@@ -1,0 +1,12 @@
+WHITESPACE = _{ " "+ | NEWLINE+ }
+
+alpha = { 'a'..'z' | 'A'..'Z' }
+digit = { '0'..'9' }
+number = @{ digit+ }
+special = { "!" | "+" }
+open = _{ "[" }
+close = _{ "]" }
+symbol = @{ !digit ~ (alpha | digit | special)+ ~ special* }
+item = ${ number | symbol }
+list = { open ~ (list | item)+ ~ close }
+program = { NEWLINE* ~ list+ }

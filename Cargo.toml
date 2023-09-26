@@ -1,0 +1,11 @@
+[package]
+name = "loon"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm16-0"] }
+pest = "2.7.2"
+pest_derive = "2.7.2"
