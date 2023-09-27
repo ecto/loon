@@ -14,14 +14,15 @@ mod parser;
 // const SIMPLE: &str = "[log [+ 6 9]]";
 // const DOUBLE: &str = "[log [+ 1 [+ 6 9]]]";
 // const LOG: &str = "[log 123]";
-const FUNCTION: &str = "
-[fn add [a b] [+ a b]]
-[log [+ 123 [add 123 123]]]
-[log true]
-[log false]";
+// const FUNCTION: &str = "
+// [fn add [a b] [+ a b]]
+// [log [+ 123 [add 123 123]]]
+// [log true]
+// [log false]";
+const IF: &str = "[log [if true [+ 1 2] 2]]";
 
 fn main() {
-    let program = FUNCTION;
+    let program = IF;
     let debug = true;
 
     let parser = parser::LoonParser {};
