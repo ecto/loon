@@ -12,22 +12,25 @@ mod parser;
 // [hello world!]\n
 // [multiple lists [with recursion]]";
 // const SIMPLE: &str = "[log [+ 6 9]]";
+// const DOUBLE: &str = "[log [+ 1 [+ 6 9]]]";
+// const LOG: &str = "[log 123]";
 const FUNCTION: &str = "
 [fn add [a b] [+ a b]]
-[log [add 123 123]]";
+[log [+ 123 [add 123 123]]]
+[log true]
+[log false]";
 
 fn main() {
     let program = FUNCTION;
+    let debug = true;
 
     let parser = parser::LoonParser {};
     let root_node = parser.run(program);
 
-    // TODO move this into compiler
     let context = Context::create();
     let module = context.create_module("tmp");
     let builder = context.create_builder();
     let fpm = PassManager::create(&module);
-
     // fpm.add_instruction_combining_pass();
     // fpm.add_reassociate_pass();
     // fpm.add_gvn_pass();
@@ -36,22 +39,24 @@ fn main() {
     // fpm.add_promote_memory_to_register_pass();
     // fpm.add_instruction_combining_pass();
     // fpm.add_reassociate_pass();
-    // fpm.initialize();
+    fpm.initialize();
 
-    let mut compiler = compiler::LoonCompiler {
+    let compiler = compiler::LoonCompiler {
         context: &context,
         builder,
         fpm,
         module,
+        debug,
     };
-
-    println!("{}", program);
 
     compiler.compile(&root_node);
 
-    println!("---------------------");
-    println!("{}", compiler.get_code());
+    if debug {
+        println!("{}", program);
+        println!("---------------------");
+        println!("{}", compiler.get_code());
+        println!("---------------------");
+    }
 
-    println!("---------------------");
     compiler.execute();
 }
