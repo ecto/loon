@@ -959,6 +959,348 @@ $ loon test
 - **Minimal scaffolding** — `loon new` creates exactly 2 files. No config sprawl.
 - **Docs from notebooks** — the documentation site is generated from `.loon.nb` files, dogfooding the notebook system
 
+### K. Content-Addressed Definitions
+
+Stolen shamelessly from Unison — and extended.
+
+Every function and type in Loon is identified not by its name but by the hash of its *content* (its AST after desugaring). Names are metadata, not identity.
+
+```loon
+loon> [hash greet]
+sha256:7f3a...  ; the identity of this function
+
+loon> [rename greet say-hello]
+; same hash — renaming doesn't change identity
+
+loon> [history greet]
+  sha256:7f3a... (current)  — added "!" to greeting
+  sha256:2b1c... (2 edits ago) — initial implementation
+  sha256:9e0d... (5 edits ago) — prototype
+```
+
+**Consequences:**
+- **Merge conflicts on renames are impossible.** Two people rename the same function differently? Both names point to the same hash. No conflict.
+- **Refactoring is free.** Move a function to a different module? The hash doesn't change. Nothing breaks.
+- **Codebase is a persistent database.** Every version of every definition is stored. `[history fn-name]` shows the full evolution. `[diff sha256:7f3a sha256:2b1c]` shows what changed.
+- **Dead code is provable.** If no live hash references your definition's hash, it's dead. Not heuristically — mathematically.
+- **Pairs with Pond.** Packages are content-addressed. Definitions are content-addressed. It's hashes all the way down.
+
+### L. Algebraic Effects
+
+Async/await is just one effect. Exceptions are just one effect. Loon generalizes all of them.
+
+An algebraic effect is a declared side effect that a function *performs* and a caller *handles*. Think of it as resumable exceptions with a type system.
+
+```loon
+; Declare effects:
+[effect IO
+  [fn read-file [path : &str] : String]
+  [fn write-file [path : &str content : &str]]]
+
+[effect Fail
+  [fn fail [msg : String] : !]]   ; ! means "never returns normally"
+
+; Use effects in function signatures:
+[defn load-config [path : &str] : Config / {IO Fail}
+  [let raw [IO.read-file path]]
+  [if [empty? raw]
+    [Fail.fail "config file is empty"]]
+  [parse-toml raw]]
+
+; Handle effects at the call site:
+[handle [load-config "app.toml"]
+  [IO.read-file path] => [resume [mock-fs.read path]]   ; inject mock FS
+  [IO.write-file _ _] => [resume]                         ; swallow writes
+  [Fail.fail msg]     => [Config.default]]                ; recover gracefully
+```
+
+**Why this is legendary:**
+- **Testing without mocks.** Handle the `IO` effect with test data — no dependency injection frameworks, no mock libraries, no test-only interfaces.
+- **Composable.** Effects compose naturally. A function with `{IO Fail Log}` effects can be partially handled — handle `Log`, pass `IO` and `Fail` through.
+- **Async is just an effect.** `[effect Async [fn await [future : Future T] : T]]` — the runtime provides the handler. You can provide a different handler for testing (instant resolution) or simulation (deterministic scheduling).
+- **Replaces 5 language features with 1.** Exceptions, async/await, generators, dependency injection, and algebraic state — all expressible as effects.
+- **Informed by research.** Draws from Koka, Eff, and OCaml 5. No mainstream language has shipped this yet.
+
+### M. Incremental Computation
+
+Loon's runtime includes a built-in incremental computation engine, inspired by Salsa (the engine inside rust-analyzer).
+
+```loon
+[memo defn parse [source : &str] : Ast
+  [parser.parse source]]
+
+[memo defn typecheck [ast : &Ast] : TypedAst
+  [checker.check ast]]
+
+[memo defn codegen [typed : &TypedAst] : Wasm
+  [emitter.emit typed]]
+
+[memo defn compile [source : &str] : Wasm
+  [|> source [parse] [typecheck] [codegen]]]
+```
+
+When `source` changes, only the affected stages re-run. The runtime automatically tracks which `[memo]` functions depend on which inputs and invalidates the minimal set.
+
+**Applications:**
+- **The Loon compiler itself** uses incremental computation — edit one function, only that function gets re-typechecked and re-compiled. Instant feedback.
+- **Reactive UIs.** `[memo]` functions + a render loop = a reactive framework with zero library code.
+- **Data pipelines.** Change one input CSV, only the downstream transformations re-run.
+- **Build systems.** `[memo]` is `make` but type-safe and automatic.
+
+### N. Structural Editing
+
+Since Loon is a LISP, syntax errors are a *choice* — and Loon chooses to eliminate them.
+
+The blessed editing experience is structural: the cursor moves between AST nodes, not characters. Insertion, deletion, and transformation operate on trees, not text.
+
+```
+; Cursor is on the [+ x 1] node:
+[defn inc [x] «[+ x 1]»]
+
+; Press "w" to wrap in a new form:
+[defn inc [x] [«▮» [+ x 1]]]
+
+; Type "if [> x 0]":
+[defn inc [x] [if [> x 0] [+ x 1] «▮»]]
+
+; Type "0" to complete:
+[defn inc [x] [if [> x 0] [+ x 1] 0]]
+```
+
+**Shipped as:**
+- **VS Code extension** — structural navigation and editing keybindings
+- **Web editor** — runs in the browser via WASM (dogfooding the WASM target)
+- **REPL integration** — structural editing in the terminal REPL
+- **Fallback** — you can always edit Loon as plain text. Structural editing is the blessed path, not a cage.
+
+**Why this matters:**
+- Syntax errors become impossible in structural mode
+- The formatter isn't a tool — it's just how the code renders
+- Refactoring is node manipulation, not text search-and-replace
+- Pairs perfectly with the content-addressed definitions (K) — edits produce new hashes automatically
+
+### O. Provenance Tracking
+
+Every value in Loon can carry invisible metadata about its origin — where it was created, how it was transformed, where it traveled.
+
+```loon
+[let name [read-input "What's your name?"]]
+[let greeting [str "hello, " name]]
+[let upper [to-upper greeting]]
+
+[provenance upper]
+; => #[
+;   {origin: "stdin" line: 1 fn: read-input}
+;   {transform: str line: 2 fn: main}
+;   {transform: to-upper line: 3 fn: main}
+; ]
+```
+
+**Zero-cost when unobserved.** Provenance metadata is tracked lazily — the compiler elides it entirely unless someone calls `[provenance]` or opts in with `[#[track] let ...]`. No runtime cost for code that doesn't use it.
+
+**Applications:**
+- **Debugging.** "Where did this value come from?" is answered instantly — no printf archaeology.
+- **Security auditing.** Track tainted data from user input through your entire program. `[tainted? val]` returns true if the value originated from an untrusted source.
+- **Data pipelines.** Every output cell in a notebook knows exactly which input cells contributed to it.
+- **Compliance.** "Show me every value derived from PII" becomes a one-liner.
+
+### P. Transparent Persistence
+
+Loon's persistent data structures aren't just immutable in memory — they can be transparently backed by durable storage.
+
+```loon
+; Create a persistent store (backed by disk):
+[let db [Store.open "./app.db"]]
+
+; Use it like a normal map:
+[let db [assoc db :users #[
+  {:name "alice" :role :admin}
+  {:name "bob" :role :user}]]]
+
+; It's durable — survives process restarts:
+[let db [Store.open "./app.db"]]
+[get db :users]  ; => still there
+
+; Query it with normal Loon functions:
+[|> [get db :users]
+  [filter [fn [u] [= u.role :admin]]]
+  [map :name]]
+; => #["alice"]
+```
+
+**Key properties:**
+- **No ORM.** Your data structures *are* your database. Same functions, same types, same everything.
+- **No serialization.** The persistent data structure format *is* the on-disk format. No encoding/decoding step.
+- **Immutable history.** Since the backing store is persistent (append-only), you get time-travel for free: `[Store.at db timestamp]` returns the database as it was at that point.
+- **Transactional.** Multiple mutations in a `[transact db ...]` block are atomic.
+- **Scales down.** For small projects, it's a JSON file with superpowers. For large projects, it's a proper embedded database. Same API either way.
+
+### Q. First-Class LLM & Agentic Programming
+
+This is the big one. Loon is designed from the ground up to be the best language for writing AI-powered programs — and the best language for AI to write programs *in*.
+
+#### The Language AI Can Actually Write
+
+Loon's LISP syntax isn't just elegant — it's *structurally trivial* for LLMs. There's no operator precedence, no semicolon insertion, no whitespace ambiguity, no brace-matching across 50 lines. Code is trees. LLMs are good at trees.
+
+```loon
+; An LLM generating Loon doesn't need to track:
+;   - indentation rules (Python)
+;   - semicolons and braces (C, Java, Rust)
+;   - operator precedence (everything)
+;   - macro hygiene (it's automatic)
+; It just needs to produce balanced brackets with valid symbols.
+```
+
+But Loon goes further than just being easy to generate. It has *language-level primitives* for AI-assisted programming.
+
+#### `[ai ...]` — Compile-Time Code Generation
+
+```loon
+; Generate a function at compile time using an LLM:
+[ai defn celsius-to-fahrenheit [c : f64] : f64
+  "Convert Celsius to Fahrenheit"]
+; The compiler sends the signature + docstring to an LLM,
+; receives an implementation, type-checks it, and compiles it.
+; If it doesn't type-check, the compiler retries (up to 3x) then errors.
+
+; Generate a type from a description:
+[ai type HttpStatus
+  "Standard HTTP status codes as an enum with variants like Ok, NotFound, etc."]
+
+; Generate a trait implementation:
+[ai impl Display HttpStatus
+  "Format status codes as 'CODE MESSAGE', e.g. '200 OK'"]
+```
+
+**Crucially:** `[ai ...]` blocks are **verified by the compiler**. The LLM proposes, the type system disposes. Generated code must pass type checking, ownership checking, and capability checking before it's accepted. The LLM is a code generator, not a trusted authority.
+
+```sh
+$ loon build
+  [ai] Generating celsius-to-fahrenheit... ✓ (type-checked, 1 attempt)
+  [ai] Generating HttpStatus... ✓ (type-checked, 2 attempts — first had duplicate variant)
+  Compiled main.wasm (1.2KB)
+```
+
+Generated code is cached by its prompt hash + model version. Rebuilds don't re-query the LLM unless the prompt changes. `loon build --offline` refuses to call any LLM and uses only cached generations.
+
+#### `[agent ...]` — Agent Loops as a Language Primitive
+
+```loon
+[defn research-agent [question : String] : String / {AI Net}
+  [agent
+    :system "You are a research assistant. Answer questions using web search."
+    :tools [web-search summarize]       ; Loon functions exposed as tools
+    :max-turns 10
+    :prompt question]]
+
+; The tools are just normal Loon functions with type signatures:
+[#[tool "Search the web for a query"]
+ defn web-search [query : String] : [Vec SearchResult] / {Net}
+  [http.get [str "https://api.search.io?q=" [url-encode query]]]]
+
+[#[tool "Summarize a long text"]
+ defn summarize [text : String] : String / {AI}
+  [ai.complete [str "Summarize this:\n" text]]]
+```
+
+**The `#[tool]` attribute** auto-generates a JSON schema from the function's type signature. No manual schema writing. No SDK. The type system *is* the tool specification.
+
+**Agent features:**
+- **Tool type safety.** If a tool returns `Result`, the agent runtime handles errors automatically. If a tool requires `Net` capability, the agent must have that capability granted.
+- **Observability.** Every agent turn is logged as structured data. `[agent-trace result]` returns the full chain of reasoning, tool calls, and responses.
+- **Deterministic replay.** Agent traces are serializable. `[replay trace]` re-executes an agent run with the same tool responses but a different system prompt — for testing, debugging, and evaluation.
+- **Composable.** Agents can call other agents. An orchestrator agent can delegate to specialist agents, each with different tools and capabilities.
+
+#### Structured Output — Types as Schemas
+
+```loon
+[type MovieReview
+  [title : String]
+  [rating : f64]
+  [pros : [Vec String]]
+  [cons : [Vec String]]
+  [summary : String]]
+
+; Ask an LLM to produce a typed value:
+[let review : MovieReview
+  [ai.extract "Review the movie Dune Part 2"]]
+
+; The LLM's output is parsed and validated against the Loon type.
+; Fields are type-checked. Missing fields are caught. Extra fields are dropped.
+review.rating  ; 8.5 — it's a real f64, not a string
+```
+
+This works because Loon types map cleanly to JSON Schema (algebraic types → discriminated unions, Option → nullable, etc.). The compiler generates schemas from types automatically.
+
+#### Semantic Functions — LLM Calls That Look Like Functions
+
+```loon
+[semantic defn classify-sentiment [text : String] : Sentiment
+  "Classify the sentiment of the given text."]
+
+[semantic defn translate [text : String lang : Language] : String
+  "Translate the text to the target language. Preserve tone and idiom."]
+
+[semantic defn extract-entities [text : String] : [Vec Entity]
+  "Extract named entities (people, places, organizations) from the text."]
+
+; Use them like any other function:
+[|> [read-file "feedback.txt"]?
+  [lines]
+  [map [fn [line] {
+    :text line
+    :sentiment [classify-sentiment line]
+    :entities [extract-entities line]}]]
+  [filter [fn [r] [= r.sentiment Sentiment.Negative]]]
+  [each [fn [r] [println [str "Negative: " r.text]]]]]
+```
+
+`[semantic defn ...]` declares a function whose implementation *is* a natural language prompt. The return type constrains the LLM's output. The function is called like any other — you can `map` it, `filter` with it, compose it. But under the hood, it's an LLM call with structured output extraction.
+
+**Key design decisions:**
+- Semantic functions are **marked in the type system** with an `AI` effect — you always know what's hitting an LLM and what's pure computation.
+- They're **cacheable** — same input → same output (configurable, opt-out for non-deterministic use cases).
+- They **compose with the pipe operator** and all other Loon features. No special syntax for "AI code" vs "normal code."
+- They **respect capabilities** — a semantic function that needs `Net` to call an API must declare it.
+
+#### Sandboxed Code Execution
+
+The killer combination: LLMs generate Loon code + the capability system sandboxes it + WASM isolates it.
+
+```loon
+; Let an LLM write and execute code, safely:
+[let code [ai.complete "Write a Loon function that sorts a list of numbers"]]
+[let ast [parse code]?]                        ; parse to AST
+[let typed [typecheck ast]?]                   ; must type-check
+[let checked [capability-check ast #{}]]       ; grant NO capabilities
+[let result [eval-sandboxed checked #[3 1 4 1 5]]]  ; run in WASM sandbox
+; => #[1 1 3 4 5]
+```
+
+An LLM can propose code. The code is parsed, type-checked, capability-checked (you control exactly what it can do), and executed in a WASM sandbox. If the LLM generates code that tries to read the filesystem, it fails at capability checking — before it ever runs.
+
+**This is Loon's superpower for agentic AI:** the language itself provides the guardrails. No separate sandbox runtime. No container overhead. The type system and capability system *are* the sandbox.
+
+#### Model Configuration
+
+```toml
+# loon.toml
+[ai]
+default-model = "claude-sonnet"
+compile-model = "claude-haiku"     # fast model for [ai defn] blocks
+agent-model = "claude-opus"        # capable model for [agent] blocks
+cache = true                        # cache LLM responses by prompt hash
+offline = false                     # if true, only use cached responses
+```
+
+```loon
+; Override per-call:
+[ai.with-model "claude-opus"
+  [ai defn complex-algorithm [data : &[f64]] : [Vec f64]
+    "Implement a fast Fourier transform"]]
+```
+
 ---
 
 ## 15. Rust Safety Feature Parity
