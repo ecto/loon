@@ -1,29 +1,78 @@
 pub mod ownership;
 
 use crate::ast::{Expr, ExprKind, NodeId};
+use crate::module::ModuleCache as ResolveHelper;
 use crate::syntax::Span;
 use crate::types::*;
+
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+
+// ── Type-level module cache ──────────────────────────────────────────
+
+/// Exports from a type-checked module.
+#[derive(Debug, Clone)]
+pub struct TypeModuleExports {
+    pub schemes: HashMap<String, Scheme>,
+    pub constructors: HashMap<String, Scheme>,
+}
+
+#[derive(Debug, Clone)]
+enum TypeModuleState {
+    Loading,
+    Loaded(TypeModuleExports),
+}
+
+/// Cache for type-checked modules (shared via Rc<RefCell<>>).
+#[derive(Debug)]
+pub struct TypeModuleCache {
+    modules: HashMap<PathBuf, TypeModuleState>,
+}
+
+impl TypeModuleCache {
+    pub fn new() -> Self {
+        Self {
+            modules: HashMap::new(),
+        }
+    }
+}
+
+impl Default for TypeModuleCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── Checker ──────────────────────────────────────────────────────────
 
 pub struct Checker {
     pub subst: Subst,
     pub env: TypeEnv,
     pub errors: Vec<TypeError>,
     /// ADT constructor types: name → scheme
-    pub constructors: std::collections::HashMap<String, Scheme>,
+    pub constructors: HashMap<String, Scheme>,
     /// ADT type → constructor names (for exhaustiveness checking)
-    pub type_constructors: std::collections::HashMap<String, Vec<String>>,
+    pub type_constructors: HashMap<String, Vec<String>>,
     /// Type of each expression node (side-table)
-    pub type_of: std::collections::HashMap<NodeId, Type>,
+    pub type_of: HashMap<NodeId, Type>,
     /// Trait declarations
-    pub traits: std::collections::HashMap<String, TraitDecl>,
+    pub traits: HashMap<String, TraitDecl>,
     /// Trait implementations: (trait_name, type_name) → method schemes
-    pub trait_impls: std::collections::HashMap<(String, String), std::collections::HashMap<String, Scheme>>,
+    pub trait_impls: HashMap<(String, String), HashMap<String, Scheme>>,
     /// Pending [sig] declarations: name → (type, span)
-    pub pending_sigs: std::collections::HashMap<String, (Type, Span)>,
+    pub pending_sigs: HashMap<String, (Type, Span)>,
     /// Inferred effects for each function: name → EffectSet
-    pub fn_effects: std::collections::HashMap<String, EffectSet>,
+    pub fn_effects: HashMap<String, EffectSet>,
     /// Effect set of the currently-checked function body
     current_fn_effects: EffectSet,
+    /// Base directory for module resolution (None = no file-system access)
+    base_dir: Option<PathBuf>,
+    /// Names declared as `pub` in this module
+    pub pub_names: HashSet<String>,
+    /// Shared cache for type-checked modules
+    module_cache: Rc<RefCell<TypeModuleCache>>,
 }
 
 impl Checker {
@@ -32,18 +81,36 @@ impl Checker {
             subst: Subst::new(),
             env: TypeEnv::new(),
             errors: Vec::new(),
-            constructors: std::collections::HashMap::new(),
-            type_constructors: std::collections::HashMap::new(),
-            type_of: std::collections::HashMap::new(),
-            traits: std::collections::HashMap::new(),
-            trait_impls: std::collections::HashMap::new(),
-            pending_sigs: std::collections::HashMap::new(),
-            fn_effects: std::collections::HashMap::new(),
+            constructors: HashMap::new(),
+            type_constructors: HashMap::new(),
+            type_of: HashMap::new(),
+            traits: HashMap::new(),
+            trait_impls: HashMap::new(),
+            pending_sigs: HashMap::new(),
+            fn_effects: HashMap::new(),
             current_fn_effects: EffectSet::empty(),
+            base_dir: None,
+            pub_names: HashSet::new(),
+            module_cache: Rc::new(RefCell::new(TypeModuleCache::new())),
         };
         checker.register_builtins();
         checker.register_prelude();
         checker
+    }
+
+    /// Create a checker that can resolve `[use ...]` against the file system.
+    pub fn with_base_dir(base_dir: &Path) -> Self {
+        let mut c = Self::new();
+        c.base_dir = Some(base_dir.to_path_buf());
+        c
+    }
+
+    /// Internal: create a checker for a sub-module that shares the module cache.
+    fn for_module(base_dir: &Path, cache: Rc<RefCell<TypeModuleCache>>) -> Self {
+        let mut c = Self::new();
+        c.base_dir = Some(base_dir.to_path_buf());
+        c.module_cache = cache;
+        c
     }
 
     /// Look up the inferred type for a given node.
@@ -1111,7 +1178,24 @@ impl Checker {
                     }
                     return Type::Str;
                 }
-                "test" | "pub" | "mut" => {
+                "use" => return self.infer_use(&items[1..], span),
+                "pub" => {
+                    // Track the name being made public
+                    if items.len() > 2 {
+                        if let ExprKind::Symbol(kind) = &items[1].kind {
+                            if matches!(kind.as_str(), "defn" | "let" | "type") {
+                                if let ExprKind::Symbol(name) = &items[2].kind {
+                                    self.pub_names.insert(name.clone());
+                                }
+                            }
+                        }
+                    }
+                    if items.len() > 1 {
+                        return self.infer_list(&items[1..], span);
+                    }
+                    return Type::Unit;
+                }
+                "test" | "mut" => {
                     if items.len() > 1 {
                         return self.infer_list(&items[1..], span);
                     }
@@ -1998,6 +2082,245 @@ impl Checker {
             "String" | "Str" => Type::Str,
             "Keyword" => Type::Keyword,
             _ => Type::Con(name.to_string(), vec![]),
+        }
+    }
+
+    // ── Module / use resolution ────────────────────────────────────
+
+    fn infer_use(&mut self, args: &[Expr], span: Span) -> Type {
+        if args.is_empty() {
+            self.errors
+                .push(TypeError::at("use requires a module path", span));
+            return Type::Unit;
+        }
+
+        let module_path = match &args[0].kind {
+            ExprKind::Symbol(s) => s.clone(),
+            _ => {
+                self.errors
+                    .push(TypeError::at("use module path must be a symbol", span));
+                return Type::Unit;
+            }
+        };
+
+        let base_dir = match &self.base_dir {
+            Some(d) => d.clone(),
+            None => {
+                // No base_dir — silently skip (e.g. WASM/REPL context)
+                return Type::Unit;
+            }
+        };
+
+        let file_path = ResolveHelper::resolve_path(&module_path, &base_dir);
+        let canonical = file_path
+            .canonicalize()
+            .unwrap_or_else(|_| file_path.clone());
+
+        // Check cache (cycle detection + memoisation)
+        {
+            let cached = {
+                let cache = self.module_cache.borrow();
+                cache.modules.get(&canonical).cloned()
+            };
+            if let Some(state) = cached {
+                match state {
+                    TypeModuleState::Loading => {
+                        self.errors.push(TypeError::at(
+                            format!("circular module dependency: {module_path}"),
+                            span,
+                        ));
+                        return Type::Unit;
+                    }
+                    TypeModuleState::Loaded(exports) => {
+                        self.import_exports(&module_path, &args[1..], &exports, span);
+                        return Type::Unit;
+                    }
+                }
+            }
+        }
+
+        // Mark as loading
+        self.module_cache
+            .borrow_mut()
+            .modules
+            .insert(canonical.clone(), TypeModuleState::Loading);
+
+        // Read and parse the module file
+        let source = match std::fs::read_to_string(&file_path) {
+            Ok(s) => s,
+            Err(e) => {
+                self.errors.push(TypeError::at(
+                    format!(
+                        "cannot read module '{}' at {}: {e}",
+                        module_path,
+                        file_path.display()
+                    ),
+                    span,
+                ));
+                self.module_cache.borrow_mut().modules.remove(&canonical);
+                return Type::Unit;
+            }
+        };
+
+        let exprs = match crate::parser::parse(&source) {
+            Ok(e) => e,
+            Err(e) => {
+                self.errors.push(TypeError::at(
+                    format!("parse error in module '{module_path}': {}", e.message),
+                    span,
+                ));
+                self.module_cache.borrow_mut().modules.remove(&canonical);
+                return Type::Unit;
+            }
+        };
+
+        // Type-check the module with a fresh checker sharing our cache
+        let module_dir = file_path
+            .parent()
+            .unwrap_or(&base_dir)
+            .to_path_buf();
+        let cache_ref = Rc::clone(&self.module_cache);
+        let mut mod_checker = Checker::for_module(&module_dir, cache_ref);
+        for expr in &exprs {
+            mod_checker.infer(expr);
+        }
+
+        // Collect exported schemes
+        let exports = mod_checker.collect_exports();
+
+        // Store in cache
+        self.module_cache
+            .borrow_mut()
+            .modules
+            .insert(canonical, TypeModuleState::Loaded(exports.clone()));
+
+        // Propagate any type errors from the module
+        self.errors.extend(
+            mod_checker
+                .errors
+                .into_iter()
+                .map(|e| TypeError::bare(format!("in module '{module_path}': {}", e.message))),
+        );
+
+        self.import_exports(&module_path, &args[1..], &exports, span);
+        Type::Unit
+    }
+
+    /// Collect the exported type schemes from a checked module.
+    fn collect_exports(&self) -> TypeModuleExports {
+        let mut schemes = HashMap::new();
+
+        if self.pub_names.is_empty() {
+            // No explicit pub — export all non-builtin globals
+            let builtin_checker = Checker::new();
+            if let Some(global_scope) = self.env.global_scope() {
+                for (name, scheme) in global_scope {
+                    if builtin_checker.env.get(name).is_none() {
+                        schemes.insert(name.clone(), scheme.clone());
+                    }
+                }
+            }
+        } else {
+            for name in &self.pub_names {
+                if let Some(scheme) = self.env.get(name) {
+                    schemes.insert(name.clone(), scheme.clone());
+                }
+            }
+        }
+
+        // Also export constructors for pub ADTs
+        let mut constructors = HashMap::new();
+        for (name, scheme) in &self.constructors {
+            // Export if the constructor's type is for a pub ADT, or if no pub names
+            if self.pub_names.is_empty() || self.pub_names.contains(name) {
+                constructors.insert(name.clone(), scheme.clone());
+            }
+        }
+
+        TypeModuleExports {
+            schemes,
+            constructors,
+        }
+    }
+
+    /// Import schemes from module exports into the current checker's env.
+    fn import_exports(
+        &mut self,
+        module_path: &str,
+        import_args: &[Expr],
+        exports: &TypeModuleExports,
+        span: Span,
+    ) {
+        // [use mod :as alias]
+        if import_args.len() >= 2 {
+            if let ExprKind::Keyword(k) = &import_args[0].kind {
+                if k == "as" {
+                    if let ExprKind::Symbol(alias) = &import_args[1].kind {
+                        for (name, scheme) in &exports.schemes {
+                            self.env
+                                .set_global(format!("{alias}.{name}"), scheme.clone());
+                        }
+                        for (name, scheme) in &exports.constructors {
+                            self.constructors
+                                .insert(format!("{alias}.{name}"), scheme.clone());
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+
+        // [use mod {name1 name2}] or [use mod [name1 name2]]
+        if !import_args.is_empty() {
+            let names: Vec<String> = match &import_args[0].kind {
+                ExprKind::Map(pairs) => pairs
+                    .iter()
+                    .filter_map(|(k, _)| {
+                        if let ExprKind::Symbol(s) = &k.kind {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+                ExprKind::Vec(items) | ExprKind::List(items) => items
+                    .iter()
+                    .filter_map(|i| {
+                        if let ExprKind::Symbol(s) = &i.kind {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+                _ => vec![],
+            };
+
+            if !names.is_empty() {
+                for name in &names {
+                    if let Some(scheme) = exports.schemes.get(name) {
+                        self.env.set_global(name.clone(), scheme.clone());
+                    } else if let Some(scheme) = exports.constructors.get(name) {
+                        self.constructors.insert(name.clone(), scheme.clone());
+                    } else {
+                        self.errors.push(TypeError::at(
+                            format!("module '{module_path}' does not export '{name}'"),
+                            span,
+                        ));
+                    }
+                }
+                return;
+            }
+        }
+
+        // Default: qualified import (mod.name)
+        for (name, scheme) in &exports.schemes {
+            self.env
+                .set_global(format!("{module_path}.{name}"), scheme.clone());
+        }
+        for (name, scheme) in &exports.constructors {
+            self.constructors
+                .insert(format!("{module_path}.{name}"), scheme.clone());
         }
     }
 

@@ -80,7 +80,8 @@ fn check_file(path: &PathBuf) {
     let filename = path.to_string_lossy().to_string();
     match loon_lang::parser::parse(&source) {
         Ok(exprs) => {
-            let mut checker = loon_lang::check::Checker::new();
+            let base_dir = path.parent().unwrap_or(std::path::Path::new("."));
+            let mut checker = loon_lang::check::Checker::with_base_dir(base_dir);
             let errors = checker.check_program(&exprs);
             if errors.is_empty() {
                 println!("{}", "OK — no type errors".green().bold());

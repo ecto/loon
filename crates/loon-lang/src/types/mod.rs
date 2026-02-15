@@ -386,6 +386,11 @@ impl TypeEnv {
         self.bindings[0].insert(name, scheme);
     }
 
+    /// Access the global (bottom) scope.
+    pub fn global_scope(&self) -> Option<&HashMap<String, Scheme>> {
+        self.bindings.first()
+    }
+
     /// Free type variables in the environment.
     pub fn free_vars(&self, subst: &Subst) -> BTreeSet<TypeVar> {
         let mut fvs = BTreeSet::new();
