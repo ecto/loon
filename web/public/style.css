@@ -229,6 +229,12 @@ pre code {
   display: none;
 }
 
+.nav-logo-img {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+}
+
 .nav-logo-icon {
   width: 32px;
   height: 32px;
@@ -311,7 +317,23 @@ pre code {
   flex-wrap: wrap;
 }
 
+.hero-illustration {
+  position: absolute;
+  right: -2rem;
+  bottom: -2rem;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.12;
+}
+
+.hero-bird {
+  width: 280px;
+  height: auto;
+}
+
 .hero-code {
+  position: relative;
+  z-index: 1;
   max-width: 800px;
   margin: var(--spacing-lg) auto 0;
   background: var(--loon-black);
@@ -1066,6 +1088,10 @@ pre code {
 
   .hero-code {
     padding: var(--spacing-sm);
+  }
+
+  .hero-illustration {
+    display: none;
   }
 
   /* Pillars */
