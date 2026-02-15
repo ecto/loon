@@ -2,9 +2,9 @@
 
 [defn tour-step [title desc code]
   [article-el {:class "tour-step"}
-    [h2 {} title]
-    [p {} desc]
-    [code-block {} code]]]
+    [h2 title]
+    [p desc]
+    [code-block code]]]
 
 [defn tour-ctas []
   [div {:class "hero-ctas"}
@@ -15,7 +15,7 @@
 [defn tour-page []
   [div {:class "page"}
     [main-el {:class "section tour"}
-      [h1 {} "A 10-Minute Tour of Loon"]
+      [h1 "A 10-Minute Tour of Loon"]
       [p {:class "section-subtitle"} "Everything you need to know to start writing Loon."]
 
       [tour-step "1. Hello, World"
@@ -51,7 +51,7 @@
         [str "[let #[a b c] #[1 2 3]]\n[let {name age} {:name \"Loon\" :age 1}]\n\n[defn process-pair [[x y]]\n  [+ x y]]"]]
 
       [article-el {:class "tour-step"}
-        [h2 {} "What's next?"]
-        [p {} "You've seen the core of Loon. Traits, row polymorphism, and content-addressed definitions are coming."]
+        [h2 "What's next?"]
+        [p "You've seen the core of Loon. Traits, row polymorphism, and content-addressed definitions are coming."]
         [tour-ctas]]]
     [footer-component]]]

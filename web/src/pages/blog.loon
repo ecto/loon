@@ -1,32 +1,32 @@
 ; blog.loon — Blog index page
 
 [defn blog-features []
-  [ul-el {}
-    [li-el {} "Full interpreter with 50+ builtins"]
-    [li-el {} "Hindley-Milner type inference"]
-    [li-el {} "Ownership checking (inferred)"]
-    [li-el {} "Algebraic effects with handle/resume"]
-    [li-el {} "Pattern matching with guards"]
-    [li-el {} "Pipe operator with thread-last semantics"]
-    [li-el {} "Module system with selective imports"]
-    [li-el {} "REPL with time travel and forking"]
-    [li-el {} "Basic WASM codegen"]]]
+  [ul-el
+    [li-el "Full interpreter with 50+ builtins"]
+    [li-el "Hindley-Milner type inference"]
+    [li-el "Ownership checking (inferred)"]
+    [li-el "Algebraic effects with handle/resume"]
+    [li-el "Pattern matching with guards"]
+    [li-el "Pipe operator with thread-last semantics"]
+    [li-el "Module system with selective imports"]
+    [li-el "REPL with time travel and forking"]
+    [li-el "Basic WASM codegen"]]]
 
 [defn blog-page []
   [div {:class "page"}
     [main-el {:class "section"}
-      [h1 {} "Blog"]
+      [h1 "Blog"]
       [p {:class "section-subtitle"} "Dispatches from the lake."]
       [article-el {:class "blog-post"}
-        [h2 {} "Hello, World — Introducing Loon"]
+        [h2 "Hello, World — Introducing Loon"]
         [p {:class "blog-meta"} "February 2026"]
-        [p {} "Today we're sharing Loon with the world. It started as a question: what if a LISP had invisible types, Rust-style ownership without annotations, and algebraic effects instead of exceptions?"]
-        [p {} "Loon is the answer. It's a v0.1 — the interpreter works, type inference works, the effect system works. There's a long road to v1.0, but the foundations are solid."]
-        [p {} "And this website? It's written entirely in Loon. The Rust interpreter compiles to WebAssembly, evaluates Loon source code in your browser, and manipulates the DOM through a thin bridge. It's Loon all the way down."]
-        [h3 {} "What works today"]
+        [p "Today we're sharing Loon with the world. It started as a question: what if a LISP had invisible types, Rust-style ownership without annotations, and algebraic effects instead of exceptions?"]
+        [p "Loon is the answer. It's a v0.1 — the interpreter works, type inference works, the effect system works. There's a long road to v1.0, but the foundations are solid."]
+        [p "And this website? It's written entirely in Loon. The Rust interpreter compiles to WebAssembly, evaluates Loon source code in your browser, and manipulates the DOM through a thin bridge. It's Loon all the way down."]
+        [h3 "What works today"]
         [blog-features]
-        [h3 {} "What's next"]
-        [p {} "See the roadmap for our full plan. The immediate priorities are traits/protocols, a more complete effect system, and better error messages."]
+        [h3 "What's next"]
+        [p "See the roadmap for our full plan. The immediate priorities are traits/protocols, a more complete effect system, and better error messages."]
         [div {:class "hero-ctas"}
           [a-el {:class "cta-button" :href "/tour"} "Take the tour"]
           [a-el {:class "cta-button-secondary" :href "/roadmap"} "See the roadmap"]]]]

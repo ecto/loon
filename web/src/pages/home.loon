@@ -31,24 +31,24 @@
       [div {:class "pillars-grid"}
         [div {:class "pillar-card"}
           [div {:class "pillar-icon"} "T"]
-          [h3 {} "Types you never write"]
-          [p {} "Full Hindley-Milner inference means the compiler knows every type. You never annotate — your editor shows them when you want."]]
+          [h3 "Types you never write"]
+          [p "Full Hindley-Milner inference means the compiler knows every type. You never annotate — your editor shows them when you want."]]
         [div {:class "pillar-card"}
           [div {:class "pillar-icon"} "O"]
-          [h3 {} "Ownership without annotations"]
-          [p {} "Rust-style memory safety, inferred. No lifetime annotations, no borrow checker fights. The compiler figures it out."]]
+          [h3 "Ownership without annotations"]
+          [p "Rust-style memory safety, inferred. No lifetime annotations, no borrow checker fights. The compiler figures it out."]]
         [div {:class "pillar-card"}
           [div {:class "pillar-icon"} "E"]
-          [h3 {} "Effects, not exceptions"]
-          [p {} "Algebraic effects replace try/catch, async/await, and state management. One elegant pattern for all side effects."]]
+          [h3 "Effects, not exceptions"]
+          [p "Algebraic effects replace try/catch, async/await, and state management. One elegant pattern for all side effects."]]
         [div {:class "pillar-card"}
           [div {:class "pillar-icon"} "M"]
-          [h3 {} "Modern ergonomics"]
-          [p {} "Pipe operator, pattern matching, destructuring, multi-arity functions. The good parts of every language, unified."]]]]
+          [h3 "Modern ergonomics"]
+          [p "Pipe operator, pattern matching, destructuring, multi-arity functions. The good parts of every language, unified."]]]]
 
     ; --- Interactive Demo ---
     [section-el {:class "section demo-section"}
-      [h2 {} "Try it right here"]
+      [h2 "Try it right here"]
       [p {:class "section-subtitle"} "This editor runs Loon in your browser — the same interpreter that renders this page."]
       [editor-component [str
         "; Fibonacci with pattern matching\n"
@@ -65,7 +65,7 @@
     ; --- Vision ---
     [section-el {:class "section vision-section"}
       [div {:class "vision-content"}
-        [h2 {} "The language we wished existed"]
+        [h2 "The language we wished existed"]
         [p {:class "vision-text"}
           "We wanted a language with the elegance of Clojure, the safety of Rust, the ergonomics of modern TypeScript, and the simplicity of a LISP. So we built one."]
         [p {:class "vision-text"}
@@ -73,7 +73,7 @@
 
     ; --- Quickstart ---
     [section-el {:class "section quickstart-section"}
-      [h2 {} "Get started in 30 seconds"]
+      [h2 "Get started in 30 seconds"]
       [div {:class "install-steps"}
         [code-block {:label "Terminal"} [str
           "curl -fsSL https://loon-lang.org/install.sh | sh\n"

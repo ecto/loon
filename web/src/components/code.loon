@@ -4,7 +4,9 @@
   [pre-el {:class "code-block"}
     [code-el {:class "language-loon"} source]]]
 
-[defn code-block [props source]
+[defn code-block [first & rest]
+  [let props [if [map? first] first {}]]
+  [let source [if [map? first] [nth rest 0] first]]
   [let label [get props :label ""]]
   [div {:class "code-block-wrapper"}
     [if [not [= label ""]]

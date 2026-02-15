@@ -1,23 +1,23 @@
 ; roadmap.loon — Roadmap page
 
 [defn rm-item [txt]
-  [li-el {} txt]]
+  [li-el txt]]
 
 [defn rm-phase [title status & items]
   [let cls [str "roadmap-phase"
     [if [= status "Done"] " roadmap-done"
       [if [= status "In Progress"] " roadmap-current" ""]]]]
   [div {:class cls}
-    [h2 {} title]
+    [h2 title]
     [if [not [= status ""]]
       [span {:class "roadmap-status"} status]
       Empty]
-    [ul-el {} [|> items [map [fn [txt] [rm-item txt]]]]]]]
+    [ul-el [|> items [map [fn [txt] [rm-item txt]]]]]]]
 
 [defn roadmap-page []
   [div {:class "page"}
     [main-el {:class "section"}
-      [h1 {} "Roadmap"]
+      [h1 "Roadmap"]
       [p {:class "section-subtitle"} "Where Loon is headed. Built in the open."]
 
       [rm-phase "v0.1 — Foundation" "Done"

@@ -194,12 +194,18 @@ async function boot() {
 
     console.log('Loon website booted successfully');
   } catch (e) {
-    console.error('Loon boot failed:', e);
+    const msg = e.message || String(e);
+    console.error('Loon boot failed:', msg);
     const app = document.getElementById('app');
     if (app) {
-      app.innerHTML = `<div style="padding: 2rem; font-family: monospace;">
-        <h1>Loon failed to start</h1>
-        <pre style="color: #c00;">${e.message || e}</pre>
+      app.innerHTML = `<div style="padding: 2rem; font-family: system-ui, monospace; max-width: 48rem; margin: 0 auto;">
+        <h1 style="color: #c00; margin-bottom: 0.5rem;">Loon failed to start</h1>
+        <p style="color: #666; margin-top: 0;">The interpreter hit a runtime error while booting.</p>
+        <pre style="background: #1a1a2e; color: #e0e0e0; padding: 1.5rem; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; line-height: 1.6;"><code>${msg}</code></pre>
+        <details style="margin-top: 1rem; color: #666;">
+          <summary style="cursor: pointer;">Stack trace</summary>
+          <pre style="background: #f5f5f5; padding: 1rem; border-radius: 4px; margin-top: 0.5rem; font-size: 0.85rem; overflow-x: auto;">${e.stack || 'No stack trace available'}</pre>
+        </details>
       </div>`;
     }
   }

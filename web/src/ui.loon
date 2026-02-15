@@ -1,8 +1,9 @@
 ; ui.loon — React-like UI library for Loon
 ; VNode types, element constructors, effects, diff/patch, mount/render
 ;
-; With rest params (& children), elements can be called as:
+; Elements support optional props:
 ;   [div {:class "hero"} [h1 "Hello"] [p "World"]]
+;   [h1 "Hello"]  ; no props needed
 ; Strings auto-coerce to text nodes.
 
 ; --- VNode ADT ---
@@ -27,46 +28,43 @@
 [defn coerce-children [children]
   [map [fn [c] [coerce-child c]] children]]
 
+; --- Element constructor helper ---
+; If first arg is a map, treat as props. Otherwise treat as first child.
+
+[defn make-element [tag first rest]
+  [if [map? first]
+    [El tag first [coerce-children rest]]
+    [El tag {} [coerce-children [cons first rest]]]]]
+
 ; --- Element constructors ---
-; First arg can be props (map) or a child. If it's a map, it's props.
-; Remaining args are children. Strings auto-coerce to text nodes.
 
-[defn make-el [tag first & rest]
-  ; Check if first arg is a map (props)
-  [let has-props [match first
-    _ => false]]
-  ; For now, always treat first as props if it's a map
-  ; This is a simplification — we check at runtime
-  [El tag first [coerce-children rest]]]
-
-; Concrete element constructors — props + children
-[defn div [props & children]    [El "div" props [coerce-children children]]]
-[defn span [props & children]   [El "span" props [coerce-children children]]]
-[defn p [props & children]      [El "p" props [coerce-children children]]]
-[defn h1 [props & children]     [El "h1" props [coerce-children children]]]
-[defn h2 [props & children]     [El "h2" props [coerce-children children]]]
-[defn h3 [props & children]     [El "h3" props [coerce-children children]]]
-[defn h4 [props & children]     [El "h4" props [coerce-children children]]]
-[defn a-el [props & children]   [El "a" props [coerce-children children]]]
-[defn button-el [props & children] [El "button" props [coerce-children children]]]
-[defn input-el [props]          [El "input" props #[]]]
-[defn textarea-el [props & children] [El "textarea" props [coerce-children children]]]
-[defn img-el [props]            [El "img" props #[]]]
-[defn nav-el [props & children] [El "nav" props [coerce-children children]]]
-[defn header-el [props & children] [El "header" props [coerce-children children]]]
-[defn footer-el [props & children] [El "footer" props [coerce-children children]]]
-[defn main-el [props & children] [El "main" props [coerce-children children]]]
-[defn section-el [props & children] [El "section" props [coerce-children children]]]
-[defn article-el [props & children] [El "article" props [coerce-children children]]]
-[defn ul-el [props & children]  [El "ul" props [coerce-children children]]]
-[defn ol-el [props & children]  [El "ol" props [coerce-children children]]]
-[defn li-el [props & children]  [El "li" props [coerce-children children]]]
-[defn pre-el [props & children] [El "pre" props [coerce-children children]]]
-[defn code-el [props & children] [El "code" props [coerce-children children]]]
-[defn strong-el [props & children] [El "strong" props [coerce-children children]]]
-[defn em-el [props & children]  [El "em" props [coerce-children children]]]
-[defn br-el []                  [El "br" {} #[]]]
-[defn hr-el []                  [El "hr" {} #[]]]
+[defn div [first & rest]          [make-element "div" first rest]]
+[defn span [first & rest]         [make-element "span" first rest]]
+[defn p [first & rest]            [make-element "p" first rest]]
+[defn h1 [first & rest]           [make-element "h1" first rest]]
+[defn h2 [first & rest]           [make-element "h2" first rest]]
+[defn h3 [first & rest]           [make-element "h3" first rest]]
+[defn h4 [first & rest]           [make-element "h4" first rest]]
+[defn a-el [first & rest]         [make-element "a" first rest]]
+[defn button-el [first & rest]    [make-element "button" first rest]]
+[defn input-el [props]            [El "input" props #[]]]
+[defn textarea-el [first & rest]  [make-element "textarea" first rest]]
+[defn img-el [props]              [El "img" props #[]]]
+[defn nav-el [first & rest]       [make-element "nav" first rest]]
+[defn header-el [first & rest]    [make-element "header" first rest]]
+[defn footer-el [first & rest]    [make-element "footer" first rest]]
+[defn main-el [first & rest]      [make-element "main" first rest]]
+[defn section-el [first & rest]   [make-element "section" first rest]]
+[defn article-el [first & rest]   [make-element "article" first rest]]
+[defn ul-el [first & rest]        [make-element "ul" first rest]]
+[defn ol-el [first & rest]        [make-element "ol" first rest]]
+[defn li-el [first & rest]        [make-element "li" first rest]]
+[defn pre-el [first & rest]       [make-element "pre" first rest]]
+[defn code-el [first & rest]      [make-element "code" first rest]]
+[defn strong-el [first & rest]    [make-element "strong" first rest]]
+[defn em-el [first & rest]        [make-element "em" first rest]]
+[defn br-el []                    [El "br" {} #[]]]
+[defn hr-el []                    [El "hr" {} #[]]]
 
 ; --- Text helper ---
 [defn text [s] [Txt s]]
@@ -90,9 +88,7 @@
   [each [fn [entry]
     [let k [nth entry 0]]
     [let v [nth entry 1]]
-    [let key-str [match k
-      [Keyword s] => s
-      _ => [str k]]]
+    [let key-str [name k]]
     [if [starts-with? key-str "on"]
       [dom/add-listener node [lowercase [replace key-str "on" ""]] v]
       [if [= key-str "class"]

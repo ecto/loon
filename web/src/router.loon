@@ -9,8 +9,8 @@
   [match result
     [Some route] => [nth route 1]
     None => [fn [] [section-el {:class "section"}
-      [h1 {} "404"]
-      [p {} "Page not found."]]]]]
+      [h1 "404"]
+      [p "Page not found."]]]]]
 
 [defn navigate-to [path]
   [dom/push-state path]
