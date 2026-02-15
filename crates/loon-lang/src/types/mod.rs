@@ -176,6 +176,12 @@ impl Subst {
     }
 }
 
+impl Default for Subst {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug)]
 pub struct TypeError {
     pub message: String,

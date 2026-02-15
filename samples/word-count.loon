@@ -1,5 +1,5 @@
 [defn count-words [text]
-  [|> [split text " \n\t"]
+  [|> [split text " "]
     [filter [fn [w] [not [empty? w]]]]
     [fold {} [fn [acc word]
       [update acc word [fn [n] [+ [or n 0] 1]]]]]]]

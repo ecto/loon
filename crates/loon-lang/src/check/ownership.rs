@@ -32,6 +32,7 @@ struct Binding {
     state: BindingState,
     defined_at: Span,
     moved_at: Option<Span>,
+    #[allow(dead_code)]
     is_copy: bool,
     is_mut: bool,
 }
@@ -119,6 +120,7 @@ impl OwnershipChecker {
         }
     }
 
+    #[allow(dead_code)]
     fn move_binding(&mut self, name: &str, span: Span) {
         if let Some(binding) = self.get_binding(name) {
             if binding.is_copy {

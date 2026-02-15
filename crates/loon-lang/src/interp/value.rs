@@ -5,11 +5,19 @@ use super::InterpError;
 
 pub type BuiltinFn = Arc<dyn Fn(&str, &[Value]) -> Result<Value, InterpError> + Send + Sync>;
 
+/// A function parameter: simple name or destructuring pattern.
+#[derive(Debug, Clone)]
+pub enum Param {
+    Simple(String),
+    VecDestructure(Vec<Param>),
+    MapDestructure(Vec<String>),
+}
+
 #[derive(Clone)]
 pub struct LoonFn {
     pub name: Option<String>,
-    /// Each clause: (param_names, body_exprs)
-    pub clauses: Vec<(Vec<String>, Vec<crate::ast::Expr>)>,
+    /// Each clause: (params, body_exprs)
+    pub clauses: Vec<(Vec<Param>, Vec<crate::ast::Expr>)>,
     /// Captured environment (for closures and recursive calls)
     pub captured_env: Option<super::env::Env>,
 }
@@ -44,11 +52,7 @@ pub enum Value {
 
 impl Value {
     pub fn is_truthy(&self) -> bool {
-        match self {
-            Value::Bool(false) | Value::Unit => false,
-            Value::Int(0) => false,
-            _ => true,
-        }
+        !matches!(self, Value::Bool(false) | Value::Unit | Value::Int(0))
     }
 
     pub fn is_callable(&self) -> bool {

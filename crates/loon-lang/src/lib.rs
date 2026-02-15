@@ -4,6 +4,8 @@ pub mod codegen;
 pub mod effects;
 pub mod errors;
 pub mod interp;
+pub mod module;
 pub mod parser;
+pub mod prelude;
 pub mod syntax;
 pub mod types;

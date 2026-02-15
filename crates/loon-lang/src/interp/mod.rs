@@ -1,3 +1,4 @@
+pub mod builtins;
 mod env;
 mod value;
 
@@ -5,8 +6,10 @@ pub use env::Env;
 pub use value::Value;
 
 use crate::ast::{Expr, ExprKind};
+use crate::module::ModuleCache;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 thread_local! {
@@ -37,7 +40,7 @@ impl std::error::Error for InterpError {}
 
 type IResult = Result<Value, InterpError>;
 
-fn err(msg: impl Into<String>) -> InterpError {
+pub(crate) fn err(msg: impl Into<String>) -> InterpError {
     InterpError {
         message: msg.into(),
         performed_effect: None,
@@ -65,10 +68,36 @@ pub fn sync_global_env_pub(env: &Env) {
 }
 
 pub fn eval_program(exprs: &[Expr]) -> IResult {
+    eval_program_with_base_dir(exprs, None)
+}
+
+pub fn eval_program_with_base_dir(exprs: &[Expr], base_dir: Option<&Path>) -> IResult {
     let mut env = Env::new();
     register_builtins(&mut env);
+    // Load prelude (Option, Result types)
+    if let Ok(prelude_exprs) = crate::parser::parse(crate::prelude::PRELUDE) {
+        for expr in &prelude_exprs {
+            let _ = eval(expr, &mut env);
+        }
+    }
+    let mut cache = ModuleCache::new();
+    let default_base = std::path::PathBuf::from(".");
+    let base = base_dir.unwrap_or(&default_base);
+
     let mut last = Value::Unit;
     for expr in exprs {
+        // Intercept [use ...] at the top level
+        if let ExprKind::List(items) = &expr.kind {
+            if !items.is_empty() {
+                if let ExprKind::Symbol(s) = &items[0].kind {
+                    if s == "use" {
+                        eval_use_with_cache(&items[1..], &mut env, base, &mut cache)?;
+                        sync_global_env(&env);
+                        continue;
+                    }
+                }
+            }
+        }
         last = eval(expr, &mut env)?;
         // Keep global env in sync for apply_value
         sync_global_env(&env);
@@ -86,7 +115,7 @@ fn sync_global_env(env: &Env) {
     });
 }
 
-fn get_global_env() -> Option<Env> {
+pub(crate) fn get_global_env() -> Option<Env> {
     GLOBAL_ENV.with(|g| g.borrow().clone())
 }
 
@@ -139,8 +168,18 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                     "effect" => return Ok(Value::Unit), // effect declarations are compile-time
                     "handle" => return eval_handle(&items[1..], env),
                     "pub" => {
-                        // [pub defn ...] — just treat as the inner form
+                        // [pub defn name ...] — eval the inner form and mark as pub
                         if items.len() > 1 {
+                            // Extract the name being defined (for pub tracking)
+                            if items.len() > 2 {
+                                if let ExprKind::Symbol(ref defn_kind) = items[1].kind {
+                                    if defn_kind == "defn" || defn_kind == "let" {
+                                        if let ExprKind::Symbol(ref name) = items[2].kind {
+                                            env.pub_names.insert(name.clone());
+                                        }
+                                    }
+                                }
+                            }
                             let inner = Expr::new(
                                 ExprKind::List(items[1..].to_vec()),
                                 expr.span,
@@ -251,50 +290,9 @@ fn eval_let(args: &[Expr], env: &mut Env) -> IResult {
 
     let val = eval(val_expr, env)?;
 
-    // Pattern destructuring
-    match &binding.kind {
-        ExprKind::Symbol(name) => {
-            if name == "_" {
-                // Wildcard — discard
-            } else {
-                env.set(name.clone(), val.clone());
-            }
-        }
-        // [let [x y] expr] — vec destructuring
-        ExprKind::List(patterns) => {
-            if let Value::Vec(ref items) | Value::Tuple(ref items) = val {
-                for (i, pat) in patterns.iter().enumerate() {
-                    if let ExprKind::Symbol(name) = &pat.kind {
-                        if name != "_" {
-                            let v = items.get(i).cloned().unwrap_or(Value::Unit);
-                            env.set(name.clone(), v);
-                        }
-                    }
-                }
-            } else {
-                return Err(err("destructuring requires a vector or tuple"));
-            }
-        }
-        // [let {name age} expr] — map destructuring
-        ExprKind::Map(pairs) => {
-            if let Value::Map(ref map_pairs) = val {
-                for (k, _) in pairs {
-                    if let ExprKind::Symbol(name) = &k.kind {
-                        let key = Value::Keyword(name.clone());
-                        let v = map_pairs
-                            .iter()
-                            .find(|(mk, _)| *mk == key)
-                            .map(|(_, mv)| mv.clone())
-                            .unwrap_or(Value::Unit);
-                        env.set(name.clone(), v);
-                    }
-                }
-            } else {
-                return Err(err("map destructuring requires a map"));
-            }
-        }
-        _ => return Err(err("invalid let binding pattern")),
-    }
+    // Use extract_param + bind_param for uniform destructuring
+    let param = extract_param(binding)?;
+    bind_param(&param, &val, env)?;
 
     Ok(val)
 }
@@ -340,14 +338,25 @@ fn eval_pipe(args: &[Expr], env: &mut Env) -> IResult {
     }
     let mut val = eval(&args[0], env)?;
     for step in &args[1..] {
-        // Each step is [fn arg1 arg2...] — insert val as first arg
         match &step.kind {
             ExprKind::List(items) if !items.is_empty() => {
                 let func = eval(&items[0], env)?;
-                let mut call_args = vec![val];
+                let mut explicit_args = Vec::new();
                 for a in &items[1..] {
-                    call_args.push(eval(a, env)?);
+                    explicit_args.push(eval(a, env)?);
                 }
+
+                // If there are explicit args, append piped value as last arg
+                // (thread-last semantics: [|> coll [f x]] → [f x coll]).
+                // If no explicit args, pass piped value as sole arg.
+                let call_args = if explicit_args.is_empty() {
+                    vec![val]
+                } else {
+                    let mut args = explicit_args;
+                    args.push(val);
+                    args
+                };
+
                 val = match func {
                     Value::Fn(lf) => call_fn(&lf, &call_args, env)?,
                     Value::Builtin(name, f) => f(&name, &call_args)?,
@@ -529,7 +538,7 @@ fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
                     let lf = value::LoonFn {
                         name: Some(ctor_name.clone()),
                         clauses: vec![(
-                            (0..arity).map(|i| format!("__f{i}")).collect(),
+                            (0..arity).map(|i| value::Param::Simple(format!("__f{i}"))).collect(),
                             vec![],
                         )],
                         captured_env: None,
@@ -672,15 +681,12 @@ fn eval_test_def(args: &[Expr], env: &mut Env) -> IResult {
     Ok(Value::Unit)
 }
 
-fn extract_params(expr: &Expr) -> Result<Vec<String>, InterpError> {
+fn extract_params(expr: &Expr) -> Result<Vec<value::Param>, InterpError> {
     match &expr.kind {
         ExprKind::List(items) => {
             let mut params = Vec::new();
             for item in items {
-                match &item.kind {
-                    ExprKind::Symbol(s) => params.push(s.clone()),
-                    _ => return Err(err("parameter must be a symbol")),
-                }
+                params.push(extract_param(item)?);
             }
             Ok(params)
         }
@@ -688,7 +694,69 @@ fn extract_params(expr: &Expr) -> Result<Vec<String>, InterpError> {
     }
 }
 
-fn call_fn(lf: &value::LoonFn, args: &[Value], env: &mut Env) -> IResult {
+fn extract_param(expr: &Expr) -> Result<value::Param, InterpError> {
+    match &expr.kind {
+        ExprKind::Symbol(s) => Ok(value::Param::Simple(s.clone())),
+        ExprKind::List(items) => {
+            let mut inner = Vec::new();
+            for item in items {
+                inner.push(extract_param(item)?);
+            }
+            Ok(value::Param::VecDestructure(inner))
+        }
+        ExprKind::Map(pairs) => {
+            let mut names = Vec::new();
+            for (k, _) in pairs {
+                if let ExprKind::Symbol(s) = &k.kind {
+                    names.push(s.clone());
+                }
+            }
+            Ok(value::Param::MapDestructure(names))
+        }
+        _ => Err(err("parameter must be a symbol or destructuring pattern")),
+    }
+}
+
+fn bind_param(param: &value::Param, val: &Value, env: &mut Env) -> Result<(), InterpError> {
+    match param {
+        value::Param::Simple(name) => {
+            if name != "_" {
+                env.set(name.clone(), val.clone());
+            }
+            Ok(())
+        }
+        value::Param::VecDestructure(inner) => {
+            let items = match val {
+                Value::Vec(v) => v,
+                Value::Tuple(v) => v,
+                _ => return Err(err("destructuring requires a vector or tuple")),
+            };
+            for (i, p) in inner.iter().enumerate() {
+                let v = items.get(i).cloned().unwrap_or(Value::Unit);
+                bind_param(p, &v, env)?;
+            }
+            Ok(())
+        }
+        value::Param::MapDestructure(names) => {
+            let pairs = match val {
+                Value::Map(m) => m,
+                _ => return Err(err("map destructuring requires a map")),
+            };
+            for name in names {
+                let key = Value::Keyword(name.clone());
+                let v = pairs
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or(Value::Unit);
+                env.set(name.clone(), v);
+            }
+            Ok(())
+        }
+    }
+}
+
+pub(crate) fn call_fn(lf: &value::LoonFn, args: &[Value], env: &mut Env) -> IResult {
     // Use captured env if present (closures), otherwise use caller's env
     let mut use_env = if let Some(ref captured) = lf.captured_env {
         let mut e = captured.clone();
@@ -704,8 +772,8 @@ fn call_fn(lf: &value::LoonFn, args: &[Value], env: &mut Env) -> IResult {
     for (params, body) in &lf.clauses {
         if params.len() == args.len() {
             env.push_scope();
-            for (name, val) in params.iter().zip(args.iter()) {
-                env.set(name.clone(), val.clone());
+            for (param, val) in params.iter().zip(args.iter()) {
+                bind_param(param, val, env)?;
             }
             let mut result = Value::Unit;
             for expr in body {
@@ -722,551 +790,90 @@ fn call_fn(lf: &value::LoonFn, args: &[Value], env: &mut Env) -> IResult {
     )))
 }
 
-// ---- Builtins ----
+/// Evaluate [use module.path] — load and import a module.
+/// Supports:
+///   [use http.server]              — import all as http.server.name
+///   [use http.server :as http]     — import all as http.name
+///   [use http.server {add sub}]    — import specific names directly
+pub fn eval_use_with_cache(
+    args: &[Expr],
+    env: &mut Env,
+    base_dir: &Path,
+    cache: &mut ModuleCache,
+) -> IResult {
+    if args.is_empty() {
+        return Err(err("use requires a module path"));
+    }
+
+    let module_path = match &args[0].kind {
+        ExprKind::Symbol(s) => s.clone(),
+        _ => return Err(err("use module path must be a symbol")),
+    };
+
+    let exports = cache
+        .load_module(&module_path, base_dir)
+        .map_err(err)?;
+
+    // Determine import style
+    if args.len() >= 3 {
+        if let ExprKind::Keyword(k) = &args[1].kind {
+            if k == "as" {
+                // [use mod.path :as alias]
+                let alias = match &args[2].kind {
+                    ExprKind::Symbol(s) => s.clone(),
+                    _ => return Err(err("alias must be a symbol")),
+                };
+                for (name, val) in &exports.values {
+                    env.set_global(format!("{alias}.{name}"), val.clone());
+                }
+                return Ok(Value::Unit);
+            }
+        }
+    }
+
+    if args.len() >= 2 {
+        if let ExprKind::Map(pairs) = &args[1].kind {
+            // [use mod.path {name1 name2}] — selective import
+            // Note: the parser sees {name1 name2} as a map with pairs,
+            // but we just want the keys as imported names
+            for (k, _) in pairs {
+                if let ExprKind::Symbol(name) = &k.kind {
+                    if let Some(val) = exports.values.get(name) {
+                        env.set_global(name.clone(), val.clone());
+                    } else {
+                        return Err(err(format!(
+                            "module '{module_path}' does not export '{name}'"
+                        )));
+                    }
+                }
+            }
+            return Ok(Value::Unit);
+        }
+
+        // Check for vec-style selective import [use mod.path [name1 name2]]
+        if let ExprKind::Vec(items) | ExprKind::List(items) = &args[1].kind {
+            for item in items {
+                if let ExprKind::Symbol(name) = &item.kind {
+                    if let Some(val) = exports.values.get(name) {
+                        env.set_global(name.clone(), val.clone());
+                    } else {
+                        return Err(err(format!(
+                            "module '{module_path}' does not export '{name}'"
+                        )));
+                    }
+                }
+            }
+            return Ok(Value::Unit);
+        }
+    }
+
+    // Default: import all as module_path.name
+    for (name, val) in &exports.values {
+        env.set_global(format!("{module_path}.{name}"), val.clone());
+    }
+    Ok(Value::Unit)
+}
 
 fn register_builtins(env: &mut Env) {
-    macro_rules! builtin {
-        ($env:expr, $name:expr, $f:expr) => {
-            $env.set(
-                $name.to_string(),
-                Value::Builtin($name.to_string(), Arc::new($f)),
-            );
-        };
-    }
-
-    builtin!(env, "+", |_, args: &[Value]| {
-        match (&args[0], &args[1]) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
-            (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + *b as f64)),
-            (Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + b)),
-            _ => Err(err(format!("+ requires numbers, got {} and {}", args[0], args[1]))),
-        }
-    });
-
-    builtin!(env, "-", |_, args: &[Value]| {
-        match (&args[0], &args[1]) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a - b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
-            (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a - *b as f64)),
-            (Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 - b)),
-            _ => Err(err("- requires numbers")),
-        }
-    });
-
-    builtin!(env, "*", |_, args: &[Value]| {
-        match (&args[0], &args[1]) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a * b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
-            (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a * *b as f64)),
-            (Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 * b)),
-            _ => Err(err("* requires numbers")),
-        }
-    });
-
-    builtin!(env, ">", |_, args: &[Value]| {
-        match (&args[0], &args[1]) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a > b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a > b)),
-            _ => Err(err("> requires numbers")),
-        }
-    });
-
-    builtin!(env, "<", |_, args: &[Value]| {
-        match (&args[0], &args[1]) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a < b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a < b)),
-            _ => Err(err("< requires numbers")),
-        }
-    });
-
-    builtin!(env, "=", |_, args: &[Value]| {
-        Ok(Value::Bool(args[0] == args[1]))
-    });
-
-    builtin!(env, ">=", |_, args: &[Value]| {
-        match (&args[0], &args[1]) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a >= b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a >= b)),
-            _ => Err(err(">= requires numbers")),
-        }
-    });
-
-    builtin!(env, "<=", |_, args: &[Value]| {
-        match (&args[0], &args[1]) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a <= b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a <= b)),
-            _ => Err(err("<= requires numbers")),
-        }
-    });
-
-    builtin!(env, "not", |_, args: &[Value]| {
-        Ok(Value::Bool(!args[0].is_truthy()))
-    });
-
-    builtin!(env, "or", |_, args: &[Value]| {
-        for arg in args {
-            if arg.is_truthy() {
-                return Ok(arg.clone());
-            }
-        }
-        Ok(args.last().cloned().unwrap_or(Value::Bool(false)))
-    });
-
-    builtin!(env, "and", |_, args: &[Value]| {
-        for arg in args {
-            if !arg.is_truthy() {
-                return Ok(arg.clone());
-            }
-        }
-        Ok(args.last().cloned().unwrap_or(Value::Bool(true)))
-    });
-
-    builtin!(env, "str", |_, args: &[Value]| {
-        let s: String = args.iter().map(|v| v.display_str()).collect();
-        Ok(Value::Str(s))
-    });
-
-    builtin!(env, "println", |_, args: &[Value]| {
-        let parts: Vec<String> = args.iter().map(|v| v.display_str()).collect();
-        println!("{}", parts.join(" "));
-        Ok(Value::Unit)
-    });
-
-    builtin!(env, "print", |_, args: &[Value]| {
-        let parts: Vec<String> = args.iter().map(|v| v.display_str()).collect();
-        print!("{}", parts.join(" "));
-        Ok(Value::Unit)
-    });
-
-    builtin!(env, "len", |_, args: &[Value]| {
-        match &args[0] {
-            Value::Vec(v) => Ok(Value::Int(v.len() as i64)),
-            Value::Str(s) => Ok(Value::Int(s.len() as i64)),
-            Value::Map(m) => Ok(Value::Int(m.len() as i64)),
-            Value::Set(s) => Ok(Value::Int(s.len() as i64)),
-            _ => Err(err("len requires a collection")),
-        }
-    });
-
-    builtin!(env, "nth", |_, args: &[Value]| {
-        match (&args[0], &args[1]) {
-            (Value::Vec(v), Value::Int(i)) => {
-                let idx = *i as usize;
-                if idx < v.len() {
-                    Ok(v[idx].clone())
-                } else if args.len() > 2 {
-                    Ok(args[2].clone()) // default value
-                } else {
-                    Err(err(format!("index {i} out of bounds (len {})", v.len())))
-                }
-            }
-            _ => Err(err("nth requires a vector and index")),
-        }
-    });
-
-    builtin!(env, "map", |_, args: &[Value]| {
-        match (&args[0], args.get(1)) {
-            (Value::Vec(v), Some(func)) => {
-                let mut result = Vec::new();
-                for item in v {
-                    let val = apply_value(func, &[item.clone()])?;
-                    result.push(val);
-                }
-                Ok(Value::Vec(result))
-            }
-            // map with function first, collection second (for pipe)
-            (func, Some(Value::Vec(v))) if func.is_callable() => {
-                let mut result = Vec::new();
-                for item in v {
-                    let val = apply_value(func, &[item.clone()])?;
-                    result.push(val);
-                }
-                Ok(Value::Vec(result))
-            }
-            // Partial: [map f] returns a function that maps f over a collection
-            (func, None) if func.is_callable() => {
-                let func_clone = func.clone();
-                Ok(Value::Builtin(
-                    "map-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| {
-                        if let Value::Vec(v) = &inner_args[0] {
-                            let mut result = Vec::new();
-                            for item in v {
-                                let val = apply_value(&func_clone, &[item.clone()])?;
-                                result.push(val);
-                            }
-                            Ok(Value::Vec(result))
-                        } else {
-                            Err(err("map requires a vector"))
-                        }
-                    }),
-                ))
-            }
-            _ => Err(err("map requires a function and vector")),
-        }
-    });
-
-    builtin!(env, "filter", |_, args: &[Value]| {
-        match (&args[0], args.get(1)) {
-            (Value::Vec(v), Some(func)) => {
-                let mut result = Vec::new();
-                for item in v {
-                    let val = apply_value(func, &[item.clone()])?;
-                    if val.is_truthy() {
-                        result.push(item.clone());
-                    }
-                }
-                Ok(Value::Vec(result))
-            }
-            (func, Some(Value::Vec(v))) if func.is_callable() => {
-                let mut result = Vec::new();
-                for item in v {
-                    let val = apply_value(func, &[item.clone()])?;
-                    if val.is_truthy() {
-                        result.push(item.clone());
-                    }
-                }
-                Ok(Value::Vec(result))
-            }
-            (func, None) if func.is_callable() => {
-                let func_clone = func.clone();
-                Ok(Value::Builtin(
-                    "filter-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| {
-                        if let Value::Vec(v) = &inner_args[0] {
-                            let mut result = Vec::new();
-                            for item in v {
-                                let val = apply_value(&func_clone, &[item.clone()])?;
-                                if val.is_truthy() {
-                                    result.push(item.clone());
-                                }
-                            }
-                            Ok(Value::Vec(result))
-                        } else {
-                            Err(err("filter requires a vector"))
-                        }
-                    }),
-                ))
-            }
-            _ => Err(err("filter requires a function and vector")),
-        }
-    });
-
-    builtin!(env, "fold", |_, args: &[Value]| {
-        match args {
-            [Value::Vec(v), init, func] => {
-                let mut acc = init.clone();
-                for item in v {
-                    acc = apply_value(func, &[acc, item.clone()])?;
-                }
-                Ok(acc)
-            }
-            [init, func] => {
-                let init_clone = init.clone();
-                let func_clone = func.clone();
-                Ok(Value::Builtin(
-                    "fold-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| {
-                        if let Value::Vec(v) = &inner_args[0] {
-                            let mut acc = init_clone.clone();
-                            for item in v {
-                                acc = apply_value(&func_clone, &[acc, item.clone()])?;
-                            }
-                            Ok(acc)
-                        } else {
-                            Err(err("fold requires a vector"))
-                        }
-                    }),
-                ))
-            }
-            _ => Err(err("fold requires init, function, and vector")),
-        }
-    });
-
-    builtin!(env, "conj", |_, args: &[Value]| {
-        match &args[0] {
-            Value::Vec(v) => {
-                let mut new = v.clone();
-                for a in &args[1..] {
-                    new.push(a.clone());
-                }
-                Ok(Value::Vec(new))
-            }
-            Value::Set(s) => {
-                let mut new = s.clone();
-                for a in &args[1..] {
-                    if !new.contains(a) {
-                        new.push(a.clone());
-                    }
-                }
-                Ok(Value::Set(new))
-            }
-            _ => Err(err("conj requires a collection")),
-        }
-    });
-
-    builtin!(env, "get", |_, args: &[Value]| {
-        match (&args[0], &args[1]) {
-            (Value::Map(pairs), key) => {
-                for (k, v) in pairs {
-                    if k == key {
-                        return Ok(v.clone());
-                    }
-                }
-                if args.len() > 2 {
-                    Ok(args[2].clone())
-                } else {
-                    Ok(Value::Unit)
-                }
-            }
-            (Value::Vec(v), Value::Int(i)) => {
-                let idx = *i as usize;
-                Ok(v.get(idx).cloned().unwrap_or(Value::Unit))
-            }
-            _ => Err(err("get requires a map/vector and key")),
-        }
-    });
-
-    builtin!(env, "assoc", |_, args: &[Value]| {
-        if let Value::Map(pairs) = &args[0] {
-            let mut new = pairs.clone();
-            let key = &args[1];
-            let val = &args[2];
-            // Replace or add
-            if let Some(pair) = new.iter_mut().find(|(k, _)| k == key) {
-                pair.1 = val.clone();
-            } else {
-                new.push((key.clone(), val.clone()));
-            }
-            Ok(Value::Map(new))
-        } else {
-            Err(err("assoc requires a map"))
-        }
-    });
-
-    builtin!(env, "update", |_, args: &[Value]| {
-        if let Value::Map(pairs) = &args[0] {
-            let key = &args[1];
-            let func = &args[2];
-            let mut new = pairs.clone();
-            let current = new
-                .iter()
-                .find(|(k, _)| k == key)
-                .map(|(_, v)| v.clone())
-                .unwrap_or(Value::Unit);
-            let updated = apply_value(func, &[current])?;
-            if let Some(pair) = new.iter_mut().find(|(k, _)| k == key) {
-                pair.1 = updated;
-            } else {
-                new.push((key.clone(), updated));
-            }
-            Ok(Value::Map(new))
-        } else {
-            Err(err("update requires a map"))
-        }
-    });
-
-    builtin!(env, "range", |_, args: &[Value]| {
-        match (&args[0], &args[1]) {
-            (Value::Int(start), Value::Int(end)) => {
-                let v: Vec<Value> = (*start..*end).map(Value::Int).collect();
-                Ok(Value::Vec(v))
-            }
-            _ => Err(err("range requires two integers")),
-        }
-    });
-
-    builtin!(env, "contains?", |_, args: &[Value]| {
-        match &args[0] {
-            Value::Set(s) => Ok(Value::Bool(s.contains(&args[1]))),
-            Value::Map(m) => Ok(Value::Bool(m.iter().any(|(k, _)| k == &args[1]))),
-            Value::Vec(v) => Ok(Value::Bool(v.contains(&args[1]))),
-            _ => Err(err("contains? requires a collection")),
-        }
-    });
-
-    builtin!(env, "empty?", |_, args: &[Value]| {
-        match &args[0] {
-            Value::Vec(v) => Ok(Value::Bool(v.is_empty())),
-            Value::Str(s) => Ok(Value::Bool(s.is_empty())),
-            Value::Map(m) => Ok(Value::Bool(m.is_empty())),
-            Value::Set(s) => Ok(Value::Bool(s.is_empty())),
-            _ => Err(err("empty? requires a collection")),
-        }
-    });
-
-    builtin!(env, "split", |_, args: &[Value]| {
-        match (&args[0], &args[1]) {
-            (Value::Str(s), Value::Str(delims)) => {
-                let words: Vec<Value> = s
-                    .split(|c: char| delims.contains(c))
-                    .map(|w| Value::Str(w.to_string()))
-                    .collect();
-                Ok(Value::Vec(words))
-            }
-            _ => Err(err("split requires a string and delimiters")),
-        }
-    });
-
-    builtin!(env, "sort-by", |_, args: &[Value]| {
-        match args {
-            [func, order] => {
-                let func_clone = func.clone();
-                let desc = matches!(order, Value::Keyword(k) if k == "desc");
-                Ok(Value::Builtin(
-                    "sort-by-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| {
-                        if let Value::Vec(v) = &inner_args[0] {
-                            let mut sorted = v.clone();
-                            sorted.sort_by(|a, b| {
-                                let ka = apply_value(&func_clone, &[a.clone()]).unwrap_or(Value::Int(0));
-                                let kb = apply_value(&func_clone, &[b.clone()]).unwrap_or(Value::Int(0));
-                                let ord = value_cmp(&ka, &kb);
-                                if desc { ord.reverse() } else { ord }
-                            });
-                            Ok(Value::Vec(sorted))
-                        } else {
-                            Err(err("sort-by requires a vector"))
-                        }
-                    }),
-                ))
-            }
-            _ => Err(err("sort-by requires a function and optional order")),
-        }
-    });
-
-    builtin!(env, "take", |_, args: &[Value]| {
-        match (&args[0], args.get(1)) {
-            (Value::Int(n), Some(Value::Vec(v))) => {
-                Ok(Value::Vec(v.iter().take(*n as usize).cloned().collect()))
-            }
-            (Value::Int(n), None) => {
-                let n = *n;
-                Ok(Value::Builtin(
-                    "take-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| {
-                        if let Value::Vec(v) = &inner_args[0] {
-                            Ok(Value::Vec(v.iter().take(n as usize).cloned().collect()))
-                        } else {
-                            Err(err("take requires a vector"))
-                        }
-                    }),
-                ))
-            }
-            _ => Err(err("take requires a count and vector")),
-        }
-    });
-
-    builtin!(env, "each", |_, args: &[Value]| {
-        match (&args[0], args.get(1)) {
-            (Value::Vec(v), Some(func)) => {
-                for item in v {
-                    apply_value(func, &[item.clone()])?;
-                }
-                Ok(Value::Unit)
-            }
-            (func, Some(Value::Vec(v))) if func.is_callable() => {
-                for item in v {
-                    apply_value(func, &[item.clone()])?;
-                }
-                Ok(Value::Unit)
-            }
-            (func, None) if func.is_callable() => {
-                let func_clone = func.clone();
-                Ok(Value::Builtin(
-                    "each-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| {
-                        if let Value::Vec(v) = &inner_args[0] {
-                            for item in v {
-                                apply_value(&func_clone, &[item.clone()])?;
-                            }
-                            Ok(Value::Unit)
-                        } else {
-                            Err(err("each requires a vector"))
-                        }
-                    }),
-                ))
-            }
-            _ => Err(err("each requires a function and vector")),
-        }
-    });
-
-    builtin!(env, "entries", |_, args: &[Value]| {
-        match &args[0] {
-            Value::Map(pairs) => {
-                let v: Vec<Value> = pairs
-                    .iter()
-                    .map(|(k, v)| Value::Tuple(vec![k.clone(), v.clone()]))
-                    .collect();
-                Ok(Value::Vec(v))
-            }
-            _ => Err(err("entries requires a map")),
-        }
-    });
-
-    builtin!(env, "collect", |_, args: &[Value]| {
-        // Identity for vectors — they're already collected
-        Ok(args[0].clone())
-    });
-
-    builtin!(env, "push!", |_, args: &[Value]| {
-        // In interpreter, we can't truly mutate, so return a new vec
-        if let Value::Vec(v) = &args[0] {
-            let mut new = v.clone();
-            for a in &args[1..] {
-                new.push(a.clone());
-            }
-            Ok(Value::Vec(new))
-        } else if let Value::Str(s) = &args[0] {
-            let mut new = s.clone();
-            for a in &args[1..] {
-                new.push_str(&a.display_str());
-            }
-            Ok(Value::Str(new))
-        } else {
-            Err(err("push! requires a mutable collection"))
-        }
-    });
-
-    builtin!(env, "assert-eq", |_, args: &[Value]| {
-        if args[0] == args[1] {
-            Ok(Value::Unit)
-        } else {
-            Err(err(format!(
-                "assert-eq failed:\n  expected: {}\n  actual:   {}",
-                args[1], args[0]
-            )))
-        }
-    });
-
-    builtin!(env, "HashMap.new", |_, _args: &[Value]| {
-        Ok(Value::Map(vec![]))
-    });
-}
-
-fn apply_value(func: &Value, args: &[Value]) -> IResult {
-    match func {
-        Value::Fn(lf) => {
-            let mut env = if let Some(e) = get_global_env() {
-                e
-            } else {
-                let mut e = Env::new();
-                register_builtins(&mut e);
-                e
-            };
-            call_fn(lf, args, &mut env)
-        }
-        Value::Builtin(name, f) => f(name, args),
-        _ => Err(err(format!("not callable: {func}"))),
-    }
-}
-
-fn value_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
-    match (a, b) {
-        (Value::Int(a), Value::Int(b)) => a.cmp(b),
-        (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
-        (Value::Str(a), Value::Str(b)) => a.cmp(b),
-        _ => std::cmp::Ordering::Equal,
-    }
+    builtins::register_builtins(env);
 }

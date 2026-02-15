@@ -54,6 +54,6 @@ pub enum Token {
     Keyword(String),
 
     // Symbols (identifiers, operators like +, -, etc.)
-    #[regex(r"[a-zA-Z_+\-*!<>=&][a-zA-Z0-9_\-?!.*]*", priority = 1, callback = |lex| lex.slice().to_string())]
+    #[regex(r"[a-zA-Z_+\-*!<>=&%][a-zA-Z0-9_\-?!.*%]*", priority = 1, callback = |lex| lex.slice().to_string())]
     Symbol(String),
 }

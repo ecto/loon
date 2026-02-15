@@ -6,12 +6,14 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize)]
+#[allow(dead_code)]
 struct ReplHistory {
     entries: Vec<ReplEntry>,
     cursor: usize,
 }
 
 #[derive(Serialize, Deserialize)]
+#[allow(dead_code)]
 struct ReplEntry {
     input: String,
     output: String,

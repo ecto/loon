@@ -1,0 +1,4 @@
+[use math]
+
+[println [math.add 1 2]]
+[println [math.square 5]]

@@ -1,0 +1,4 @@
+[use math :as m]
+
+[println [m.add 10 20]]
+[println [m.sub 10 3]]

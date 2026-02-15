@@ -57,13 +57,6 @@ impl<'a> Parser<'a> {
         self.tokens.get(self.pos).map(|(t, _)| t)
     }
 
-    fn peek_span(&self) -> Span {
-        self.tokens
-            .get(self.pos)
-            .map(|(_, s)| *s)
-            .unwrap_or(Span::new(self.source.len(), self.source.len()))
-    }
-
     fn advance(&mut self) -> Option<(Token, Span)> {
         let item = self.tokens.get(self.pos).cloned();
         if item.is_some() {

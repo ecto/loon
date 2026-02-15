@@ -52,8 +52,9 @@ fn run_file(path: &PathBuf) {
     };
 
     let filename = path.to_string_lossy().to_string();
+    let base_dir = path.parent().unwrap_or(std::path::Path::new("."));
     match loon_lang::parser::parse(&source) {
-        Ok(exprs) => match loon_lang::interp::eval_program(&exprs) {
+        Ok(exprs) => match loon_lang::interp::eval_program_with_base_dir(&exprs, Some(base_dir)) {
             Ok(_) => {}
             Err(e) => {
                 eprintln!("{}: {e}", "error".red().bold());

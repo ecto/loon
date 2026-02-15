@@ -1,15 +1,18 @@
 use super::value::Value;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 #[derive(Clone)]
 pub struct Env {
     scopes: Vec<HashMap<String, Value>>,
+    pub pub_names: HashSet<String>,
 }
 
 impl Env {
     pub fn new() -> Self {
         Self {
             scopes: vec![HashMap::new()],
+            pub_names: HashSet::new(),
         }
     }
 
@@ -50,6 +53,11 @@ impl Env {
                 self.scopes[0].insert(k.clone(), v.clone());
             }
         }
+    }
+
+    /// Get all global bindings (for module exports)
+    pub fn globals(&self) -> &HashMap<String, Value> {
+        &self.scopes[0]
     }
 }
 

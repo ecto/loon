@@ -1,4 +1,4 @@
-use loon_lang::interp::{eval_program, Value};
+use loon_lang::interp::{eval_program, eval_program_with_base_dir, Value};
 use loon_lang::parser::parse;
 
 fn run(src: &str) -> Value {
@@ -247,4 +247,193 @@ fn effect_handle_no_resume() {
         "#),
         Value::Str("caught: boom".to_string())
     );
+}
+
+#[test]
+fn fn_param_destructuring() {
+    assert_eq!(
+        run(r#"
+            [defn first-of-pair [[a b]] a]
+            [first-of-pair (1 2)]
+        "#),
+        Value::Int(1)
+    );
+}
+
+#[test]
+fn nested_let_destructuring() {
+    assert_eq!(
+        run(r#"
+            [do
+              [let [x [y z]] #[1 #[2 3]]]
+              [+ y z]]
+        "#),
+        Value::Int(5)
+    );
+}
+
+#[test]
+fn pipe_thread_last() {
+    // Pipe should thread value as last arg when explicit args present
+    assert_eq!(
+        run(r#"
+            [|> #[1 2 3 4 5]
+              [map [fn [x] [* x x]]]
+              [filter [fn [x] [> x 5]]]
+              [len]]
+        "#),
+        Value::Int(3)
+    );
+}
+
+#[test]
+fn division_and_modulo() {
+    assert_eq!(run("[/ 10 3]"), Value::Int(3));
+    assert_eq!(run("[% 10 3]"), Value::Int(1));
+}
+
+#[test]
+fn string_builtins() {
+    assert_eq!(
+        run(r#"[join ", " #["a" "b" "c"]]"#),
+        Value::Str("a, b, c".to_string())
+    );
+    assert_eq!(
+        run(r#"[trim "  hello  "]"#),
+        Value::Str("hello".to_string())
+    );
+    assert_eq!(
+        run(r#"[starts-with? "hello world" "hello"]"#),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        run(r#"[ends-with? "hello world" "world"]"#),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        run(r#"[replace "hello world" "world" "loon"]"#),
+        Value::Str("hello loon".to_string())
+    );
+    assert_eq!(
+        run(r#"[uppercase "hello"]"#),
+        Value::Str("HELLO".to_string())
+    );
+    assert_eq!(
+        run(r#"[lowercase "HELLO"]"#),
+        Value::Str("hello".to_string())
+    );
+}
+
+#[test]
+fn vec_builtins() {
+    // zip
+    assert_eq!(
+        run("[zip #[1 2 3] #[4 5 6]]"),
+        Value::Vec(vec![
+            Value::Tuple(vec![Value::Int(1), Value::Int(4)]),
+            Value::Tuple(vec![Value::Int(2), Value::Int(5)]),
+            Value::Tuple(vec![Value::Int(3), Value::Int(6)]),
+        ])
+    );
+    // flatten
+    assert_eq!(
+        run("[flatten #[#[1 2] #[3 4]]]"),
+        Value::Vec(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)])
+    );
+    // chunk
+    assert_eq!(
+        run("[chunk 2 #[1 2 3 4 5]]"),
+        Value::Vec(vec![
+            Value::Vec(vec![Value::Int(1), Value::Int(2)]),
+            Value::Vec(vec![Value::Int(3), Value::Int(4)]),
+            Value::Vec(vec![Value::Int(5)]),
+        ])
+    );
+    // reverse
+    assert_eq!(
+        run("[reverse #[1 2 3]]"),
+        Value::Vec(vec![Value::Int(3), Value::Int(2), Value::Int(1)])
+    );
+    // drop
+    assert_eq!(
+        run("[drop 2 #[1 2 3 4 5]]"),
+        Value::Vec(vec![Value::Int(3), Value::Int(4), Value::Int(5)])
+    );
+    // any? and all?
+    assert_eq!(
+        run("[any? [fn [x] [> x 3]] #[1 2 3 4 5]]"),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        run("[all? [fn [x] [> x 3]] #[1 2 3 4 5]]"),
+        Value::Bool(false)
+    );
+}
+
+#[test]
+fn find_returns_option() {
+    assert_eq!(
+        run(r#"
+            [match [find [fn [x] [> x 3]] #[1 2 3 4 5]]
+              [Some x] => x
+              None => 0]
+        "#),
+        Value::Int(4)
+    );
+    assert_eq!(
+        run(r#"
+            [match [find [fn [x] [> x 10]] #[1 2 3]]
+              [Some x] => x
+              None => 0]
+        "#),
+        Value::Int(0)
+    );
+}
+
+#[test]
+fn map_builtins() {
+    // keys
+    assert_eq!(
+        run("[keys {:a 1 :b 2}]"),
+        Value::Vec(vec![
+            Value::Keyword("a".to_string()),
+            Value::Keyword("b".to_string()),
+        ])
+    );
+    // values
+    assert_eq!(
+        run("[values {:a 1 :b 2}]"),
+        Value::Vec(vec![Value::Int(1), Value::Int(2)])
+    );
+    // remove
+    assert_eq!(
+        run("[remove {:a 1 :b 2} :b]"),
+        Value::Map(vec![(Value::Keyword("a".to_string()), Value::Int(1))])
+    );
+}
+
+#[test]
+fn module_use() {
+    // Write a temp module and import it
+    let dir = std::env::temp_dir().join("loon_test_modules");
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(
+        dir.join("mymath.loon"),
+        "[pub defn double [x] [* x 2]]\n[pub defn triple [x] [* x 3]]\n",
+    )
+    .unwrap();
+
+    let src = "[use mymath]\n[mymath.double 5]";
+    let exprs = parse(src).expect("parse failed");
+    let result = eval_program_with_base_dir(&exprs, Some(dir.as_path())).expect("eval failed");
+    assert_eq!(result, Value::Int(10));
+
+    // Test alias import
+    let src = "[use mymath :as m]\n[m.triple 4]";
+    let exprs = parse(src).expect("parse failed");
+    let result = eval_program_with_base_dir(&exprs, Some(dir.as_path())).expect("eval failed");
+    assert_eq!(result, Value::Int(12));
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
 }

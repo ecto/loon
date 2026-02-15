@@ -9,6 +9,8 @@ pub struct Checker {
     pub errors: Vec<TypeError>,
     /// ADT constructor types: name → scheme
     pub constructors: std::collections::HashMap<String, Scheme>,
+    /// ADT type → constructor names (for exhaustiveness checking)
+    pub type_constructors: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl Checker {
@@ -18,8 +20,10 @@ impl Checker {
             env: TypeEnv::new(),
             errors: Vec::new(),
             constructors: std::collections::HashMap::new(),
+            type_constructors: std::collections::HashMap::new(),
         };
         checker.register_builtins();
+        checker.register_prelude();
         checker
     }
 
@@ -318,6 +322,372 @@ impl Checker {
                 },
             );
         }
+
+        // / and %: Int → Int → Int
+        for op in ["/", "%"] {
+            self.env.set_global(op.to_string(), int_bin.clone());
+        }
+
+        // or, and: Bool → Bool → Bool
+        let bool_bin = Scheme::mono(Type::Fn(vec![Type::Bool, Type::Bool], Box::new(Type::Bool)));
+        for op in ["or", "and"] {
+            self.env.set_global(op.to_string(), bool_bin.clone());
+        }
+
+        // print: ∀a. a → ()
+        {
+            let a = self.subst.fresh();
+            let tv = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "print".to_string(),
+                Scheme {
+                    vars: vec![tv],
+                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Unit)),
+                },
+            );
+        }
+
+        // split: Str → Str → Vec Str
+        self.env.set_global(
+            "split".to_string(),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str, Type::Str],
+                Box::new(Type::Con("Vec".to_string(), vec![Type::Str])),
+            )),
+        );
+
+        // join: Str → Vec Str → Str
+        self.env.set_global(
+            "join".to_string(),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str, Type::Con("Vec".to_string(), vec![Type::Str])],
+                Box::new(Type::Str),
+            )),
+        );
+
+        // trim: Str → Str
+        self.env.set_global(
+            "trim".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Str))),
+        );
+
+        // starts-with?, ends-with?: Str → Str → Bool
+        let str_str_bool = Scheme::mono(Type::Fn(vec![Type::Str, Type::Str], Box::new(Type::Bool)));
+        for op in ["starts-with?", "ends-with?"] {
+            self.env.set_global(op.to_string(), str_str_bool.clone());
+        }
+
+        // replace: Str → Str → Str → Str
+        self.env.set_global(
+            "replace".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Str, Type::Str, Type::Str], Box::new(Type::Str))),
+        );
+
+        // uppercase, lowercase: Str → Str
+        let str_to_str = Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Str)));
+        for op in ["uppercase", "lowercase"] {
+            self.env.set_global(op.to_string(), str_to_str.clone());
+        }
+
+        // sort-by: ∀a. (a → a → Int) → Vec a → Vec a
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
+            self.env.set_global(
+                "sort-by".to_string(),
+                Scheme {
+                    vars: vec![tva],
+                    ty: Type::Fn(
+                        vec![
+                            Type::Fn(vec![Type::Var(tva), Type::Var(tva)], Box::new(Type::Int)),
+                            vec_a.clone(),
+                        ],
+                        Box::new(vec_a),
+                    ),
+                },
+            );
+        }
+
+        // take: ∀a. Int → Vec a → Vec a
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
+            self.env.set_global(
+                "take".to_string(),
+                Scheme {
+                    vars: vec![tva],
+                    ty: Type::Fn(vec![Type::Int, vec_a.clone()], Box::new(vec_a)),
+                },
+            );
+        }
+
+        // drop: ∀a. Int → Vec a → Vec a
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
+            self.env.set_global(
+                "drop".to_string(),
+                Scheme {
+                    vars: vec![tva],
+                    ty: Type::Fn(vec![Type::Int, vec_a.clone()], Box::new(vec_a)),
+                },
+            );
+        }
+
+        // reverse: ∀a. Vec a → Vec a
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
+            self.env.set_global(
+                "reverse".to_string(),
+                Scheme {
+                    vars: vec![tva],
+                    ty: Type::Fn(vec![vec_a.clone()], Box::new(vec_a)),
+                },
+            );
+        }
+
+        // flatten: ∀a. Vec (Vec a) → Vec a
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
+            self.env.set_global(
+                "flatten".to_string(),
+                Scheme {
+                    vars: vec![tva],
+                    ty: Type::Fn(
+                        vec![Type::Con("Vec".to_string(), vec![vec_a.clone()])],
+                        Box::new(vec_a),
+                    ),
+                },
+            );
+        }
+
+        // chunk: ∀a. Int → Vec a → Vec (Vec a)
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
+            self.env.set_global(
+                "chunk".to_string(),
+                Scheme {
+                    vars: vec![tva],
+                    ty: Type::Fn(
+                        vec![Type::Int, vec_a.clone()],
+                        Box::new(Type::Con("Vec".to_string(), vec![vec_a])),
+                    ),
+                },
+            );
+        }
+
+        // zip: ∀a b. Vec a → Vec b → Vec (a, b)
+        {
+            let a = self.subst.fresh();
+            let b = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tvb = if let Type::Var(v) = b { v } else { unreachable!() };
+            self.env.set_global(
+                "zip".to_string(),
+                Scheme {
+                    vars: vec![tva, tvb],
+                    ty: Type::Fn(
+                        vec![
+                            Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
+                            Type::Con("Vec".to_string(), vec![Type::Var(tvb)]),
+                        ],
+                        Box::new(Type::Con(
+                            "Vec".to_string(),
+                            vec![Type::Tuple(vec![Type::Var(tva), Type::Var(tvb)])],
+                        )),
+                    ),
+                },
+            );
+        }
+
+        // find: ∀a. (a → Bool) → Vec a → Option a
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "find".to_string(),
+                Scheme {
+                    vars: vec![tva],
+                    ty: Type::Fn(
+                        vec![
+                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                            Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
+                        ],
+                        Box::new(Type::Con("Option".to_string(), vec![Type::Var(tva)])),
+                    ),
+                },
+            );
+        }
+
+        // any?: ∀a. (a → Bool) → Vec a → Bool
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "any?".to_string(),
+                Scheme {
+                    vars: vec![tva],
+                    ty: Type::Fn(
+                        vec![
+                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                            Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
+                        ],
+                        Box::new(Type::Bool),
+                    ),
+                },
+            );
+        }
+
+        // all?: ∀a. (a → Bool) → Vec a → Bool
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "all?".to_string(),
+                Scheme {
+                    vars: vec![tva],
+                    ty: Type::Fn(
+                        vec![
+                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                            Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
+                        ],
+                        Box::new(Type::Bool),
+                    ),
+                },
+            );
+        }
+
+        // update: ∀v. Map Keyword v → Keyword → (v → v) → Map Keyword v
+        {
+            let v = self.subst.fresh();
+            let tv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            let map_t = Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)]);
+            self.env.set_global(
+                "update".to_string(),
+                Scheme {
+                    vars: vec![tv],
+                    ty: Type::Fn(
+                        vec![
+                            map_t.clone(),
+                            Type::Keyword,
+                            Type::Fn(vec![Type::Var(tv)], Box::new(Type::Var(tv))),
+                        ],
+                        Box::new(map_t),
+                    ),
+                },
+            );
+        }
+
+        // entries: ∀v. Map Keyword v → Vec (Keyword, v)
+        {
+            let v = self.subst.fresh();
+            let tv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            self.env.set_global(
+                "entries".to_string(),
+                Scheme {
+                    vars: vec![tv],
+                    ty: Type::Fn(
+                        vec![Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)])],
+                        Box::new(Type::Con(
+                            "Vec".to_string(),
+                            vec![Type::Tuple(vec![Type::Keyword, Type::Var(tv)])],
+                        )),
+                    ),
+                },
+            );
+        }
+
+        // keys: ∀v. Map Keyword v → Vec Keyword
+        {
+            let v = self.subst.fresh();
+            let tv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            self.env.set_global(
+                "keys".to_string(),
+                Scheme {
+                    vars: vec![tv],
+                    ty: Type::Fn(
+                        vec![Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)])],
+                        Box::new(Type::Con("Vec".to_string(), vec![Type::Keyword])),
+                    ),
+                },
+            );
+        }
+
+        // values: ∀v. Map Keyword v → Vec v
+        {
+            let v = self.subst.fresh();
+            let tv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            self.env.set_global(
+                "values".to_string(),
+                Scheme {
+                    vars: vec![tv],
+                    ty: Type::Fn(
+                        vec![Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)])],
+                        Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tv)])),
+                    ),
+                },
+            );
+        }
+
+        // merge: ∀v. Map Keyword v → Map Keyword v → Map Keyword v
+        {
+            let v = self.subst.fresh();
+            let tv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            let map_t = Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)]);
+            self.env.set_global(
+                "merge".to_string(),
+                Scheme {
+                    vars: vec![tv],
+                    ty: Type::Fn(vec![map_t.clone(), map_t.clone()], Box::new(map_t)),
+                },
+            );
+        }
+
+        // remove: ∀v. Map Keyword v → Keyword → Map Keyword v
+        {
+            let v = self.subst.fresh();
+            let tv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            let map_t = Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)]);
+            self.env.set_global(
+                "remove".to_string(),
+                Scheme {
+                    vars: vec![tv],
+                    ty: Type::Fn(vec![map_t.clone(), Type::Keyword], Box::new(map_t)),
+                },
+            );
+        }
+
+        // push!: ∀a. Vec a → a → Vec a
+        {
+            let a = self.subst.fresh();
+            let tv = if let Type::Var(v) = a { v } else { unreachable!() };
+            let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tv)]);
+            self.env.set_global(
+                "push!".to_string(),
+                Scheme {
+                    vars: vec![tv],
+                    ty: Type::Fn(vec![vec_a.clone(), Type::Var(tv)], Box::new(vec_a)),
+                },
+            );
+        }
+    }
+
+    fn register_prelude(&mut self) {
+        // Parse and check the prelude to register Option/Result types
+        if let Ok(exprs) = crate::parser::parse(crate::prelude::PRELUDE) {
+            for expr in &exprs {
+                self.infer(expr);
+            }
+        }
     }
 
     /// Infer the type of an expression.
@@ -454,17 +824,6 @@ impl Checker {
 
         // Single-arity
         if let ExprKind::List(params) = &args[1].kind {
-            let param_types: Vec<(String, Type)> = params
-                .iter()
-                .filter_map(|p| {
-                    if let ExprKind::Symbol(s) = &p.kind {
-                        Some((s.clone(), self.subst.fresh()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
             // Skip effect annotation
             let mut body_start = 2;
             if body_start < args.len() {
@@ -476,14 +835,12 @@ impl Checker {
             }
 
             self.env.push_scope();
-            for (pname, ptype) in &param_types {
-                self.env.set(pname.clone(), Scheme::mono(ptype.clone()));
-            }
+            let param_types = self.infer_params(params);
 
             // For recursive calls, add a temporary type for the function
             let temp_ret = self.subst.fresh();
             let temp_fn_ty = Type::Fn(
-                param_types.iter().map(|(_, t)| t.clone()).collect(),
+                param_types.clone(),
                 Box::new(temp_ret.clone()),
             );
             self.env.set(name.clone(), Scheme::mono(temp_fn_ty));
@@ -499,10 +856,7 @@ impl Checker {
 
             self.env.pop_scope();
 
-            let fn_ty = Type::Fn(
-                param_types.iter().map(|(_, t)| t.clone()).collect(),
-                Box::new(body_ty),
-            );
+            let fn_ty = Type::Fn(param_types, Box::new(body_ty));
             let scheme = generalize(&self.env, &self.subst, &fn_ty);
             self.env.set_global(name, scheme);
         }
@@ -511,21 +865,8 @@ impl Checker {
 
     fn infer_fn_clause(&mut self, params_expr: &Expr, body: &[Expr]) -> Type {
         if let ExprKind::List(params) = &params_expr.kind {
-            let param_types: Vec<(String, Type)> = params
-                .iter()
-                .filter_map(|p| {
-                    if let ExprKind::Symbol(s) = &p.kind {
-                        Some((s.clone(), self.subst.fresh()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
             self.env.push_scope();
-            for (pname, ptype) in &param_types {
-                self.env.set(pname.clone(), Scheme::mono(ptype.clone()));
-            }
+            let _param_types = self.infer_params(params);
 
             let mut body_ty = Type::Unit;
             for expr in body {
@@ -573,21 +914,8 @@ impl Checker {
         }
 
         if let ExprKind::List(params) = &args[0].kind {
-            let param_types: Vec<(String, Type)> = params
-                .iter()
-                .filter_map(|p| {
-                    if let ExprKind::Symbol(s) = &p.kind {
-                        Some((s.clone(), self.subst.fresh()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
             self.env.push_scope();
-            for (pname, ptype) in &param_types {
-                self.env.set(pname.clone(), Scheme::mono(ptype.clone()));
-            }
+            let param_types = self.infer_params(params);
 
             let mut body_ty = Type::Unit;
             for expr in &args[1..] {
@@ -595,10 +923,7 @@ impl Checker {
             }
             self.env.pop_scope();
 
-            Type::Fn(
-                param_types.into_iter().map(|(_, t)| t).collect(),
-                Box::new(body_ty),
-            )
+            Type::Fn(param_types, Box::new(body_ty))
         } else {
             self.subst.fresh()
         }
@@ -634,28 +959,72 @@ impl Checker {
         if args.is_empty() {
             return Type::Unit;
         }
-        let _scrutinee_ty = self.infer(&args[0]);
+        let scrutinee_ty = self.infer(&args[0]);
         let result_ty = self.subst.fresh();
 
         // Walk arms: pattern => body (skip => tokens)
         let arms = &args[1..];
         let mut i = 0;
+        let mut covered_ctors: Vec<String> = Vec::new();
+        let mut has_wildcard = false;
         while i < arms.len() {
+            // Track pattern for exhaustiveness
+            match &arms[i].kind {
+                ExprKind::Symbol(s) if s == "_" => has_wildcard = true,
+                ExprKind::Symbol(s) if !s.starts_with(char::is_uppercase) && s != "=>" => {
+                    // Variable binding = wildcard
+                    has_wildcard = true;
+                }
+                ExprKind::Symbol(s) if s.starts_with(char::is_uppercase) => {
+                    covered_ctors.push(s.clone());
+                }
+                ExprKind::List(items) if !items.is_empty() => {
+                    if let ExprKind::Symbol(s) = &items[0].kind {
+                        if s.starts_with(char::is_uppercase) {
+                            covered_ctors.push(s.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+
             // Skip patterns and =>, just type the body exprs
             if let ExprKind::Symbol(s) = &arms[i].kind {
-                if s == "=>" {
-                    if i + 1 < arms.len() {
+                if s == "=>"
+                    && i + 1 < arms.len() {
                         let body_ty = self.infer(&arms[i + 1]);
                         if let Err(e) = unify(&mut self.subst, &result_ty, &body_ty) {
                             self.errors.push(e);
                         }
                         i += 2;
                         continue;
-                    }
                 }
             }
             i += 1;
         }
+
+        // Exhaustiveness check: if scrutinee is an ADT, check all constructors covered
+        if !has_wildcard {
+            let resolved = self.subst.resolve(&scrutinee_ty);
+            if let Type::Con(ref type_name, _) = resolved {
+                if let Some(all_ctors) = self.type_constructors.get(type_name).cloned() {
+                    let missing: Vec<&String> = all_ctors
+                        .iter()
+                        .filter(|c| !covered_ctors.contains(c))
+                        .collect();
+                    if !missing.is_empty() {
+                        self.errors.push(TypeError {
+                            message: format!(
+                                "non-exhaustive match on {}: missing {}",
+                                type_name,
+                                missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
         result_ty
     }
 
@@ -668,10 +1037,18 @@ impl Checker {
             match &step.kind {
                 ExprKind::List(items) if !items.is_empty() => {
                     let func_ty = self.infer(&items[0]);
-                    let mut arg_tys = vec![current];
-                    for a in &items[1..] {
-                        arg_tys.push(self.infer(a));
-                    }
+                    let explicit_args: Vec<Type> = items[1..].iter().map(|a| self.infer(a)).collect();
+
+                    // Thread-last: if explicit args present, append piped value last.
+                    // [|> coll [f x]] → [f x coll]
+                    let arg_tys = if explicit_args.is_empty() {
+                        vec![current]
+                    } else {
+                        let mut tys = explicit_args;
+                        tys.push(current);
+                        tys
+                    };
+
                     let ret = self.subst.fresh();
                     let expected = Type::Fn(arg_tys, Box::new(ret.clone()));
                     if let Err(e) = unify(&mut self.subst, &func_ty, &expected) {
@@ -706,9 +1083,10 @@ impl Checker {
         // Collect type params
         let mut type_params = Vec::new();
         let mut ctor_start = 1;
+        let mut ctor_names = Vec::new();
         for arg in &args[1..] {
             if let ExprKind::Symbol(s) = &arg.kind {
-                if s.chars().next().map_or(false, |c| c.is_uppercase()) {
+                if s.chars().next().is_some_and(|c| c.is_uppercase()) {
                     break;
                 }
                 // Lowercase symbol = type parameter
@@ -765,6 +1143,7 @@ impl Checker {
                         self.constructors
                             .insert(ctor_name.clone(), scheme.clone());
                         self.env.set_global(ctor_name.clone(), scheme);
+                        ctor_names.push(ctor_name.clone());
                     }
                 }
                 ExprKind::Symbol(ctor_name)
@@ -780,12 +1159,52 @@ impl Checker {
                     self.constructors
                         .insert(ctor_name.clone(), scheme.clone());
                     self.env.set_global(ctor_name.clone(), scheme);
+                    ctor_names.push(ctor_name.clone());
                 }
                 _ => {}
             }
         }
 
+        if !ctor_names.is_empty() {
+            self.type_constructors.insert(type_name, ctor_names);
+        }
+
         Type::Unit
+    }
+
+    /// Infer param types, binding names into the current scope.
+    /// Returns the list of top-level param types.
+    fn infer_params(&mut self, params_expr: &[Expr]) -> Vec<Type> {
+        params_expr
+            .iter()
+            .map(|p| self.infer_single_param(p))
+            .collect()
+    }
+
+    fn infer_single_param(&mut self, expr: &Expr) -> Type {
+        match &expr.kind {
+            ExprKind::Symbol(s) => {
+                let t = self.subst.fresh();
+                self.env.set(s.clone(), Scheme::mono(t.clone()));
+                t
+            }
+            // [a b] destructuring → tuple/vec type
+            ExprKind::List(items) => {
+                let elem_types: Vec<Type> = items.iter().map(|p| self.infer_single_param(p)).collect();
+                Type::Tuple(elem_types)
+            }
+            // {name age} destructuring → map type
+            ExprKind::Map(pairs) => {
+                let val_t = self.subst.fresh();
+                for (k, _) in pairs {
+                    if let ExprKind::Symbol(s) = &k.kind {
+                        self.env.set(s.clone(), Scheme::mono(val_t.clone()));
+                    }
+                }
+                Type::Con("Map".to_string(), vec![Type::Keyword, val_t])
+            }
+            _ => self.subst.fresh(),
+        }
     }
 
     fn name_to_type(&self, name: &str) -> Type {
