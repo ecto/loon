@@ -713,6 +713,52 @@ loon> y
 - **Forking.** `[fork]` branches your session for experimentation. Keep or discard.
 - **Hot reload.** Redefine functions, types, even trait implementations mid-session. The REPL re-typechecks incrementally.
 - **The REPL is the debugger.** Set breakpoints with `[break-at module.fn]`. Inspect any value. Step through execution. All in the same session.
+- **Natural language mode.** Type brackets → it's code. Type English → it's a prompt. The REPL detects which one you meant and seamlessly switches.
+
+#### The REPL Speaks English
+
+The detection is trivial: input that starts with `[` or is a bare symbol is code. Everything else is natural language. No mode-switching command, no prefix character — just type.
+
+```loon
+loon> [+ 1 2]
+3
+
+loon> what does the greet function do?
+  greet takes a String and returns "hello, {name}!"
+  Defined at src/main.loon:3. Last modified 2 minutes ago.
+
+loon> add a test for greet that checks empty strings
+  ✓ Generated test:
+  [test defn test-greet-empty []
+    [assert-eq [greet ""] "hello, !"]]
+  Apply? [y/n/edit]
+
+loon> refactor fib to use tail recursion
+  ✓ Proposed change to fib:
+  [defn fib [n]
+    [fib-iter n 0 1]]
+  [defn fib-iter [n a b]
+    [match n
+      0 => a
+      n => [fib-iter [- n 1] b [+ a b]]]]
+  Apply? [y/n/edit]
+
+loon> show me everything that depends on Config
+  3 functions reference Config:
+    load-config  (src/config.loon:12) — constructs Config
+    validate     (src/config.loon:28) — borrows &Config
+    main         (src/main.loon:5)    — owns Config
+```
+
+**The AI has full context.** It can see every binding in your REPL session, every function in your project, every type definition. It doesn't guess — it reads the AST, the type environment, and the dependency graph. When it proposes code, that code is type-checked before you see it.
+
+**It composes with everything else:**
+- Ask "why did that error?" and it explains the last error using the same teaching format as the compiler (Section 14E)
+- Ask "what changed since my last snapshot?" and it diffs against your REPL history (time travel)
+- Ask "make this function pure" and it refactors effects out, verified by the effect system (Section 14L)
+- Ask "what capabilities does this dep use?" and it queries the capability system (Section 14G)
+
+**The REPL is Claude Code for Loon.** But better — because the AI operates on typed ASTs, not raw text. It can't propose code that doesn't type-check. It can't propose code that violates ownership. It can't propose code that exceeds granted capabilities. The language *constrains* the AI's output to be correct.
 
 ### B. Provably Minimal Binaries
 
