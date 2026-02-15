@@ -16,36 +16,38 @@
 
 ---
 
-## v0.2 — Make it real
+## What's done (v0.2)
 
-The language works but only for toy programs. v0.2 closes the gaps that matter most.
+- [x] Destructuring in `let`: `[let [x y] point]`, `[let {name age} user]`
+- [x] Destructuring in `fn` params: `[fn [[k v]] ...]`
+- [x] Exhaustiveness checking for `match` (ADT constructors)
+- [x] WASM indirect calls + environment passing for closures
+- [x] Lambda lifting for simple cases
+- [x] `[use module.path]`, `[use module {item1 item2}]` (interpreter)
+- [x] File = module convention (interpreter)
+- [x] `[pub defn ...]` / `[pub type ...]` visibility (interpreter)
+- [x] Multi-file execution (interpreter, with cycle detection + caching)
+- [x] `Result` / `Option` as proper ADTs (in prelude)
+- [x] String: `join`, `trim`, `starts-with?`, `ends-with?`, `replace`
+- [x] Vec: `zip`, `flatten`, `chunk`, `reverse`, `drop`, `find`
+- [x] Map: `keys`, `values`, `merge`, `remove`
+- [x] Pipe operator type checking
+- [x] `word-count.loon` working
+- [x] Clippy warnings clean
 
-### Destructuring & pattern matching
-- [ ] Destructuring in `let`: `[let [x y] point]`, `[let {name age} user]`
-- [ ] Destructuring in `fn` params: `[fn [[k v]] ...]`
-- [ ] Exhaustiveness checking for `match` (verify all constructors covered)
+---
 
-### Closures in WASM
-- [ ] Closure capture analysis (what gets captured, by ref or by move)
-- [ ] WASM indirect calls + environment passing for closures
-- [ ] Lambda lifting for simple cases
+## v0.2.1 — Close the gaps
 
-### Module system
-- [ ] `[use module.path]`, `[use module {item1 item2}]`
-- [ ] File = module convention (`src/http/server.loon` → `http.server`)
-- [ ] `[pub defn ...]` / `[pub type ...]` visibility
-- [ ] Multi-file compilation
+What's left to finish v0.2 properly.
 
-### Standard library basics
-- [ ] `Result` / `Option` as proper ADTs (not just conventions)
-- [ ] String: `join`, `trim`, `starts-with?`, `ends-with?`, `replace`
-- [ ] Vec: `zip`, `flatten`, `chunk`, `reverse`, `drop`, `find`
-- [ ] Map: `keys`, `values`, `merge`, `remove`
+### Module system in type checker & codegen
+- [x] `[use ...]` resolved during type checking (cross-file inference)
+- [x] `[pub ...]` visibility enforced in type checker
+- [ ] Multi-file compilation to WASM (module linking/bundling)
 
-### Fix known issues
-- [ ] Pipe operator type checking
-- [ ] `word-count.loon` (needs fn param destructuring)
-- [ ] Clean up clippy warnings (dead code, style)
+### Closure capture classification
+- [x] Ref vs move capture analysis (integrate with ownership checker)
 
 ---
 
@@ -89,7 +91,7 @@ The language works but only for toy programs. v0.2 closes the gaps that matter m
 ## v0.5 — WASM gets real
 
 ### Expanded codegen
-- [ ] Closures (indirect calls + captured environments)
+- [x] Closures (indirect calls + captured environments)
 - [ ] ADTs (tagged unions on the heap)
 - [ ] Pattern matching compilation (decision trees)
 - [ ] Persistent data structures (HAMT vectors and maps)
