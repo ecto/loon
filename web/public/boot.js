@@ -1,7 +1,7 @@
 // boot.js — Loon website bootstrap
 // Loads WASM interpreter, sets up DOM bridge, evaluates Loon source.
 
-import init, { init_dom_bridge, eval_ui, eval_program } from './loon_wasm.js';
+import init, { init_dom_bridge, eval_ui, eval_program, eval_with_output, invoke_callback } from './loon_wasm.js';
 
 // --- DOM Bridge ---
 // The Loon interpreter calls dom/* builtins which route through this bridge.
@@ -105,6 +105,32 @@ function domBridge(op, args) {
       }
       return null;
     }
+    case 'getValue': {
+      const node = getNode(args[0]);
+      return node ? (node.value || '') : '';
+    }
+    case 'setValue': {
+      const node = getNode(args[0]);
+      if (node) node.value = args[1];
+      return null;
+    }
+    case 'evalLoon': {
+      const code = args[0];
+      // Capture console.log output (Loon's println! routes to console.log in WASM)
+      const captured = [];
+      const origLog = console.log;
+      console.log = (...a) => captured.push(a.join(' '));
+      try {
+        const result = eval_with_output(code);
+        const output = captured.length > 0 ? captured.join('\n') + '\n' : '';
+        return output + result;
+      } catch (e) {
+        const output = captured.length > 0 ? captured.join('\n') + '\n' : '';
+        return output + 'Error: ' + (e.message || String(e));
+      } finally {
+        console.log = origLog;
+      }
+    }
     case 'setTitle': {
       document.title = args[0];
       return null;
@@ -163,6 +189,11 @@ async function boot() {
 
     // Set up DOM bridge
     init_dom_bridge(domBridge);
+
+    // Wire up event callback handler
+    window.__loon_event_handler = (callbackId) => {
+      invoke_callback(callbackId);
+    };
 
     // Load and evaluate Loon source files in order
     const sources = [

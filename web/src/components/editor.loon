@@ -1,10 +1,17 @@
 ; editor.loon — Code editor component for the playground
 
+[defn run-playground []
+  [let editor [dom/query-selector "#playground-editor"]]
+  [let output [dom/query-selector "#playground-output"]]
+  [let code [dom/get-value editor]]
+  [let result [dom/eval-loon code]]
+  [dom/set-text output result]]
+
 [defn editor-component [initial-code]
   [div {:class "editor-wrapper"}
     [div {:class "editor-toolbar"}
       [span {:class "editor-title"} "Loon Playground"]
-      [button-el {:class "cta-button editor-run" :id "run-btn"} "Run"]]
+      [button-el {:class "cta-button editor-run" :onclick run-playground} "Run"]]
     [div {:class "editor-body"}
       [div {:class "editor-input"}
         [textarea-el {:id "playground-editor"

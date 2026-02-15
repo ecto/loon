@@ -1,5 +1,8 @@
+use super::builtins::apply_value;
 use super::value::Value;
 use super::{err, Env, InterpError};
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 type IResult = Result<Value, InterpError>;
@@ -13,10 +16,10 @@ type IResult = Result<Value, InterpError>;
 /// there's only one thread so this is safe.
 pub type DomBridgeFn = Arc<dyn Fn(&str, &[Value]) -> IResult + Send + Sync>;
 
-use std::cell::RefCell;
-
 thread_local! {
     static DOM_BRIDGE: RefCell<Option<DomBridgeFn>> = const { RefCell::new(None) };
+    static CALLBACKS: RefCell<HashMap<u32, Value>> = RefCell::new(HashMap::new());
+    static NEXT_CB: Cell<u32> = const { Cell::new(1) };
 }
 
 pub fn set_dom_bridge(bridge: DomBridgeFn) {
@@ -39,6 +42,25 @@ fn call_bridge(op: &str, args: &[Value]) -> IResult {
             ))),
         }
     })
+}
+
+pub fn store_callback(val: Value) -> u32 {
+    NEXT_CB.with(|n| {
+        let id = n.get();
+        n.set(id + 1);
+        CALLBACKS.with(|cb| {
+            cb.borrow_mut().insert(id, val);
+        });
+        id
+    })
+}
+
+pub fn invoke_callback(id: u32) -> IResult {
+    let func = CALLBACKS.with(|cb| cb.borrow().get(&id).cloned());
+    match func {
+        Some(f) => apply_value(&f, &[]),
+        None => Err(err(format!("callback {id} not found"))),
+    }
 }
 
 macro_rules! builtin {
@@ -92,13 +114,33 @@ pub fn register_dom_builtins(env: &mut Env) {
         call_bridge("setInnerHTML", args)
     });
 
-    // Events
+    // Events — intercept callable args to store in callback registry
     builtin!(env, "dom/add-listener", |_, args: &[Value]| {
-        call_bridge("addListener", args)
+        if args.len() >= 3 && args[2].is_callable() {
+            let cb_id = store_callback(args[2].clone());
+            let mut new_args = args.to_vec();
+            new_args[2] = Value::Int(cb_id as i64);
+            call_bridge("addListener", &new_args)
+        } else {
+            call_bridge("addListener", args)
+        }
     });
 
     builtin!(env, "dom/remove-listener", |_, args: &[Value]| {
         call_bridge("removeListener", args)
+    });
+
+    // Form elements
+    builtin!(env, "dom/get-value", |_, args: &[Value]| {
+        call_bridge("getValue", args)
+    });
+
+    builtin!(env, "dom/set-value", |_, args: &[Value]| {
+        call_bridge("setValue", args)
+    });
+
+    builtin!(env, "dom/eval-loon", |_, args: &[Value]| {
+        call_bridge("evalLoon", args)
     });
 
     // Browser

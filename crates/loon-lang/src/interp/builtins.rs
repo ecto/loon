@@ -1129,6 +1129,26 @@ pub fn register_builtins(env: &mut Env) {
             Err(err("recv requires a channel rx"))
         }
     });
+
+    builtin!(env, "try-recv", |_, args: &[Value]| {
+        if let Value::ChannelRx(id) = &args[0] {
+            let id = *id;
+            CHANNELS.with(|ch| {
+                let mut channels = ch.borrow_mut();
+                if let Some(buf) = channels.get_mut(&id) {
+                    if let Some(val) = buf.pop_front() {
+                        Ok(Value::Adt("Some".to_string(), vec![val]))
+                    } else {
+                        Ok(Value::Adt("None".to_string(), vec![]))
+                    }
+                } else {
+                    Err(err(format!("channel {id} does not exist")))
+                }
+            })
+        } else {
+            Err(err("try-recv requires a channel rx"))
+        }
+    });
 }
 
 pub fn apply_value(func: &Value, args: &[Value]) -> IResult {

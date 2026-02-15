@@ -92,6 +92,23 @@ pub fn check_program(source: &str) -> Result<String, String> {
     }
 }
 
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console, js_name = warn)]
+    fn console_warn(s: &str);
+}
+
+/// Invoke a stored Loon callback by ID (called from JS event handlers).
+#[wasm_bindgen]
+pub fn invoke_callback(id: u32) {
+    match dom_builtins::invoke_callback(id) {
+        Ok(_) => {}
+        Err(e) => {
+            console_warn(&format!("Loon callback {id} error: {}", e.message));
+        }
+    }
+}
+
 fn value_to_js(val: &Value) -> JsValue {
     match val {
         Value::Int(n) => JsValue::from_f64(*n as f64),
