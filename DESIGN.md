@@ -25,11 +25,9 @@ Loon is a LISP that steals the best ideas from Rust, Clojure, and Scheme — the
 
 ---
 
-## 2. Syntax Exploration
+## 2. Syntax
 
-Loon's syntax is still under exploration. Two candidates are presented below using the same program — a function that greets a list of users and returns the results.
-
-### Style A: Classic S-Expression with `[]`
+`[]` for s-expressions. `()` for grouping/tuples. `{}` for maps/records. Style B (indentation-aware sweet expressions) may be added later as a preprocessor.
 
 ```loon
 [defn greet [name]
@@ -48,37 +46,6 @@ Loon's syntax is still under exploration. Two candidates are presented below usi
 
 Everything is explicit. Brackets everywhere. No type annotations — they're inferred and shown by the editor. Maximally homoiconic — what you see is the AST.
 
-### Style B: Indentation-Aware (Sweet Expressions)
-
-```loon
-defn greet [name]
-  str "hello, " name "!"
-
-defn greet-all [names]
-  |> names
-    map greet
-    collect
-
-defn main []
-  let users #["alice" "bob" "carol"]
-  |> greet-all users
-    each println
-```
-
-Top-level forms use indentation instead of wrapping brackets. Inner expressions still use `[]` when needed for clarity. This is the "Python-ized LISP" approach — less visual noise, same semantics.
-
-### Comparison
-
-| Property | Style A (brackets) | Style B (sweet) |
-|---|---|---|
-| Homoiconicity | Perfect — AST = syntax | Slightly obscured by indentation rules |
-| Macro-friendliness | Excellent | Requires indent-aware quasi-quoting |
-| Readability for newcomers | Moderate (bracket fatigue) | High (familiar to Python/Haskell users) |
-| Tooling complexity | Low | Medium (whitespace-sensitive parsing) |
-| Copy-paste safety | High | Low (indentation can break) |
-
-**Recommendation:** Start with Style A for the initial implementation. It's simpler to parse, simpler to macro-expand, and simpler to get right. Style B can be added as syntactic sugar later — a preprocessor that emits Style A.
-
 ---
 
 ## 3. Type System
@@ -87,7 +54,7 @@ Top-level forms use indentation instead of wrapping brackets. Inner expressions 
 
 Loon's most radical design decision: **you don't write type annotations.** Ever.
 
-Types are inferred by the compiler, stored alongside the content-addressed definition hash (Section 14K), and rendered by the editor as phantom text. The source file contains zero type syntax. The compiler knows every type. The editor shows you whatever you want to see. But the *code you write* is just logic.
+Types are inferred by the compiler, stored alongside the content-addressed definition hash (Section 12K), and rendered by the editor as phantom text. The source file contains zero type syntax. The compiler knows every type. The editor shows you whatever you want to see. But the *code you write* is just logic.
 
 ```loon
 ; What you write:
@@ -105,22 +72,28 @@ Types are inferred by the compiler, stored alongside the content-addressed defin
 **Why this works for Loon (and wouldn't work for most languages):**
 - Hindley-Milner inference is *complete* for the core language — every expression has a principal type
 - LISP's structural simplicity (everything is an expression, uniform syntax) makes inference tractable even for complex programs
-- Content-addressed definitions (Section 14K) mean the inferred types are stored permanently — they're not re-inferred on every build, they're part of the definition's identity
-- The structural editor (Section 14N) renders types inline, on hover, or in a sidebar — you choose the visibility level
+- Content-addressed definitions (Section 12K) mean the inferred types are stored permanently — they're not re-inferred on every build, they're part of the definition's identity
+- The structural editor (Section 12N) renders types inline, on hover, or in a sidebar — you choose the visibility level
 
 **When inference isn't enough:** the `[sig]` form lets you constrain a function's type. This is rare — you'd use it for polymorphic functions where you want to restrict the type, or for documentation at module boundaries.
 
 ```loon
-; Constrain a type when needed:
 [sig parse : String → Result Config ParseError]
 [defn parse [raw]
   ...]
-
-; Or inline, for a specific binding:
-[let x [sig i32] 42]   ; force i32 instead of default i64
 ```
 
 `[sig]` is an assertion, not an annotation. The compiler checks that the inferred type matches. If it doesn't, you get an error.
+
+**Editor experience** — three rendering modes:
+
+1. **Clean** (default) — no types shown. Just your code.
+2. **Subtle** — types appear as dimmed phantom text after names, like VS Code inlay hints but pervasive.
+3. **Full** — types rendered inline as if you'd written them. Useful for learning and code review.
+
+Toggle with a keybinding. Hover any expression to see its type. Click a type to jump to its definition.
+
+**Open question: does full inference scale?** Adding ownership, borrowing, and effect tracking on top of HM significantly complicates inference. Vanilla HM is decidable; HM + affine types + effects is an open research area. Our bet is that LISP's uniform syntax makes this more tractable than in languages with complex control flow. If the bet is wrong, we add `[sig]` requirements at module boundaries — it's easier to tighten than loosen.
 
 ### Primitives
 
@@ -177,26 +150,9 @@ Implementations don't need type annotations — the trait provides them:
       Point       => "point"]]]
 ```
 
-### Type Aliases
-
-```loon
-[type-alias Name String]
-[type-alias Pair T [T T]]
-```
-
 ### No Null
 
 There is no null, nil, or undefined. Use `Option` for values that might not exist. Use `Result` for operations that might fail. The type system enforces exhaustive handling.
-
-### Editor Experience
-
-The editor is the window into the type system. Three rendering modes:
-
-1. **Clean** (default) — no types shown. Just your code.
-2. **Subtle** — types appear as dimmed phantom text after names, like VS Code inlay hints but pervasive.
-3. **Full** — types rendered inline as if you'd written them. Useful for learning and code review.
-
-Toggle with a keybinding. Hover any expression to see its type. Click a type to jump to its definition. The structural editor (Section 14N) makes this seamless.
 
 ---
 
@@ -209,7 +165,7 @@ Loon adopts Rust's ownership model but infers more aggressively.
 1. Every value has exactly one owner.
 2. When the owner goes out of scope, the value is dropped.
 3. Values can be *moved* (ownership transferred) or *borrowed* (temporary access).
-4. At any time: either one `&mut` reference OR any number of `&` references. Never both.
+4. At any time: either one mutable reference OR any number of immutable references. Never both.
 
 ### Inference — Not Annotation
 
@@ -218,21 +174,16 @@ Ownership and borrowing follow the same philosophy as types: **inferred, not ann
 The compiler performs whole-function analysis. If a function only reads a parameter, it's automatically borrowed. If it stores it in a struct or returns it, it's moved. You never write `&` or `&mut` — the compiler figures it out.
 
 ```loon
-; You write this:
 [defn greet [name]
   [str "hello, " name]]
 
 [let name "alice"]
 [greet name]      ; compiler infers borrow — greet only reads name
 [println name]    ; still valid — name wasn't moved
-
-; The editor shows this (in "subtle" or "full" mode):
-[defn greet [name ⸬&String] ⸬String
-  [str "hello, " name]]
 ```
 
 ```loon
-; Mutation — the compiler infers &mut:
+; Mutation — the compiler infers mutable borrow:
 [defn add-world [s]
   [push! s " world"]]    ; push! requires mutation → compiler infers &mut
 
@@ -241,22 +192,17 @@ The compiler performs whole-function analysis. If a function only reads a parame
   [store-in-db s]]        ; s escapes into a struct → compiler infers move
 ```
 
-The `!` suffix on `push!` is a convention, not a compiler directive. The compiler determines mutability from usage, not naming. But the convention makes it obvious to the human reader.
-
 ### Lifetimes
 
 Lifetimes exist in the type system but are always inferred. The compiler tracks them internally; you never write `'a`.
 
 ```loon
-; You write:
 [defn first [s]
   [slice s 0 1]]
-
-; Compiler infers: first : &'a String → &'a str
-; (the output lifetime is tied to the input lifetime)
+; Compiler infers: the output lifetime is tied to the input lifetime
 ```
 
-In the rare case where lifetime inference is ambiguous, the compiler asks via an error with a suggestion — and you can resolve it with a `[sig]` form:
+In the rare case where lifetime inference is ambiguous, resolve it with `[sig]`:
 
 ```loon
 [sig longest : &'a str → &'a str → &'a str]
@@ -273,17 +219,33 @@ Primitives (`i32`, `f64`, `Bool`, etc.) implement `Copy` — they're duplicated 
  type Point [x f64] [y f64]]
 ```
 
-### The Bet
+### Unsafe
 
-Rust requires explicit ownership annotations because Rust has complex control flow — loops, early returns, closures with different capture modes, async boundaries. Loon's bet is that LISP's structural simplicity (everything is an expression, uniform syntax, no hidden control flow) makes full ownership inference tractable.
+For operations the compiler can't verify — raw memory access, certain FFI calls:
 
-If this proves wrong, we add `[sig]` requirements at module boundaries — it's easier to tighten than to loosen. But we start maximally inferred.
+```loon
+[unsafe
+  [let ptr [alloc 1024]]
+  [write-bytes ptr data]
+  [dealloc ptr]]
+```
+
+`unsafe` blocks are checked, flagged by `pond audit`, and should be rare. The same semantics as Rust: you're telling the compiler "I've verified this is sound, trust me."
 
 ---
 
 ## 5. Core Data Structures
 
-### Vectors (Persistent, Immutable by Default)
+### The Hybrid Model
+
+Loon has two families of data structures:
+
+- **Persistent (immutable)** — Clojure-style structural sharing. Use reference counting internally. This is the default.
+- **Owned (mutable)** — Rust-style single-owner, no RC overhead. Opt-in when you need performance.
+
+The ownership model governs the *handles* to persistent data (who can read, who can drop the reference), while reference counting governs the *shared internal structure*. This is analogous to Rust's `Arc<Vec<T>>` — the `Arc` is refcounted, the `Vec` inside is owned.
+
+### Persistent Vectors
 
 ```loon
 [let v #[1 2 3 4 5]]
@@ -292,7 +254,9 @@ If this proves wrong, we add `[sig]` requirements at module boundaries — it's 
 [len v]                      ; 5
 ```
 
-### Maps (Persistent, Immutable by Default)
+`v` and `v2` share structure internally (refcounted tree nodes). Creating `v2` doesn't copy the whole vector.
+
+### Persistent Maps
 
 ```loon
 [let m {:name "loon" :version "0.1" :cool true}]
@@ -308,24 +272,24 @@ If this proves wrong, we add `[sig]` requirements at module boundaries — it's 
 [let s2 [conj s 4]]          ; #{1 2 3 4}
 ```
 
-### Mutable Variants
+### Owned Mutable Variants
 
-When you need mutation (and you've got unique ownership):
+When you need mutation and zero RC overhead (hot loops, performance-critical code):
 
 ```loon
 [let mut v [mut-vec 1 2 3]]
-[push! v 4]                  ; mutates in place
+[push! v 4]                  ; mutates in place, no RC
 ```
 
-The `!` suffix is a convention for mutating functions. The type system enforces that `push!` requires `&mut`.
+Owned collections follow standard ownership rules — single owner, no sharing. The `!` suffix on `push!` is a convention for mutating functions.
 
 ### Strings
 
-UTF-8 by default. Strings are owned (`String`) or borrowed (`&str`), same as Rust:
+UTF-8 by default. Same owned/borrowed distinction as Rust, but inferred:
 
 ```loon
-[let s "hello"]              ; &str (string slice, borrowed from static data)
-[let s2 [String.from "hello"]] ; String (owned, heap-allocated)
+[let s "hello"]                ; string literal — borrowed from static data
+[let s2 [String.from "hello"]] ; heap-allocated, owned
 ```
 
 ---
@@ -337,9 +301,7 @@ UTF-8 by default. Strings are owned (`String`) or borrowed (`&str`), same as Rus
 ```loon
 [defn add [x y]
   [+ x y]]
-
-; The compiler infers: add : i64 → i64 → i64
-; The editor shows it. The source doesn't.
+; Compiler infers: add : i64 → i64 → i64
 ```
 
 ### Multi-Arity
@@ -384,8 +346,6 @@ UTF-8 by default. Strings are owned (`String`) or borrowed (`&str`), same as Rus
 
 ### Pipe Operator
 
-The pipe operator threads data through a sequence of transformations:
-
 ```loon
 [|> #[1 2 3 4 5]
   [map [fn [x] [* x x]]]
@@ -422,8 +382,7 @@ Everything is private by default. Use `pub` to export:
   [port u16]
   [host String]]
 
-; Private helper — not exported
-[defn parse-header [raw]
+[defn parse-header [raw]    ; private
   ...]
 ```
 
@@ -433,61 +392,112 @@ Everything is private by default. Use `pub` to export:
 [use std.io]                         ; use as std.io.read, etc.
 [use std.io :as io]                  ; alias: io.read, etc.
 [use std.collections {HashMap HashSet}] ; import specific items
-[use std.io {read write :as w}]      ; mix and match
 ```
 
 ---
 
-## 8. Error Handling
+## 8. Algebraic Effects
 
-### Result Type
+This is Loon's unified model for side effects. Async, errors, IO, state, logging — all expressed as effects.
 
-Loon uses `Result` for all fallible operations. No exceptions.
+### What's an Effect?
+
+An algebraic effect is a declared side effect that a function *performs* and a caller *handles*. Think of it as a resumable exception with a type system.
 
 ```loon
-[defn read-file [path]
-  ...]
-; Compiler infers: read-file : &str → Result String IoError
+; Declare effects:
+[effect IO
+  [fn read-file [path] → String]
+  [fn write-file [path content]]]
 
-[match [read-file "config.toml"]
-  [Ok content]  => [parse content]
-  [Err e]       => [println "failed: " e]]
+[effect Fail
+  [fn fail [msg] → !]]
 ```
 
-### The `?` Operator
+### Using Effects
 
-Propagates errors up the call stack (like Rust):
+Effects appear after `/` in function signatures — this IS visible in source, because effects are contracts:
 
 ```loon
-[defn load-config [path]
-  [let raw [read-file path]?]
+[defn load-config [path] / {IO Fail}
+  [let raw [IO.read-file path]]
+  [if [empty? raw]
+    [Fail.fail "config file is empty"]]
+  [parse-toml raw]]
+```
+
+### Handling Effects
+
+Callers handle effects at the call site:
+
+```loon
+[handle [load-config "app.toml"]
+  [IO.read-file path] => [resume [mock-fs.read path]]
+  [IO.write-file _ _] => [resume]
+  [Fail.fail msg]     => [Config.default]]
+```
+
+### Error Handling — `Result` and `?` as Sugar
+
+`Result` is Loon's conventional error type. The `?` operator is sugar for performing and handling the `Fail` effect:
+
+```loon
+; These two are equivalent:
+[defn load-config [path] / {Fail}
+  [let raw [read-file path]?]       ; ? performs Fail on Err
   [let config [parse-toml raw]?]
   [Ok config]]
-; Compiler infers: load-config : &str → Result Config AppError
-; (inferred from the ? propagation chain)
+
+; Desugars to:
+[defn load-config [path] / {Fail}
+  [let raw [match [read-file path]
+    [Ok v]  => v
+    [Err e] => [Fail.fail e]]]
+  ...]
 ```
 
-### `try` Blocks
+`?` is the common case. `[handle ...]` is the general case. They compose.
 
-Group fallible operations:
+### Async — Also Just an Effect
 
 ```loon
-[try
-  [let file [open "data.txt"]?]
-  [let data [read-all file]?]
-  [Ok [parse data]?]]
+[effect Async
+  [fn await [future] → T]]
+
+; [async defn ...] is sugar for a function with the Async effect:
+[defn fetch-data [url] / {Async IO}
+  [let response [Async.await [http.get url]]]
+  response.body]
+
+; The runtime provides the Async handler. You can provide your own for testing:
+[handle [fetch-data "https://example.com"]
+  [Async.await f] => [resume [resolve-immediately f]]]
 ```
 
-### Panic
-
-For unrecoverable errors (bugs, not expected failures):
+### Channels and Concurrency
 
 ```loon
-[panic "invariant violated: x must be positive"]
+[let [tx rx] [channel]]
 
-; Or with unwrap (panics on Err/None):
-[let val [some-option.unwrap]]
+[spawn [fn []
+  [send tx "hello from task"]]]
+
+[let msg [Async.await [recv rx]]]
+[println msg]
 ```
+
+The ownership model prevents data races: you can't share mutable references across tasks. If you need shared state, use channels or atomics.
+
+### Effects + Ownership
+
+Algebraic effects involve capturing continuations. Continuations can duplicate references that are supposed to be unique. Loon handles this the same way Koka does: **effect handlers consume their continuation linearly.** A handler must call `[resume ...]` exactly once (or zero times, if it doesn't resume). The compiler enforces this. Multi-shot continuations require explicit cloning, which only works for `Copy` types.
+
+### Why Effects Are Legendary
+
+- **Testing without mocks.** Handle the `IO` effect with test data — no DI frameworks, no mock libraries.
+- **Composable.** A function with `{IO Fail Log}` effects can be partially handled — handle `Log`, pass the rest through.
+- **Replaces 5 features with 1.** Exceptions, async/await, generators, dependency injection, algebraic state — all expressible as effects.
+- **Informed by research.** Draws from Koka, Eff, and OCaml 5. No mainstream language has shipped this yet.
 
 ---
 
@@ -521,12 +531,12 @@ Loon macros are hygienic by default (like Scheme's `syntax-rules`). They operate
 - `~` — unquote (evaluate this part)
 - `~@` — splice-unquote (evaluate and spread)
 
-### Type-Aware Macros (see Section 14F)
+### Type-Aware Macros
 
-Unlike traditional LISPs, Loon macros can optionally run *after* type inference, giving them access to type information. This enables powerful compile-time code generation.
+Unlike traditional LISPs, Loon macros can optionally run *after* type inference, giving them access to type information.
 
 ```loon
-[defmacro derive-serialize [T]
+[defmacro+ derive-serialize [T]    ; the + means "type-aware"
   [let fields [type-fields T]]
   `[impl Serialize ~T
      [fn serialize [self writer]
@@ -535,51 +545,80 @@ Unlike traditional LISPs, Loon macros can optionally run *after* type inference,
               fields]]]]
 ```
 
+This enables zero-cost derive macros (`[#[derive Debug Serialize Eq]]`), compile-time ORMs, and generic serialization — all implemented in Loon itself. Still hygienic.
+
 ---
 
-## 10. Concurrency
+## 10. Testing
 
-### Async/Await
+### Test Functions
 
 ```loon
-[async defn fetch-data [url]
-  [let response [await [http.get url]]?]
-  [Ok response.body]]
-; Inferred: fetch-data : &str → Result String HttpError
+[test defn test-greet []
+  [assert-eq [greet "world"] "hello, world!"]]
 
-[async defn main []
-  [let data [await [fetch-data "https://api.example.com"]]?]
-  [println data]]
+[test defn test-fib []
+  [assert-eq [fib 0] 0]
+  [assert-eq [fib 10] 55]]
 ```
 
-### Channels
+`[test defn ...]` marks a function as a test. It's a regular function — no special syntax, no test framework to import.
 
-Message passing between concurrent tasks:
+### Running Tests
 
-```loon
-[let [tx rx] [channel]]
-
-[spawn [fn []
-  [send tx "hello from task"]]]
-
-[let msg [await [recv rx]]]
-[println msg]  ; "hello from task"
+```sh
+$ loon test
+  Running 4 tests...
+  ✓ test-greet .................. 0.1ms
+  ✓ test-fib .................... 0.2ms
+  ✓ test-parse .................. 0.3ms
+  ✗ test-edge-case .............. 0.1ms
+    assert-eq failed:
+      expected: 42
+      actual:   41
+      at: src/math.loon:28
+  3 passed, 1 failed (0.7ms)
 ```
 
-### No Shared Mutable State
-
-The ownership model prevents data races at compile time. You can't share `&mut` across tasks. If you need shared state, use channels or explicit concurrent primitives:
+### Property-Based Testing
 
 ```loon
-[let counter [Atomic.new 0]]
-[spawn [fn [] [counter.fetch-add 1]]]
+[test defn test-sort-idempotent []
+  [check [fn [xs]            ; check generates random inputs
+    [assert-eq [sort [sort xs]] [sort xs]]]]]
+
+[test defn test-reverse-reverse []
+  [check [fn [xs]
+    [assert-eq [reverse [reverse xs]] xs]]]]
+```
+
+### Testing Effects
+
+Effects make testing trivial — handle IO with test data, no mocks needed:
+
+```loon
+[test defn test-load-config []
+  [let result
+    [handle [load-config "app.toml"]
+      [IO.read-file _] => [resume "name = \"test\""]
+      [Fail.fail msg]  => [Err msg]]]
+  [assert-eq result.name "test"]]
 ```
 
 ---
 
 ## 11. WASM Target
 
-### Compilation
+### Compilation Model
+
+Loon has two execution modes:
+
+- **Compiled** — `loon build` produces WASM bytecode via ahead-of-time compilation. This is the shipping format.
+- **Interpreted** — the REPL uses a tree-walking interpreter over the typed AST. No WASM compilation step. This enables instant feedback, time travel, and hot reload.
+
+The same type checker and ownership checker run in both modes. The interpreter enforces ownership rules at runtime (consuming values on move, tracking borrows). The compiler enforces them statically.
+
+### Build Commands
 
 ```sh
 loon build              # produces target/main.wasm
@@ -602,16 +641,12 @@ System interfaces via WASI:
 
 ### FFI / Extern
 
-Import functions from the WASM host. Extern declarations are the one place where `[sig]` is required — you can't infer types across language boundaries:
+Extern declarations are where `[sig]` is required — you can't infer types across language boundaries:
 
 ```loon
 [extern "env"
   [sig log : &str → void]
   [fn log [msg]]]
-
-[extern "wasi_snapshot_preview1"
-  [sig fd-write : i32 → i32 → i32 → i32 → i32]
-  [fn fd-write [fd iovs iovs-len nwritten]]]
 ```
 
 Export Loon functions to the host:
@@ -622,6 +657,21 @@ Export Loon functions to the host:
   [Response.ok "hello from loon"]]
 ```
 
+### Browser / JS Interop
+
+DOM and browser APIs are accessed via extern declarations, same as any WASM host:
+
+```loon
+[extern "env"
+  [sig query-selector : &str → Element]
+  [fn query-selector [sel]]
+
+  [sig set-text-content : Element → &str → void]
+  [fn set-text-content [el text]]]
+```
+
+Loon doesn't provide a built-in browser framework — it provides the FFI. Frameworks are packages.
+
 ### Component Model
 
 Loon supports the WASM Component Model for composing modules across languages:
@@ -629,134 +679,12 @@ Loon supports the WASM Component Model for composing modules across languages:
 ```loon
 [import "wasi:http/handler" {handle}]
 [export "wasi:http/handler"
-  [fn handle [req]
-    ...]]
+  [fn handle [req] ...]]
 ```
 
 ---
 
-## 12. Decentralized Package Manager ("Pond")
-
-### Manifest: `loon.toml`
-
-```toml
-[package]
-name = "my-app"
-version = "0.1.0"
-authors = ["alice <alice@example.com>"]
-
-[dependencies]
-http = { hash = "sha256:a1b2c3d4...", source = "ipfs" }
-json = { hash = "sha256:e5f6g7h8...", source = "https://pond.loon.dev" }
-
-[capabilities]
-net = true
-fs.read = ["./data/*"]
-```
-
-### Content-Addressed Identity
-
-A package's identity is the hash of its source tree. Not a name, not a version — the hash.
-
-```loon
-[dep io.github.alice/http "sha256:a1b2c3d4e5f6..."]
-```
-
-- Names are vanity — convenient but not authoritative
-- The hash is the truth — you always get exactly what you asked for
-- No squatting, no typosquatting, no supply chain attacks via name confusion
-
-### Distribution
-
-Packages are distributed via content-addressed storage:
-
-1. **IPFS** (default) — fully decentralized, anyone can pin
-2. **HTTP** — any server can host packages (just serve the content at its hash)
-3. **Git** — pin to a specific commit hash
-4. **Pond Index** — optional discovery layer, maps names → hashes
-
-### Commands
-
-```sh
-pond add io.github.alice/http     # resolve name → hash, add to loon.toml
-pond audit                        # type-check all deps against their interfaces
-pond verify                       # verify all dep hashes match their content
-pond publish                      # hash your source, push to IPFS + index
-pond search "http server"         # search the optional index
-```
-
-### Reproducible Builds
-
-Since deps are hash-pinned and Loon compiles to WASM (a deterministic target), builds are reproducible by construction. Same source + same deps = same binary, always.
-
----
-
-## 13. Example Programs
-
-### Hello World
-
-```loon
-[defn main []
-  [println "hello, world!"]]
-```
-
-### Fibonacci
-
-```loon
-[defn fib [n]
-  [match n
-    0 => 0
-    1 => 1
-    n => [+ [fib [- n 1]] [fib [- n 2]]]]]
-
-[defn main []
-  [|> [range 0 10]
-    [map fib]
-    [each [fn [x] [println x]]]]]
-```
-
-### HTTP Server
-
-```loon
-[use std.http {Server Request Response}]
-
-[defn handle [req]
-  [match req.path
-    "/"      => [Response.ok "welcome to loon!"]
-    "/ping"  => [Response.ok "pong"]
-    _        => [Response.not-found "404"]]]
-
-[async defn main []
-  [let server [Server.bind "0.0.0.0:8080"]]
-  [println "listening on :8080"]
-  [await [server.serve handle]]]
-```
-
-### CLI Tool: Word Counter
-
-```loon
-[use std.io {stdin read-to-string}]
-[use std.collections {HashMap}]
-
-[defn count-words [text]
-  [|> [split text " \n\t"]
-    [filter [fn [w] [not [empty? w]]]]
-    [fold [HashMap.new] [fn [acc word]
-      [update acc word [fn [n] [+ [or n 0] 1]]]]]]]
-
-[defn main []
-  [let text [read-to-string stdin]?]
-  [let counts [count-words text]]
-  [|> [entries counts]
-    [sort-by [fn [[_ n]] n] :desc]
-    [take 10]
-    [each [fn [[word n]]
-      [println [str word ": " n]]]]]]
-```
-
----
-
-## 14. What Makes Loon Legendary
+## 12. What Makes Loon Legendary
 
 This section is the soul of the design — the features that make people say "holy shit" and rewrite their side projects in Loon overnight.
 
@@ -774,7 +702,7 @@ loon> x
 42
 loon> y
 ; error: unbound symbol 'y'
-loon> [fork]               ; branch this session — experiment freely
+loon> [fork]               ; branch this session
 loon (fork-1)> [let y 999]
 loon (fork-1)> [exit-fork]
 loon> y
@@ -783,15 +711,14 @@ loon> y
 
 **Key features:**
 - **Persistent state.** Your REPL session is serializable. Close your laptop, reopen, pick up exactly where you left off.
-- **Time travel.** `[rewind n]` steps back n evaluations. `[snapshot]` saves a named checkpoint. `[restore "checkpoint-name"]` jumps back.
+- **Time travel.** `[rewind n]` steps back n evaluations. `[snapshot]` saves a named checkpoint.
 - **Forking.** `[fork]` branches your session for experimentation. Keep or discard.
 - **Hot reload.** Redefine functions, types, even trait implementations mid-session. The REPL re-typechecks incrementally.
-- **The REPL is the debugger.** Set breakpoints with `[break-at module.fn]`. Inspect any value. Step through execution. All in the same session.
-- **Natural language mode.** Type brackets → it's code. Type English → it's a prompt. The REPL detects which one you meant and seamlessly switches.
+- **The REPL is the debugger.** Set breakpoints with `[break-at module.fn]`. Inspect any value. Step through execution.
 
 #### The REPL Speaks English
 
-The detection is trivial: input that starts with `[` or is a bare symbol is code. Everything else is natural language. No mode-switching command, no prefix character — just type.
+Input that starts with `[` or is a bare symbol is code. Everything else is natural language. No mode-switching, no prefix — just type.
 
 ```loon
 loon> [+ 1 2]
@@ -820,19 +747,11 @@ loon> refactor fib to use tail recursion
 loon> show me everything that depends on Config
   3 functions reference Config:
     load-config  (src/config.loon:12) — constructs Config
-    validate     (src/config.loon:28) — borrows &Config
+    validate     (src/config.loon:28) — borrows Config
     main         (src/main.loon:5)    — owns Config
 ```
 
-**The AI has full context.** It can see every binding in your REPL session, every function in your project, every type definition. It doesn't guess — it reads the AST, the type environment, and the dependency graph. When it proposes code, that code is type-checked before you see it.
-
-**It composes with everything else:**
-- Ask "why did that error?" and it explains the last error using the same teaching format as the compiler (Section 14E)
-- Ask "what changed since my last snapshot?" and it diffs against your REPL history (time travel)
-- Ask "make this function pure" and it refactors effects out, verified by the effect system (Section 14L)
-- Ask "what capabilities does this dep use?" and it queries the capability system (Section 14G)
-
-**The REPL is Claude Code for Loon.** But better — because the AI operates on typed ASTs, not raw text. It can't propose code that doesn't type-check. It can't propose code that violates ownership. It can't propose code that exceeds granted capabilities. The language *constrains* the AI's output to be correct.
+The AI operates on the typed AST, the effect system, and the dependency graph. It can't propose code that doesn't type-check, violates ownership, or exceeds capabilities. The language *constrains* the AI's output to be correct.
 
 ### B. Provably Minimal Binaries
 
@@ -851,50 +770,7 @@ $ loon build --release
    Type-level DCE removed 14 types, 89 functions
 ```
 
-This matters for edge computing, embedded WASM, and anywhere binary size is a constraint.
-
-### C. Pond — The Package Manager That Can't Be Rugged
-
-(See Section 12 for full specification.)
-
-The key insight: if packages are identified by their content hash, then:
-
-- **No left-pad incident.** A package can't be "unpublished" — the hash still resolves from anyone who has it cached.
-- **No supply chain attacks via name confusion.** The hash is the identity, not the name.
-- **Built-in audit.** `pond audit` type-checks every dependency against its declared interface. If a dep's types don't match its claims, you know before you ship.
-- **Gossip protocol for discovery.** No single point of failure. No npm Inc. Nodes share package metadata peer-to-peer.
-
-```sh
-$ pond audit
-  ✓ http (sha256:a1b2c3d4) — 14 public fns, all type-safe
-  ✓ json (sha256:e5f6g7h8) — 8 public fns, all type-safe
-  ⚠ crypto (sha256:deadbeef) — uses unsafe in 2 locations
-    → src/aes.loon:47  [unsafe block: raw memory access]
-    → src/rng.loon:12  [unsafe block: FFI call]
-  All deps verified.
-```
-
-### D. First-Class WASM Interop
-
-Loon is Lua for the WASM era.
-
-```loon
-; Import a Rust-compiled WASM module as if it were Loon:
-[use-wasm "image-resize.wasm" :as img]
-[let resized [img.resize photo 800 600]]
-
-; Export Loon functions for any WASM host:
-[pub extern defn transform [input]
-  [|> input [decode-json] [process] [encode-json]]]
-```
-
-**Interop features:**
-- Import any WASM module with zero glue code — Loon reads the module's type signature
-- Export Loon functions with Component Model types for seamless cross-language composition
-- Works everywhere WASM runs: browsers, Wasmtime, Cloudflare Workers, Fastly Compute, Deno
-- Bidirectional: Loon can be the host *or* the guest
-
-### E. Error Messages That Teach
+### C. Error Messages That Teach
 
 Every Loon error includes three things: **what** went wrong, **why** it's wrong, and **how** to fix it.
 
@@ -903,61 +779,45 @@ error[E0312]: cannot borrow `data` as mutable — already borrowed as immutable
 
    ┌─ src/main.loon:14:5
    │
-12 │  [let ref [&data]]
+12 │  [let view [slice data 0 3]]
    │            ───── immutable borrow occurs here
-13 │  [println ref]
+13 │  [println view]
 14 │  [push! data 42]
    │  ^^^^^^^^^^^^^^ mutable borrow attempted here
-15 │  [println ref]
-   │           ─── immutable borrow still in use here
+15 │  [println view]
+   │           ──── immutable borrow still in use here
 
    why: Loon prevents reading and writing the same data simultaneously
         to eliminate data races and dangling references.
 
    fix: Move the mutable operation before or after the immutable borrow:
 
-   │  [push! data 42]     ; ← move this up
-   │  [let ref [&data]]
-   │  [println ref]
-   │  [println ref]
+   │  [push! data 42]        ; ← move this up
+   │  [let view [slice data 0 3]]
+   │  [println view]
+   │  [println view]
 
    help: [explain E0312] for an interactive tutorial on borrowing
 ```
 
 **Error features:**
-- **Visual ownership diagrams** showing who owns what and where conflicts arise
+- **Visual ownership diagrams** showing who owns what and where the conflict is
 - **`[explain E0312]`** opens an interactive REPL-based tutorial for that error class
-- **Errors are data.** `[catch-errors [compile "src/main.loon"]]` returns a vector of structured error values — build your own error tooling
+- **Errors are data.** `[catch-errors [compile "src/main.loon"]]` returns structured error values
 
-### F. Macros That See Types
+### D. Macros That See Types
 
-In every other LISP, macros operate on syntax alone. They can't ask "what type is this expression?" Loon macros can.
+(Full specification in Section 9.)
 
-Loon's macro system has two phases:
-1. **Syntax macros** — traditional hygienic macros, expanded before type checking
-2. **Type-aware macros** — expanded *after* type inference, with access to the type environment
+Loon's `[defmacro+ ...]` macros run *after* type inference, with access to the type environment. This enables:
 
-```loon
-[defmacro+ derive-debug [T]     ; the + means "type-aware"
-  [let fields [type-fields T]]
-  `[impl Debug ~T
-     [fn debug [self f]
-       [write f ~(str (type-name T) " { ")]
-       ~@[interpose
-           [map [fn [field]
-                  `[write f ~(str (field-name field) ": {:?} ") self.~(field-name field)]]
-                fields]
-           `[write f ", "]]
-       [write f "}"]]]]
-```
-
-This enables:
-- **Zero-cost generic serialization** — generate optimal serialize/deserialize at compile time
-- **Derive macros** — `[#[derive Debug Serialize Eq]]` like Rust, but implemented in Loon itself
+- **Zero-cost derive macros** — `[#[derive Debug Serialize Eq]]`, implemented in Loon itself
 - **Compile-time ORMs** — generate type-safe queries from struct definitions
-- Still hygienic — type-awareness doesn't mean type-unsafety
+- **Generic serialization** — branch on types, generate optimal code per type
 
-### G. Built-In Capability-Based Security
+Still hygienic — type-awareness doesn't mean type-unsafety.
+
+### E. Capability-Based Security
 
 Every Loon module declares what it needs:
 
@@ -976,83 +836,153 @@ Callers grant capabilities explicitly:
   :grant [:net :fs.read ["./cache/*"]]]
 ```
 
-**Security properties:**
+**Properties:**
 - A dependency can't phone home unless you grant `:net`
-- A dependency can't read your filesystem unless you grant `:fs.read`
 - Capabilities compose — if you don't grant `:net` to a dep, none of *its* deps get `:net` either
 - Pairs perfectly with WASM's sandboxing model
-- `pond audit` reports capability usage for every dependency
+- `pond audit --capabilities` reports what every dep requires
 
-```sh
-$ pond audit --capabilities
-  http    — requires :net
-  json    — requires nothing (pure)
-  logger  — requires :fs.write ["./logs/*"]
-  crypto  — requires nothing (pure)
-```
+### F. Content-Addressed Definitions
 
-### H. Notebooks as First-Class Programs
+Stolen from Unison — and extended.
 
-Loon supports two file types:
-- `.loon` — regular source files
-- `.loon.nb` — notebook files (literate programming)
-
-Notebooks contain interleaved Markdown and code cells:
-
-````loon-nb
-# Data Analysis Pipeline
-
-This notebook processes the Q4 sales data and generates a report.
+Every function and type is identified by the hash of its *content* (AST after desugaring). Names are metadata, not identity.
 
 ```loon
-[use std.csv {read-csv}]
-[use std.stats {mean median std-dev}]
+loon> [hash greet]
+sha256:7f3a...
 
-[let data [read-csv "./sales-q4.csv"]?]
-[let revenue [map data [fn [row] row.revenue]]]
+loon> [rename greet say-hello]
+; same hash — renaming doesn't change identity
+
+loon> [history greet]
+  sha256:7f3a... (current)  — added "!" to greeting
+  sha256:2b1c... (2 edits ago) — initial implementation
 ```
 
-## Summary Statistics
+**Consequences:**
+- **Merge conflicts on renames are impossible.** Both names point to the same hash.
+- **Refactoring is free.** Move a function between modules? The hash doesn't change.
+- **Dead code is provable.** If no live hash references your definition's hash, it's dead — mathematically.
+- **Pairs with Pond.** Packages are content-addressed. Definitions are content-addressed. Hashes all the way down.
+- **Types are stored with the hash.** This is what makes the invisible type system work — inferred types are part of the definition's identity, not re-inferred on every build.
 
-```loon
-[println [str "Mean revenue:   $" [mean revenue]]]
-[println [str "Median revenue: $" [median revenue]]]
-[println [str "Std deviation:  $" [std-dev revenue]]]
-```
-````
+### G. Structural Editing & Tooling
 
-**Notebook features:**
-- **Compile to WASM** — same as regular `.loon` files. No second-class citizens.
-- **Render in browser** — via WASM, with live evaluation
-- **Type-safe** — notebooks are type-checked like any other code
-- **Ideal for:** science, data work, tutorials, documentation, and internal tools
-
-### I. The Syntax Is the API
-
-Because Loon is a LISP, the AST *is* the syntax. This makes tooling trivially derivable:
+Since Loon is a LISP, the AST *is* the syntax. This makes tooling trivially derivable:
 
 - **Formatter** — structurally format any Loon code (no ambiguity, no style debates)
 - **Linter** — pattern-match on the AST directly
-- **LSP** — autocomplete, go-to-definition, type-on-hover, all derived from the same data structure
-- **Tree-sitter grammar** — near-trivial to write (it's just nested brackets)
-- **AI-friendly** — LLMs can generate and manipulate Loon code structurally. It's just trees. No syntax edge cases, no operator precedence, no semicolon insertion.
+- **LSP** — autocomplete, go-to-definition, type-on-hover — all from the same data structure
+- **Tree-sitter grammar** — near-trivial (it's just nested brackets)
+- **AI-friendly** — LLMs generate Loon structurally. No operator precedence, no semicolons, no whitespace ambiguity.
+
+The blessed editing experience is structural: the cursor moves between AST nodes, not characters.
+
+```
+; Cursor is on the [+ x 1] node:
+[defn inc [x] «[+ x 1]»]
+
+; Press "w" to wrap in a new form:
+[defn inc [x] [«▮» [+ x 1]]]
+
+; Type "if [> x 0]":
+[defn inc [x] [if [> x 0] [+ x 1] «▮»]]
+```
+
+Plain text editing always works. Structural editing is the blessed path, not a cage.
 
 ```loon
 ; Code is data:
 [let code [quote [+ 1 2]]]
 [eval code]                    ; 3
-
-; Transform code:
-[let doubled [map code [fn [x]
-  [if [number? x] [* x 2] x]]]]
-[eval doubled]                 ; 6
 ```
 
-`[quote]` and `[eval]` aren't just features — they're the extension model. Build your own DSLs, your own test frameworks, your own build tools — all in Loon.
+`[quote]` and `[eval]` aren't just features — they're the extension model.
 
-### J. Emotional Design
+### H. Incremental Computation
 
-Loon should feel good to use. The CLI, the error messages, the documentation — everything is designed with taste.
+Loon's runtime includes a built-in incremental computation engine, inspired by Salsa (the engine inside rust-analyzer).
+
+```loon
+[memo defn parse [source]
+  [parser.parse source]]
+
+[memo defn typecheck [ast]
+  [checker.check ast]]
+
+[memo defn compile [source]
+  [|> source [parse] [typecheck] [codegen]]]
+```
+
+When `source` changes, only the affected stages re-run. The runtime tracks `[memo]` dependencies automatically.
+
+**Applications:**
+- **The Loon compiler itself** uses this — edit one function, only that function re-compiles.
+- **Reactive UIs.** `[memo]` functions + a render loop = a reactive framework with zero library code.
+- **Data pipelines.** Change one input, only downstream transformations re-run.
+
+### I. Provenance Tracking
+
+Every value in Loon can carry metadata about its origin — where it was created, how it was transformed.
+
+```loon
+[let name [read-input "What's your name?"]]
+[let greeting [str "hello, " name]]
+
+[provenance greeting]
+; => #[
+;   {origin: "stdin" fn: read-input}
+;   {transform: str fn: main}
+; ]
+```
+
+**Cost model:** Provenance is tracked via compile-time instrumentation, not runtime tagging. The compiler inserts tracking code only for values that flow into a `[provenance ...]` call or are marked with `[#[track] ...]`. Untracked code paths have zero overhead. Tracked paths pay proportional to the number of transformations — comparable to structured logging.
+
+**Applications:**
+- **Debugging.** "Where did this value come from?" — answered instantly.
+- **Security.** Track tainted data from user input through your program.
+- **Compliance.** "Show me every value derived from PII."
+
+### J. Transparent Persistence
+
+Loon's persistent data structures can be transparently backed by durable storage.
+
+```loon
+[let db [Store.open "./app.db"]]
+
+[let db [assoc db :users #[
+  {:name "alice" :role :admin}
+  {:name "bob" :role :user}]]]
+
+; Survives process restarts:
+[let db [Store.open "./app.db"]]
+[get db :users]  ; still there
+```
+
+**Key properties:**
+- **No ORM.** Your data structures *are* your database.
+- **Immutable history.** `[Store.at db timestamp]` returns the database as it was at that point.
+- **Transactional.** `[transact db ...]` blocks are atomic.
+- **Scales down.** Small projects: a file with superpowers. Large projects: a proper embedded database.
+
+### K. Notebooks as First-Class Programs
+
+`.loon` files are programs. `.loon.nb` files are notebooks — interleaved Markdown and code cells:
+
+````loon-nb
+# Data Analysis
+
+```loon
+[use std.csv {read-csv}]
+[let data [read-csv "./sales.csv"]?]
+[println [str "Mean: $" [mean [map data :revenue]]]]
+```
+````
+
+Notebooks compile to the same WASM as regular files. Type-checked, ownership-checked, no second-class citizens.
+
+### L. Emotional Design
 
 ```
 $ loon new my-project
@@ -1064,274 +994,57 @@ $ loon new my-project
 $ loon run
   Compiling my-project (847 bytes)
   hello, world!
-
-$ loon test
-  Running 3 tests...
-  ✓ test-add ..................... 0.1ms
-  ✓ test-greet .................. 0.2ms
-  ✓ test-parse .................. 0.3ms
-  All 3 tests passed (0.6ms)
 ```
 
-**Design principles:**
-- **Colors and Unicode** — box-drawing characters, check marks, spinners, syntax highlighting in terminal output
-- **Bracket style in messages** — compiler examples use `[]` notation, dogfooding the syntax
-- **Minimal scaffolding** — `loon new` creates exactly 2 files. No config sprawl.
-- **Docs from notebooks** — the documentation site is generated from `.loon.nb` files, dogfooding the notebook system
+- Colors, Unicode box-drawing, progress spinners
+- `loon new` creates exactly 2 files — no boilerplate
+- The docs site is generated from `.loon.nb` notebooks, dogfooding the whole stack
 
-### K. Content-Addressed Definitions
+### M. First-Class LLM & Agentic Programming
 
-Stolen shamelessly from Unison — and extended.
-
-Every function and type in Loon is identified not by its name but by the hash of its *content* (its AST after desugaring). Names are metadata, not identity.
-
-```loon
-loon> [hash greet]
-sha256:7f3a...  ; the identity of this function
-
-loon> [rename greet say-hello]
-; same hash — renaming doesn't change identity
-
-loon> [history greet]
-  sha256:7f3a... (current)  — added "!" to greeting
-  sha256:2b1c... (2 edits ago) — initial implementation
-  sha256:9e0d... (5 edits ago) — prototype
-```
-
-**Consequences:**
-- **Merge conflicts on renames are impossible.** Two people rename the same function differently? Both names point to the same hash. No conflict.
-- **Refactoring is free.** Move a function to a different module? The hash doesn't change. Nothing breaks.
-- **Codebase is a persistent database.** Every version of every definition is stored. `[history fn-name]` shows the full evolution. `[diff sha256:7f3a sha256:2b1c]` shows what changed.
-- **Dead code is provable.** If no live hash references your definition's hash, it's dead. Not heuristically — mathematically.
-- **Pairs with Pond.** Packages are content-addressed. Definitions are content-addressed. It's hashes all the way down.
-
-### L. Algebraic Effects
-
-Async/await is just one effect. Exceptions are just one effect. Loon generalizes all of them.
-
-An algebraic effect is a declared side effect that a function *performs* and a caller *handles*. Think of it as resumable exceptions with a type system.
-
-```loon
-; Declare effects:
-[effect IO
-  [fn read-file [path] → String]
-  [fn write-file [path content]]]
-
-[effect Fail
-  [fn fail [msg] → !]]   ; ! means "never returns normally"
-
-; Effects appear after / — this IS visible in source, because effects are contracts:
-[defn load-config [path] / {IO Fail}
-  [let raw [IO.read-file path]]
-  [if [empty? raw]
-    [Fail.fail "config file is empty"]]
-  [parse-toml raw]]
-
-; Handle effects at the call site:
-[handle [load-config "app.toml"]
-  [IO.read-file path] => [resume [mock-fs.read path]]   ; inject mock FS
-  [IO.write-file _ _] => [resume]                         ; swallow writes
-  [Fail.fail msg]     => [Config.default]]                ; recover gracefully
-```
-
-**Why this is legendary:**
-- **Testing without mocks.** Handle the `IO` effect with test data — no dependency injection frameworks, no mock libraries, no test-only interfaces.
-- **Composable.** Effects compose naturally. A function with `{IO Fail Log}` effects can be partially handled — handle `Log`, pass `IO` and `Fail` through.
-- **Async is just an effect.** `[effect Async [fn await [future] → T]]` — the runtime provides the handler. You can provide a different handler for testing (instant resolution) or simulation (deterministic scheduling).
-- **Replaces 5 language features with 1.** Exceptions, async/await, generators, dependency injection, and algebraic state — all expressible as effects.
-- **Informed by research.** Draws from Koka, Eff, and OCaml 5. No mainstream language has shipped this yet.
-
-### M. Incremental Computation
-
-Loon's runtime includes a built-in incremental computation engine, inspired by Salsa (the engine inside rust-analyzer).
-
-```loon
-[memo defn parse [source]
-  [parser.parse source]]
-
-[memo defn typecheck [ast]
-  [checker.check ast]]
-
-[memo defn codegen [typed]
-  [emitter.emit typed]]
-
-[memo defn compile [source]
-  [|> source [parse] [typecheck] [codegen]]]
-```
-
-When `source` changes, only the affected stages re-run. The runtime automatically tracks which `[memo]` functions depend on which inputs and invalidates the minimal set.
-
-**Applications:**
-- **The Loon compiler itself** uses incremental computation — edit one function, only that function gets re-typechecked and re-compiled. Instant feedback.
-- **Reactive UIs.** `[memo]` functions + a render loop = a reactive framework with zero library code.
-- **Data pipelines.** Change one input CSV, only the downstream transformations re-run.
-- **Build systems.** `[memo]` is `make` but type-safe and automatic.
-
-### N. Structural Editing
-
-Since Loon is a LISP, syntax errors are a *choice* — and Loon chooses to eliminate them.
-
-The blessed editing experience is structural: the cursor moves between AST nodes, not characters. Insertion, deletion, and transformation operate on trees, not text.
-
-```
-; Cursor is on the [+ x 1] node:
-[defn inc [x] «[+ x 1]»]
-
-; Press "w" to wrap in a new form:
-[defn inc [x] [«▮» [+ x 1]]]
-
-; Type "if [> x 0]":
-[defn inc [x] [if [> x 0] [+ x 1] «▮»]]
-
-; Type "0" to complete:
-[defn inc [x] [if [> x 0] [+ x 1] 0]]
-```
-
-**Shipped as:**
-- **VS Code extension** — structural navigation and editing keybindings
-- **Web editor** — runs in the browser via WASM (dogfooding the WASM target)
-- **REPL integration** — structural editing in the terminal REPL
-- **Fallback** — you can always edit Loon as plain text. Structural editing is the blessed path, not a cage.
-
-**Why this matters:**
-- Syntax errors become impossible in structural mode
-- The formatter isn't a tool — it's just how the code renders
-- Refactoring is node manipulation, not text search-and-replace
-- Pairs perfectly with the content-addressed definitions (K) — edits produce new hashes automatically
-
-### O. Provenance Tracking
-
-Every value in Loon can carry invisible metadata about its origin — where it was created, how it was transformed, where it traveled.
-
-```loon
-[let name [read-input "What's your name?"]]
-[let greeting [str "hello, " name]]
-[let upper [to-upper greeting]]
-
-[provenance upper]
-; => #[
-;   {origin: "stdin" line: 1 fn: read-input}
-;   {transform: str line: 2 fn: main}
-;   {transform: to-upper line: 3 fn: main}
-; ]
-```
-
-**Zero-cost when unobserved.** Provenance metadata is tracked lazily — the compiler elides it entirely unless someone calls `[provenance]` or opts in with `[#[track] let ...]`. No runtime cost for code that doesn't use it.
-
-**Applications:**
-- **Debugging.** "Where did this value come from?" is answered instantly — no printf archaeology.
-- **Security auditing.** Track tainted data from user input through your entire program. `[tainted? val]` returns true if the value originated from an untrusted source.
-- **Data pipelines.** Every output cell in a notebook knows exactly which input cells contributed to it.
-- **Compliance.** "Show me every value derived from PII" becomes a one-liner.
-
-### P. Transparent Persistence
-
-Loon's persistent data structures aren't just immutable in memory — they can be transparently backed by durable storage.
-
-```loon
-; Create a persistent store (backed by disk):
-[let db [Store.open "./app.db"]]
-
-; Use it like a normal map:
-[let db [assoc db :users #[
-  {:name "alice" :role :admin}
-  {:name "bob" :role :user}]]]
-
-; It's durable — survives process restarts:
-[let db [Store.open "./app.db"]]
-[get db :users]  ; => still there
-
-; Query it with normal Loon functions:
-[|> [get db :users]
-  [filter [fn [u] [= u.role :admin]]]
-  [map :name]]
-; => #["alice"]
-```
-
-**Key properties:**
-- **No ORM.** Your data structures *are* your database. Same functions, same types, same everything.
-- **No serialization.** The persistent data structure format *is* the on-disk format. No encoding/decoding step.
-- **Immutable history.** Since the backing store is persistent (append-only), you get time-travel for free: `[Store.at db timestamp]` returns the database as it was at that point.
-- **Transactional.** Multiple mutations in a `[transact db ...]` block are atomic.
-- **Scales down.** For small projects, it's a JSON file with superpowers. For large projects, it's a proper embedded database. Same API either way.
-
-### Q. First-Class LLM & Agentic Programming
-
-This is the big one. Loon is designed from the ground up to be the best language for writing AI-powered programs — and the best language for AI to write programs *in*.
-
-#### The Language AI Can Actually Write
-
-Loon's LISP syntax isn't just elegant — it's *structurally trivial* for LLMs. There's no operator precedence, no semicolon insertion, no whitespace ambiguity, no brace-matching across 50 lines. Code is trees. LLMs are good at trees.
-
-```loon
-; An LLM generating Loon doesn't need to track:
-;   - indentation rules (Python)
-;   - semicolons and braces (C, Java, Rust)
-;   - operator precedence (everything)
-;   - macro hygiene (it's automatic)
-; It just needs to produce balanced brackets with valid symbols.
-```
-
-But Loon goes further than just being easy to generate. It has *language-level primitives* for AI-assisted programming.
+Loon is designed from the ground up to be the best language for writing AI-powered programs — and the best language for AI to write programs *in*.
 
 #### `[ai ...]` — Compile-Time Code Generation
 
 ```loon
-; Generate a function at compile time using an LLM:
 [sig celsius-to-fahrenheit : f64 → f64]
 [ai defn celsius-to-fahrenheit [c]
   "Convert Celsius to Fahrenheit"]
-; The compiler sends the sig + docstring to an LLM,
-; receives an implementation, type-checks it, and compiles it.
-; If it doesn't type-check, the compiler retries (up to 3x) then errors.
-
-; Generate a type from a description:
-[ai type HttpStatus
-  "Standard HTTP status codes as an enum with variants like Ok, NotFound, etc."]
-
-; Generate a trait implementation:
-[ai impl Display HttpStatus
-  "Format status codes as 'CODE MESSAGE', e.g. '200 OK'"]
 ```
 
-**Crucially:** `[ai ...]` blocks are **verified by the compiler**. The LLM proposes, the type system disposes. Generated code must pass type checking, ownership checking, and capability checking before it's accepted. The LLM is a code generator, not a trusted authority.
+The compiler sends the sig + docstring to an LLM, receives an implementation, type-checks it, and compiles it. If it doesn't type-check, retries up to 3x then errors.
 
 ```sh
 $ loon build
   [ai] Generating celsius-to-fahrenheit... ✓ (type-checked, 1 attempt)
-  [ai] Generating HttpStatus... ✓ (type-checked, 2 attempts — first had duplicate variant)
   Compiled main.wasm (1.2KB)
 ```
 
-Generated code is cached by its prompt hash + model version. Rebuilds don't re-query the LLM unless the prompt changes. `loon build --offline` refuses to call any LLM and uses only cached generations.
+**Crucially:** `[ai ...]` blocks are **verified by the compiler**. The LLM proposes, the type system disposes.
 
-#### `[agent ...]` — Agent Loops as a Language Primitive
+Generated code is cached by prompt hash + model version. `loon build --offline` uses only cached generations. **Reproducible builds require `--offline`** — the `loon.lock` file pins cached AI generations alongside dependency hashes.
+
+#### `[agent ...]` — Agent Loops as a Primitive
 
 ```loon
 [defn research-agent [question] / {AI Net}
   [agent
-    :system "You are a research assistant. Answer questions using web search."
+    :system "You are a research assistant."
     :tools [web-search summarize]
     :max-turns 10
     :prompt question]]
 
-; The tools are just normal Loon functions — #[tool] auto-generates schemas from inferred types:
-[#[tool "Search the web for a query"]
+; #[tool] auto-generates a JSON schema from the inferred type:
+[#[tool "Search the web"]
  defn web-search [query] / {Net}
   [http.get [str "https://api.search.io?q=" [url-encode query]]]]
-
-[#[tool "Summarize a long text"]
- defn summarize [text] / {AI}
-  [ai.complete [str "Summarize this:\n" text]]]
 ```
 
-**The `#[tool]` attribute** auto-generates a JSON schema from the function's type signature. No manual schema writing. No SDK. The type system *is* the tool specification.
-
 **Agent features:**
-- **Tool type safety.** If a tool returns `Result`, the agent runtime handles errors automatically. If a tool requires `Net` capability, the agent must have that capability granted.
-- **Observability.** Every agent turn is logged as structured data. `[agent-trace result]` returns the full chain of reasoning, tool calls, and responses.
-- **Deterministic replay.** Agent traces are serializable. `[replay trace]` re-executes an agent run with the same tool responses but a different system prompt — for testing, debugging, and evaluation.
-- **Composable.** Agents can call other agents. An orchestrator agent can delegate to specialist agents, each with different tools and capabilities.
+- **Tool type safety.** The type system *is* the tool specification. No manual schemas.
+- **Observability.** `[agent-trace result]` returns the full chain of reasoning and tool calls.
+- **Deterministic replay.** `[replay trace]` re-executes with same tool responses but different prompt.
+- **Composable.** Agents call agents. Orchestrators delegate to specialists.
 
 #### Structured Output — Types as Schemas
 
@@ -1343,67 +1056,41 @@ Generated code is cached by its prompt hash + model version. Rebuilds don't re-q
   [cons [Vec String]]
   [summary String]]
 
-; Ask an LLM to produce a typed value — the type is inferred from context:
-[let review [sig MovieReview] [ai.extract "Review the movie Dune Part 2"]]
-
-; The LLM's output is parsed and validated against the Loon type.
-; Fields are type-checked. Missing fields are caught. Extra fields are dropped.
-review.rating  ; 8.5 — it's a real f64, not a string
+[let review [ai.extract MovieReview "Review the movie Dune Part 2"]]
+review.rating  ; 8.5 — a real f64, not a string
 ```
 
-This works because Loon types map cleanly to JSON Schema (algebraic types → discriminated unions, Option → nullable, etc.). The compiler generates schemas from types automatically.
+Loon types map cleanly to JSON Schema. The compiler generates schemas from types automatically.
 
-#### Semantic Functions — LLM Calls That Look Like Functions
+#### Semantic Functions
 
 ```loon
 [sig classify-sentiment : String → Sentiment]
 [semantic defn classify-sentiment [text]
   "Classify the sentiment of the given text."]
 
-[sig translate : String → Language → String]
-[semantic defn translate [text lang]
-  "Translate the text to the target language. Preserve tone and idiom."]
-
-[sig extract-entities : String → [Vec Entity]]
-[semantic defn extract-entities [text]
-  "Extract named entities (people, places, organizations) from the text."]
-
-; Use them like any other function:
+; Use like any other function:
 [|> [read-file "feedback.txt"]?
   [lines]
-  [map [fn [line] {
-    :text line
-    :sentiment [classify-sentiment line]
-    :entities [extract-entities line]}]]
-  [filter [fn [r] [= r.sentiment Sentiment.Negative]]]
-  [each [fn [r] [println [str "Negative: " r.text]]]]]
+  [map [fn [line] {:text line :sentiment [classify-sentiment line]}]]
+  [filter [fn [r] [= r.sentiment Sentiment.Negative]]]]
 ```
 
-`[semantic defn ...]` declares a function whose implementation *is* a natural language prompt. The return type constrains the LLM's output. The function is called like any other — you can `map` it, `filter` with it, compose it. But under the hood, it's an LLM call with structured output extraction.
-
-**Key design decisions:**
-- Semantic functions are **marked in the type system** with an `AI` effect — you always know what's hitting an LLM and what's pure computation.
-- They're **cacheable** — same input → same output (configurable, opt-out for non-deterministic use cases).
-- They **compose with the pipe operator** and all other Loon features. No special syntax for "AI code" vs "normal code."
-- They **respect capabilities** — a semantic function that needs `Net` to call an API must declare it.
+`[semantic defn ...]` declares a function whose implementation is a natural language prompt. The return type constrains the LLM's output. Marked with the `AI` effect — you always know what's hitting an LLM.
 
 #### Sandboxed Code Execution
 
-The killer combination: LLMs generate Loon code + the capability system sandboxes it + WASM isolates it.
+The killer combination: LLMs generate Loon code + capability system sandboxes it + WASM isolates it.
 
 ```loon
-; Let an LLM write and execute code, safely:
-[let code [ai.complete "Write a Loon function that sorts a list of numbers"]]
-[let ast [parse code]?]                        ; parse to AST
-[let typed [typecheck ast]?]                   ; must type-check
-[let checked [capability-check ast #{}]]       ; grant NO capabilities
-[let result [eval-sandboxed checked #[3 1 4 1 5]]]  ; run in WASM sandbox
+[let code [ai.complete "Write a function that sorts numbers"]]
+[let ast [parse code]?]
+[let checked [capability-check ast #{}]]    ; grant NO capabilities
+[let result [eval-sandboxed checked #[3 1 4 1 5]]]
 ; => #[1 1 3 4 5]
 ```
 
-An LLM can propose code. The code is parsed, type-checked, capability-checked (you control exactly what it can do), and executed in a WASM sandbox. If the LLM generates code that tries to read the filesystem, it fails at capability checking — before it ever runs.
-
-**This is Loon's superpower for agentic AI:** the language itself provides the guardrails. No separate sandbox runtime. No container overhead. The type system and capability system *are* the sandbox.
+The language itself provides the guardrails. No separate sandbox. The type system and capability system *are* the sandbox.
 
 #### Model Configuration
 
@@ -1413,42 +1100,129 @@ An LLM can propose code. The code is parsed, type-checked, capability-checked (y
 default-model = "claude-sonnet"
 compile-model = "claude-haiku"     # fast model for [ai defn] blocks
 agent-model = "claude-opus"        # capable model for [agent] blocks
-cache = true                        # cache LLM responses by prompt hash
-offline = false                     # if true, only use cached responses
+cache = true
+offline = false
 ```
+
+---
+
+## 13. Decentralized Package Manager ("Pond")
+
+### Manifest: `loon.toml`
+
+```toml
+[package]
+name = "my-app"
+version = "0.1.0"
+
+[dependencies]
+http = { hash = "sha256:a1b2c3d4...", source = "ipfs" }
+json = { hash = "sha256:e5f6g7h8..." }
+
+[capabilities]
+net = true
+fs.read = ["./data/*"]
+```
+
+`loon.toml` is the canonical location for dependencies. No in-source `[dep ...]` form — dependencies are configuration, not code.
+
+### Content-Addressed Identity
+
+A package's identity is the hash of its source tree. Not a name, not a version — the hash.
+
+- Names are vanity — convenient but not authoritative
+- The hash is the truth — you always get exactly what you asked for
+- No squatting, no typosquatting, no supply chain attacks via name confusion
+
+### Distribution
+
+1. **IPFS** (default) — fully decentralized, anyone can pin
+2. **HTTP** — any server can host packages at their hash
+3. **Git** — pin to a specific commit hash
+4. **Pond Index** — optional discovery layer, maps names → hashes
+
+### Commands
+
+```sh
+pond add io.github.alice/http     # resolve name → hash, add to loon.toml
+pond audit                        # type-check all deps against their interfaces
+pond audit --capabilities         # report what each dep requires
+pond verify                       # verify all dep hashes match content
+pond publish                      # hash source, push to IPFS + index
+```
+
+### Reproducible Builds
+
+Deps are hash-pinned. WASM is a deterministic target. AI-generated code is cached and pinned in `loon.lock`. Same source + same lock file = same binary, always. `loon build --offline` guarantees full reproducibility.
+
+---
+
+## 14. Example Programs
+
+### Hello World
 
 ```loon
-; Override per-call:
-[ai.with-model "claude-opus"
-  [sig complex-algorithm : [Vec f64] → [Vec f64]]
-  [ai defn complex-algorithm [data]
-    "Implement a fast Fourier transform"]]
+[defn main []
+  [println "hello, world!"]]
+```
+
+### Fibonacci
+
+```loon
+[defn fib [n]
+  [match n
+    0 => 0
+    1 => 1
+    n => [+ [fib [- n 1]] [fib [- n 2]]]]]
+
+[defn main []
+  [|> [range 0 10]
+    [map fib]
+    [each [fn [x] [println x]]]]]
+```
+
+### HTTP Server
+
+```loon
+[use std.http {Server Response}]
+
+[defn handle [req]
+  [match req.path
+    "/"      => [Response.ok "welcome to loon!"]
+    "/ping"  => [Response.ok "pong"]
+    _        => [Response.not-found "404"]]]
+
+[defn main [] / {Async IO}
+  [let server [Server.bind "0.0.0.0:8080"]]
+  [println "listening on :8080"]
+  [Async.await [server.serve handle]]]
+```
+
+### CLI Tool: Word Counter
+
+```loon
+[use std.io {stdin read-to-string}]
+[use std.collections {HashMap}]
+
+[defn count-words [text]
+  [|> [split text " \n\t"]
+    [filter [fn [w] [not [empty? w]]]]
+    [fold [HashMap.new] [fn [acc word]
+      [update acc word [fn [n] [+ [or n 0] 1]]]]]]]
+
+[defn main [] / {IO Fail}
+  [let text [read-to-string stdin]?]
+  [let counts [count-words text]]
+  [|> [entries counts]
+    [sort-by [fn [[_ n]] n] :desc]
+    [take 10]
+    [each [fn [[word n]]
+      [println [str word ": " n]]]]]]
 ```
 
 ---
 
-## 15. Rust Safety Feature Parity
-
-Every safety guarantee Rust provides, Loon provides:
-
-| Rust Feature | Loon Equivalent |
-|---|---|
-| Ownership | Same model, more inference |
-| Borrowing & lifetimes | Same model, lifetimes almost always elided |
-| No null | `Option` / `Result` only |
-| Pattern matching exhaustiveness | Enforced by compiler |
-| `Send` / `Sync` | Inferred from ownership (values can only be sent if uniquely owned) |
-| No data races | Ownership prevents shared mutable state |
-| `unsafe` | `[unsafe ...]` blocks, same semantics — required for FFI and raw memory |
-| Algebraic types | `[type ...]` with full pattern matching |
-| Traits | `[trait ...]` / `[impl ...]` |
-| `Result` / `?` operator | Same |
-| `Drop` | `[trait Drop [fn drop [&mut self]]]` |
-| Const generics | `[defn array [T n : usize] ...]` |
-
----
-
-## 16. Syntax Comparison: Loon vs. Others
+## 15. Syntax Comparison
 
 ### Fibonacci — Four Languages
 
@@ -1481,22 +1255,11 @@ fn fib(n: u64) -> u64 {
 }
 ```
 
-**Zig:**
-```zig
-fn fib(n: u64) u64 {
-    return switch (n) {
-        0 => 0,
-        1 => 1,
-        else => fib(n - 1) + fib(n - 2),
-    };
-}
-```
-
 ### HTTP Handler — Loon vs. Rust
 
 **Loon:**
 ```loon
-[async defn handle [req]
+[defn handle [req]
   [match req.method
     :GET  => [Response.ok [get-page req.path]]
     :POST => [Response.ok [create-item [req.json]?]]
@@ -1514,19 +1277,37 @@ async fn handle(req: Request) -> Response {
 }
 ```
 
-Loon is radically more concise — zero type annotations — while retaining the same type safety. The types are there. You just don't have to write them.
+Loon is radically more concise — zero type annotations — while retaining the same type safety.
+
+---
+
+## 16. Rust Safety Feature Parity
+
+| Rust Feature | Loon Equivalent |
+|---|---|
+| Ownership | Same model, fully inferred |
+| Borrowing & lifetimes | Same model, fully inferred, `[sig]` for rare ambiguity |
+| No null | `Option` / `Result` only |
+| Pattern matching exhaustiveness | Enforced by compiler |
+| `Send` / `Sync` | Inferred from ownership |
+| No data races | Ownership prevents shared mutable state |
+| `unsafe` | `[unsafe ...]` blocks, same semantics |
+| Algebraic types | `[type ...]` with full pattern matching |
+| Traits | `[trait ...]` / `[impl ...]` |
+| `Result` / `?` | Same (sugar for `Fail` effect) |
+| `Drop` | `[trait Drop [fn drop [self]]]` |
 
 ---
 
 ## 17. Next Steps
 
-1. **Finalize syntax choice** — gather feedback on Style A vs. Style B from this design doc
-2. **Formal grammar** — write a PEG or EBNF grammar for the chosen syntax
-3. **Rust implementation scaffold** — lexer, parser, AST types
-4. **Type checker** — Hindley-Milner inference engine
-5. **Ownership checker** — borrow checker inspired by Rust's but with more inference
-6. **WASM codegen** — emit WASM bytecode
-7. **REPL** — persistent, image-based
+1. **Formal grammar** — PEG or EBNF for the bracket syntax
+2. **Rust implementation scaffold** — lexer, parser, AST types
+3. **Type checker** — Hindley-Milner inference engine
+4. **Effect checker** — effect inference and handler verification
+5. **Ownership checker** — borrow checker with aggressive inference
+6. **Tree-walking interpreter** — for the REPL
+7. **WASM codegen** — emit WASM bytecode
 8. **Pond** — package manager MVP (local-only first, then IPFS)
 
 ---
