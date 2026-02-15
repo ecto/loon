@@ -18,12 +18,14 @@
 ; Strings become Txt nodes, VNodes pass through
 
 [defn coerce-child [c]
-  [match c
-    [El tag props children] => [El tag props children]
-    [Txt s] => [Txt s]
-    [Fragment children] => [Fragment children]
-    Empty => Empty
-    _ => [Txt [str c]]]]
+  [if [vec? c]
+    [Fragment [coerce-children c]]
+    [match c
+      [El tag props children] => [El tag props children]
+      [Txt s] => [Txt s]
+      [Fragment children] => [Fragment children]
+      Empty => Empty
+      _ => [Txt [str c]]]]]
 
 [defn coerce-children [children]
   [map [fn [c] [coerce-child c]] children]]

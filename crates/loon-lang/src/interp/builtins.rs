@@ -760,6 +760,10 @@ pub fn register_builtins(env: &mut Env) {
         Ok(Value::Bool(matches!(&args[0], Value::Map(_))))
     });
 
+    builtin!(env, "vec?", |_, args: &[Value]| {
+        Ok(Value::Bool(matches!(&args[0], Value::Vec(_))))
+    });
+
     // --- Cons (prepend to vec) ---
 
     builtin!(env, "cons", |_, args: &[Value]| {

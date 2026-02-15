@@ -602,16 +602,28 @@ fn pattern_matches(
         ExprKind::Keyword(k) => Ok(value == &Value::Keyword(k.clone())),
         // Variable binding or constructor name
         ExprKind::Symbol(s) => {
-            // Check if it's an ADT constructor with no fields
-            if let Some(Value::Fn(lf)) = env.get(s) {
-                if let Some(ref name) = lf.name {
-                    if name.starts_with(char::is_uppercase) && lf.clauses[0].0.is_empty() {
-                        // Nullary constructor — match by tag
-                        if let Value::Adt(tag, _) = value {
-                            return Ok(tag == s);
+            // Check if it's a nullary ADT constructor
+            if let Some(val) = env.get(s) {
+                match val {
+                    // Nullary constructor stored directly as Adt value
+                    Value::Adt(ref tag, ref fields) if fields.is_empty() && tag == s => {
+                        if let Value::Adt(val_tag, _) = value {
+                            return Ok(val_tag == s);
                         }
                         return Ok(false);
                     }
+                    // Nullary constructor stored as Fn
+                    Value::Fn(ref lf) => {
+                        if let Some(ref name) = lf.name {
+                            if name.starts_with(char::is_uppercase) && lf.clauses[0].0.is_empty() {
+                                if let Value::Adt(tag, _) = value {
+                                    return Ok(tag == s);
+                                }
+                                return Ok(false);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
             // Otherwise it's a variable binding
