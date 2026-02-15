@@ -1,8 +1,15 @@
-use super::value::Value;
+use super::value::{ChannelId, Value};
 use super::{call_fn, err, get_global_env, Env, InterpError};
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 type IResult = Result<Value, InterpError>;
+
+thread_local! {
+    static CHANNELS: RefCell<HashMap<ChannelId, VecDeque<Value>>> = RefCell::new(HashMap::new());
+    static NEXT_CHAN: Cell<ChannelId> = const { Cell::new(0) };
+}
 
 pub fn register_builtins(env: &mut Env) {
     macro_rules! builtin {
@@ -224,18 +231,28 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "nth", |_, args: &[Value]| {
-        match (&args[0], &args[1]) {
-            (Value::Vec(v), Value::Int(i)) => {
-                let idx = *i as usize;
-                if idx < v.len() {
-                    Ok(v[idx].clone())
-                } else if args.len() > 2 {
-                    Ok(args[2].clone())
-                } else {
-                    Err(err(format!("index {i} out of bounds (len {})", v.len())))
-                }
+        let items = match &args[0] {
+            Value::Vec(v) => v,
+            Value::Tuple(v) => v,
+            _ => return Err(err(format!(
+                "nth requires a vector/tuple and index, got {} and {}",
+                args[0], args[1]
+            ))),
+        };
+        if let Value::Int(i) = &args[1] {
+            let idx = *i as usize;
+            if idx < items.len() {
+                Ok(items[idx].clone())
+            } else if args.len() > 2 {
+                Ok(args[2].clone())
+            } else {
+                Err(err(format!("index {i} out of bounds (len {})", items.len())))
             }
-            _ => Err(err("nth requires a vector and index")),
+        } else {
+            Err(err(format!(
+                "nth requires a vector/tuple and index, got {} and {}",
+                args[0], args[1]
+            )))
         }
     });
 
@@ -729,6 +746,33 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
+    // --- Type predicates ---
+
+    builtin!(env, "name", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Keyword(k) => Ok(Value::Str(k.clone())),
+            Value::Str(s) => Ok(Value::Str(s.clone())),
+            _ => Err(err("name requires a keyword or string")),
+        }
+    });
+
+    builtin!(env, "map?", |_, args: &[Value]| {
+        Ok(Value::Bool(matches!(&args[0], Value::Map(_))))
+    });
+
+    // --- Cons (prepend to vec) ---
+
+    builtin!(env, "cons", |_, args: &[Value]| {
+        match &args[1] {
+            Value::Vec(v) => {
+                let mut new = vec![args[0].clone()];
+                new.extend(v.iter().cloned());
+                Ok(Value::Vec(new))
+            }
+            _ => Err(err("cons: second arg must be a vec")),
+        }
+    });
+
     // --- Map builtins ---
 
     builtin!(env, "keys", |_, args: &[Value]| {
@@ -778,6 +822,58 @@ pub fn register_builtins(env: &mut Env) {
                 Ok(Value::Map(filtered))
             }
             _ => Err(err("remove requires a map and key")),
+        }
+    });
+
+    // --- Channel builtins ---
+
+    builtin!(env, "channel", |_, _args: &[Value]| {
+        let id = NEXT_CHAN.with(|c| {
+            let id = c.get();
+            c.set(id + 1);
+            id
+        });
+        CHANNELS.with(|ch| {
+            ch.borrow_mut().insert(id, VecDeque::new());
+        });
+        Ok(Value::Tuple(vec![Value::ChannelTx(id), Value::ChannelRx(id)]))
+    });
+
+    builtin!(env, "send", |_, args: &[Value]| {
+        if let Value::ChannelTx(id) = &args[0] {
+            let id = *id;
+            let val = args.get(1).cloned().unwrap_or(Value::Unit);
+            CHANNELS.with(|ch| {
+                let mut channels = ch.borrow_mut();
+                if let Some(buf) = channels.get_mut(&id) {
+                    buf.push_back(val);
+                    Ok(Value::Unit)
+                } else {
+                    Err(err(format!("channel {id} does not exist")))
+                }
+            })
+        } else {
+            Err(err("send requires a channel tx"))
+        }
+    });
+
+    builtin!(env, "recv", |_, args: &[Value]| {
+        if let Value::ChannelRx(id) = &args[0] {
+            let id = *id;
+            CHANNELS.with(|ch| {
+                let mut channels = ch.borrow_mut();
+                if let Some(buf) = channels.get_mut(&id) {
+                    if let Some(val) = buf.pop_front() {
+                        Ok(val)
+                    } else {
+                        Err(err("recv on empty channel"))
+                    }
+                } else {
+                    Err(err(format!("channel {id} does not exist")))
+                }
+            })
+        } else {
+            Err(err("recv requires a channel rx"))
         }
     });
 }

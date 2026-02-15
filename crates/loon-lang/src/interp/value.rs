@@ -6,6 +6,9 @@ use super::InterpError;
 /// Opaque handle to a DOM node (index into JS-side node table).
 pub type DomHandle = u32;
 
+/// Channel identifier.
+pub type ChannelId = u32;
+
 pub type BuiltinFn = Arc<dyn Fn(&str, &[Value]) -> Result<Value, InterpError> + Send + Sync>;
 
 /// A function parameter: simple name or destructuring pattern.
@@ -53,6 +56,8 @@ pub enum Value {
     Builtin(String, BuiltinFn),
     Adt(String, Vec<Value>),
     DomNode(DomHandle),
+    ChannelTx(ChannelId),
+    ChannelRx(ChannelId),
     Unit,
 }
 
@@ -138,6 +143,8 @@ impl fmt::Display for Value {
                 write!(f, "]")
             }
             Value::DomNode(h) => write!(f, "<dom-node {h}>"),
+            Value::ChannelTx(id) => write!(f, "<channel-tx {id}>"),
+            Value::ChannelRx(id) => write!(f, "<channel-rx {id}>"),
             Value::Unit => write!(f, "()"),
         }
     }
@@ -163,6 +170,8 @@ impl PartialEq for Value {
             (Value::Tuple(a), Value::Tuple(b)) => a == b,
             (Value::Adt(a, af), Value::Adt(b, bf)) => a == b && af == bf,
             (Value::DomNode(a), Value::DomNode(b)) => a == b,
+            (Value::ChannelTx(a), Value::ChannelTx(b)) => a == b,
+            (Value::ChannelRx(a), Value::ChannelRx(b)) => a == b,
             (Value::Unit, Value::Unit) => true,
             _ => false,
         }

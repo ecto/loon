@@ -413,6 +413,107 @@ fn map_builtins() {
 }
 
 #[test]
+fn question_ok() {
+    assert_eq!(
+        run("[Ok 42]?"),
+        Value::Int(42)
+    );
+}
+
+#[test]
+fn question_err_caught() {
+    assert_eq!(
+        run(r#"
+            [handle [Err "oops"]?
+              [Fail.fail msg] => [str "caught: " msg]]
+        "#),
+        Value::Str("caught: oops".to_string())
+    );
+}
+
+#[test]
+fn io_println_at_top_level() {
+    // IO.println at top level should work via built-in handler
+    let result = run(r#"[IO.println "hello from IO"]"#);
+    assert_eq!(result, Value::Unit);
+}
+
+#[test]
+fn io_read_file_missing_fails() {
+    // IO.read-file on missing file: the built-in handler converts it to Fail.fail,
+    // which propagates as an unhandled effect error at the top level
+    let exprs = parse(r#"[IO.read-file "/nonexistent/path/foo.txt"]"#).expect("parse failed");
+    let result = eval_program(&exprs);
+    assert!(result.is_err(), "should fail for missing file");
+    let e = result.unwrap_err();
+    assert!(e.performed_effect.is_some(), "should be a Fail effect");
+    let performed = e.performed_effect.unwrap();
+    assert_eq!(performed.effect, "Fail");
+    assert_eq!(performed.operation, "fail");
+}
+
+#[test]
+fn io_read_file_mock_handler_still_works() {
+    // Mock handler should still intercept before built-in handler
+    assert_eq!(
+        run(r#"
+            [handle [IO.read-file "test.txt"]
+              [IO.read-file path] => [resume "mock data"]]
+        "#),
+        Value::Str("mock data".to_string())
+    );
+}
+
+#[test]
+fn question_in_defn_propagates_fail() {
+    assert_eq!(
+        run(r#"
+            [defn wrap [x] x]
+            [defn try-it [x] [wrap x]?]
+            [handle [try-it [Err "bad"]]
+              [Fail.fail msg] => [str "got: " msg]]
+        "#),
+        Value::Str("got: bad".to_string())
+    );
+}
+
+#[test]
+fn channel_send_recv() {
+    assert_eq!(
+        run(r#"
+            [let [tx rx] [channel]]
+            [send tx 42]
+            [recv rx]
+        "#),
+        Value::Int(42)
+    );
+}
+
+#[test]
+fn channel_fifo_order() {
+    assert_eq!(
+        run(r#"
+            [let [tx rx] [channel]]
+            [send tx 1]
+            [send tx 2]
+            [send tx 3]
+            [recv rx]
+        "#),
+        Value::Int(1)
+    );
+}
+
+#[test]
+fn channel_recv_empty_errors() {
+    let exprs = parse(r#"
+        [let [tx rx] [channel]]
+        [recv rx]
+    "#).expect("parse failed");
+    let result = eval_program(&exprs);
+    assert!(result.is_err(), "recv on empty should error");
+}
+
+#[test]
 fn module_use() {
     // Write a temp module and import it
     let dir = std::env::temp_dir().join("loon_test_modules");

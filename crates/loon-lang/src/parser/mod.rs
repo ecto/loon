@@ -80,6 +80,18 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+        let expr = self.parse_expr_inner()?;
+        // Postfix ? operator: desugar expr? into
+        // [match expr [Ok __v] => __v [Err __e] => [Fail.fail __e]]
+        if self.peek() == Some(&Token::Question) {
+            let (_, q_span) = self.advance().unwrap();
+            let full_span = expr.span.merge(q_span);
+            return Ok(desugar_question(expr, full_span));
+        }
+        Ok(expr)
+    }
+
+    fn parse_expr_inner(&mut self) -> Result<Expr, ParseError> {
         let Some((tok, span)) = self.advance() else {
             return Err(ParseError {
                 message: "unexpected EOF".to_string(),
@@ -117,7 +129,6 @@ impl<'a> Parser<'a> {
             Token::Slash => Ok(Expr::new(ExprKind::Symbol("/".to_string()), span)),
             Token::FatArrow => Ok(Expr::new(ExprKind::Symbol("=>".to_string()), span)),
             Token::Arrow => Ok(Expr::new(ExprKind::Symbol("->".to_string()), span)),
-            Token::Question => Ok(Expr::new(ExprKind::Symbol("?".to_string()), span)),
 
             // S-expression: [head args...]
             Token::LBracket => {
@@ -217,6 +228,47 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// Desugar `expr?` into `[match expr [Ok __v] => __v [Err __e] => [Fail.fail __e]]`
+fn desugar_question(expr: Expr, span: Span) -> Expr {
+    let ok_var = Expr::new(ExprKind::Symbol("__v".to_string()), span);
+    let err_var = Expr::new(ExprKind::Symbol("__e".to_string()), span);
+    let ok_pattern = Expr::new(
+        ExprKind::List(vec![
+            Expr::new(ExprKind::Symbol("Ok".to_string()), span),
+            Expr::new(ExprKind::Symbol("__v".to_string()), span),
+        ]),
+        span,
+    );
+    let err_pattern = Expr::new(
+        ExprKind::List(vec![
+            Expr::new(ExprKind::Symbol("Err".to_string()), span),
+            Expr::new(ExprKind::Symbol("__e".to_string()), span),
+        ]),
+        span,
+    );
+    let arrow = Expr::new(ExprKind::Symbol("=>".to_string()), span);
+    let fail_call = Expr::new(
+        ExprKind::List(vec![
+            Expr::new(ExprKind::Symbol("Fail.fail".to_string()), span),
+            err_var,
+        ]),
+        span,
+    );
+    Expr::new(
+        ExprKind::List(vec![
+            Expr::new(ExprKind::Symbol("match".to_string()), span),
+            expr,
+            ok_pattern,
+            arrow.clone(),
+            ok_var,
+            err_pattern,
+            arrow,
+            fail_call,
+        ]),
+        span,
+    )
+}
+
 /// Parse a source string into a list of top-level expressions.
 pub fn parse(source: &str) -> Result<Vec<Expr>, ParseError> {
     let mut parser = Parser::new(source)?;
@@ -304,6 +356,19 @@ mod tests {
         let src = r#"[defn load-config [path] / {IO Fail} [IO.read-file path]]"#;
         let exprs = parse(src).unwrap();
         assert_eq!(exprs.len(), 1);
+    }
+
+    #[test]
+    fn parse_question_desugar() {
+        let src = "[Ok 42]?";
+        let exprs = parse(src).unwrap();
+        assert_eq!(exprs.len(), 1);
+        // Should be a match expression
+        if let ExprKind::List(items) = &exprs[0].kind {
+            assert!(matches!(&items[0].kind, ExprKind::Symbol(s) if s == "match"));
+        } else {
+            panic!("expected list (match)");
+        }
     }
 
     #[test]

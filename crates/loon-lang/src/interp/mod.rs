@@ -48,6 +48,68 @@ pub(crate) fn err(msg: impl Into<String>) -> InterpError {
     }
 }
 
+/// Try to handle an effect with a built-in handler (for IO at the top level).
+fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
+    match (performed.effect.as_str(), performed.operation.as_str()) {
+        ("IO", "println") => {
+            let parts: Vec<String> = performed.args.iter().map(|v| v.display_str()).collect();
+            println!("{}", parts.join(" "));
+            Some(Ok(Value::Unit))
+        }
+        ("IO", "read-file") => {
+            if let Some(Value::Str(path)) = performed.args.first() {
+                match std::fs::read_to_string(path) {
+                    Ok(contents) => Some(Ok(Value::Str(contents))),
+                    Err(e) => Some(Err(perform_effect(
+                        "Fail",
+                        "fail",
+                        vec![Value::Str(e.to_string())],
+                    ))),
+                }
+            } else {
+                Some(Err(err("IO.read-file requires a string path")))
+            }
+        }
+        ("IO", "write-file") => {
+            if let (Some(Value::Str(path)), Some(contents)) =
+                (performed.args.first(), performed.args.get(1))
+            {
+                match std::fs::write(path, contents.display_str()) {
+                    Ok(()) => Some(Ok(Value::Unit)),
+                    Err(e) => Some(Err(perform_effect(
+                        "Fail",
+                        "fail",
+                        vec![Value::Str(e.to_string())],
+                    ))),
+                }
+            } else {
+                Some(Err(err("IO.write-file requires a path and contents")))
+            }
+        }
+        ("IO", "read-line") => {
+            let mut line = String::new();
+            match std::io::stdin().read_line(&mut line) {
+                Ok(_) => {
+                    // Trim trailing newline
+                    if line.ends_with('\n') {
+                        line.pop();
+                        if line.ends_with('\r') {
+                            line.pop();
+                        }
+                    }
+                    Some(Ok(Value::Str(line)))
+                }
+                Err(e) => Some(Err(perform_effect(
+                    "Fail",
+                    "fail",
+                    vec![Value::Str(e.to_string())],
+                ))),
+            }
+        }
+        _ => None,
+    }
+}
+
 fn perform_effect(effect: &str, op: &str, args: Vec<Value>) -> InterpError {
     InterpError {
         message: format!("unhandled effect: {effect}.{op}"),
@@ -99,13 +161,36 @@ pub fn eval_program_with_base_dir(exprs: &[Expr], base_dir: Option<&Path>) -> IR
                 }
             }
         }
-        last = eval(expr, &mut env)?;
+        match eval(expr, &mut env) {
+            Ok(val) => last = val,
+            Err(e) => {
+                if let Some(ref performed) = e.performed_effect {
+                    if let Some(result) = try_builtin_handler(performed) {
+                        last = result?;
+                    } else {
+                        return Err(e);
+                    }
+                } else {
+                    return Err(e);
+                }
+            }
+        }
         // Keep global env in sync for apply_value
         sync_global_env(&env);
     }
     // If there's a main function, call it
     if let Some(Value::Fn(main_fn)) = env.get("main") {
-        return call_fn(&main_fn, &[], &mut env);
+        match call_fn(&main_fn, &[], &mut env) {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                if let Some(ref performed) = e.performed_effect {
+                    if let Some(result) = try_builtin_handler(performed) {
+                        return result;
+                    }
+                }
+                return Err(e);
+            }
+        }
     }
     Ok(last)
 }

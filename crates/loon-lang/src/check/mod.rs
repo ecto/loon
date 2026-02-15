@@ -20,6 +20,10 @@ pub struct Checker {
     pub trait_impls: std::collections::HashMap<(String, String), std::collections::HashMap<String, Scheme>>,
     /// Pending [sig] declarations: name → (type, span)
     pub pending_sigs: std::collections::HashMap<String, (Type, Span)>,
+    /// Inferred effects for each function: name → EffectSet
+    pub fn_effects: std::collections::HashMap<String, EffectSet>,
+    /// Effect set of the currently-checked function body
+    current_fn_effects: EffectSet,
 }
 
 impl Checker {
@@ -34,6 +38,8 @@ impl Checker {
             traits: std::collections::HashMap::new(),
             trait_impls: std::collections::HashMap::new(),
             pending_sigs: std::collections::HashMap::new(),
+            fn_effects: std::collections::HashMap::new(),
+            current_fn_effects: EffectSet::empty(),
         };
         checker.register_builtins();
         checker.register_prelude();
@@ -715,6 +721,60 @@ impl Checker {
                 },
             );
         }
+
+        // channel: () → (Tx a, Rx a)
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "channel".to_string(),
+                Scheme {
+                    vars: vec![tva],
+                    ty: Type::Fn(
+                        vec![],
+                        Box::new(Type::Tuple(vec![
+                            Type::Con("Tx".to_string(), vec![Type::Var(tva)]),
+                            Type::Con("Rx".to_string(), vec![Type::Var(tva)]),
+                        ])),
+                    ),
+                },
+            );
+        }
+
+        // send: Tx a → a → ()
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "send".to_string(),
+                Scheme {
+                    vars: vec![tva],
+                    ty: Type::Fn(
+                        vec![
+                            Type::Con("Tx".to_string(), vec![Type::Var(tva)]),
+                            Type::Var(tva),
+                        ],
+                        Box::new(Type::Unit),
+                    ),
+                },
+            );
+        }
+
+        // recv: Rx a → a
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "recv".to_string(),
+                Scheme {
+                    vars: vec![tva],
+                    ty: Type::Fn(
+                        vec![Type::Con("Rx".to_string(), vec![Type::Var(tva)])],
+                        Box::new(Type::Var(tva)),
+                    ),
+                },
+            );
+        }
     }
 
     fn register_prelude(&mut self) {
@@ -868,6 +928,7 @@ impl Checker {
                 "trait" => return self.infer_trait_def(&items[1..]),
                 "impl" => return self.infer_impl_def(&items[1..], span),
                 "sig" => return self.infer_sig(&items[1..], span),
+                "handle" => return self.infer_handle(&items[1..], span),
                 "test" | "pub" | "mut" => {
                     if items.len() > 1 {
                         return self.infer_list(&items[1..], span);
@@ -875,6 +936,18 @@ impl Checker {
                     return Type::Unit;
                 }
                 _ => {}
+            }
+
+            // Check for Effect.op pattern (e.g. IO.read-file)
+            if let Some((effect, _op)) = s.split_once('.') {
+                if effect.starts_with(char::is_uppercase) {
+                    self.current_fn_effects.insert(effect.to_string());
+                    // Infer args but return a fresh type (effect ops have unknown return type)
+                    for a in &items[1..] {
+                        self.infer(a);
+                    }
+                    return self.subst.fresh();
+                }
             }
         }
 
@@ -887,6 +960,14 @@ impl Checker {
         if let Err(e) = unify(&mut self.subst, &func_ty, &expected_fn) {
             self.errors.push(e.with_span(span));
         }
+
+        // Propagate callee effects
+        if let ExprKind::Symbol(callee_name) = &head.kind {
+            if let Some(callee_effects) = self.fn_effects.get(callee_name).cloned() {
+                self.current_fn_effects = self.current_fn_effects.union(&callee_effects);
+            }
+        }
+
         ret
     }
 
@@ -898,6 +979,9 @@ impl Checker {
             ExprKind::Symbol(s) => s.clone(),
             _ => return Type::Unit,
         };
+
+        // Save and reset current_fn_effects
+        let saved_effects = std::mem::replace(&mut self.current_fn_effects, EffectSet::empty());
 
         // Multi-arity check
         if matches!(args[1].kind, ExprKind::Tuple(_)) {
@@ -913,16 +997,25 @@ impl Checker {
                 }
             }
             let scheme = generalize(&self.env, &self.subst, &ret);
-            self.env.set_global(name, scheme);
+            self.env.set_global(name.clone(), scheme);
+            // Store inferred effects and restore
+            let inferred = std::mem::replace(&mut self.current_fn_effects, saved_effects);
+            self.fn_effects.insert(name, inferred);
             return Type::Unit;
         }
 
         // Single-arity
         if let ExprKind::List(params) = &args[1].kind {
+            // Parse effect annotation: / #{IO Fail}
             let mut body_start = 2;
+            let mut declared_effects: Option<EffectSet> = None;
             if body_start < args.len() {
                 if let ExprKind::Symbol(s) = &args[body_start].kind {
                     if s == "/" {
+                        // Next arg should be a set literal #{IO Fail}
+                        if body_start + 1 < args.len() {
+                            declared_effects = Some(self.parse_effect_set(&args[body_start + 1]));
+                        }
                         body_start += 2;
                     }
                 }
@@ -966,10 +1059,121 @@ impl Checker {
                 }
             }
 
+            // Store inferred effects
+            let inferred = std::mem::replace(&mut self.current_fn_effects, saved_effects);
+
+            // Check declared effects if present
+            if let Some(ref declared) = declared_effects {
+                if !inferred.is_subset_of(declared) {
+                    for eff in &inferred.0 {
+                        if !declared.contains(eff) {
+                            self.errors.push(TypeError::at(
+                                format!("function `{name}` performs undeclared effect `{eff}`"),
+                                span,
+                            ));
+                        }
+                    }
+                }
+            }
+
+            self.fn_effects.insert(name.clone(), inferred);
+
             let scheme = generalize(&self.env, &self.subst, &fn_ty);
             self.env.set_global(name, scheme);
+        } else {
+            // Restore effects if params weren't a list
+            self.current_fn_effects = saved_effects;
         }
         Type::Unit
+    }
+
+    fn infer_handle(&mut self, args: &[Expr], _span: Span) -> Type {
+        if args.is_empty() {
+            return Type::Unit;
+        }
+        // Save current effects, infer body
+        let saved_effects = self.current_fn_effects.clone();
+        let body_ty = self.infer(&args[0]);
+        let body_effects = self.current_fn_effects.clone();
+
+        // Parse handler patterns to find handled effects
+        let mut handled = EffectSet::empty();
+        let handler_args = &args[1..];
+        let mut i = 0;
+        while i < handler_args.len() {
+            if let ExprKind::List(pattern) = &handler_args[i].kind {
+                if !pattern.is_empty() {
+                    if let ExprKind::Symbol(qualified) = &pattern[0].kind {
+                        if let Some((effect, _op)) = qualified.split_once('.') {
+                            if effect.starts_with(char::is_uppercase) {
+                                handled.insert(effect.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            // Skip => and body
+            if i + 2 < handler_args.len() {
+                if let ExprKind::Symbol(arrow) = &handler_args[i + 1].kind {
+                    if arrow == "=>" {
+                        // Bind handler params and resume in scope for handler body
+                        self.env.push_scope();
+                        if let ExprKind::List(pattern) = &handler_args[i].kind {
+                            for p in &pattern[1..] {
+                                if let ExprKind::Symbol(name) = &p.kind {
+                                    let t = self.subst.fresh();
+                                    self.env.set(name.clone(), Scheme::mono(t));
+                                }
+                            }
+                        }
+                        // resume: a -> a (one-shot continuation)
+                        let resume_arg = self.subst.fresh();
+                        self.env.set(
+                            "resume".to_string(),
+                            Scheme::mono(Type::Fn(
+                                vec![resume_arg.clone()],
+                                Box::new(resume_arg),
+                            )),
+                        );
+                        self.infer(&handler_args[i + 2]);
+                        self.env.pop_scope();
+                        i += 3;
+                        continue;
+                    }
+                }
+            }
+            i += 1;
+        }
+
+        // handle expression's effects = body_effects - handled
+        self.current_fn_effects = saved_effects.union(&body_effects.subtract(&handled));
+        body_ty
+    }
+
+    fn parse_effect_set(&self, expr: &Expr) -> EffectSet {
+        let mut effects = EffectSet::empty();
+        match &expr.kind {
+            ExprKind::Set(items) => {
+                for item in items {
+                    if let ExprKind::Symbol(name) = &item.kind {
+                        effects.insert(name.clone());
+                    }
+                }
+            }
+            // Also support {IO Fail} parsed as a map (parser quirk)
+            ExprKind::Map(pairs) => {
+                for (k, v) in pairs {
+                    if let ExprKind::Symbol(name) = &k.kind {
+                        effects.insert(name.clone());
+                    }
+                    if let ExprKind::Symbol(name) = &v.kind {
+                        effects.insert(name.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+        effects
     }
 
     fn infer_fn_clause(&mut self, params_expr: &Expr, body: &[Expr]) -> Type {
@@ -1074,14 +1278,17 @@ impl Checker {
         let mut i = 0;
         let mut covered_ctors: Vec<String> = Vec::new();
         let mut has_wildcard = false;
+        let mut last_pattern: Option<&Expr> = None;
         while i < arms.len() {
             match &arms[i].kind {
-                ExprKind::Symbol(s) if s == "_" => has_wildcard = true,
+                ExprKind::Symbol(s) if s == "_" => { has_wildcard = true; last_pattern = Some(&arms[i]); }
                 ExprKind::Symbol(s) if !s.starts_with(char::is_uppercase) && s != "=>" => {
                     has_wildcard = true;
+                    last_pattern = Some(&arms[i]);
                 }
                 ExprKind::Symbol(s) if s.starts_with(char::is_uppercase) => {
                     covered_ctors.push(s.clone());
+                    last_pattern = Some(&arms[i]);
                 }
                 ExprKind::List(items) if !items.is_empty() => {
                     if let ExprKind::Symbol(s) = &items[0].kind {
@@ -1089,14 +1296,26 @@ impl Checker {
                             covered_ctors.push(s.clone());
                         }
                     }
+                    last_pattern = Some(&arms[i]);
                 }
-                _ => {}
+                _ => {
+                    // Could be a literal or other pattern
+                    if !matches!(&arms[i].kind, ExprKind::Symbol(s) if s == "=>") {
+                        last_pattern = Some(&arms[i]);
+                    }
+                }
             }
 
             if let ExprKind::Symbol(s) = &arms[i].kind {
                 if s == "=>"
                     && i + 1 < arms.len() {
+                        // Bind pattern variables in a new scope for the body
+                        self.env.push_scope();
+                        if let Some(pat) = last_pattern.take() {
+                            self.bind_pattern_vars(pat, &scrutinee_ty);
+                        }
                         let body_ty = self.infer(&arms[i + 1]);
+                        self.env.pop_scope();
                         if let Err(e) = unify(&mut self.subst, &result_ty, &body_ty) {
                             self.errors.push(e.with_span(arms[i + 1].span));
                         }
@@ -1568,6 +1787,27 @@ impl Checker {
         }
     }
 
+    /// Bind variables from a match pattern into the current scope.
+    fn bind_pattern_vars(&mut self, pattern: &Expr, _scrutinee_ty: &Type) {
+        match &pattern.kind {
+            ExprKind::Symbol(s) if s != "_" && s != "=>" && !s.starts_with(char::is_uppercase) => {
+                let t = self.subst.fresh();
+                self.env.set(s.clone(), Scheme::mono(t));
+            }
+            ExprKind::List(items) if !items.is_empty() => {
+                // Constructor pattern: [Ok x] — bind the field vars
+                if let ExprKind::Symbol(ctor) = &items[0].kind {
+                    if ctor.starts_with(char::is_uppercase) {
+                        for field in &items[1..] {
+                            self.bind_pattern_vars(field, _scrutinee_ty);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn name_to_type(&self, name: &str) -> Type {
         match name {
             "i64" | "Int" => Type::Int,
@@ -1780,5 +2020,91 @@ mod tests {
         let (ty, errors) = infer_type(r#"[= "a" "b"]"#);
         assert!(errors.is_empty(), "errors: {:?}", errors);
         assert_eq!(ty, Type::Bool);
+    }
+
+    // --- Effect inference tests ---
+
+    fn infer_effects(src: &str) -> (std::collections::HashMap<String, EffectSet>, Vec<TypeError>) {
+        let exprs = parse(src).unwrap();
+        let mut checker = Checker::new();
+        for expr in &exprs {
+            checker.infer(expr);
+        }
+        let errors = std::mem::take(&mut checker.errors);
+        (checker.fn_effects, errors)
+    }
+
+    #[test]
+    fn effect_infer_io_read_file() {
+        let (effects, errors) = infer_effects(r#"[defn load [p] [IO.read-file p]]"#);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let load_effects = effects.get("load").unwrap();
+        assert!(load_effects.contains("IO"), "load should have IO effect");
+    }
+
+    #[test]
+    fn effect_propagation() {
+        let (effects, errors) = infer_effects(r#"
+            [defn load [p] [IO.read-file p]]
+            [defn main [] [load "x"]]
+        "#);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let main_effects = effects.get("main").unwrap();
+        assert!(main_effects.contains("IO"), "main should have IO effect via propagation");
+    }
+
+    #[test]
+    fn effect_handle_subtracts() {
+        let (effects, errors) = infer_effects(r#"
+            [defn safe []
+              [handle [IO.read-file "x"]
+                [IO.read-file p] => [resume "y"]]]
+        "#);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let safe_effects = effects.get("safe").unwrap();
+        assert!(!safe_effects.contains("IO"), "handle should subtract IO effect");
+    }
+
+    #[test]
+    fn effect_annotation_passes() {
+        let errors = check_errors(r#"
+            [defn load [path] / #{IO} [IO.read-file path]]
+        "#);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    #[test]
+    fn effect_annotation_extra_ok() {
+        let errors = check_errors(r#"
+            [defn load [path] / #{IO Fail} [IO.read-file path]]
+        "#);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    #[test]
+    fn effect_annotation_missing_errors() {
+        let errors = check_errors(r#"
+            [defn load [path] / #{Fail} [IO.read-file path]]
+        "#);
+        assert!(!errors.is_empty(), "should error for undeclared IO effect");
+        assert!(errors[0].message.contains("undeclared effect"), "error: {}", errors[0].message);
+    }
+
+    #[test]
+    fn effect_question_infers_fail() {
+        let (effects, errors) = infer_effects(r#"
+            [defn try-it [x] [do x]?]
+        "#);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let eff = effects.get("try-it").unwrap();
+        assert!(eff.contains("Fail"), "? should infer Fail effect");
+    }
+
+    #[test]
+    fn effect_annotation_pure_passes() {
+        let errors = check_errors(r#"
+            [defn pure [x] / #{} [+ x 1]]
+        "#);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
     }
 }

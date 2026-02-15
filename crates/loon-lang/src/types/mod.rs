@@ -50,6 +50,22 @@ impl EffectSet {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.0.contains(name)
+    }
+
+    pub fn subtract(&self, other: &EffectSet) -> Self {
+        Self(self.0.difference(&other.0).cloned().collect())
+    }
+
+    pub fn is_subset_of(&self, other: &EffectSet) -> bool {
+        self.0.is_subset(&other.0)
+    }
+
+    pub fn insert(&mut self, name: String) {
+        self.0.insert(name);
+    }
 }
 
 impl fmt::Display for Type {
