@@ -1,0 +1,12 @@
+[package]
+name = "loon-wasm"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+loon-lang = { path = "../loon-lang" }
+wasm-bindgen = "0.2"
+js-sys = "0.3"

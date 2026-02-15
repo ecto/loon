@@ -1,0 +1,79 @@
+; roadmap.loon — Roadmap page
+
+[defn rm-item [txt]
+  [li-el {} txt]]
+
+[defn rm-phase [title status & items]
+  [let cls [str "roadmap-phase"
+    [if [= status "Done"] " roadmap-done"
+      [if [= status "In Progress"] " roadmap-current" ""]]]]
+  [div {:class cls}
+    [h2 {} title]
+    [if [not [= status ""]]
+      [span {:class "roadmap-status"} status]
+      Empty]
+    [ul-el {} [|> items [map [fn [txt] [rm-item txt]]]]]]]
+
+[defn roadmap-page []
+  [div {:class "page"}
+    [main-el {:class "section"}
+      [h1 {} "Roadmap"]
+      [p {:class "section-subtitle"} "Where Loon is headed. Built in the open."]
+
+      [rm-phase "v0.1 — Foundation" "Done"
+        "Lexer and parser (square-bracket s-expressions)"
+        "Tree-walking interpreter with 50+ builtins"
+        "Hindley-Milner type inference"
+        "Ownership checker (inferred, no annotations)"
+        "Algebraic effects (declare, perform, handle)"
+        "REPL with time travel and forking"
+        "Basic WASM codegen"
+        "CLI: run, check, build, test, repl"]
+
+      [rm-phase "v0.2 — Ergonomics" "Done"
+        "Destructuring in let and function params"
+        "Multi-arity functions"
+        "Module system (use, pub, aliases)"
+        "More collection builtins (zip, flatten, chunk, find, any?, all?)"]
+
+      [rm-phase "v0.3 — Type System" "In Progress"
+        "Traits / protocols"
+        "Typed AST (lower from untyped)"
+        "Row polymorphism for records"
+        "Type classes"]
+
+      [rm-phase "v0.4 — Effects" ""
+        "Full effect inference"
+        "? sugar for Result/Option"
+        "Built-in effects: IO, Async, State, Exception"
+        "Effect composition"]
+
+      [rm-phase "v0.5 — Compilation" ""
+        "WASM codegen for closures and ADTs"
+        "Pattern matching compilation"
+        "Tail call optimization"
+        "Inline caching for interpreter"]
+
+      [rm-phase "v0.6 — Developer Experience" ""
+        "Error messages that teach"
+        "Language Server Protocol (LSP)"
+        "Formatter"
+        "Tree-sitter grammar"]
+
+      [rm-phase "v0.7 — Macros" ""
+        "Hygienic macros"
+        "Type-aware macros"
+        "Compile-time evaluation"]
+
+      [rm-phase "v0.8 — Ecosystem" ""
+        "Package manager (Pond)"
+        "Standard library"
+        "Documentation generator"]
+
+      [rm-phase "v1.0 — The Vision" ""
+        "Content-addressed definitions (Unison-inspired)"
+        "Incremental computation"
+        "LLM integration (ai defn, agents)"
+        "Persistent data structures"
+        "Notebooks / literate programming"]]
+    [footer-component]]]

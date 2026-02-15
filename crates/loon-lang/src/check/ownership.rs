@@ -1,5 +1,6 @@
-use crate::ast::{Expr, ExprKind};
+use crate::ast::{Expr, ExprKind, NodeId};
 use crate::syntax::Span;
+use crate::types::{Subst, Type};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -32,19 +33,24 @@ struct Binding {
     state: BindingState,
     defined_at: Span,
     moved_at: Option<Span>,
-    #[allow(dead_code)]
     is_copy: bool,
     is_mut: bool,
 }
 
-pub struct OwnershipChecker {
+pub struct OwnershipChecker<'a> {
     scopes: Vec<HashMap<String, Binding>>,
     pub errors: Vec<OwnershipError>,
     /// Functions known to only borrow (not move) their args
     borrow_fns: std::collections::HashSet<String>,
+    /// Types known to be Copy
+    copy_types: std::collections::HashSet<String>,
+    /// Type side-table from the type checker
+    type_of: Option<&'a HashMap<NodeId, Type>>,
+    /// Substitution for resolving type variables
+    subst: Option<&'a Subst>,
 }
 
-impl OwnershipChecker {
+impl<'a> OwnershipChecker<'a> {
     pub fn new() -> Self {
         let mut borrow_fns = std::collections::HashSet::new();
         // Builtins that only read/borrow their arguments
@@ -54,11 +60,47 @@ impl OwnershipChecker {
         ] {
             borrow_fns.insert(name.to_string());
         }
+        let mut copy_types = std::collections::HashSet::new();
+        for ty in ["Int", "Float", "Bool", "Keyword"] {
+            copy_types.insert(ty.to_string());
+        }
         Self {
             scopes: vec![HashMap::new()],
             errors: Vec::new(),
             borrow_fns,
+            copy_types,
+            type_of: None,
+            subst: None,
         }
+    }
+
+    /// Create an ownership checker with type information from the type checker.
+    pub fn with_type_info(type_of: &'a HashMap<NodeId, Type>, subst: &'a Subst) -> Self {
+        let mut checker = Self::new();
+        checker.type_of = Some(type_of);
+        checker.subst = Some(subst);
+        checker
+    }
+
+    /// Check if a type is a Copy type.
+    fn is_copy_type(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Int | Type::Float | Type::Bool | Type::Keyword => true,
+            Type::Con(name, _) => self.copy_types.contains(name.as_str()),
+            _ => false,
+        }
+    }
+
+    /// Look up whether the value expression for a binding is a Copy type.
+    fn is_value_copy(&self, expr: &Expr) -> bool {
+        if let (Some(type_of), Some(subst)) = (self.type_of, self.subst) {
+            if let Some(ty) = type_of.get(&expr.id) {
+                let resolved = subst.resolve(ty);
+                return self.is_copy_type(&resolved);
+            }
+        }
+        // Without type info, conservatively assume non-copy
+        false
     }
 
     fn push_scope(&mut self) {
@@ -120,7 +162,6 @@ impl OwnershipChecker {
         }
     }
 
-    #[allow(dead_code)]
     fn move_binding(&mut self, name: &str, span: Span) {
         if let Some(binding) = self.get_binding(name) {
             if binding.is_copy {
@@ -230,7 +271,7 @@ impl OwnershipChecker {
                     }
                     return;
                 }
-                "match" | "|>" | "type" | "test" | "pub" => {
+                "match" | "|>" | "type" | "test" | "pub" | "trait" | "impl" | "sig" => {
                     for item in &items[1..] {
                         self.check_expr(item);
                     }
@@ -259,9 +300,14 @@ impl OwnershipChecker {
             }
         }
 
-        // Generic function call — check all args
-        for item in items {
-            self.check_expr(item);
+        // Generic function call — head is borrowed, args are moved
+        self.check_expr(&items[0]);
+        for item in &items[1..] {
+            if let ExprKind::Symbol(ref name) = item.kind {
+                self.move_binding(name, item.span);
+            } else {
+                self.check_expr(item);
+            }
         }
     }
 
@@ -279,13 +325,13 @@ impl OwnershipChecker {
             }
         }
 
-        // Register params
+        // Register params with type-based Copy detection
         if let ExprKind::List(params) = &args[1].kind {
             self.push_scope();
             for p in params {
                 if let ExprKind::Symbol(name) = &p.kind {
-                    // Assume params are non-copy by default (conservative)
-                    self.define(name.clone(), p.span, false, false);
+                    let is_copy = self.is_value_copy(p);
+                    self.define(name.clone(), p.span, is_copy, false);
                 }
             }
             for expr in &args[body_start..] {
@@ -314,10 +360,13 @@ impl OwnershipChecker {
             self.check_expr(&args[val_idx]);
         }
 
-        // Register the binding
+        // Register the binding, using type info for Copy detection
         if let ExprKind::Symbol(name) = &binding.kind {
-            // Primitives are copy types
-            let is_copy = false; // Conservative — could be refined with type info
+            let is_copy = if val_idx < args.len() {
+                self.is_value_copy(&args[val_idx])
+            } else {
+                false
+            };
             self.define(name.clone(), binding.span, is_copy, is_mut);
         }
     }
@@ -330,7 +379,8 @@ impl OwnershipChecker {
             self.push_scope();
             for p in params {
                 if let ExprKind::Symbol(name) = &p.kind {
-                    self.define(name.clone(), p.span, false, false);
+                    let is_copy = self.is_value_copy(p);
+                    self.define(name.clone(), p.span, is_copy, false);
                 }
             }
             for expr in &args[1..] {
@@ -348,7 +398,7 @@ impl OwnershipChecker {
     }
 }
 
-impl Default for OwnershipChecker {
+impl Default for OwnershipChecker<'_> {
     fn default() -> Self {
         Self::new()
     }
@@ -362,6 +412,16 @@ mod tests {
     fn check(src: &str) -> Vec<OwnershipError> {
         let exprs = parse(src).unwrap();
         let mut checker = OwnershipChecker::new();
+        checker.check_program(&exprs)
+    }
+
+    fn check_with_types(src: &str) -> Vec<OwnershipError> {
+        let exprs = parse(src).unwrap();
+        let mut type_checker = crate::check::Checker::new();
+        for expr in &exprs {
+            type_checker.infer(expr);
+        }
+        let mut checker = OwnershipChecker::with_type_info(&type_checker.type_of, &type_checker.subst);
         checker.check_program(&exprs)
     }
 
@@ -382,10 +442,12 @@ mod tests {
               [println name]]
         "#,
         );
-        // In our simplified model, `take` is not in borrow_fns so args
-        // are just "used" not moved. We'd need callee analysis for real
-        // move detection. For now, this test just verifies no crash.
-        assert!(errors.is_empty());
+        // `take` is not in borrow_fns, so `name` gets moved, then used
+        assert!(
+            errors.iter().any(|e| e.message.contains("moved")),
+            "expected use-after-move error, got: {:?}",
+            errors
+        );
     }
 
     #[test]
@@ -414,5 +476,37 @@ mod tests {
         "#,
         );
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn copy_type_no_move_error() {
+        // Int is Copy, so using x after passing to a function should be fine
+        let errors = check_with_types(
+            r#"
+            [defn take [s] s]
+            [let x 42]
+            [take x]
+            [println x]
+        "#,
+        );
+        assert!(errors.is_empty(), "Int is Copy, should not error: {:?}", errors);
+    }
+
+    #[test]
+    fn non_copy_type_move_error() {
+        // Vec is not Copy, so using v after passing to a function should error
+        let errors = check_with_types(
+            r#"
+            [defn consume [v] v]
+            [let v #[1 2 3]]
+            [consume v]
+            [println v]
+        "#,
+        );
+        assert!(
+            errors.iter().any(|e| e.message.contains("moved")),
+            "Vec is not Copy, should error: {:?}",
+            errors
+        );
     }
 }

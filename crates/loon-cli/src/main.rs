@@ -86,7 +86,7 @@ fn check_file(path: &PathBuf) {
                 println!("{}", "OK — no type errors".green().bold());
             } else {
                 for err in &errors {
-                    eprintln!("{}: {err}", "type error".red().bold());
+                    loon_lang::errors::report_type_error(&filename, &source, err);
                 }
                 std::process::exit(1);
             }

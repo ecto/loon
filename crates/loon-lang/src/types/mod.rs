@@ -1,6 +1,8 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 
+use crate::syntax::Span;
+
 /// Unique type variable identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TypeVar(pub u32);
@@ -16,7 +18,7 @@ pub enum Type {
     Unit,
     /// Unification variable
     Var(TypeVar),
-    /// Function type: params → return
+    /// Function type: params -> return
     Fn(Vec<Type>, Box<Type>),
     /// Type constructor: name + type args (e.g., Vec<Int>, Option<T>)
     Con(String, Vec<Type>),
@@ -63,12 +65,12 @@ impl fmt::Display for Type {
             Type::Fn(params, ret) => {
                 for (i, p) in params.iter().enumerate() {
                     if i > 0 {
-                        write!(f, " → ")?;
+                        write!(f, " \u{2192} ")?;
                     }
                     write!(f, "{p}")?;
                 }
                 if !params.is_empty() {
-                    write!(f, " → ")?;
+                    write!(f, " \u{2192} ")?;
                 }
                 write!(f, "{ret}")
             }
@@ -104,10 +106,11 @@ impl fmt::Display for Type {
     }
 }
 
-/// Mutable substitution: maps TypeVar → Type
+/// Mutable substitution: maps TypeVar -> Type
 pub struct Subst {
     bindings: Vec<Option<Type>>,
     next_var: u32,
+    pub constraints: HashMap<TypeVar, Vec<TraitBound>>,
 }
 
 impl Subst {
@@ -115,7 +118,12 @@ impl Subst {
         Self {
             bindings: Vec::new(),
             next_var: 0,
+            constraints: HashMap::new(),
         }
+    }
+
+    pub fn add_constraint(&mut self, v: TypeVar, bound: TraitBound) {
+        self.constraints.entry(v).or_default().push(bound);
     }
 
     pub fn fresh(&mut self) -> Type {
@@ -185,6 +193,31 @@ impl Default for Subst {
 #[derive(Debug)]
 pub struct TypeError {
     pub message: String,
+    pub span: Option<Span>,
+}
+
+impl TypeError {
+    pub fn at(msg: impl Into<String>, span: Span) -> Self {
+        Self {
+            message: msg.into(),
+            span: Some(span),
+        }
+    }
+
+    pub fn bare(msg: impl Into<String>) -> Self {
+        Self {
+            message: msg.into(),
+            span: None,
+        }
+    }
+
+    /// Add a span to this error if it doesn't already have one.
+    pub fn with_span(mut self, span: Span) -> Self {
+        if self.span.is_none() {
+            self.span = Some(span);
+        }
+        self
+    }
 }
 
 impl fmt::Display for TypeError {
@@ -195,6 +228,28 @@ impl fmt::Display for TypeError {
 
 impl std::error::Error for TypeError {}
 
+/// Trait declaration
+#[derive(Debug, Clone)]
+pub struct TraitDecl {
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub methods: Vec<TraitMethod>,
+}
+
+/// Method signature in a trait
+#[derive(Debug, Clone)]
+pub struct TraitMethod {
+    pub name: String,
+    pub param_types: Vec<Type>,
+    pub ret_type: Type,
+}
+
+/// A trait bound on a type variable
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TraitBound {
+    pub trait_name: String,
+}
+
 /// Unify two types under the given substitution.
 pub fn unify(subst: &mut Subst, a: &Type, b: &Type) -> Result<(), TypeError> {
     let a = subst.resolve(a);
@@ -204,31 +259,40 @@ pub fn unify(subst: &mut Subst, a: &Type, b: &Type) -> Result<(), TypeError> {
         _ if a == b => Ok(()),
         (Type::Var(v), _) => {
             if subst.occurs_in(*v, &b) {
-                return Err(TypeError {
-                    message: format!("infinite type: {a} ~ {b}"),
-                });
+                return Err(TypeError::bare(format!("infinite type: {a} ~ {b}")));
+            }
+            // Propagate constraints when binding a variable to another variable
+            if let Type::Var(u) = &b {
+                if let Some(bounds) = subst.constraints.get(v).cloned() {
+                    for bound in bounds {
+                        subst.add_constraint(*u, bound);
+                    }
+                }
             }
             subst.bind(*v, b);
             Ok(())
         }
         (_, Type::Var(v)) => {
             if subst.occurs_in(*v, &a) {
-                return Err(TypeError {
-                    message: format!("infinite type: {a} ~ {b}"),
-                });
+                return Err(TypeError::bare(format!("infinite type: {a} ~ {b}")));
+            }
+            if let Type::Var(u) = &a {
+                if let Some(bounds) = subst.constraints.get(v).cloned() {
+                    for bound in bounds {
+                        subst.add_constraint(*u, bound);
+                    }
+                }
             }
             subst.bind(*v, a);
             Ok(())
         }
         (Type::Fn(ap, ar), Type::Fn(bp, br)) => {
             if ap.len() != bp.len() {
-                return Err(TypeError {
-                    message: format!(
-                        "function arity mismatch: expected {}, got {}",
-                        ap.len(),
-                        bp.len()
-                    ),
-                });
+                return Err(TypeError::bare(format!(
+                    "function arity mismatch: expected {}, got {}",
+                    ap.len(),
+                    bp.len()
+                )));
             }
             for (p1, p2) in ap.iter().zip(bp.iter()) {
                 unify(subst, p1, p2)?;
@@ -247,13 +311,11 @@ pub fn unify(subst: &mut Subst, a: &Type, b: &Type) -> Result<(), TypeError> {
             }
             Ok(())
         }
-        _ => Err(TypeError {
-            message: format!("cannot unify {a} with {b}"),
-        }),
+        _ => Err(TypeError::bare(format!("cannot unify {a} with {b}"))),
     }
 }
 
-/// Type scheme: ∀ vars . type (for let-polymorphism)
+/// Type scheme: forall vars . type (for let-polymorphism)
 #[derive(Debug, Clone)]
 pub struct Scheme {
     pub vars: Vec<TypeVar>,
@@ -369,13 +431,23 @@ pub fn generalize(env: &TypeEnv, subst: &Subst, ty: &Type) -> Scheme {
     }
 }
 
-/// Instantiate a scheme with fresh type variables.
+/// Instantiate a scheme with fresh type variables, propagating constraints.
 pub fn instantiate(subst: &mut Subst, scheme: &Scheme) -> Type {
     let mapping: HashMap<TypeVar, Type> = scheme
         .vars
         .iter()
         .map(|v| (*v, subst.fresh()))
         .collect();
+    // Propagate constraints from old vars to fresh vars
+    for (old_var, new_ty) in &mapping {
+        if let Type::Var(new_var) = new_ty {
+            if let Some(bounds) = subst.constraints.get(old_var).cloned() {
+                for bound in bounds {
+                    subst.add_constraint(*new_var, bound);
+                }
+            }
+        }
+    }
     substitute(&scheme.ty, &mapping)
 }
 

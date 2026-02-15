@@ -33,6 +33,8 @@ pub enum Token {
     Question,
     #[token("/")]
     Slash,
+    #[token("->")]
+    Arrow,
 
     // Literals — higher priority than Symbol
     #[regex(r"-?[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?(f32|f64)?", priority = 10, callback = |lex| lex.slice().to_string())]
@@ -54,6 +56,7 @@ pub enum Token {
     Keyword(String),
 
     // Symbols (identifiers, operators like +, -, etc.)
-    #[regex(r"[a-zA-Z_+\-*!<>=&%][a-zA-Z0-9_\-?!.*%]*", priority = 1, callback = |lex| lex.slice().to_string())]
+    // Allows / in the middle for namespaced names like dom/create-element
+    #[regex(r"[a-zA-Z_+\-*!<>=&%][a-zA-Z0-9_\-?!.*%/]*", priority = 1, callback = |lex| lex.slice().to_string())]
     Symbol(String),
 }

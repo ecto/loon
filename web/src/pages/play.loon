@@ -1,0 +1,36 @@
+; play.loon — Playground page
+
+[defn play-examples []
+  [div {:class "playground-examples"}
+    [h3 {} "Examples"]
+    [div {:class "pillars-grid"}
+      [div {:class "pillar-card example-card"}
+        [h4 {} "Hello World"]
+        [code-block {} "[println \"Hello, world!\"]"]]
+      [div {:class "pillar-card example-card"}
+        [h4 {} "Fibonacci"]
+        [code-block {} "[defn fib [n]\n  [match n\n    0 => 0  1 => 1\n    _ => [+ [fib [- n 1]]\n            [fib [- n 2]]]]]\n[fib 10]"]]
+      [div {:class "pillar-card example-card"}
+        [h4 {} "Effects"]
+        [code-block {} "[effect Ask\n  [fn question [q]]]\n\n[handle\n  [Ask.question \"name?\"]\n  [Ask.question q] =>\n    [resume \"Loon\"]]"]]
+      [div {:class "pillar-card example-card"}
+        [h4 {} "Pipelines"]
+        [code-block {} "[|> [range 1 100]\n  [filter [fn [n] [= 0 [% n 3]]]]\n  [map [fn [n] [* n n]]]\n  [take 5]]"]]]]]
+
+[defn play-page []
+  [div {:class "page"}
+    [main-el {:class "section playground-section"}
+      [h1 {} "Playground"]
+      [p {:class "section-subtitle"} "Write and run Loon in your browser. This page is itself written in Loon."]
+      [editor-component [str
+        "; Try some Loon!\n\n"
+        "[type Shape [Circle f64] [Rect f64 f64] Point]\n\n"
+        "[defn area [shape]\n"
+        "  [match shape\n"
+        "    [Circle r] => [* 3.14159 [* r r]]\n"
+        "    [Rect w h] => [* w h]\n"
+        "    Point => 0.0]]\n\n"
+        "[each [fn [s] [println [str s \" => \" [area s]]]]\n"
+        "  #[[Circle 5.0] [Rect 3.0 4.0] Point]]"]]
+      [play-examples]]
+    [footer-component]]]

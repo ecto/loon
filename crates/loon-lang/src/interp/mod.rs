@@ -1,4 +1,5 @@
 pub mod builtins;
+pub mod dom_builtins;
 mod env;
 mod value;
 
@@ -166,6 +167,9 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                     "type" => return eval_type_def(&items[1..], env),
                     "test" => return eval_test_def(&items[1..], env),
                     "effect" => return Ok(Value::Unit), // effect declarations are compile-time
+                    "trait" => return Ok(Value::Unit), // trait declarations are compile-time
+                    "sig" => return Ok(Value::Unit),   // sig assertions are compile-time
+                    "impl" => return eval_impl_def(&items[1..], env),
                     "handle" => return eval_handle(&items[1..], env),
                     "pub" => {
                         // [pub defn name ...] — eval the inner form and mark as pub
@@ -575,6 +579,48 @@ fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
     Ok(Value::Unit)
 }
 
+/// Evaluate [impl TraitName TypeName [fn method [self ...] body] ...]
+fn eval_impl_def(args: &[Expr], env: &mut Env) -> IResult {
+    if args.len() < 2 {
+        return Err(err("impl requires trait name and type name"));
+    }
+    let _trait_name = match &args[0].kind {
+        ExprKind::Symbol(s) => s.clone(),
+        _ => return Err(err("impl trait name must be a symbol")),
+    };
+    let type_name = match &args[1].kind {
+        ExprKind::Symbol(s) => s.clone(),
+        _ => return Err(err("impl type name must be a symbol")),
+    };
+
+    for arg in &args[2..] {
+        if let ExprKind::List(items) = &arg.kind {
+            if items.len() >= 3 {
+                if let ExprKind::Symbol(ref kw) = items[0].kind {
+                    if kw == "fn" {
+                        if let ExprKind::Symbol(ref method_name) = items[1].kind {
+                            let params = extract_params(&items[2])?;
+                            let body = items[3..].to_vec();
+                            let lf = value::LoonFn {
+                                name: Some(format!("{type_name}.{method_name}")),
+                                clauses: vec![(params, body)],
+                                captured_env: None,
+                            };
+                            // Register as TypeName.method_name
+                            env.set_global(
+                                format!("{type_name}.{method_name}"),
+                                Value::Fn(lf),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Value::Unit)
+}
+
 /// Evaluate [handle body handler1 handler2 ...]
 /// Format: [handle [expr] [Effect.op params] => handler_body ...]
 fn eval_handle(args: &[Expr], env: &mut Env) -> IResult {
@@ -685,8 +731,23 @@ fn extract_params(expr: &Expr) -> Result<Vec<value::Param>, InterpError> {
     match &expr.kind {
         ExprKind::List(items) => {
             let mut params = Vec::new();
-            for item in items {
-                params.push(extract_param(item)?);
+            let mut i = 0;
+            while i < items.len() {
+                if let ExprKind::Symbol(s) = &items[i].kind {
+                    if s == "&" {
+                        // Rest parameter: & name
+                        if i + 1 < items.len() {
+                            if let ExprKind::Symbol(rest_name) = &items[i + 1].kind {
+                                params.push(value::Param::Rest(rest_name.clone()));
+                                i += 2;
+                                continue;
+                            }
+                        }
+                        return Err(err("& must be followed by a parameter name"));
+                    }
+                }
+                params.push(extract_param(&items[i])?);
+                i += 1;
             }
             Ok(params)
         }
@@ -753,6 +814,11 @@ fn bind_param(param: &value::Param, val: &Value, env: &mut Env) -> Result<(), In
             }
             Ok(())
         }
+        value::Param::Rest(name) => {
+            // Rest param in bind_param context — bind as-is
+            env.set(name.clone(), val.clone());
+            Ok(())
+        }
     }
 }
 
@@ -768,12 +834,28 @@ pub(crate) fn call_fn(lf: &value::LoonFn, args: &[Value], env: &mut Env) -> IRes
     };
     let env = use_env.as_mut().map_or(env, |e| e);
 
-    // Find matching clause by arity
+    // Find matching clause by arity (with rest param support)
     for (params, body) in &lf.clauses {
-        if params.len() == args.len() {
+        let has_rest = params.last().is_some_and(|p| matches!(p, value::Param::Rest(_)));
+        let required = if has_rest { params.len() - 1 } else { params.len() };
+        let matches = if has_rest {
+            args.len() >= required
+        } else {
+            args.len() == required
+        };
+
+        if matches {
             env.push_scope();
-            for (param, val) in params.iter().zip(args.iter()) {
+            // Bind regular params
+            for (param, val) in params[..required].iter().zip(args[..required].iter()) {
                 bind_param(param, val, env)?;
+            }
+            // Bind rest param if present
+            if has_rest {
+                if let Some(value::Param::Rest(name)) = params.last() {
+                    let rest_vals: Vec<Value> = args[required..].to_vec();
+                    env.set(name.clone(), Value::Vec(rest_vals));
+                }
             }
             let mut result = Value::Unit;
             for expr in body {
@@ -876,4 +958,7 @@ pub fn eval_use_with_cache(
 
 fn register_builtins(env: &mut Env) {
     builtins::register_builtins(env);
+    if dom_builtins::has_dom_bridge() {
+        dom_builtins::register_dom_builtins(env);
+    }
 }

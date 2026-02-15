@@ -1,0 +1,38 @@
+; community.loon — Community page
+
+[defn community-page []
+  [div {:class "page"}
+    [main-el {:class "section"}
+      [h1 {} "Community"]
+      [p {:class "section-subtitle"} "Loon is built in the open. Come join us."]
+
+      [div {:class "community-links"}
+        [div {:class "pillar-card"}
+          [h3 {} "GitHub"]
+          [p {} "Source code, issues, and pull requests."]
+          [a-el {:class "cta-button-secondary" :href "https://github.com/loon-lang/loon"} "loon-lang/loon"]]
+        [div {:class "pillar-card"}
+          [h3 {} "Discord"]
+          [p {} "Chat with the community. Ask questions, share what you're building."]
+          [a-el {:class "cta-button-secondary" :href "https://discord.gg/loon-lang"} "Join Discord"]]
+        [div {:class "pillar-card"}
+          [h3 {} "Discussions"]
+          [p {} "Longer-form conversations, RFCs, and design discussions."]
+          [a-el {:class "cta-button-secondary" :href "https://github.com/loon-lang/loon/discussions"} "GitHub Discussions"]]
+        [div {:class "pillar-card"}
+          [h3 {} "Contributing"]
+          [p {} "Loon is early and there's lots to do. Good first issues are tagged."]
+          [a-el {:class "cta-button-secondary" :href "https://github.com/loon-lang/loon/contribute"} "Good first issues"]]]
+
+      [section-el {:class "tour-step"}
+        [h2 {} "Ways to contribute"]
+        [ul-el {}
+          [li-el {} "Report bugs and suggest features"]
+          [li-el {} "Write documentation and tutorials"]
+          [li-el {} "Add builtins and standard library functions"]
+          [li-el {} "Improve error messages"]
+          [li-el {} "Work on the WASM codegen"]
+          [li-el {} "Build tools: LSP, formatter, tree-sitter grammar"]
+          [li-el {} "Write sample programs and example projects"]
+          [li-el {} "Tell people about Loon"]]]]
+    [footer-component]]]

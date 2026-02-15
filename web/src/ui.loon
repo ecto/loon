@@ -1,0 +1,145 @@
+; ui.loon — React-like UI library for Loon
+; VNode types, element constructors, effects, diff/patch, mount/render
+;
+; With rest params (& children), elements can be called as:
+;   [div {:class "hero"} [h1 "Hello"] [p "World"]]
+; Strings auto-coerce to text nodes.
+
+; --- VNode ADT ---
+
+[type VNode
+  [El String Props [Vec VNode]]
+  [Txt String]
+  [Fragment [Vec VNode]]
+  Empty]
+
+; --- Coerce children ---
+; Strings become Txt nodes, VNodes pass through
+
+[defn coerce-child [c]
+  [match c
+    [El tag props children] => [El tag props children]
+    [Txt s] => [Txt s]
+    [Fragment children] => [Fragment children]
+    Empty => Empty
+    _ => [Txt [str c]]]]
+
+[defn coerce-children [children]
+  [map [fn [c] [coerce-child c]] children]]
+
+; --- Element constructors ---
+; First arg can be props (map) or a child. If it's a map, it's props.
+; Remaining args are children. Strings auto-coerce to text nodes.
+
+[defn make-el [tag first & rest]
+  ; Check if first arg is a map (props)
+  [let has-props [match first
+    _ => false]]
+  ; For now, always treat first as props if it's a map
+  ; This is a simplification — we check at runtime
+  [El tag first [coerce-children rest]]]
+
+; Concrete element constructors — props + children
+[defn div [props & children]    [El "div" props [coerce-children children]]]
+[defn span [props & children]   [El "span" props [coerce-children children]]]
+[defn p [props & children]      [El "p" props [coerce-children children]]]
+[defn h1 [props & children]     [El "h1" props [coerce-children children]]]
+[defn h2 [props & children]     [El "h2" props [coerce-children children]]]
+[defn h3 [props & children]     [El "h3" props [coerce-children children]]]
+[defn h4 [props & children]     [El "h4" props [coerce-children children]]]
+[defn a-el [props & children]   [El "a" props [coerce-children children]]]
+[defn button-el [props & children] [El "button" props [coerce-children children]]]
+[defn input-el [props]          [El "input" props #[]]]
+[defn textarea-el [props & children] [El "textarea" props [coerce-children children]]]
+[defn img-el [props]            [El "img" props #[]]]
+[defn nav-el [props & children] [El "nav" props [coerce-children children]]]
+[defn header-el [props & children] [El "header" props [coerce-children children]]]
+[defn footer-el [props & children] [El "footer" props [coerce-children children]]]
+[defn main-el [props & children] [El "main" props [coerce-children children]]]
+[defn section-el [props & children] [El "section" props [coerce-children children]]]
+[defn article-el [props & children] [El "article" props [coerce-children children]]]
+[defn ul-el [props & children]  [El "ul" props [coerce-children children]]]
+[defn ol-el [props & children]  [El "ol" props [coerce-children children]]]
+[defn li-el [props & children]  [El "li" props [coerce-children children]]]
+[defn pre-el [props & children] [El "pre" props [coerce-children children]]]
+[defn code-el [props & children] [El "code" props [coerce-children children]]]
+[defn strong-el [props & children] [El "strong" props [coerce-children children]]]
+[defn em-el [props & children]  [El "em" props [coerce-children children]]]
+[defn br-el []                  [El "br" {} #[]]]
+[defn hr-el []                  [El "hr" {} #[]]]
+
+; --- Text helper ---
+[defn text [s] [Txt s]]
+
+; --- Fragment helper ---
+[defn fragment [& children] [Fragment [coerce-children children]]]
+
+; --- UI Effect ---
+
+[effect UI
+  [fn state [initial]]
+  [fn set-state [cell value]]
+  [fn memo [deps thunk]]
+  [fn on-effect [deps thunk]]
+  [fn context [key]]
+  [fn provide [key value]]]
+
+; --- Render VNode to real DOM ---
+
+[defn render-props [node props]
+  [each [fn [entry]
+    [let k [nth entry 0]]
+    [let v [nth entry 1]]
+    [let key-str [match k
+      [Keyword s] => s
+      _ => [str k]]]
+    [if [starts-with? key-str "on"]
+      [dom/add-listener node [lowercase [replace key-str "on" ""]] v]
+      [if [= key-str "class"]
+        [dom/set-attribute node "class" v]
+        [if [= key-str "style"]
+          [each [fn [se]
+            [let sk [nth se 0]]
+            [let sv [nth se 1]]
+            [dom/set-style node [str sk] [str sv]]]
+            [entries v]]
+          [dom/set-attribute node key-str [str v]]]]]]
+    [entries props]]]
+
+[defn render-vnode [vnode]
+  [match vnode
+    [El tag props children] => [do
+      [let node [dom/create-element tag]]
+      [render-props node props]
+      [each [fn [child]
+        [let child-node [render-vnode child]]
+        [dom/append-child node child-node]]
+        children]
+      node]
+    [Txt s] => [dom/create-text s]
+    [Fragment children] => [do
+      [let frag [dom/create-element "div"]]
+      [each [fn [child]
+        [let child-node [render-vnode child]]
+        [dom/append-child frag child-node]]
+        children]
+      frag]
+    Empty => [dom/create-text ""]
+    _ => [dom/create-text ""]]]
+
+; --- Mount ---
+
+[defn mount [selector vnode]
+  [let root [dom/query-selector selector]]
+  [let rendered [render-vnode vnode]]
+  [dom/set-inner-html root ""]
+  [dom/append-child root rendered]
+  rendered]
+
+[defn rerender [selector build-fn]
+  [let root [dom/query-selector selector]]
+  [let vnode [build-fn]]
+  [let rendered [render-vnode vnode]]
+  [dom/set-inner-html root ""]
+  [dom/append-child root rendered]
+  rendered]

@@ -1,0 +1,17 @@
+; router.loon — Client-side router for Loon website
+
+[defn match-route [path route-table]
+  [let result [find
+    [fn [route]
+      [let pattern [nth route 0]]
+      [= pattern path]]
+    route-table]]
+  [match result
+    [Some route] => [nth route 1]
+    None => [fn [] [section-el {:class "section"}
+      [h1 {} "404"]
+      [p {} "Page not found."]]]]]
+
+[defn navigate-to [path]
+  [dom/push-state path]
+  [dom/set-title [str "Loon — " path]]]

@@ -3,6 +3,9 @@ use std::sync::Arc;
 
 use super::InterpError;
 
+/// Opaque handle to a DOM node (index into JS-side node table).
+pub type DomHandle = u32;
+
 pub type BuiltinFn = Arc<dyn Fn(&str, &[Value]) -> Result<Value, InterpError> + Send + Sync>;
 
 /// A function parameter: simple name or destructuring pattern.
@@ -11,6 +14,8 @@ pub enum Param {
     Simple(String),
     VecDestructure(Vec<Param>),
     MapDestructure(Vec<String>),
+    /// Rest parameter: `& name` — collects remaining args into a Vec
+    Rest(String),
 }
 
 #[derive(Clone)]
@@ -47,6 +52,7 @@ pub enum Value {
     Fn(LoonFn),
     Builtin(String, BuiltinFn),
     Adt(String, Vec<Value>),
+    DomNode(DomHandle),
     Unit,
 }
 
@@ -131,6 +137,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "]")
             }
+            Value::DomNode(h) => write!(f, "<dom-node {h}>"),
             Value::Unit => write!(f, "()"),
         }
     }
@@ -155,6 +162,7 @@ impl PartialEq for Value {
             (Value::Map(a), Value::Map(b)) => a == b,
             (Value::Tuple(a), Value::Tuple(b)) => a == b,
             (Value::Adt(a, af), Value::Adt(b, bf)) => a == b && af == bf,
+            (Value::DomNode(a), Value::DomNode(b)) => a == b,
             (Value::Unit, Value::Unit) => true,
             _ => false,
         }

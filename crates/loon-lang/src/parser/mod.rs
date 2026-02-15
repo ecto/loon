@@ -116,6 +116,7 @@ impl<'a> Parser<'a> {
             Token::Pipe => Ok(Expr::new(ExprKind::Symbol("|>".to_string()), span)),
             Token::Slash => Ok(Expr::new(ExprKind::Symbol("/".to_string()), span)),
             Token::FatArrow => Ok(Expr::new(ExprKind::Symbol("=>".to_string()), span)),
+            Token::Arrow => Ok(Expr::new(ExprKind::Symbol("->".to_string()), span)),
             Token::Question => Ok(Expr::new(ExprKind::Symbol("?".to_string()), span)),
 
             // S-expression: [head args...]

@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300">
+  <!-- Water ripples -->
+  <ellipse cx="200" cy="240" rx="150" ry="15" fill="#1e3a5f" opacity="0.3"/>
+  <ellipse cx="200" cy="245" rx="130" ry="12" fill="#1e3a5f" opacity="0.2"/>
+  <ellipse cx="200" cy="250" rx="110" ry="10" fill="#1e3a5f" opacity="0.15"/>
+
+  <!-- Loon body -->
+  <g id="loon">
+    <!-- Tail -->
+    <path d="M 80 200 Q 70 205 75 215 Q 80 210 85 205 Z" fill="#1a1a1a"/>
+
+    <!-- Main body -->
+    <ellipse cx="160" cy="190" rx="70" ry="45" fill="#1a1a1a"/>
+
+    <!-- White breast -->
+    <ellipse cx="175" cy="200" rx="45" ry="35" fill="#faf8f5"/>
+
+    <!-- Back with white spots -->
+    <path d="M 130 165 Q 180 155 220 170 Q 215 190 200 200 Q 160 195 130 185 Z" fill="#1a1a1a"/>
+
+    <!-- White spots on back -->
+    <circle cx="150" cy="170" r="3.5" fill="#faf8f5"/>
+    <circle cx="165" cy="168" r="3" fill="#faf8f5"/>
+    <circle cx="180" cy="170" r="3.5" fill="#faf8f5"/>
+    <circle cx="195" cy="173" r="3" fill="#faf8f5"/>
+    <circle cx="145" cy="180" r="2.5" fill="#faf8f5"/>
+    <circle cx="160" cy="179" r="3" fill="#faf8f5"/>
+    <circle cx="175" cy="180" r="3.5" fill="#faf8f5"/>
+    <circle cx="190" cy="182" r="3" fill="#faf8f5"/>
+    <circle cx="205" cy="185" r="2.5" fill="#faf8f5"/>
+
+    <!-- Neck -->
+    <path d="M 210 175 Q 230 160 240 140" fill="none" stroke="#1a1a1a" stroke-width="18"/>
+
+    <!-- Iridescent necklace/collar -->
+    <path d="M 215 170 Q 230 165 240 155" fill="none" stroke="#2d5016" stroke-width="8" opacity="0.9"/>
+    <path d="M 217 173 Q 232 168 241 158" fill="none" stroke="#2d5016" stroke-width="6" opacity="0.7"/>
+
+    <!-- White neck stripe -->
+    <path d="M 205 180 L 210 178 L 215 182 L 210 184 Z" fill="#faf8f5"/>
+    <rect x="218" y="160" width="3" height="8" fill="#faf8f5" transform="rotate(-55 220 165)"/>
+
+    <!-- Head -->
+    <ellipse cx="250" cy="130" rx="20" ry="18" fill="#1a1a1a"/>
+
+    <!-- Beak -->
+    <path d="M 268 130 L 295 128 L 294 132 L 268 134 Z" fill="#1a1a1a"/>
+
+    <!-- Red eye -->
+    <circle cx="258" cy="127" r="4.5" fill="#c0392b"/>
+    <circle cx="259" cy="126" r="1.5" fill="#1a1a1a"/>
+
+    <!-- Wing detail -->
+    <path d="M 150 185 Q 170 180 185 185" fill="none" stroke="#1a1a1a" stroke-width="1.5" opacity="0.3"/>
+  </g>
+
+  <!-- Additional water reflection -->
+  <ellipse cx="200" cy="235" rx="100" ry="8" fill="#1e3a5f" opacity="0.25"/>
+</svg>

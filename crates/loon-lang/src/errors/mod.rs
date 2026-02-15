@@ -1,4 +1,5 @@
 use crate::syntax::Span;
+use crate::types::TypeError;
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 use codespan_reporting::files::SimpleFiles;
 use codespan_reporting::term;
@@ -13,4 +14,12 @@ pub fn report_error(filename: &str, source: &str, message: &str, span: Span) {
     let writer = StandardStream::stderr(ColorChoice::Auto);
     let config = term::Config::default();
     let _ = term::emit(&mut writer.lock(), &config, &files, &diagnostic);
+}
+
+pub fn report_type_error(filename: &str, source: &str, error: &TypeError) {
+    if let Some(span) = error.span {
+        report_error(filename, source, &error.message, span);
+    } else {
+        eprintln!("type error: {}", error.message);
+    }
 }

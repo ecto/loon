@@ -1,0 +1,85 @@
+; home.loon — Landing page
+
+[defn hero-code-example []
+  [str
+    "[defn greet [name]\n"
+    "  [str \"Hello, \" name \"!\"]]\n"
+    "\n"
+    "[|> [range 1 5]\n"
+    "  [map [fn [n] [* n n]]]\n"
+    "  [filter [fn [n] [> n 4]]]\n"
+    "  [each println]]"]]
+
+[defn home-page []
+  [div {:class "page"}
+    ; --- Hero ---
+    [section-el {:class "hero"}
+      [div {:class "hero-content"}
+        [h1 {:class "hero-title"} "A LISP that flies."]
+        [p {:class "hero-subtitle"}
+          "Invisible types. Ownership without annotations. Effects, not exceptions. A modern language that gets out of your way."]
+        [div {:class "hero-ctas"}
+          [a-el {:class "cta-button" :href "/tour"} "Take the tour"]
+          [a-el {:class "cta-button-secondary" :href "/play"} "Try it now"]]
+        [div {:class "hero-code"}
+          [code-block {:label "hello.loon"} [hero-code-example]]]]
+      [div {:class "hero-illustration"}
+        [img-el {:src "loon-bird.svg" :alt "Loon bird" :class "hero-bird"}]]]
+
+    ; --- Four Pillars ---
+    [section-el {:class "section pillars"}
+      [div {:class "pillars-grid"}
+        [div {:class "pillar-card"}
+          [div {:class "pillar-icon"} "T"]
+          [h3 {} "Types you never write"]
+          [p {} "Full Hindley-Milner inference means the compiler knows every type. You never annotate — your editor shows them when you want."]]
+        [div {:class "pillar-card"}
+          [div {:class "pillar-icon"} "O"]
+          [h3 {} "Ownership without annotations"]
+          [p {} "Rust-style memory safety, inferred. No lifetime annotations, no borrow checker fights. The compiler figures it out."]]
+        [div {:class "pillar-card"}
+          [div {:class "pillar-icon"} "E"]
+          [h3 {} "Effects, not exceptions"]
+          [p {} "Algebraic effects replace try/catch, async/await, and state management. One elegant pattern for all side effects."]]
+        [div {:class "pillar-card"}
+          [div {:class "pillar-icon"} "M"]
+          [h3 {} "Modern ergonomics"]
+          [p {} "Pipe operator, pattern matching, destructuring, multi-arity functions. The good parts of every language, unified."]]]]
+
+    ; --- Interactive Demo ---
+    [section-el {:class "section demo-section"}
+      [h2 {} "Try it right here"]
+      [p {:class "section-subtitle"} "This editor runs Loon in your browser — the same interpreter that renders this page."]
+      [editor-component [str
+        "; Fibonacci with pattern matching\n"
+        "[defn fib [n]\n"
+        "  [match n\n"
+        "    0 => 0\n"
+        "    1 => 1\n"
+        "    _ => [+ [fib [- n 1]] [fib [- n 2]]]]]\n"
+        "\n"
+        "[|> [range 0 10]\n"
+        "  [map fib]\n"
+        "  [each println]]"]]]
+
+    ; --- Vision ---
+    [section-el {:class "section vision-section"}
+      [div {:class "vision-content"}
+        [h2 {} "The language we wished existed"]
+        [p {:class "vision-text"}
+          "We wanted a language with the elegance of Clojure, the safety of Rust, the ergonomics of modern TypeScript, and the simplicity of a LISP. So we built one."]
+        [p {:class "vision-text"}
+          "Loon compiles to WebAssembly. It runs everywhere. And this website? It's written entirely in Loon — interpreted by a Loon runtime compiled to WASM, rendering to the DOM through algebraic effects. Turtles all the way down."]]]
+
+    ; --- Quickstart ---
+    [section-el {:class "section quickstart-section"}
+      [h2 {} "Get started in 30 seconds"]
+      [div {:class "install-steps"}
+        [code-block {:label "Terminal"} [str
+          "curl -fsSL https://loon-lang.org/install.sh | sh\n"
+          "loon new my-project\n"
+          "loon run src/main.loon"]]
+        [p {:class "section-note"} "Or "]
+        [a-el {:class "cta-button-secondary" :href "/play"} "skip the install and try it in your browser"]]]
+
+    [footer-component]]]

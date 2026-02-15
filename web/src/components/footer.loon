@@ -1,0 +1,26 @@
+; footer.loon — Site footer component
+
+[defn footer-component []
+  [footer-el {:class "footer"}
+    [div {:class "footer-inner"}
+      [div {:class "footer-col"}
+        [h4 {} "Loon"]
+        [p {} "A LISP that flies."]
+        [p {:class "footer-small"} "Built with Loon, running in your browser."]]
+      [div {:class "footer-col"}
+        [h4 {} "Learn"]
+        [ul-el {}
+          [li-el {} [a-el {:href "/tour"} "Language Tour"]]
+          [li-el {} [a-el {:href "/install"} "Getting Started"]]
+          [li-el {} [a-el {:href "/play"} "Playground"]]]]
+      [div {:class "footer-col"}
+        [h4 {} "Community"]
+        [ul-el {}
+          [li-el {} [a-el {:href "https://github.com/loon-lang/loon"} "GitHub"]]
+          [li-el {} [a-el {:href "/community"} "Discord & Forums"]]
+          [li-el {} [a-el {:href "/blog"} "Blog"]]]]
+      [div {:class "footer-col"}
+        [h4 {} "More"]
+        [ul-el {}
+          [li-el {} [a-el {:href "/roadmap"} "Roadmap"]]
+          [li-el {} [a-el {:href "https://github.com/loon-lang/loon/blob/main/LICENSE"} "MIT License"]]]]]]]

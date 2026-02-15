@@ -1,0 +1,23 @@
+; nav.loon — Navigation bar component
+
+[defn nav-links []
+  #[#["/" "Home"] #["/tour" "Tour"] #["/install" "Install"]
+    #["/play" "Playground"] #["/blog" "Blog"]
+    #["/roadmap" "Roadmap"] #["/community" "Community"]]]
+
+[defn make-nav-link [current-path link-item]
+  [let href [nth link-item 0]]
+  [let label [nth link-item 1]]
+  [a-el {:class [str "nav-link" [if [= current-path href] " nav-link-active" ""]]
+         :href href}
+    label]]
+
+[defn nav-component [current-path]
+  [nav-el {:class "nav"}
+    [div {:class "nav-inner"}
+      [a-el {:class "nav-logo" :href "/"}
+        [img-el {:src "loon-bird.svg" :alt "Loon" :class "nav-logo-img"}]
+        [span {:class "nav-logo-text"} "Loon"]]
+      [div {:class "nav-links"}
+        [|> [nav-links]
+          [map [fn [item] [make-nav-link current-path item]]]]]]]]
