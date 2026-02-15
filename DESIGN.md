@@ -32,10 +32,10 @@ Loon's syntax is still under exploration. Two candidates are presented below usi
 ### Style A: Classic S-Expression with `[]`
 
 ```loon
-[defn greet [name : String] : String
+[defn greet [name]
   [str "hello, " name "!"]]
 
-[defn greet-all [names : [Vec String]] : [Vec String]
+[defn greet-all [names]
   [|> names
     [map greet]
     [collect]]]
@@ -46,15 +46,15 @@ Loon's syntax is still under exploration. Two candidates are presented below usi
     [each println]]]
 ```
 
-Everything is explicit. Brackets everywhere. Maximally homoiconic — what you see is the AST.
+Everything is explicit. Brackets everywhere. No type annotations — they're inferred and shown by the editor. Maximally homoiconic — what you see is the AST.
 
 ### Style B: Indentation-Aware (Sweet Expressions)
 
 ```loon
-defn greet [name : String] : String
+defn greet [name]
   str "hello, " name "!"
 
-defn greet-all [names : [Vec String]] : [Vec String]
+defn greet-all [names]
   |> names
     map greet
     collect
@@ -83,13 +83,50 @@ Top-level forms use indentation instead of wrapping brackets. Inner expressions 
 
 ## 3. Type System
 
-Loon uses Hindley-Milner type inference with algebraic data types. You *can* annotate everything, but you almost never *need* to.
+### The Invisible Type System
+
+Loon's most radical design decision: **you don't write type annotations.** Ever.
+
+Types are inferred by the compiler, stored alongside the content-addressed definition hash (Section 14K), and rendered by the editor as phantom text. The source file contains zero type syntax. The compiler knows every type. The editor shows you whatever you want to see. But the *code you write* is just logic.
+
+```loon
+; What you write:
+[defn greet [name]
+  [str "hello, " name]]
+
+; What the editor renders (toggleable phantom text):
+[defn greet [name ⸬String] ⸬String
+  [str "hello, " name]]
+
+; What the compiler stores with the definition hash:
+;   greet : String → String
+```
+
+**Why this works for Loon (and wouldn't work for most languages):**
+- Hindley-Milner inference is *complete* for the core language — every expression has a principal type
+- LISP's structural simplicity (everything is an expression, uniform syntax) makes inference tractable even for complex programs
+- Content-addressed definitions (Section 14K) mean the inferred types are stored permanently — they're not re-inferred on every build, they're part of the definition's identity
+- The structural editor (Section 14N) renders types inline, on hover, or in a sidebar — you choose the visibility level
+
+**When inference isn't enough:** the `[sig]` form lets you constrain a function's type. This is rare — you'd use it for polymorphic functions where you want to restrict the type, or for documentation at module boundaries.
+
+```loon
+; Constrain a type when needed:
+[sig parse : String → Result Config ParseError]
+[defn parse [raw]
+  ...]
+
+; Or inline, for a specific binding:
+[let x [sig i32] 42]   ; force i32 instead of default i64
+```
+
+`[sig]` is an assertion, not an annotation. The compiler checks that the inferred type matches. If it doesn't, you get an error.
 
 ### Primitives
 
 ```loon
 42        ; i64 (default integer)
-42i32     ; i32
+42i32     ; i32 (suffix for non-default)
 3.14      ; f64 (default float)
 3.14f32   ; f32
 true      ; Bool
@@ -98,6 +135,8 @@ true      ; Bool
 ```
 
 ### Algebraic Data Types
+
+Type *definitions* are the one place where types appear in source — because you're defining new types, not annotating existing values.
 
 ```loon
 [type Option T
@@ -116,16 +155,22 @@ true      ; Bool
 
 ### Traits (Protocols)
 
+Trait definitions also contain type information — they're contracts, and contracts need to be explicit.
+
 ```loon
 [trait Display
-  [fn display [&self] : String]]
+  [fn display [self] → String]]
 
 [trait Add T
   [type Output]
-  [fn add [self other : T] : Self.Output]]
+  [fn add [self other] → Self.Output]]
+```
 
+Implementations don't need type annotations — the trait provides them:
+
+```loon
 [impl Display Shape
-  [fn display [&self] : String
+  [fn display [self]
     [match self
       [Circle r]  => [str "circle(" r ")"]
       [Rect w h]  => [str "rect(" w "x" h ")"]
@@ -143,6 +188,16 @@ true      ; Bool
 
 There is no null, nil, or undefined. Use `Option` for values that might not exist. Use `Result` for operations that might fail. The type system enforces exhaustive handling.
 
+### Editor Experience
+
+The editor is the window into the type system. Three rendering modes:
+
+1. **Clean** (default) — no types shown. Just your code.
+2. **Subtle** — types appear as dimmed phantom text after names, like VS Code inlay hints but pervasive.
+3. **Full** — types rendered inline as if you'd written them. Useful for learning and code review.
+
+Toggle with a keybinding. Hover any expression to see its type. Click a type to jump to its definition. The structural editor (Section 14N) makes this seamless.
+
 ---
 
 ## 4. Ownership & Borrowing
@@ -156,46 +211,57 @@ Loon adopts Rust's ownership model but infers more aggressively.
 3. Values can be *moved* (ownership transferred) or *borrowed* (temporary access).
 4. At any time: either one `&mut` reference OR any number of `&` references. Never both.
 
-### Syntax
+### Inference — Not Annotation
+
+Ownership and borrowing follow the same philosophy as types: **inferred, not annotated.**
+
+The compiler performs whole-function analysis. If a function only reads a parameter, it's automatically borrowed. If it stores it in a struct or returns it, it's moved. You never write `&` or `&mut` — the compiler figures it out.
 
 ```loon
-[defn take-ownership [s : String]    ; moves s into this function
-  [println s]]
-
-[defn borrow [s : &String]           ; borrows s immutably
-  [println s]]
-
-[defn mutate [s : &mut String]       ; borrows s mutably
-  [push! s " world"]]
-```
-
-### Aggressive Inference
-
-Unlike Rust, Loon infers borrow vs. move from usage:
-
-```loon
-[defn greet [name : String] : String
+; You write this:
+[defn greet [name]
   [str "hello, " name]]
 
 [let name "alice"]
-[greet name]        ; compiler infers &String since greet only reads name
-[println name]      ; still valid — name wasn't moved
+[greet name]      ; compiler infers borrow — greet only reads name
+[println name]    ; still valid — name wasn't moved
+
+; The editor shows this (in "subtle" or "full" mode):
+[defn greet [name ⸬&String] ⸬String
+  [str "hello, " name]]
 ```
 
-The compiler performs whole-function analysis. If a function only reads a parameter, it's automatically borrowed. If it stores it in a struct or returns it, it's moved. You can always override with explicit annotations.
+```loon
+; Mutation — the compiler infers &mut:
+[defn add-world [s]
+  [push! s " world"]]    ; push! requires mutation → compiler infers &mut
+
+; Ownership transfer — the compiler infers move:
+[defn take [s]
+  [store-in-db s]]        ; s escapes into a struct → compiler infers move
+```
+
+The `!` suffix on `push!` is a convention, not a compiler directive. The compiler determines mutability from usage, not naming. But the convention makes it obvious to the human reader.
 
 ### Lifetimes
 
-Lifetimes exist in the type system but are almost always elided:
+Lifetimes exist in the type system but are always inferred. The compiler tracks them internally; you never write `'a`.
 
 ```loon
-; Explicit (rarely needed):
-[defn first ['a] [s : &'a String] : &'a str
+; You write:
+[defn first [s]
   [slice s 0 1]]
 
-; Elided (the common case — compiler figures it out):
-[defn first [s : &String] : &str
-  [slice s 0 1]]
+; Compiler infers: first : &'a String → &'a str
+; (the output lifetime is tied to the input lifetime)
+```
+
+In the rare case where lifetime inference is ambiguous, the compiler asks via an error with a suggestion — and you can resolve it with a `[sig]` form:
+
+```loon
+[sig longest : &'a str → &'a str → &'a str]
+[defn longest [a b]
+  [if [> [len a] [len b]] a b]]
 ```
 
 ### Copy Types
@@ -204,12 +270,14 @@ Primitives (`i32`, `f64`, `Bool`, etc.) implement `Copy` — they're duplicated 
 
 ```loon
 [#[derive Copy]
- type Point [x : f64] [y : f64]]
+ type Point [x f64] [y f64]]
 ```
 
-### Open Question
+### The Bet
 
-How much can the compiler infer before the programmer gets confused? Rust's explicitness is a feature for large codebases. Loon's bet is that LISP's structural simplicity (everything is an expression, no complex control flow) makes deeper inference tractable. If this proves wrong, we add more required annotations — it's easier to loosen than tighten.
+Rust requires explicit ownership annotations because Rust has complex control flow — loops, early returns, closures with different capture modes, async boundaries. Loon's bet is that LISP's structural simplicity (everything is an expression, uniform syntax, no hidden control flow) makes full ownership inference tractable.
+
+If this proves wrong, we add `[sig]` requirements at module boundaries — it's easier to tighten than to loosen. But we start maximally inferred.
 
 ---
 
@@ -267,12 +335,11 @@ UTF-8 by default. Strings are owned (`String`) or borrowed (`&str`), same as Rus
 ### Function Definition
 
 ```loon
-[defn add [x : i64 y : i64] : i64
-  [+ x y]]
-
-; With type inference (types elided):
 [defn add [x y]
   [+ x y]]
+
+; The compiler infers: add : i64 → i64 → i64
+; The editor shows it. The source doesn't.
 ```
 
 ### Multi-Arity
@@ -348,15 +415,15 @@ src/
 Everything is private by default. Use `pub` to export:
 
 ```loon
-[pub defn serve [port : u16]
+[pub defn serve [port]
   ...]
 
 [pub type Config
-  [port : u16]
-  [host : String]]
+  [port u16]
+  [host String]]
 
 ; Private helper — not exported
-[defn parse-header [raw : &str] : Header
+[defn parse-header [raw]
   ...]
 ```
 
@@ -378,8 +445,9 @@ Everything is private by default. Use `pub` to export:
 Loon uses `Result` for all fallible operations. No exceptions.
 
 ```loon
-[defn read-file [path : &str] : [Result String IoError]
+[defn read-file [path]
   ...]
+; Compiler infers: read-file : &str → Result String IoError
 
 [match [read-file "config.toml"]
   [Ok content]  => [parse content]
@@ -391,10 +459,12 @@ Loon uses `Result` for all fallible operations. No exceptions.
 Propagates errors up the call stack (like Rust):
 
 ```loon
-[defn load-config [path : &str] : [Result Config AppError]
+[defn load-config [path]
   [let raw [read-file path]?]
   [let config [parse-toml raw]?]
   [Ok config]]
+; Compiler infers: load-config : &str → Result Config AppError
+; (inferred from the ? propagation chain)
 ```
 
 ### `try` Blocks
@@ -459,7 +529,7 @@ Unlike traditional LISPs, Loon macros can optionally run *after* type inference,
 [defmacro derive-serialize [T]
   [let fields [type-fields T]]
   `[impl Serialize ~T
-     [fn serialize [&self writer : &mut Writer]
+     [fn serialize [self writer]
        ~@[map [fn [f]
                 `[serialize-field writer ~(field-name f) self.~(field-name f)]]
               fields]]]]
@@ -472,9 +542,10 @@ Unlike traditional LISPs, Loon macros can optionally run *after* type inference,
 ### Async/Await
 
 ```loon
-[async defn fetch-data [url : &str] : [Result String HttpError]
+[async defn fetch-data [url]
   [let response [await [http.get url]]?]
   [Ok response.body]]
+; Inferred: fetch-data : &str → Result String HttpError
 
 [async defn main []
   [let data [await [fetch-data "https://api.example.com"]]?]
@@ -531,20 +602,23 @@ System interfaces via WASI:
 
 ### FFI / Extern
 
-Import functions from the WASM host:
+Import functions from the WASM host. Extern declarations are the one place where `[sig]` is required — you can't infer types across language boundaries:
 
 ```loon
 [extern "env"
-  [fn log [msg : &str]]]
+  [sig log : &str → void]
+  [fn log [msg]]]
 
 [extern "wasi_snapshot_preview1"
-  [fn fd-write [fd : i32 iovs : i32 iovs-len : i32 nwritten : i32] : i32]]
+  [sig fd-write : i32 → i32 → i32 → i32 → i32]
+  [fn fd-write [fd iovs iovs-len nwritten]]]
 ```
 
 Export Loon functions to the host:
 
 ```loon
-[pub extern defn handle-request [req : Request] : Response
+[sig handle-request : Request → Response]
+[pub extern defn handle-request [req]
   [Response.ok "hello from loon"]]
 ```
 
@@ -555,7 +629,7 @@ Loon supports the WASM Component Model for composing modules across languages:
 ```loon
 [import "wasi:http/handler" {handle}]
 [export "wasi:http/handler"
-  [fn handle [req : IncomingRequest] : OutgoingResponse
+  [fn handle [req]
     ...]]
 ```
 
@@ -629,7 +703,7 @@ Since deps are hash-pinned and Loon compiles to WASM (a deterministic target), b
 ### Fibonacci
 
 ```loon
-[defn fib [n : u64] : u64
+[defn fib [n]
   [match n
     0 => 0
     1 => 1
@@ -646,7 +720,7 @@ Since deps are hash-pinned and Loon compiles to WASM (a deterministic target), b
 ```loon
 [use std.http {Server Request Response}]
 
-[defn handle [req : &Request] : Response
+[defn handle [req]
   [match req.path
     "/"      => [Response.ok "welcome to loon!"]
     "/ping"  => [Response.ok "pong"]
@@ -664,7 +738,7 @@ Since deps are hash-pinned and Loon compiles to WASM (a deterministic target), b
 [use std.io {stdin read-to-string}]
 [use std.collections {HashMap}]
 
-[defn count-words [text : &str] : [HashMap String u64]
+[defn count-words [text]
   [|> [split text " \n\t"]
     [filter [fn [w] [not [empty? w]]]]
     [fold [HashMap.new] [fn [acc word]
@@ -672,7 +746,7 @@ Since deps are hash-pinned and Loon compiles to WASM (a deterministic target), b
 
 [defn main []
   [let text [read-to-string stdin]?]
-  [let counts [count-words &text]]
+  [let counts [count-words text]]
   [|> [entries counts]
     [sort-by [fn [[_ n]] n] :desc]
     [take 10]
@@ -810,7 +884,7 @@ Loon is Lua for the WASM era.
 [let resized [img.resize photo 800 600]]
 
 ; Export Loon functions for any WASM host:
-[pub extern defn transform [input : &[u8]] : Vec<u8>
+[pub extern defn transform [input]
   [|> input [decode-json] [process] [encode-json]]]
 ```
 
@@ -867,7 +941,7 @@ Loon's macro system has two phases:
 [defmacro+ derive-debug [T]     ; the + means "type-aware"
   [let fields [type-fields T]]
   `[impl Debug ~T
-     [fn debug [&self f : &mut Formatter] : FmtResult
+     [fn debug [self f]
        [write f ~(str (type-name T) " { ")]
        ~@[interpose
            [map [fn [field]
@@ -1040,14 +1114,14 @@ An algebraic effect is a declared side effect that a function *performs* and a c
 ```loon
 ; Declare effects:
 [effect IO
-  [fn read-file [path : &str] : String]
-  [fn write-file [path : &str content : &str]]]
+  [fn read-file [path] → String]
+  [fn write-file [path content]]]
 
 [effect Fail
-  [fn fail [msg : String] : !]]   ; ! means "never returns normally"
+  [fn fail [msg] → !]]   ; ! means "never returns normally"
 
-; Use effects in function signatures:
-[defn load-config [path : &str] : Config / {IO Fail}
+; Effects appear after / — this IS visible in source, because effects are contracts:
+[defn load-config [path] / {IO Fail}
   [let raw [IO.read-file path]]
   [if [empty? raw]
     [Fail.fail "config file is empty"]]
@@ -1063,7 +1137,7 @@ An algebraic effect is a declared side effect that a function *performs* and a c
 **Why this is legendary:**
 - **Testing without mocks.** Handle the `IO` effect with test data — no dependency injection frameworks, no mock libraries, no test-only interfaces.
 - **Composable.** Effects compose naturally. A function with `{IO Fail Log}` effects can be partially handled — handle `Log`, pass `IO` and `Fail` through.
-- **Async is just an effect.** `[effect Async [fn await [future : Future T] : T]]` — the runtime provides the handler. You can provide a different handler for testing (instant resolution) or simulation (deterministic scheduling).
+- **Async is just an effect.** `[effect Async [fn await [future] → T]]` — the runtime provides the handler. You can provide a different handler for testing (instant resolution) or simulation (deterministic scheduling).
 - **Replaces 5 language features with 1.** Exceptions, async/await, generators, dependency injection, and algebraic state — all expressible as effects.
 - **Informed by research.** Draws from Koka, Eff, and OCaml 5. No mainstream language has shipped this yet.
 
@@ -1072,16 +1146,16 @@ An algebraic effect is a declared side effect that a function *performs* and a c
 Loon's runtime includes a built-in incremental computation engine, inspired by Salsa (the engine inside rust-analyzer).
 
 ```loon
-[memo defn parse [source : &str] : Ast
+[memo defn parse [source]
   [parser.parse source]]
 
-[memo defn typecheck [ast : &Ast] : TypedAst
+[memo defn typecheck [ast]
   [checker.check ast]]
 
-[memo defn codegen [typed : &TypedAst] : Wasm
+[memo defn codegen [typed]
   [emitter.emit typed]]
 
-[memo defn compile [source : &str] : Wasm
+[memo defn compile [source]
   [|> source [parse] [typecheck] [codegen]]]
 ```
 
@@ -1204,9 +1278,10 @@ But Loon goes further than just being easy to generate. It has *language-level p
 
 ```loon
 ; Generate a function at compile time using an LLM:
-[ai defn celsius-to-fahrenheit [c : f64] : f64
+[sig celsius-to-fahrenheit : f64 → f64]
+[ai defn celsius-to-fahrenheit [c]
   "Convert Celsius to Fahrenheit"]
-; The compiler sends the signature + docstring to an LLM,
+; The compiler sends the sig + docstring to an LLM,
 ; receives an implementation, type-checks it, and compiles it.
 ; If it doesn't type-check, the compiler retries (up to 3x) then errors.
 
@@ -1233,20 +1308,20 @@ Generated code is cached by its prompt hash + model version. Rebuilds don't re-q
 #### `[agent ...]` — Agent Loops as a Language Primitive
 
 ```loon
-[defn research-agent [question : String] : String / {AI Net}
+[defn research-agent [question] / {AI Net}
   [agent
     :system "You are a research assistant. Answer questions using web search."
-    :tools [web-search summarize]       ; Loon functions exposed as tools
+    :tools [web-search summarize]
     :max-turns 10
     :prompt question]]
 
-; The tools are just normal Loon functions with type signatures:
+; The tools are just normal Loon functions — #[tool] auto-generates schemas from inferred types:
 [#[tool "Search the web for a query"]
- defn web-search [query : String] : [Vec SearchResult] / {Net}
+ defn web-search [query] / {Net}
   [http.get [str "https://api.search.io?q=" [url-encode query]]]]
 
 [#[tool "Summarize a long text"]
- defn summarize [text : String] : String / {AI}
+ defn summarize [text] / {AI}
   [ai.complete [str "Summarize this:\n" text]]]
 ```
 
@@ -1262,15 +1337,14 @@ Generated code is cached by its prompt hash + model version. Rebuilds don't re-q
 
 ```loon
 [type MovieReview
-  [title : String]
-  [rating : f64]
-  [pros : [Vec String]]
-  [cons : [Vec String]]
-  [summary : String]]
+  [title String]
+  [rating f64]
+  [pros [Vec String]]
+  [cons [Vec String]]
+  [summary String]]
 
-; Ask an LLM to produce a typed value:
-[let review : MovieReview
-  [ai.extract "Review the movie Dune Part 2"]]
+; Ask an LLM to produce a typed value — the type is inferred from context:
+[let review [sig MovieReview] [ai.extract "Review the movie Dune Part 2"]]
 
 ; The LLM's output is parsed and validated against the Loon type.
 ; Fields are type-checked. Missing fields are caught. Extra fields are dropped.
@@ -1282,13 +1356,16 @@ This works because Loon types map cleanly to JSON Schema (algebraic types → di
 #### Semantic Functions — LLM Calls That Look Like Functions
 
 ```loon
-[semantic defn classify-sentiment [text : String] : Sentiment
+[sig classify-sentiment : String → Sentiment]
+[semantic defn classify-sentiment [text]
   "Classify the sentiment of the given text."]
 
-[semantic defn translate [text : String lang : Language] : String
+[sig translate : String → Language → String]
+[semantic defn translate [text lang]
   "Translate the text to the target language. Preserve tone and idiom."]
 
-[semantic defn extract-entities [text : String] : [Vec Entity]
+[sig extract-entities : String → [Vec Entity]]
+[semantic defn extract-entities [text]
   "Extract named entities (people, places, organizations) from the text."]
 
 ; Use them like any other function:
@@ -1343,7 +1420,8 @@ offline = false                     # if true, only use cached responses
 ```loon
 ; Override per-call:
 [ai.with-model "claude-opus"
-  [ai defn complex-algorithm [data : &[f64]] : [Vec f64]
+  [sig complex-algorithm : [Vec f64] → [Vec f64]]
+  [ai defn complex-algorithm [data]
     "Implement a fast Fourier transform"]]
 ```
 
@@ -1418,7 +1496,7 @@ fn fib(n: u64) u64 {
 
 **Loon:**
 ```loon
-[async defn handle [req : &Request] : Response
+[async defn handle [req]
   [match req.method
     :GET  => [Response.ok [get-page req.path]]
     :POST => [Response.ok [create-item [req.json]?]]
@@ -1436,7 +1514,7 @@ async fn handle(req: Request) -> Response {
 }
 ```
 
-Loon is consistently more concise while retaining the same type safety.
+Loon is radically more concise — zero type annotations — while retaining the same type safety. The types are there. You just don't have to write them.
 
 ---
 
