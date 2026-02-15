@@ -514,6 +514,188 @@ fn channel_recv_empty_errors() {
 }
 
 #[test]
+fn process_args_mock() {
+    // Test Process.args with a mock handler
+    assert_eq!(
+        run(r#"
+            [handle [Process.args]
+              [Process.args] => [resume #["loon" "test"]]]
+        "#),
+        Value::Vec(vec![Value::Str("loon".to_string()), Value::Str("test".to_string())])
+    );
+}
+
+#[test]
+fn process_env_mock() {
+    // Test Process.env with a mock handler
+    assert_eq!(
+        run(r#"
+            [handle [Process.env "HOME"]
+              [Process.env k] => [resume [Some "/home"]]]
+        "#),
+        Value::Adt("Some".to_string(), vec![Value::Str("/home".to_string())])
+    );
+}
+
+#[test]
+fn resumable_sequential_effects() {
+    // Both IO.println calls should run, and handle should return 42
+    assert_eq!(
+        run(r#"
+            [handle [do [IO.println "a"] [IO.println "b"] 42]
+              [IO.println msg] => [resume ()]]
+        "#),
+        Value::Int(42)
+    );
+}
+
+#[test]
+fn resumable_with_value() {
+    // Resume value substitutes into the effect call site, even in nested expressions
+    assert_eq!(
+        run(r#"
+            [handle [+ 1 [int [IO.read-line]]]
+              [IO.read-line] => [resume "5"]]
+        "#),
+        Value::Int(6)
+    );
+}
+
+#[test]
+fn try_success() {
+    assert_eq!(
+        run(r#"[try [+ 1 2] [fn [_] 0]]"#),
+        Value::Int(3)
+    );
+}
+
+#[test]
+fn try_failure() {
+    assert_eq!(
+        run(r#"[try [Err "oops"]? [fn [msg] [str "caught: " msg]]]"#),
+        Value::Str("caught: oops".to_string())
+    );
+}
+
+#[test]
+fn stdlib_number_parsing() {
+    assert_eq!(run(r#"[int "42"]"#), Value::Int(42));
+    assert_eq!(run(r#"[float "3.14"]"#), Value::Float(3.14));
+    assert_eq!(run("[int 5]"), Value::Int(5));
+    assert_eq!(run("[float 5]"), Value::Float(5.0));
+}
+
+#[test]
+fn stdlib_number_parsing_error() {
+    let exprs = parse(r#"[int "abc"]"#).expect("parse failed");
+    let result = eval_program(&exprs);
+    assert!(result.is_err(), "int of non-numeric string should error");
+}
+
+#[test]
+fn stdlib_string_ops() {
+    assert_eq!(
+        run(r#"[char-at "hello" 1]"#),
+        Value::Str("e".to_string())
+    );
+    assert_eq!(
+        run(r#"[substring "hello world" 0 5]"#),
+        Value::Str("hello".to_string())
+    );
+    assert_eq!(
+        run(r#"[contains-str? "hello world" "world"]"#),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        run(r#"[contains-str? "hello world" "xyz"]"#),
+        Value::Bool(false)
+    );
+    assert_eq!(
+        run(r#"[index-of "hello world" "world"]"#),
+        Value::Int(6)
+    );
+    assert_eq!(
+        run(r#"[index-of "hello world" "xyz"]"#),
+        Value::Int(-1)
+    );
+}
+
+#[test]
+fn stdlib_group_by() {
+    assert_eq!(
+        run(r#"[group-by [fn [x] [% x 2]] #[1 2 3 4 5]]"#),
+        Value::Map(vec![
+            (Value::Int(1), Value::Vec(vec![Value::Int(1), Value::Int(3), Value::Int(5)])),
+            (Value::Int(0), Value::Vec(vec![Value::Int(2), Value::Int(4)])),
+        ])
+    );
+}
+
+#[test]
+fn stdlib_flat_map() {
+    assert_eq!(
+        run(r#"[flat-map [fn [x] #[x [* x 2]]] #[1 2 3]]"#),
+        Value::Vec(vec![
+            Value::Int(1), Value::Int(2),
+            Value::Int(2), Value::Int(4),
+            Value::Int(3), Value::Int(6),
+        ])
+    );
+}
+
+#[test]
+fn stdlib_sort() {
+    assert_eq!(
+        run("[sort #[3 1 2]]"),
+        Value::Vec(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+    );
+}
+
+#[test]
+fn stdlib_min_max_sum() {
+    assert_eq!(run("[min #[3 1 2]]"), Value::Int(1));
+    assert_eq!(run("[max #[3 1 2]]"), Value::Int(3));
+    assert_eq!(run("[sum #[1 2 3 4]]"), Value::Int(10));
+}
+
+#[test]
+fn stdlib_to_string() {
+    assert_eq!(run(r#"[to-string 42]"#), Value::Str("42".to_string()));
+    assert_eq!(run(r#"[to-string true]"#), Value::Str("true".to_string()));
+}
+
+#[test]
+fn stdlib_into_map() {
+    assert_eq!(
+        run("[into-map #[(1 2) (3 4)]]"),
+        Value::Map(vec![
+            (Value::Int(1), Value::Int(2)),
+            (Value::Int(3), Value::Int(4)),
+        ])
+    );
+}
+
+#[test]
+fn fmt_interpolation() {
+    assert_eq!(
+        run(r#"[let name "world"] [fmt "hello {name}"]"#),
+        Value::Str("hello world".to_string())
+    );
+    assert_eq!(
+        run(r#"[fmt "2 + 2 = {[+ 2 2]}"]"#),
+        Value::Str("2 + 2 = 4".to_string())
+    );
+    assert_eq!(
+        run(r#"[fmt "no interpolation"]"#),
+        Value::Str("no interpolation".to_string())
+    );
+    assert_eq!(
+        run(r#"[fmt "escaped {{braces}}"]"#),
+        Value::Str("escaped {braces}".to_string())
+    );
+}
+
+#[test]
 fn module_use() {
     // Write a temp module and import it
     let dir = std::env::temp_dir().join("loon_test_modules");

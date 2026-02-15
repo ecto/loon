@@ -55,6 +55,23 @@ impl EffectRegistry {
             }],
         });
         reg.register(EffectDecl {
+            name: "Process".to_string(),
+            operations: vec![
+                EffectOp {
+                    name: "args".to_string(),
+                    params: vec![],
+                },
+                EffectOp {
+                    name: "env".to_string(),
+                    params: vec!["key".to_string()],
+                },
+                EffectOp {
+                    name: "exit".to_string(),
+                    params: vec!["code".to_string()],
+                },
+            ],
+        });
+        reg.register(EffectDecl {
             name: "Async".to_string(),
             operations: vec![EffectOp {
                 name: "await".to_string(),

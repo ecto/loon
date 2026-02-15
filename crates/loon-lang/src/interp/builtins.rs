@@ -825,6 +825,259 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
+    // --- Number parsing ---
+
+    builtin!(env, "int", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Str(s) => s.trim().parse::<i64>()
+                .map(Value::Int)
+                .map_err(|e| err(format!("int: cannot parse '{}': {}", s, e))),
+            Value::Int(n) => Ok(Value::Int(*n)),
+            Value::Float(f) => Ok(Value::Int(*f as i64)),
+            _ => Err(err(format!("int: cannot convert {}", args[0]))),
+        }
+    });
+
+    builtin!(env, "float", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Str(s) => s.trim().parse::<f64>()
+                .map(Value::Float)
+                .map_err(|e| err(format!("float: cannot parse '{}': {}", s, e))),
+            Value::Float(f) => Ok(Value::Float(*f)),
+            Value::Int(n) => Ok(Value::Float(*n as f64)),
+            _ => Err(err(format!("float: cannot convert {}", args[0]))),
+        }
+    });
+
+    // --- String ops ---
+
+    builtin!(env, "char-at", |_, args: &[Value]| {
+        match (&args[0], &args[1]) {
+            (Value::Str(s), Value::Int(i)) => {
+                let idx = *i as usize;
+                s.chars().nth(idx)
+                    .map(|c| Value::Str(c.to_string()))
+                    .ok_or_else(|| err(format!("char-at: index {} out of bounds (len {})", i, s.chars().count())))
+            }
+            _ => Err(err("char-at requires a string and index")),
+        }
+    });
+
+    builtin!(env, "substring", |_, args: &[Value]| {
+        match (&args[0], &args[1], &args[2]) {
+            (Value::Str(s), Value::Int(start), Value::Int(end)) => {
+                let start = *start as usize;
+                let end = *end as usize;
+                let chars: Vec<char> = s.chars().collect();
+                if start > chars.len() || end > chars.len() || start > end {
+                    return Err(err(format!("substring: invalid range {}..{} for len {}", start, end, chars.len())));
+                }
+                Ok(Value::Str(chars[start..end].iter().collect()))
+            }
+            _ => Err(err("substring requires a string, start, and end")),
+        }
+    });
+
+    builtin!(env, "contains-str?", |_, args: &[Value]| {
+        match (&args[0], &args[1]) {
+            (Value::Str(haystack), Value::Str(needle)) => {
+                Ok(Value::Bool(haystack.contains(needle.as_str())))
+            }
+            _ => Err(err("contains-str? requires two strings")),
+        }
+    });
+
+    builtin!(env, "index-of", |_, args: &[Value]| {
+        match (&args[0], &args[1]) {
+            (Value::Str(haystack), Value::Str(needle)) => {
+                match haystack.find(needle.as_str()) {
+                    Some(pos) => Ok(Value::Int(pos as i64)),
+                    None => Ok(Value::Int(-1)),
+                }
+            }
+            _ => Err(err("index-of requires two strings")),
+        }
+    });
+
+    // --- Collection ops ---
+
+    builtin!(env, "group-by", |_, args: &[Value]| {
+        match (&args[0], args.get(1)) {
+            (func, Some(Value::Vec(v))) if func.is_callable() => {
+                let mut groups: Vec<(Value, Vec<Value>)> = Vec::new();
+                for item in v {
+                    let key = apply_value(func, std::slice::from_ref(item))?;
+                    if let Some(group) = groups.iter_mut().find(|(k, _)| k == &key) {
+                        group.1.push(item.clone());
+                    } else {
+                        groups.push((key, vec![item.clone()]));
+                    }
+                }
+                let map: Vec<(Value, Value)> = groups
+                    .into_iter()
+                    .map(|(k, v)| (k, Value::Vec(v)))
+                    .collect();
+                Ok(Value::Map(map))
+            }
+            (func, None) if func.is_callable() => {
+                let func_clone = func.clone();
+                Ok(Value::Builtin(
+                    "group-by-partial".to_string(),
+                    Arc::new(move |_, inner_args: &[Value]| {
+                        if let Value::Vec(v) = &inner_args[0] {
+                            let mut groups: Vec<(Value, Vec<Value>)> = Vec::new();
+                            for item in v {
+                                let key = apply_value(&func_clone, std::slice::from_ref(item))?;
+                                if let Some(group) = groups.iter_mut().find(|(k, _)| k == &key) {
+                                    group.1.push(item.clone());
+                                } else {
+                                    groups.push((key, vec![item.clone()]));
+                                }
+                            }
+                            let map: Vec<(Value, Value)> = groups
+                                .into_iter()
+                                .map(|(k, v)| (k, Value::Vec(v)))
+                                .collect();
+                            Ok(Value::Map(map))
+                        } else {
+                            Err(err("group-by requires a vector"))
+                        }
+                    }),
+                ))
+            }
+            _ => Err(err("group-by requires a function and vector")),
+        }
+    });
+
+    builtin!(env, "flat-map", |_, args: &[Value]| {
+        match (&args[0], args.get(1)) {
+            (func, Some(Value::Vec(v))) if func.is_callable() => {
+                let mut result = Vec::new();
+                for item in v {
+                    let val = apply_value(func, std::slice::from_ref(item))?;
+                    if let Value::Vec(inner) = val {
+                        result.extend(inner);
+                    } else {
+                        result.push(val);
+                    }
+                }
+                Ok(Value::Vec(result))
+            }
+            (func, None) if func.is_callable() => {
+                let func_clone = func.clone();
+                Ok(Value::Builtin(
+                    "flat-map-partial".to_string(),
+                    Arc::new(move |_, inner_args: &[Value]| {
+                        if let Value::Vec(v) = &inner_args[0] {
+                            let mut result = Vec::new();
+                            for item in v {
+                                let val = apply_value(&func_clone, std::slice::from_ref(item))?;
+                                if let Value::Vec(inner) = val {
+                                    result.extend(inner);
+                                } else {
+                                    result.push(val);
+                                }
+                            }
+                            Ok(Value::Vec(result))
+                        } else {
+                            Err(err("flat-map requires a vector"))
+                        }
+                    }),
+                ))
+            }
+            _ => Err(err("flat-map requires a function and vector")),
+        }
+    });
+
+    builtin!(env, "sort", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Vec(v) => {
+                let mut sorted = v.clone();
+                sorted.sort_by(value_cmp);
+                Ok(Value::Vec(sorted))
+            }
+            _ => Err(err("sort requires a vector")),
+        }
+    });
+
+    builtin!(env, "min", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Vec(v) if !v.is_empty() => {
+                let mut result = &v[0];
+                for item in &v[1..] {
+                    if value_cmp(item, result) == std::cmp::Ordering::Less {
+                        result = item;
+                    }
+                }
+                Ok(result.clone())
+            }
+            Value::Vec(_) => Err(err("min: empty vector")),
+            _ => Err(err("min requires a vector")),
+        }
+    });
+
+    builtin!(env, "max", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Vec(v) if !v.is_empty() => {
+                let mut result = &v[0];
+                for item in &v[1..] {
+                    if value_cmp(item, result) == std::cmp::Ordering::Greater {
+                        result = item;
+                    }
+                }
+                Ok(result.clone())
+            }
+            Value::Vec(_) => Err(err("max: empty vector")),
+            _ => Err(err("max requires a vector")),
+        }
+    });
+
+    builtin!(env, "sum", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Vec(v) => {
+                if v.is_empty() {
+                    return Ok(Value::Int(0));
+                }
+                let mut acc = v[0].clone();
+                for item in &v[1..] {
+                    acc = match (&acc, item) {
+                        (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+                        (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
+                        (Value::Float(a), Value::Int(b)) => Value::Float(a + *b as f64),
+                        (Value::Int(a), Value::Float(b)) => Value::Float(*a as f64 + b),
+                        _ => return Err(err("sum: non-numeric element")),
+                    };
+                }
+                Ok(acc)
+            }
+            _ => Err(err("sum requires a vector")),
+        }
+    });
+
+    // --- Conversion ---
+
+    builtin!(env, "to-string", |_, args: &[Value]| {
+        Ok(Value::Str(args[0].display_str()))
+    });
+
+    builtin!(env, "into-map", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Vec(v) => {
+                let mut pairs = Vec::new();
+                for item in v {
+                    match item {
+                        Value::Tuple(kv) if kv.len() == 2 => {
+                            pairs.push((kv[0].clone(), kv[1].clone()));
+                        }
+                        _ => return Err(err("into-map: each element must be a 2-tuple")),
+                    }
+                }
+                Ok(Value::Map(pairs))
+            }
+            _ => Err(err("into-map requires a vector of pairs")),
+        }
+    });
+
     // --- Channel builtins ---
 
     builtin!(env, "channel", |_, _args: &[Value]| {

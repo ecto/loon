@@ -143,7 +143,18 @@ impl<'a> Parser<'a> {
                     items.push(self.parse_expr()?);
                 }
                 let end = self.expect(&Token::RBracket)?;
-                Ok(Expr::new(ExprKind::List(items), span.merge(end)))
+                let full_span = span.merge(end);
+                // Desugar [fmt "...{expr}..."] → [str parts...]
+                if items.len() == 2 {
+                    if let ExprKind::Symbol(ref s) = items[0].kind {
+                        if s == "fmt" {
+                            if let ExprKind::Str(ref template) = items[1].kind {
+                                return desugar_fmt(template, full_span, self.source);
+                            }
+                        }
+                    }
+                }
+                Ok(Expr::new(ExprKind::List(items), full_span))
             }
 
             // Persistent vector: #[a b c]
@@ -226,6 +237,95 @@ impl<'a> Parser<'a> {
         }
         Ok(exprs)
     }
+}
+
+/// Desugar `[fmt "hello {name}, {[+ 1 2]}"]` into `[str "hello " name ", " [+ 1 2]]`
+fn desugar_fmt(template: &str, span: Span, _source: &str) -> Result<Expr, ParseError> {
+    let mut parts: Vec<Expr> = Vec::new();
+    let mut literal = String::new();
+    let mut chars = template.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '{' {
+            if chars.peek() == Some(&'{') {
+                // Escaped {{ → literal {
+                chars.next();
+                literal.push('{');
+            } else {
+                // Flush literal
+                if !literal.is_empty() {
+                    parts.push(Expr::new(ExprKind::Str(literal.clone()), span));
+                    literal.clear();
+                }
+                // Collect expression text until matching }
+                let mut expr_text = String::new();
+                let mut depth = 1;
+                while let Some(ec) = chars.next() {
+                    if ec == '{' {
+                        depth += 1;
+                        expr_text.push(ec);
+                    } else if ec == '}' {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                        expr_text.push(ec);
+                    } else {
+                        expr_text.push(ec);
+                    }
+                }
+                if depth != 0 {
+                    return Err(ParseError {
+                        message: "unclosed { in fmt string".to_string(),
+                        span,
+                    });
+                }
+                // Parse the expression text
+                let inner_exprs = parse(&expr_text).map_err(|e| ParseError {
+                    message: format!("error in fmt interpolation: {}", e.message),
+                    span,
+                })?;
+                if inner_exprs.len() == 1 {
+                    parts.push(inner_exprs.into_iter().next().unwrap());
+                } else {
+                    return Err(ParseError {
+                        message: "fmt interpolation must contain exactly one expression".to_string(),
+                        span,
+                    });
+                }
+            }
+        } else if c == '}' {
+            if chars.peek() == Some(&'}') {
+                // Escaped }} → literal }
+                chars.next();
+                literal.push('}');
+            } else {
+                return Err(ParseError {
+                    message: "unmatched } in fmt string".to_string(),
+                    span,
+                });
+            }
+        } else {
+            literal.push(c);
+        }
+    }
+
+    // Flush remaining literal
+    if !literal.is_empty() {
+        parts.push(Expr::new(ExprKind::Str(literal), span));
+    }
+
+    // If no interpolation, just return a plain string
+    if parts.len() == 1 {
+        if let ExprKind::Str(_) = &parts[0].kind {
+            return Ok(parts.into_iter().next().unwrap());
+        }
+    }
+
+    // Build [str part0 part1 ...]
+    let mut items = vec![Expr::new(ExprKind::Symbol("str".to_string()), span)];
+    items.extend(parts);
+    Ok(Expr::new(ExprKind::List(items), span))
 }
 
 /// Desugar `expr?` into `[match expr [Ok __v] => __v [Err __e] => [Fail.fail __e]]`
@@ -369,6 +469,40 @@ mod tests {
         } else {
             panic!("expected list (match)");
         }
+    }
+
+    #[test]
+    fn parse_fmt_simple() {
+        let src = r#"[fmt "hello {name}"]"#;
+        let exprs = parse(src).unwrap();
+        assert_eq!(exprs.len(), 1);
+        // Should desugar to [str "hello " name]
+        assert_eq!(exprs[0].to_string(), r#"[str "hello " name]"#);
+    }
+
+    #[test]
+    fn parse_fmt_expr() {
+        let src = r#"[fmt "2 + 2 = {[+ 2 2]}"]"#;
+        let exprs = parse(src).unwrap();
+        assert_eq!(exprs.len(), 1);
+        assert_eq!(exprs[0].to_string(), r#"[str "2 + 2 = " [+ 2 2]]"#);
+    }
+
+    #[test]
+    fn parse_fmt_no_interp() {
+        let src = r#"[fmt "no interpolation"]"#;
+        let exprs = parse(src).unwrap();
+        assert_eq!(exprs.len(), 1);
+        // Should be a plain string, not a str call
+        assert_eq!(exprs[0].to_string(), r#""no interpolation""#);
+    }
+
+    #[test]
+    fn parse_fmt_escaped_braces() {
+        let src = r#"[fmt "escaped {{braces}}"]"#;
+        let exprs = parse(src).unwrap();
+        assert_eq!(exprs.len(), 1);
+        assert_eq!(exprs[0].to_string(), r#""escaped {braces}""#);
     }
 
     #[test]

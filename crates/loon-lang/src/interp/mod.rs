@@ -86,6 +86,27 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
                 Some(Err(err("IO.write-file requires a path and contents")))
             }
         }
+        ("Process", "args") => {
+            let args: Vec<Value> = std::env::args().map(Value::Str).collect();
+            Some(Ok(Value::Vec(args)))
+        }
+        ("Process", "env") => {
+            if let Some(Value::Str(key)) = performed.args.first() {
+                match std::env::var(key) {
+                    Ok(val) => Some(Ok(Value::Adt("Some".to_string(), vec![Value::Str(val)]))),
+                    Err(_) => Some(Ok(Value::Adt("None".to_string(), vec![]))),
+                }
+            } else {
+                Some(Err(err("Process.env requires a string key")))
+            }
+        }
+        ("Process", "exit") => {
+            if let Some(Value::Int(code)) = performed.args.first() {
+                std::process::exit(*code as i32);
+            } else {
+                std::process::exit(0);
+            }
+        }
         ("IO", "read-line") => {
             let mut line = String::new();
             match std::io::stdin().read_line(&mut line) {
@@ -256,6 +277,7 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                     "sig" => return Ok(Value::Unit),   // sig assertions are compile-time
                     "impl" => return eval_impl_def(&items[1..], env),
                     "handle" => return eval_handle(&items[1..], env),
+                    "try" => return eval_try(&items[1..], env),
                     "pub" => {
                         // [pub defn name ...] — eval the inner form and mark as pub
                         if items.len() > 1 {
@@ -285,9 +307,28 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
             if let ExprKind::Symbol(s) = &head.kind {
                 if let Some((effect, op)) = s.split_once('.') {
                     if effect.starts_with(char::is_uppercase) {
+                        // Check for override (from resumable handle)
+                        if let Some(override_val) = check_effect_override(effect, op) {
+                            // Still evaluate args for side effects, but return the override
+                            for e in &items[1..] {
+                                let _ = eval(e, env);
+                            }
+                            return Ok(override_val);
+                        }
                         let args: Result<Vec<_>, _> =
                             items[1..].iter().map(|e| eval(e, env)).collect();
                         let args = args?;
+                        // If not inside a handle block, try built-in handler directly
+                        if !INSIDE_HANDLE.with(|h| *h.borrow()) {
+                            let performed = PerformedEffect {
+                                effect: effect.to_string(),
+                                operation: op.to_string(),
+                                args: args.clone(),
+                            };
+                            if let Some(result) = try_builtin_handler(&performed) {
+                                return result;
+                            }
+                        }
                         return Err(perform_effect(effect, op, args));
                     }
                 }
@@ -708,25 +749,154 @@ fn eval_impl_def(args: &[Expr], env: &mut Env) -> IResult {
 
 /// Evaluate [handle body handler1 handler2 ...]
 /// Format: [handle [expr] [Effect.op params] => handler_body ...]
+///
+/// Supports resumable handlers: when an effect is caught and [resume val] is called,
+/// the resume value is fed back as the return of the effect call, and the body is
+/// re-evaluated with the effect temporarily overridden to return that value.
+/// Multiple sequential effects are handled by accumulating overrides.
 fn eval_handle(args: &[Expr], env: &mut Env) -> IResult {
     if args.is_empty() {
         return Err(err("handle requires a body expression"));
     }
 
-    // First arg is the body expression to evaluate
     let body = &args[0];
+    let handlers = collect_handlers(&args[1..]);
 
-    // Collect handlers: [Effect.op params...] => body
-    let mut handlers: Vec<(String, String, Vec<String>, &Expr)> = Vec::new();
-    let handler_args = &args[1..];
+    // Mark that we're inside a handle block so effects propagate as errors
+    // instead of being eagerly handled by builtin handlers
+    let was_inside = INSIDE_HANDLE.with(|h| {
+        let old = *h.borrow();
+        *h.borrow_mut() = true;
+        old
+    });
+    let restore = || INSIDE_HANDLE.with(|h| *h.borrow_mut() = was_inside);
+
+    // We accumulate effect overrides: when an effect is handled with resume,
+    // we record the override and re-evaluate the body from scratch.
+    // Each override is (effect, op, call_index, resume_value) where call_index
+    // counts which invocation of that effect.op to override.
+    let mut overrides: Vec<(String, String, usize, Value)> = Vec::new();
+    let max_iterations = 100; // safety limit
+
+    for _ in 0..max_iterations {
+        // Install overrides as temporary effect interceptors
+        let result = eval_with_effect_overrides(body, env, &overrides);
+
+        match result {
+            Ok(val) => {
+                restore();
+                return Ok(val);
+            }
+            Err(e) => {
+                if let Some(ref performed) = e.performed_effect {
+                    // Run handler with INSIDE_HANDLE restored so it can use builtin effects
+                    restore();
+                    let handler_result = run_handler(performed, &handlers, env)?;
+                    INSIDE_HANDLE.with(|h| *h.borrow_mut() = true);
+
+                    if let Some(resume_val) = handler_result {
+                        // Count how many times this effect.op has been overridden already
+                        let count = overrides.iter()
+                            .filter(|(eff, op, _, _)| eff == &performed.effect && op == &performed.operation)
+                            .count();
+                        overrides.push((
+                            performed.effect.clone(),
+                            performed.operation.clone(),
+                            count,
+                            resume_val,
+                        ));
+                        // Re-evaluate body with the new override
+                        continue;
+                    } else {
+                        restore();
+                        return Err(e);
+                    }
+                } else {
+                    restore();
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    restore();
+    Err(err("handle: too many sequential effects (possible infinite loop)"))
+}
+
+/// Evaluate an expression, but intercept effect operations that have overrides.
+/// When the Nth invocation of Effect.op is encountered and there's an override for it,
+/// return the override value instead of performing the effect.
+fn eval_with_effect_overrides(
+    expr: &Expr,
+    env: &mut Env,
+    overrides: &[(String, String, usize, Value)],
+) -> IResult {
+    if overrides.is_empty() {
+        return eval(expr, env);
+    }
+
+    // We need to track how many times each effect.op has been invoked during this
+    // evaluation so we can match the correct override. We use thread-local counters.
+    EFFECT_COUNTERS.with(|c| c.borrow_mut().clear());
+
+    eval_with_overrides_inner(expr, env, overrides)
+}
+
+thread_local! {
+    static EFFECT_COUNTERS: RefCell<HashMap<(String, String), usize>> = RefCell::new(HashMap::new());
+    static EFFECT_OVERRIDES: RefCell<Vec<(String, String, usize, Value)>> = RefCell::new(Vec::new());
+    static INSIDE_HANDLE: RefCell<bool> = RefCell::new(false);
+}
+
+fn eval_with_overrides_inner(
+    expr: &Expr,
+    env: &mut Env,
+    overrides: &[(String, String, usize, Value)],
+) -> IResult {
+    // Set up the overrides in thread-local storage so perform_effect_or_override can use them
+    EFFECT_OVERRIDES.with(|o| *o.borrow_mut() = overrides.to_vec());
+    eval(expr, env)
+}
+
+/// Check if an effect operation has an override. If so, return the override value
+/// and increment the counter. Otherwise return None.
+fn check_effect_override(effect: &str, op: &str) -> Option<Value> {
+    let key = (effect.to_string(), op.to_string());
+
+    let count = EFFECT_COUNTERS.with(|c| {
+        let mut counters = c.borrow_mut();
+        let count = counters.entry(key.clone()).or_insert(0);
+        let current = *count;
+        *count += 1;
+        current
+    });
+
+    EFFECT_OVERRIDES.with(|o| {
+        let overrides = o.borrow();
+        for (eff, operation, idx, val) in overrides.iter() {
+            if eff == effect && operation == op && *idx == count {
+                return Some(val.clone());
+            }
+        }
+        None
+    })
+}
+
+struct Handler<'a> {
+    effect: String,
+    op: String,
+    params: Vec<String>,
+    body: &'a Expr,
+}
+
+fn collect_handlers<'a>(handler_args: &'a [Expr]) -> Vec<Handler<'a>> {
+    let mut handlers = Vec::new();
     let mut i = 0;
     while i < handler_args.len() {
-        // Pattern: [Effect.op param1 param2...] => body
         if let ExprKind::List(pattern) = &handler_args[i].kind {
             if !pattern.is_empty() {
                 if let ExprKind::Symbol(qualified) = &pattern[0].kind {
                     if let Some((effect, op)) = qualified.split_once('.') {
-                        // Collect param names
                         let params: Vec<String> = pattern[1..]
                             .iter()
                             .filter_map(|p| {
@@ -738,16 +908,15 @@ fn eval_handle(args: &[Expr], env: &mut Env) -> IResult {
                             })
                             .collect();
 
-                        // Skip => and get body
                         if i + 2 < handler_args.len() {
                             if let ExprKind::Symbol(arrow) = &handler_args[i + 1].kind {
                                 if arrow == "=>" {
-                                    handlers.push((
-                                        effect.to_string(),
-                                        op.to_string(),
+                                    handlers.push(Handler {
+                                        effect: effect.to_string(),
+                                        op: op.to_string(),
                                         params,
-                                        &handler_args[i + 2],
-                                    ));
+                                        body: &handler_args[i + 2],
+                                    });
                                     i += 3;
                                     continue;
                                 }
@@ -759,40 +928,68 @@ fn eval_handle(args: &[Expr], env: &mut Env) -> IResult {
         }
         i += 1;
     }
+    handlers
+}
 
-    // Try to evaluate the body
+/// Try to match a performed effect against handlers.
+/// Returns Ok(Some(resume_val)) if handled (resume was called),
+/// Ok(None) if no handler matched,
+/// Err if the handler errored.
+fn run_handler(
+    performed: &PerformedEffect,
+    handlers: &[Handler<'_>],
+    env: &mut Env,
+) -> Result<Option<Value>, InterpError> {
+    for handler in handlers {
+        if performed.effect == handler.effect && performed.operation == handler.op {
+            env.push_scope();
+            for (pname, pval) in handler.params.iter().zip(performed.args.iter()) {
+                if pname != "_" {
+                    env.set(pname.clone(), pval.clone());
+                }
+            }
+            // `resume` returns the value it's called with — this becomes
+            // the return value of the handled effect call site.
+            env.set(
+                "resume".to_string(),
+                Value::Builtin(
+                    "resume".to_string(),
+                    Arc::new(|_, args: &[Value]| {
+                        Ok(args.first().cloned().unwrap_or(Value::Unit))
+                    }),
+                ),
+            );
+            let result = eval(handler.body, env);
+            env.pop_scope();
+            return result.map(Some);
+        }
+    }
+    Ok(None)
+}
+
+/// Evaluate [try body on-fail]
+/// Desugars to: [handle body [Fail.fail msg] => [on-fail msg]]
+fn eval_try(args: &[Expr], env: &mut Env) -> IResult {
+    if args.len() < 2 {
+        return Err(err("try requires a body and failure handler"));
+    }
+    let body = &args[0];
+    let on_fail = eval(&args[1], env)?;
+
     match eval(body, env) {
         Ok(val) => Ok(val),
         Err(e) => {
             if let Some(ref performed) = e.performed_effect {
-                // Look for a matching handler
-                for (effect, op, params, handler_body) in &handlers {
-                    if performed.effect == *effect && performed.operation == *op {
-                        env.push_scope();
-                        // Bind handler params to effect args
-                        for (pname, pval) in params.iter().zip(performed.args.iter()) {
-                            if pname != "_" {
-                                env.set(pname.clone(), pval.clone());
-                            }
-                        }
-                        // [resume val] is a builtin in the handler scope
-                        // For one-shot continuations, resume just returns the value
-                        env.set(
-                            "resume".to_string(),
-                            Value::Builtin(
-                                "resume".to_string(),
-                                Arc::new(|_, args: &[Value]| {
-                                    Ok(args.first().cloned().unwrap_or(Value::Unit))
-                                }),
-                            ),
-                        );
-                        let result = eval(handler_body, env);
-                        env.pop_scope();
-                        return result;
+                if performed.effect == "Fail" && performed.operation == "fail" {
+                    let msg = performed.args.first().cloned().unwrap_or(Value::Unit);
+                    match &on_fail {
+                        Value::Fn(lf) => call_fn(lf, &[msg], env),
+                        Value::Builtin(name, f) => f(name, &[msg]),
+                        _ => Err(err("try: on-fail must be callable")),
                     }
+                } else {
+                    Err(e)
                 }
-                // No handler matched — propagate
-                Err(e)
             } else {
                 Err(e)
             }

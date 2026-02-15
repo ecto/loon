@@ -20,6 +20,16 @@ struct FnDef {
     /// Number of parameters (used for future validation)
     #[allow(dead_code)]
     arity: usize,
+    /// Whether this is a closure that takes env_ptr as first param
+    is_closure: bool,
+}
+
+/// ADT metadata: type name → list of (constructor_name, tag, arity)
+#[derive(Clone, Debug)]
+struct AdtInfo {
+    #[allow(dead_code)]
+    type_name: String,
+    constructors: Vec<(String, u32, usize)>,
 }
 
 struct Compiler {
@@ -37,6 +47,19 @@ struct Compiler {
     import_count: u32,
     /// Counter for generating unique lambda names
     lambda_counter: u32,
+    /// ADT info: maps constructor names to their metadata
+    adt_constructors: HashMap<String, (u32, usize)>, // name → (tag, arity)
+    /// All ADT types
+    #[allow(dead_code)]
+    adt_types: Vec<AdtInfo>,
+    /// Function table entries: func_idx values for call_indirect
+    table_entries: Vec<u32>,
+    /// Maps func_idx → table index
+    table_map: HashMap<u32, u32>,
+    /// Type indices for indirect call signatures: arity → type_idx
+    indirect_type_cache: HashMap<usize, u32>,
+    /// Number of types allocated so far (for generating new type indices)
+    type_count: u32,
 }
 
 struct FunctionBody {
@@ -75,6 +98,20 @@ enum WasmInstruction {
     I32Const(i32),
     I32Store(u32, u32),   // align, offset
     I32Store16(u32, u32), // for newline
+    // For closures and ADTs
+    CallIndirect(u32),    // type index
+    I64Store(u32, u32),   // align, offset
+    I64Load(u32, u32),    // align, offset
+    I32Load(u32, u32),    // align, offset
+    GlobalGet(u32),       // for heap_ptr
+    GlobalSet(u32),       // for heap_ptr
+    I32WrapI64,
+    I64ExtendI32U,
+    I64ShrU,
+    I64And,
+    I64Or,
+    I64Shl,
+    I32Add,
 }
 
 impl Compiler {
@@ -87,10 +124,40 @@ impl Compiler {
             next_fn_idx: 1,      // 0 is fd_write import
             import_count: 1,
             lambda_counter: 0,
+            adt_constructors: HashMap::new(),
+            adt_types: Vec::new(),
+            table_entries: Vec::new(),
+            table_map: HashMap::new(),
+            indirect_type_cache: HashMap::new(),
+            type_count: 2, // 0=fd_write, 1=println are pre-allocated
         }
     }
 
+    /// Ensure a function is in the table and return its table index.
+    fn ensure_in_table(&mut self, func_idx: u32) -> u32 {
+        if let Some(&table_idx) = self.table_map.get(&func_idx) {
+            return table_idx;
+        }
+        let table_idx = self.table_entries.len() as u32;
+        self.table_entries.push(func_idx);
+        self.table_map.insert(func_idx, table_idx);
+        table_idx
+    }
+
     fn compile_program(&mut self, exprs: &[Expr]) -> Result<(), String> {
+        // Pass 0: collect ADT type definitions
+        for expr in exprs {
+            if let ExprKind::List(items) = &expr.kind {
+                if items.len() >= 2 {
+                    if let ExprKind::Symbol(s) = &items[0].kind {
+                        if s == "type" {
+                            self.collect_adt_def(&items[1..])?;
+                        }
+                    }
+                }
+            }
+        }
+
         // First pass: collect function definitions
         for expr in exprs {
             if let ExprKind::List(items) = &expr.kind {
@@ -106,6 +173,7 @@ impl Compiler {
                                         FnDef {
                                             func_idx: idx,
                                             arity,
+                                            is_closure: false,
                                         },
                                     );
                                     self.next_fn_idx += 1;
@@ -130,6 +198,46 @@ impl Compiler {
             }
         }
 
+        Ok(())
+    }
+
+    fn collect_adt_def(&mut self, args: &[Expr]) -> Result<(), String> {
+        if args.is_empty() {
+            return Ok(());
+        }
+        let type_name = match &args[0].kind {
+            ExprKind::Symbol(s) => s.clone(),
+            _ => return Ok(()),
+        };
+
+        let mut constructors = Vec::new();
+        let mut tag: u32 = 0;
+        // Skip type params (lowercase symbols)
+        for arg in &args[1..] {
+            match &arg.kind {
+                ExprKind::List(items) if !items.is_empty() => {
+                    if let ExprKind::Symbol(ctor_name) = &items[0].kind {
+                        if ctor_name.starts_with(char::is_uppercase) {
+                            let arity = items.len() - 1;
+                            self.adt_constructors.insert(ctor_name.clone(), (tag, arity));
+                            constructors.push((ctor_name.clone(), tag, arity));
+                            tag += 1;
+                        }
+                    }
+                }
+                ExprKind::Symbol(name) if name.starts_with(char::is_uppercase) => {
+                    self.adt_constructors.insert(name.clone(), (tag, 0));
+                    constructors.push((name.clone(), tag, 0));
+                    tag += 1;
+                }
+                _ => {}
+            }
+        }
+
+        self.adt_types.push(AdtInfo {
+            type_name,
+            constructors,
+        });
         Ok(())
     }
 
@@ -243,13 +351,22 @@ impl Compiler {
 
         // Generate types for each function
         let mut fn_type_indices = Vec::new();
-        for (i, func) in self.functions.iter().enumerate() {
+        for func in self.functions.iter() {
             let type_idx = types.len();
             types
                 .ty()
                 .function(func.params.clone(), func.results.clone());
             fn_type_indices.push(type_idx);
-            let _ = i;
+        }
+
+        // Generate types for indirect calls (all i64 params → i64 result)
+        // Sort by arity for deterministic output
+        let mut indirect_entries: Vec<(usize, u32)> = self.indirect_type_cache.iter()
+            .map(|(&arity, &type_idx)| (arity, type_idx))
+            .collect();
+        indirect_entries.sort_by_key(|&(_, idx)| idx);
+        for (arity, _) in &indirect_entries {
+            types.ty().function(vec![ValType::I64; *arity], vec![ValType::I64]);
         }
 
         module.section(&types);
@@ -270,6 +387,19 @@ impl Compiler {
         }
         module.section(&functions);
 
+        // Table section (for call_indirect)
+        if !self.table_entries.is_empty() {
+            let mut tables = TableSection::new();
+            tables.table(TableType {
+                element_type: RefType::FUNCREF,
+                minimum: self.table_entries.len() as u64,
+                maximum: Some(self.table_entries.len() as u64),
+                table64: false,
+                shared: false,
+            });
+            module.section(&tables);
+        }
+
         // Memory section
         let mut memories = MemorySection::new();
         memories.memory(MemoryType {
@@ -281,6 +411,22 @@ impl Compiler {
         });
         module.section(&memories);
 
+        // Global section (heap_ptr for bump allocator)
+        let needs_heap = !self.table_entries.is_empty() || !self.adt_constructors.is_empty();
+        if needs_heap {
+            let mut globals = GlobalSection::new();
+            // Global 0: heap_ptr (mutable i32), starts at 4096 (after string/iov area)
+            globals.global(
+                GlobalType {
+                    val_type: ValType::I32,
+                    mutable: true,
+                    shared: false,
+                },
+                &ConstExpr::i32_const(4096),
+            );
+            module.section(&globals);
+        }
+
         // Export section
         let mut exports = ExportSection::new();
         exports.export("memory", ExportKind::Memory, 0);
@@ -289,6 +435,18 @@ impl Compiler {
             exports.export("_start", ExportKind::Func, main_fn.func_idx);
         }
         module.section(&exports);
+
+        // Element section (populate function table)
+        if !self.table_entries.is_empty() {
+            let mut elements = ElementSection::new();
+            let func_indices: Vec<u32> = self.table_entries.clone();
+            elements.active(
+                Some(0), // table index
+                &ConstExpr::i32_const(0),
+                Elements::Functions(func_indices.into()),
+            );
+            module.section(&elements);
+        }
 
         // Code section
         let mut code = CodeSection::new();
@@ -323,6 +481,12 @@ impl Compiler {
                         f.instruction(&Instruction::LocalTee(*i))
                     }
                     WasmInstruction::Call(i) => f.instruction(&Instruction::Call(*i)),
+                    WasmInstruction::CallIndirect(type_idx) => {
+                        f.instruction(&Instruction::CallIndirect {
+                            type_index: *type_idx,
+                            table_index: 0,
+                        })
+                    }
                     WasmInstruction::If(bt) => f.instruction(&Instruction::If(*bt)),
                     WasmInstruction::Else => f.instruction(&Instruction::Else),
                     WasmInstruction::End => f.instruction(&Instruction::End),
@@ -345,6 +509,44 @@ impl Compiler {
                             memory_index: 0,
                         }))
                     }
+                    WasmInstruction::I64Store(align, offset) => {
+                        f.instruction(&Instruction::I64Store(MemArg {
+                            offset: *offset as u64,
+                            align: *align,
+                            memory_index: 0,
+                        }))
+                    }
+                    WasmInstruction::I64Load(align, offset) => {
+                        f.instruction(&Instruction::I64Load(MemArg {
+                            offset: *offset as u64,
+                            align: *align,
+                            memory_index: 0,
+                        }))
+                    }
+                    WasmInstruction::I32Load(align, offset) => {
+                        f.instruction(&Instruction::I32Load(MemArg {
+                            offset: *offset as u64,
+                            align: *align,
+                            memory_index: 0,
+                        }))
+                    }
+                    WasmInstruction::GlobalGet(i) => {
+                        f.instruction(&Instruction::GlobalGet(*i))
+                    }
+                    WasmInstruction::GlobalSet(i) => {
+                        f.instruction(&Instruction::GlobalSet(*i))
+                    }
+                    WasmInstruction::I32WrapI64 => {
+                        f.instruction(&Instruction::I32WrapI64)
+                    }
+                    WasmInstruction::I64ExtendI32U => {
+                        f.instruction(&Instruction::I64ExtendI32U)
+                    }
+                    WasmInstruction::I64ShrU => f.instruction(&Instruction::I64ShrU),
+                    WasmInstruction::I64And => f.instruction(&Instruction::I64And),
+                    WasmInstruction::I64Or => f.instruction(&Instruction::I64Or),
+                    WasmInstruction::I64Shl => f.instruction(&Instruction::I64Shl),
+                    WasmInstruction::I32Add => f.instruction(&Instruction::I32Add),
                 };
             }
             f.instruction(&Instruction::End);
@@ -409,6 +611,9 @@ impl<'a> FnCtx<'a> {
                 if let Some(&idx) = self.locals.get(name) {
                     self.instructions.push(WasmInstruction::LocalGet(idx));
                     Ok(())
+                } else if let Some((tag, 0)) = self.compiler.adt_constructors.get(name.as_str()).cloned() {
+                    // Nullary ADT constructor
+                    self.compile_adt_constructor(name, tag, 0, &[])
                 } else {
                     Err(format!("codegen: unbound symbol '{name}'"))
                 }
@@ -422,11 +627,7 @@ impl<'a> FnCtx<'a> {
                 if !items.is_empty() {
                     if let ExprKind::Symbol(s) = &items[0].kind {
                         if s == "fn" {
-                            return Err(
-                                "closures cannot escape their scope in WASM codegen. \
-                                 Use the interpreter (`loon run`) instead."
-                                    .to_string(),
-                            );
+                            return self.compile_closure(&items[1..]);
                         }
                     }
                 }
@@ -626,15 +827,32 @@ impl<'a> FnCtx<'a> {
                          Use the interpreter (`loon run`) for dynamic HOFs."
                     ));
                 }
+                "type" => {
+                    // Type definitions are compile-time only, already collected
+                    self.instructions.push(WasmInstruction::I64Const(0));
+                    return Ok(());
+                }
                 name => {
+                    // Check for ADT constructor
+                    if let Some((tag, arity)) = self.compiler.adt_constructors.get(name).cloned() {
+                        return self.compile_adt_constructor(name, tag, arity, &items[1..]);
+                    }
                     // User-defined function call
                     if let Some(fn_def) = self.compiler.fn_map.get(name).cloned() {
+                        if fn_def.is_closure {
+                            // Closure call: get the packed closure, unpack, call_indirect
+                            return self.compile_closure_call_named(name, &items[1..]);
+                        }
                         for arg in &items[1..] {
                             self.compile_expr(arg)?;
                         }
                         self.instructions
                             .push(WasmInstruction::Call(fn_def.func_idx));
                         return Ok(());
+                    }
+                    // Maybe it's a local holding a closure
+                    if self.locals.contains_key(name) {
+                        return self.compile_closure_call_local(name, &items[1..]);
                     }
                     return Err(format!("codegen: unknown function '{name}'"));
                 }
@@ -685,6 +903,23 @@ impl<'a> FnCtx<'a> {
                                 continue;
                             }
                             ExprKind::Symbol(name) if name != "=>" => {
+                                // Check if it's a nullary ADT constructor
+                                if let Some((tag, 0)) = self.compiler.adt_constructors.get(name.as_str()).cloned() {
+                                    // Match on tag: load tag from scrutinee ptr, compare
+                                    // scrutinee is an i64 ptr
+                                    self.instructions.push(WasmInstruction::LocalGet(scrutinee));
+                                    self.instructions.push(WasmInstruction::I32WrapI64);
+                                    self.instructions.push(WasmInstruction::I64Load(3, 0)); // load tag
+                                    self.instructions.push(WasmInstruction::I64Const(tag as i64));
+                                    self.instructions.push(WasmInstruction::I64Eq);
+                                    self.instructions.push(WasmInstruction::If(
+                                        BlockType::Result(ValType::I64),
+                                    ));
+                                    self.compile_expr(&arms[i + 2])?;
+                                    first = false;
+                                    i += 3;
+                                    continue;
+                                }
                                 // Variable binding — matches anything
                                 if !first {
                                     self.instructions.push(WasmInstruction::Else);
@@ -701,6 +936,40 @@ impl<'a> FnCtx<'a> {
                                     self.instructions.push(WasmInstruction::End);
                                 }
                                 return Ok(());
+                            }
+                            // ADT constructor pattern: [Just x] => ...
+                            ExprKind::List(pat_items) if !pat_items.is_empty() => {
+                                if let ExprKind::Symbol(ctor_name) = &pat_items[0].kind {
+                                    if let Some((tag, _arity)) = self.compiler.adt_constructors.get(ctor_name.as_str()).cloned() {
+                                        // Match on tag
+                                        self.instructions.push(WasmInstruction::LocalGet(scrutinee));
+                                        self.instructions.push(WasmInstruction::I32WrapI64);
+                                        self.instructions.push(WasmInstruction::I64Load(3, 0)); // load tag
+                                        self.instructions.push(WasmInstruction::I64Const(tag as i64));
+                                        self.instructions.push(WasmInstruction::I64Eq);
+                                        self.instructions.push(WasmInstruction::If(
+                                            BlockType::Result(ValType::I64),
+                                        ));
+                                        // Bind field variables
+                                        for (fi, field_pat) in pat_items[1..].iter().enumerate() {
+                                            if let ExprKind::Symbol(field_name) = &field_pat.kind {
+                                                if field_name != "_" {
+                                                    let local = self.alloc_local();
+                                                    self.locals.insert(field_name.clone(), local);
+                                                    // Load field from heap: ptr + 8 + fi*8
+                                                    self.instructions.push(WasmInstruction::LocalGet(scrutinee));
+                                                    self.instructions.push(WasmInstruction::I32WrapI64);
+                                                    self.instructions.push(WasmInstruction::I64Load(3, (8 + fi * 8) as u32));
+                                                    self.instructions.push(WasmInstruction::LocalSet(local));
+                                                }
+                                            }
+                                        }
+                                        self.compile_expr(&arms[i + 2])?;
+                                        first = false;
+                                        i += 3;
+                                        continue;
+                                    }
+                                }
                             }
                             _ => {}
                         }
@@ -778,6 +1047,7 @@ impl<'a> FnCtx<'a> {
             FnDef {
                 func_idx: idx,
                 arity: all_params.len(),
+                is_closure: false,
             },
         );
         self.compiler.next_fn_idx += 1;
@@ -834,6 +1104,228 @@ impl<'a> FnCtx<'a> {
 
         Ok(())
     }
+
+    /// Compile [fn [params] body] — closure conversion.
+    /// Produces a packed i64: (table_idx << 32) | env_ptr
+    fn compile_closure(&mut self, args: &[Expr]) -> Result<(), String> {
+        if args.is_empty() {
+            return Err("closure requires params".to_string());
+        }
+
+        let params = match &args[0].kind {
+            ExprKind::List(items) => items
+                .iter()
+                .filter_map(|p| {
+                    if let ExprKind::Symbol(s) = &p.kind {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>(),
+            _ => return Err("closure params must be a list".to_string()),
+        };
+
+        let body = &args[1..];
+
+        // Capture analysis
+        let free = capture::free_vars(&params, body);
+        let mut captures: Vec<(String, u32)> = Vec::new();
+        for name in &free {
+            if let Some(&idx) = self.locals.get(name) {
+                captures.push((name.clone(), idx));
+            }
+        }
+
+        // Lift to a top-level function with env_ptr as first param
+        let lambda_name = format!("__closure_{}", self.compiler.lambda_counter);
+        self.compiler.lambda_counter += 1;
+
+        // Closure function signature: (env_ptr: i64, param0: i64, ...) -> i64
+        let total_params = 1 + params.len(); // env_ptr + actual params
+
+        let idx = self.compiler.next_fn_idx;
+        self.compiler.fn_map.insert(
+            lambda_name.clone(),
+            FnDef {
+                func_idx: idx,
+                arity: total_params,
+                is_closure: true,
+            },
+        );
+        self.compiler.next_fn_idx += 1;
+
+        // Put function in the table
+        let table_idx = self.compiler.ensure_in_table(idx);
+
+        // Compile the closure body
+        let mut closure_ctx = FnCtx {
+            locals: HashMap::new(),
+            local_count: total_params as u32,
+            instructions: Vec::new(),
+            compiler: self.compiler,
+        };
+
+        // Local 0 = env_ptr
+        closure_ctx.locals.insert("__env_ptr".to_string(), 0);
+        // Locals 1..n = actual params
+        for (i, p) in params.iter().enumerate() {
+            closure_ctx.locals.insert(p.clone(), (i + 1) as u32);
+        }
+
+        // Load captured variables from env
+        for (ci, (cap_name, _)) in captures.iter().enumerate() {
+            let local = closure_ctx.alloc_local();
+            closure_ctx.locals.insert(cap_name.clone(), local);
+            // Load from env: env_ptr + ci * 8
+            closure_ctx.instructions.push(WasmInstruction::LocalGet(0)); // env_ptr
+            closure_ctx.instructions.push(WasmInstruction::I32WrapI64);
+            closure_ctx.instructions.push(WasmInstruction::I64Load(3, (ci * 8) as u32));
+            closure_ctx.instructions.push(WasmInstruction::LocalSet(local));
+        }
+
+        for expr in body {
+            closure_ctx.compile_expr(expr)?;
+        }
+
+        let fn_body = FunctionBody {
+            params: vec![ValType::I64; total_params],
+            results: vec![ValType::I64],
+            locals: if closure_ctx.local_count > total_params as u32 {
+                vec![ValType::I64; (closure_ctx.local_count - total_params as u32) as usize]
+            } else {
+                vec![]
+            },
+            instructions: closure_ctx.instructions,
+        };
+        self.compiler.functions.push(fn_body);
+
+        // At the call site, allocate env and store captures
+        if captures.is_empty() {
+            // No env needed, env_ptr = 0
+            // Pack: (table_idx << 32) | 0
+            self.instructions.push(WasmInstruction::I64Const((table_idx as i64) << 32));
+        } else {
+            let env_size = captures.len() * 8;
+            // Allocate env: bump heap_ptr
+            self.emit_alloc(env_size as u32);
+            let env_local = self.alloc_local();
+            self.instructions.push(WasmInstruction::LocalTee(env_local));
+
+            // Store captured values
+            for (ci, (_, src_local)) in captures.iter().enumerate() {
+                self.instructions.push(WasmInstruction::LocalGet(env_local));
+                self.instructions.push(WasmInstruction::I32WrapI64);
+                self.instructions.push(WasmInstruction::LocalGet(*src_local));
+                self.instructions.push(WasmInstruction::I64Store(3, (ci * 8) as u32));
+            }
+
+            // Pack: (table_idx << 32) | env_ptr
+            self.instructions.push(WasmInstruction::I64Const((table_idx as i64) << 32));
+            self.instructions.push(WasmInstruction::LocalGet(env_local));
+            self.instructions.push(WasmInstruction::I64Or);
+        }
+
+        Ok(())
+    }
+
+    /// Call a local variable that holds a packed closure i64
+    fn compile_closure_call_local(&mut self, name: &str, call_args: &[Expr]) -> Result<(), String> {
+        let closure_local = *self.locals.get(name)
+            .ok_or_else(|| format!("codegen: unbound closure '{name}'"))?;
+
+        // Unpack closure: env_ptr = closure & 0xFFFFFFFF, table_idx = closure >> 32
+        let env_local = self.alloc_local();
+        let tidx_local = self.alloc_local();
+
+        // env_ptr
+        self.instructions.push(WasmInstruction::LocalGet(closure_local));
+        self.instructions.push(WasmInstruction::I64Const(0xFFFFFFFF));
+        self.instructions.push(WasmInstruction::I64And);
+        self.instructions.push(WasmInstruction::LocalSet(env_local));
+
+        // table_idx
+        self.instructions.push(WasmInstruction::LocalGet(closure_local));
+        self.instructions.push(WasmInstruction::I64Const(32));
+        self.instructions.push(WasmInstruction::I64ShrU);
+        self.instructions.push(WasmInstruction::LocalSet(tidx_local));
+
+        // Push args: env_ptr first, then actual args
+        self.instructions.push(WasmInstruction::LocalGet(env_local));
+        for arg in call_args {
+            self.compile_expr(arg)?;
+        }
+
+        // call_indirect with the right type (arity = 1 + call_args.len())
+        let total_arity = 1 + call_args.len(); // env_ptr + actual args
+        let type_idx = self.get_or_create_indirect_type(total_arity);
+
+        self.instructions.push(WasmInstruction::LocalGet(tidx_local));
+        self.instructions.push(WasmInstruction::I32WrapI64);
+        self.instructions.push(WasmInstruction::CallIndirect(type_idx));
+
+        Ok(())
+    }
+
+    fn compile_closure_call_named(&mut self, _name: &str, _call_args: &[Expr]) -> Result<(), String> {
+        Err("codegen: named closure calls not yet supported".to_string())
+    }
+
+    /// Compile an ADT constructor call: allocate heap space, store tag + fields
+    fn compile_adt_constructor(&mut self, _name: &str, tag: u32, arity: usize, args: &[Expr]) -> Result<(), String> {
+        if args.len() != arity {
+            return Err(format!("codegen: constructor expects {} args, got {}", arity, args.len()));
+        }
+
+        // Allocate: 8 bytes for tag + 8 bytes per field
+        let size = 8 + arity * 8;
+        self.emit_alloc(size as u32);
+        let ptr_local = self.alloc_local();
+        self.instructions.push(WasmInstruction::LocalTee(ptr_local));
+
+        // Store tag at ptr
+        self.instructions.push(WasmInstruction::I32WrapI64);
+        self.instructions.push(WasmInstruction::I64Const(tag as i64));
+        self.instructions.push(WasmInstruction::I64Store(3, 0));
+
+        // Store fields
+        for (fi, arg) in args.iter().enumerate() {
+            self.instructions.push(WasmInstruction::LocalGet(ptr_local));
+            self.instructions.push(WasmInstruction::I32WrapI64);
+            self.compile_expr(arg)?;
+            self.instructions.push(WasmInstruction::I64Store(3, (8 + fi * 8) as u32));
+        }
+
+        // Return ptr as i64
+        self.instructions.push(WasmInstruction::LocalGet(ptr_local));
+
+        Ok(())
+    }
+
+    /// Emit code to bump-allocate `size` bytes, pushing the ptr as i64
+    fn emit_alloc(&mut self, size: u32) {
+        // heap_ptr global is index 0
+        self.instructions.push(WasmInstruction::GlobalGet(0));  // old heap_ptr (i32)
+        self.instructions.push(WasmInstruction::I64ExtendI32U);  // as i64 (return value)
+
+        // Bump: heap_ptr += size
+        self.instructions.push(WasmInstruction::GlobalGet(0));
+        self.instructions.push(WasmInstruction::I32Const(size as i32));
+        self.instructions.push(WasmInstruction::I32Add);
+        self.instructions.push(WasmInstruction::GlobalSet(0));
+    }
+
+    /// Get or create a WASM type for indirect calls with the given total arity
+    /// (all params and return are i64)
+    fn get_or_create_indirect_type(&mut self, total_arity: usize) -> u32 {
+        if let Some(&type_idx) = self.compiler.indirect_type_cache.get(&total_arity) {
+            return type_idx;
+        }
+        let type_idx = self.compiler.type_count;
+        self.compiler.type_count += 1;
+        self.compiler.indirect_type_cache.insert(total_arity, type_idx);
+        type_idx
+    }
 }
 
 #[cfg(test)]
@@ -887,17 +1379,70 @@ mod tests {
     }
 
     #[test]
-    fn compile_escaping_closure_error() {
-        // A closure assigned to a variable should error
+    fn compile_closure_no_capture() {
+        // Closure with no captures compiles
         let src = r#"
-            [defn make-adder [n]
-              [let f [fn [x] [+ x n]]]
-              f]
-            [defn main [] [make-adder 5]]
+            [defn main []
+              [let f [fn [x] [+ x 1]]]
+              [f 41]]
         "#;
         let exprs = parse(src).unwrap();
-        let result = compile(&exprs);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("closures cannot escape"));
+        let wasm = compile(&exprs).unwrap();
+        assert_eq!(&wasm[0..4], b"\0asm");
+    }
+
+    #[test]
+    fn compile_closure_with_capture() {
+        // Closure capturing a variable
+        let src = r#"
+            [defn main []
+              [let y 10]
+              [let f [fn [x] [+ x y]]]
+              [f 32]]
+        "#;
+        let exprs = parse(src).unwrap();
+        let wasm = compile(&exprs).unwrap();
+        assert_eq!(&wasm[0..4], b"\0asm");
+    }
+
+    #[test]
+    fn compile_higher_order() {
+        // Passing a closure to a function
+        let src = r#"
+            [defn apply [f x] [f x]]
+            [defn main [] [apply [fn [x] [* x 2]] 21]]
+        "#;
+        let exprs = parse(src).unwrap();
+        let wasm = compile(&exprs).unwrap();
+        assert_eq!(&wasm[0..4], b"\0asm");
+    }
+
+    #[test]
+    fn compile_adt_constructor_and_match() {
+        let src = r#"
+            [type Maybe T [Just T] Nothing]
+            [defn main []
+              [let val [Just 42]]
+              [match val
+                [Just x] => x
+                Nothing => 0]]
+        "#;
+        let exprs = parse(src).unwrap();
+        let wasm = compile(&exprs).unwrap();
+        assert_eq!(&wasm[0..4], b"\0asm");
+    }
+
+    #[test]
+    fn compile_adt_nullary_match() {
+        let src = r#"
+            [type Maybe T [Just T] Nothing]
+            [defn main []
+              [match Nothing
+                [Just x] => x
+                Nothing => 0]]
+        "#;
+        let exprs = parse(src).unwrap();
+        let wasm = compile(&exprs).unwrap();
+        assert_eq!(&wasm[0..4], b"\0asm");
     }
 }

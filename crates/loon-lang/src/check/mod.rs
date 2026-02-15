@@ -722,6 +722,157 @@ impl Checker {
             );
         }
 
+        // int: Str → Int
+        self.env.set_global(
+            "int".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Int))),
+        );
+
+        // float: Str → Float
+        self.env.set_global(
+            "float".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Float))),
+        );
+
+        // char-at: Str → Int → Str
+        self.env.set_global(
+            "char-at".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Str, Type::Int], Box::new(Type::Str))),
+        );
+
+        // substring: Str → Int → Int → Str
+        self.env.set_global(
+            "substring".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Str, Type::Int, Type::Int], Box::new(Type::Str))),
+        );
+
+        // contains-str?: Str → Str → Bool
+        self.env.set_global(
+            "contains-str?".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Str, Type::Str], Box::new(Type::Bool))),
+        );
+
+        // index-of: Str → Str → Int
+        self.env.set_global(
+            "index-of".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Str, Type::Str], Box::new(Type::Int))),
+        );
+
+        // group-by: ∀a k. (a → k) → Vec a → Map k (Vec a)
+        {
+            let a = self.subst.fresh();
+            let k = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tvk = if let Type::Var(v) = k { v } else { unreachable!() };
+            self.env.set_global(
+                "group-by".to_string(),
+                Scheme {
+                    vars: vec![tva, tvk],
+                    ty: Type::Fn(
+                        vec![
+                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Var(tvk))),
+                            Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
+                        ],
+                        Box::new(Type::Con("Map".to_string(), vec![
+                            Type::Var(tvk),
+                            Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
+                        ])),
+                    ),
+                },
+            );
+        }
+
+        // flat-map: ∀a b. (a → Vec b) → Vec a → Vec b
+        {
+            let a = self.subst.fresh();
+            let b = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tvb = if let Type::Var(v) = b { v } else { unreachable!() };
+            self.env.set_global(
+                "flat-map".to_string(),
+                Scheme {
+                    vars: vec![tva, tvb],
+                    ty: Type::Fn(
+                        vec![
+                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvb)]))),
+                            Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
+                        ],
+                        Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvb)])),
+                    ),
+                },
+            );
+        }
+
+        // sort: ∀a. Vec a → Vec a
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
+            self.env.set_global(
+                "sort".to_string(),
+                Scheme {
+                    vars: vec![tva],
+                    ty: Type::Fn(vec![vec_a.clone()], Box::new(vec_a)),
+                },
+            );
+        }
+
+        // min, max: ∀a. Vec a → a
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
+            for name in ["min", "max"] {
+                self.env.set_global(
+                    name.to_string(),
+                    Scheme {
+                        vars: vec![tva],
+                        ty: Type::Fn(vec![vec_a.clone()], Box::new(Type::Var(tva))),
+                    },
+                );
+            }
+        }
+
+        // sum: Vec Int → Int (approximate)
+        self.env.set_global(
+            "sum".to_string(),
+            Scheme::mono(Type::Fn(
+                vec![Type::Con("Vec".to_string(), vec![Type::Int])],
+                Box::new(Type::Int),
+            )),
+        );
+
+        // to-string: ∀a. a → Str
+        {
+            let a = self.subst.fresh();
+            let tv = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "to-string".to_string(),
+                Scheme {
+                    vars: vec![tv],
+                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Str)),
+                },
+            );
+        }
+
+        // into-map: ∀k v. Vec (k, v) → Map k v
+        {
+            let k = self.subst.fresh();
+            let v = self.subst.fresh();
+            let tvk = if let Type::Var(vv) = k { vv } else { unreachable!() };
+            let tvv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            self.env.set_global(
+                "into-map".to_string(),
+                Scheme {
+                    vars: vec![tvk, tvv],
+                    ty: Type::Fn(
+                        vec![Type::Con("Vec".to_string(), vec![Type::Tuple(vec![Type::Var(tvk), Type::Var(tvv)])])],
+                        Box::new(Type::Con("Map".to_string(), vec![Type::Var(tvk), Type::Var(tvv)])),
+                    ),
+                },
+            );
+        }
+
         // channel: () → (Tx a, Rx a)
         {
             let a = self.subst.fresh();
@@ -929,6 +1080,15 @@ impl Checker {
                 "impl" => return self.infer_impl_def(&items[1..], span),
                 "sig" => return self.infer_sig(&items[1..], span),
                 "handle" => return self.infer_handle(&items[1..], span),
+                "try" => {
+                    // [try body on-fail] — returns type of body
+                    if items.len() >= 3 {
+                        let body_ty = self.infer(&items[1]);
+                        self.infer(&items[2]); // on-fail handler
+                        return body_ty;
+                    }
+                    return Type::Unit;
+                }
                 "test" | "pub" | "mut" => {
                     if items.len() > 1 {
                         return self.infer_list(&items[1..], span);
