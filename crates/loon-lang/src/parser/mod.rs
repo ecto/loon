@@ -260,7 +260,7 @@ fn desugar_fmt(template: &str, span: Span, _source: &str) -> Result<Expr, ParseE
                 // Collect expression text until matching }
                 let mut expr_text = String::new();
                 let mut depth = 1;
-                while let Some(ec) = chars.next() {
+                for ec in chars.by_ref() {
                     if ec == '{' {
                         depth += 1;
                         expr_text.push(ec);

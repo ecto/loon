@@ -1,5 +1,28 @@
 use logos::Logos;
 
+fn unescape(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s[1..s.len() - 1].chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('\\') => out.push('\\'),
+                Some('"') => out.push('"'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[derive(Logos, Debug, Clone, PartialEq)]
 #[logos(skip r"[ \t\r\n]+")]
 #[logos(skip r";[^\n]*")]
@@ -45,10 +68,7 @@ pub enum Token {
     True,
     #[token("false")]
     False,
-    #[regex(r#""([^"\\]|\\.)*""#, |lex| {
-        let s = lex.slice();
-        s[1..s.len()-1].to_string()
-    })]
+    #[regex(r#""([^"\\]|\\.)*""#, |lex| unescape(lex.slice()))]
     Str(String),
 
     // Keywords (Clojure-style :keyword)

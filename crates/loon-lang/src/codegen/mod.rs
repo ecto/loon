@@ -29,6 +29,7 @@ struct FnDef {
 struct AdtInfo {
     #[allow(dead_code)]
     type_name: String,
+    #[allow(dead_code)]
     constructors: Vec<(String, u32, usize)>,
 }
 

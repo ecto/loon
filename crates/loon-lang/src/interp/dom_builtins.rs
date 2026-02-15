@@ -10,8 +10,8 @@ type IResult = Result<Value, InterpError>;
 /// Callback type for DOM operations. The bridge receives:
 /// - operation name (e.g. "createElement", "setAttribute")
 /// - arguments as a list of Values
-/// Returns a Value (often DomNode handle or Unit).
 ///
+/// Returns a Value (often DomNode handle or Unit).
 /// This must be Send+Sync since it's stored in a global, but in WASM
 /// there's only one thread so this is safe.
 pub type DomBridgeFn = Arc<dyn Fn(&str, &[Value]) -> IResult + Send + Sync>;

@@ -856,8 +856,8 @@ fn eval_with_effect_overrides(
 
 thread_local! {
     static EFFECT_COUNTERS: RefCell<HashMap<(String, String), usize>> = RefCell::new(HashMap::new());
-    static EFFECT_OVERRIDES: RefCell<Vec<(String, String, usize, Value)>> = RefCell::new(Vec::new());
-    static INSIDE_HANDLE: RefCell<bool> = RefCell::new(false);
+    static EFFECT_OVERRIDES: RefCell<Vec<(String, String, usize, Value)>> = const { RefCell::new(Vec::new()) };
+    static INSIDE_HANDLE: RefCell<bool> = const { RefCell::new(false) };
 }
 
 fn eval_with_overrides_inner(
