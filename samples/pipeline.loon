@@ -1,0 +1,7 @@
+[defn square [x] [* x x]]
+
+[defn main []
+  [|> #[1 2 3 4 5]
+    [map [fn [x] [* x x]]]
+    [filter [fn [x] [> x 5]]]
+    [each [fn [x] [println x]]]]]

@@ -1,0 +1,20 @@
+[defn fib [n]
+  [match n
+    0 => 0
+    1 => 1
+    n => [+ [fib [- n 1]] [fib [- n 2]]]]]
+
+[defn greet [name]
+  [str "hello, " name "!"]]
+
+[test defn test-fib []
+  [assert-eq [fib 0] 0]
+  [assert-eq [fib 1] 1]
+  [assert-eq [fib 10] 55]]
+
+[test defn test-greet []
+  [assert-eq [greet "world"] "hello, world!"]]
+
+[test defn test-arithmetic []
+  [assert-eq [+ 1 2] 3]
+  [assert-eq [* 6 7] 42]]

@@ -1,0 +1,12 @@
+[package]
+name = "loon-lang"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+logos = "0.15"
+codespan-reporting = "0.11"
+wasm-encoder = "0.227"
+
+[dev-dependencies]
+insta = "1"
