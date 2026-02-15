@@ -1,5 +1,5 @@
 ; word-freq.loon — count word frequencies in a text file
-; Exercises: pipes, closures, string ops, and new stdlib.
+; Exercises: effects (IO), pipes, closures, destructuring, string interpolation, stdlib.
 
 [defn count-words [text]
   [let words
@@ -9,17 +9,13 @@
   [let counts [group-by [fn [w] w] words]]
   [let pairs
     [|> [entries counts]
-      [map [fn [pair]
-        [let word [nth pair 0 0]]
-        [let occ [nth pair 1 #[]]]
+      [map [fn [[word occ]]
         (word [len occ])]]]]
-  [let ranked [sort-by [fn [pair] [nth pair 1 0]] :desc pairs]]
+  [let ranked [sort-by [fn [[_ n]] n] :desc pairs]]
   [take 10 ranked]]
 
-[defn format-pair [pair]
-  [let word [to-string [nth pair 0 0]]]
-  [let n [to-string [nth pair 1 0]]]
-  [str word ": " n]]
+[defn format-pair [[word n]]
+  [fmt "{[to-string word]}: {[to-string n]}"]]
 
 ; Read file and process
 [IO.println "=== Word Frequency Counter ==="]

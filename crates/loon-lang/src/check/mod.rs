@@ -100,11 +100,20 @@ impl Checker {
             Scheme::mono(Type::Fn(vec![Type::Bool], Box::new(Type::Bool))),
         );
 
-        // str: String → ... → String (variadic, approximate as String → String)
-        self.env.set_global(
-            "str".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str, Type::Str], Box::new(Type::Str))),
-        );
+        // str: ∀a b. a → b → Str (variadic, approximate as polymorphic)
+        {
+            let a = self.subst.fresh();
+            let b = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tvb = if let Type::Var(v) = b { v } else { unreachable!() };
+            self.env.set_global(
+                "str".to_string(),
+                Scheme {
+                    vars: vec![tva, tvb],
+                    ty: Type::Fn(vec![Type::Var(tva), Type::Var(tvb)], Box::new(Type::Str)),
+                },
+            );
+        }
 
         // println: ∀a. a → ()
         {
@@ -163,7 +172,7 @@ impl Checker {
             )),
         );
 
-        // empty?: ∀a. Vec a → Bool
+        // empty?: ∀a. a → Bool (works on Vec, Str, Map, Set)
         {
             let a = self.subst.fresh();
             let tv = if let Type::Var(v) = a { v } else { unreachable!() };
@@ -171,10 +180,7 @@ impl Checker {
                 "empty?".to_string(),
                 Scheme {
                     vars: vec![tv],
-                    ty: Type::Fn(
-                        vec![Type::Con("Vec".to_string(), vec![Type::Var(tv)])],
-                        Box::new(Type::Bool),
-                    ),
+                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Bool)),
                 },
             );
         }
@@ -431,18 +437,21 @@ impl Checker {
             self.env.set_global(op.to_string(), str_to_str.clone());
         }
 
-        // sort-by: ∀a. (a → a → Int) → Vec a → Vec a
+        // sort-by: ∀a b. (a → b) → Keyword → Vec a → Vec a
         {
             let a = self.subst.fresh();
+            let b = self.subst.fresh();
             let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tvb = if let Type::Var(v) = b { v } else { unreachable!() };
             let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
             self.env.set_global(
                 "sort-by".to_string(),
                 Scheme {
-                    vars: vec![tva],
+                    vars: vec![tva, tvb],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva), Type::Var(tva)], Box::new(Type::Int)),
+                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Var(tvb))),
+                            Type::Keyword,
                             vec_a.clone(),
                         ],
                         Box::new(vec_a),
@@ -629,52 +638,58 @@ impl Checker {
             );
         }
 
-        // entries: ∀v. Map Keyword v → Vec (Keyword, v)
+        // entries: ∀k v. Map k v → Vec (k, v)
         {
+            let k = self.subst.fresh();
             let v = self.subst.fresh();
-            let tv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            let tvk = if let Type::Var(vv) = k { vv } else { unreachable!() };
+            let tvv = if let Type::Var(vv) = v { vv } else { unreachable!() };
             self.env.set_global(
                 "entries".to_string(),
                 Scheme {
-                    vars: vec![tv],
+                    vars: vec![tvk, tvv],
                     ty: Type::Fn(
-                        vec![Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)])],
+                        vec![Type::Con("Map".to_string(), vec![Type::Var(tvk), Type::Var(tvv)])],
                         Box::new(Type::Con(
                             "Vec".to_string(),
-                            vec![Type::Tuple(vec![Type::Keyword, Type::Var(tv)])],
+                            vec![Type::Tuple(vec![Type::Var(tvk), Type::Var(tvv)])],
                         )),
                     ),
                 },
             );
         }
 
-        // keys: ∀v. Map Keyword v → Vec Keyword
+        // keys: ∀k v. Map k v → Vec k
         {
+            let k = self.subst.fresh();
             let v = self.subst.fresh();
-            let tv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            let tvk = if let Type::Var(vv) = k { vv } else { unreachable!() };
+            let tvv = if let Type::Var(vv) = v { vv } else { unreachable!() };
             self.env.set_global(
                 "keys".to_string(),
                 Scheme {
-                    vars: vec![tv],
+                    vars: vec![tvk, tvv],
                     ty: Type::Fn(
-                        vec![Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)])],
-                        Box::new(Type::Con("Vec".to_string(), vec![Type::Keyword])),
+                        vec![Type::Con("Map".to_string(), vec![Type::Var(tvk), Type::Var(tvv)])],
+                        Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvk)])),
                     ),
                 },
             );
         }
 
-        // values: ∀v. Map Keyword v → Vec v
+        // values: ∀k v. Map k v → Vec v
         {
+            let k = self.subst.fresh();
             let v = self.subst.fresh();
-            let tv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            let tvk = if let Type::Var(vv) = k { vv } else { unreachable!() };
+            let tvv = if let Type::Var(vv) = v { vv } else { unreachable!() };
             self.env.set_global(
                 "values".to_string(),
                 Scheme {
-                    vars: vec![tv],
+                    vars: vec![tvk, tvv],
                     ty: Type::Fn(
-                        vec![Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)])],
-                        Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tv)])),
+                        vec![Type::Con("Map".to_string(), vec![Type::Var(tvk), Type::Var(tvv)])],
+                        Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvv)])),
                     ),
                 },
             );
@@ -1088,6 +1103,13 @@ impl Checker {
                         return body_ty;
                     }
                     return Type::Unit;
+                }
+                // str is variadic: any number of args → Str
+                "str" => {
+                    for a in &items[1..] {
+                        self.infer(a);
+                    }
+                    return Type::Str;
                 }
                 "test" | "pub" | "mut" => {
                     if items.len() > 1 {
