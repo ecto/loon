@@ -1,5 +1,5 @@
 import { execSync } from 'child_process';
-import { cpSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from 'fs';
+import { cpSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { join, relative } from 'path';
 
 const ROOT = join(import.meta.dirname, '..');
@@ -45,7 +45,54 @@ function copyDir(src: string, dest: string) {
 console.log('Copying Loon source files...');
 copyDir(SRC, join(DIST, 'src'));
 
-// Step 4: Generate pre-rendered HTML (if not dev mode)
+// Step 4: Type-check Loon sources
+console.log('Type-checking Loon sources...');
+{
+  const bootOrder = [
+    'src/ui.loon',
+    'src/lib/utils.loon',
+    'src/lib/theme.loon',
+    'src/lib/components.loon',
+    'src/router.loon',
+    'src/components/nav.loon',
+    'src/components/footer.loon',
+    'src/components/code.loon',
+    'src/components/editor.loon',
+    'src/pages/home.loon',
+    'src/pages/tour.loon',
+    'src/pages/play.loon',
+    'src/pages/blog.loon',
+    'src/app.loon',
+  ];
+
+  const parts: string[] = [];
+  for (const file of bootOrder) {
+    const fullPath = join(SRC, '..', file);
+    try {
+      parts.push(readFileSync(fullPath, 'utf-8'));
+    } catch {
+      // File may not exist (e.g., deleted pages)
+    }
+  }
+
+  const tmpFile = join(DIST, '_check.loon');
+  writeFileSync(tmpFile, parts.join('\n\n'));
+
+  try {
+    execSync(
+      `cargo run -p loon-cli --quiet -- check ${tmpFile}`,
+      { stdio: 'inherit', cwd: ROOT }
+    );
+  } catch {
+    console.error('Type-check failed! Fix errors above before deploying.');
+    process.exit(1);
+  }
+
+  // Clean up temp file
+  try { unlinkSync(tmpFile); } catch {}
+}
+
+// Step 5: Generate pre-rendered HTML (if not dev mode)
 if (!isDev) {
   console.log('Pre-rendering pages...');
   // Run native interpreter to generate static HTML for each page

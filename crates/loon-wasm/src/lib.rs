@@ -66,6 +66,17 @@ pub fn init_dom_bridge(bridge: &js_sys::Function) {
 #[wasm_bindgen]
 pub fn eval_ui(source: &str) -> Result<(), String> {
     let exprs = loon_lang::parser::parse(source).map_err(|e| format!("{e}"))?;
+
+    // Run type checker — log warnings but don't block boot
+    let mut checker = loon_lang::check::Checker::new();
+    let errors = checker.check_program(&exprs);
+    if !errors.is_empty() {
+        console_warn(&format!("[loon] {} type warning(s):", errors.len()));
+        for err in &errors {
+            console_warn(&format!("  {err}"));
+        }
+    }
+
     loon_lang::interp::eval_program(&exprs).map_err(|e| e.message)?;
     Ok(())
 }

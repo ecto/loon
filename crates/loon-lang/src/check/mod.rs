@@ -123,6 +123,7 @@ impl Checker {
             derived_copy_types: HashSet::new(),
         };
         checker.register_builtins();
+        checker.register_dom_builtins();
         checker.register_prelude();
         checker
     }
@@ -1078,6 +1079,254 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Con("Rx".to_string(), vec![Type::Var(tva)])],
                         Box::new(Type::Var(tva)),
+                    ),
+                },
+            );
+        }
+
+        // name: Keyword → Str
+        self.env.set_global(
+            "name".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Keyword], Box::new(Type::Str))),
+        );
+
+        // map?: ∀a. a → Bool
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "map?".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tva],
+                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                },
+            );
+        }
+
+        // vec?: ∀a. a → Bool
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "vec?".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tva],
+                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                },
+            );
+        }
+
+        // cons: ∀a. a → Vec a → Vec a
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
+            self.env.set_global(
+                "cons".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tva],
+                    ty: Type::Fn(vec![Type::Var(tva), vec_a.clone()], Box::new(vec_a)),
+                },
+            );
+        }
+
+        // HashMap.new: ∀k v. () → Map k v
+        {
+            let k = self.subst.fresh();
+            let v = self.subst.fresh();
+            let tvk = if let Type::Var(vv) = k { vv } else { unreachable!() };
+            let tvv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            self.env.set_global(
+                "HashMap.new".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tvk, tvv],
+                    ty: Type::Fn(
+                        vec![],
+                        Box::new(Type::Con("Map".to_string(), vec![Type::Var(tvk), Type::Var(tvv)])),
+                    ),
+                },
+            );
+        }
+
+        // try-recv: ∀a. Rx a → Option a
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "try-recv".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tva],
+                    ty: Type::Fn(
+                        vec![Type::Con("Rx".to_string(), vec![Type::Var(tva)])],
+                        Box::new(Type::Con("Option".to_string(), vec![Type::Var(tva)])),
+                    ),
+                },
+            );
+        }
+    }
+
+    /// Register type signatures for all DOM builtins.
+    pub fn register_dom_builtins(&mut self) {
+        // dom/create-element: Str → Int
+        self.env.set_global(
+            "dom/create-element".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Int))),
+        );
+
+        // dom/create-text: Str → Int
+        self.env.set_global(
+            "dom/create-text".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Int))),
+        );
+
+        // dom/set-attribute: Int → Str → Str → ()
+        self.env.set_global(
+            "dom/set-attribute".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Int, Type::Str, Type::Str], Box::new(Type::Unit))),
+        );
+
+        // dom/set-style: Int → Str → Str → ()
+        self.env.set_global(
+            "dom/set-style".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Int, Type::Str, Type::Str], Box::new(Type::Unit))),
+        );
+
+        // dom/append-child: Int → Int → ()
+        self.env.set_global(
+            "dom/append-child".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Unit))),
+        );
+
+        // dom/remove-child: Int → Int → ()
+        self.env.set_global(
+            "dom/remove-child".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Unit))),
+        );
+
+        // dom/replace-child: Int → Int → Int → ()
+        self.env.set_global(
+            "dom/replace-child".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Int, Type::Int, Type::Int], Box::new(Type::Unit))),
+        );
+
+        // dom/set-text: Int → Str → ()
+        self.env.set_global(
+            "dom/set-text".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Int, Type::Str], Box::new(Type::Unit))),
+        );
+
+        // dom/query-selector: Str → Int
+        self.env.set_global(
+            "dom/query-selector".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Int))),
+        );
+
+        // dom/set-inner-html: Int → Str → ()
+        self.env.set_global(
+            "dom/set-inner-html".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Int, Type::Str], Box::new(Type::Unit))),
+        );
+
+        // dom/add-listener: ∀a. Int → Str → (a → ()) → Int
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "dom/add-listener".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tva],
+                    ty: Type::Fn(
+                        vec![
+                            Type::Int,
+                            Type::Str,
+                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Unit)),
+                        ],
+                        Box::new(Type::Int),
+                    ),
+                },
+            );
+        }
+
+        // dom/remove-listener: Int → ()
+        self.env.set_global(
+            "dom/remove-listener".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Int], Box::new(Type::Unit))),
+        );
+
+        // dom/get-value: Int → Str
+        self.env.set_global(
+            "dom/get-value".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Int], Box::new(Type::Str))),
+        );
+
+        // dom/set-value: Int → Str → ()
+        self.env.set_global(
+            "dom/set-value".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Int, Type::Str], Box::new(Type::Unit))),
+        );
+
+        // dom/eval-loon: Str → Str
+        self.env.set_global(
+            "dom/eval-loon".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Str))),
+        );
+
+        // dom/set-title: Str → ()
+        self.env.set_global(
+            "dom/set-title".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Unit))),
+        );
+
+        // dom/push-state: Str → ()
+        self.env.set_global(
+            "dom/push-state".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Unit))),
+        );
+
+        // dom/location: () → Str
+        self.env.set_global(
+            "dom/location".to_string(),
+            Scheme::mono(Type::Fn(vec![], Box::new(Type::Str))),
+        );
+
+        // dom/request-animation-frame: ∀a. (a → ()) → ()
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "dom/request-animation-frame".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tva],
+                    ty: Type::Fn(
+                        vec![Type::Fn(vec![Type::Var(tva)], Box::new(Type::Unit))],
+                        Box::new(Type::Unit),
+                    ),
+                },
+            );
+        }
+
+        // dom/set-timeout: ∀a. (a → ()) → Int → ()
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "dom/set-timeout".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tva],
+                    ty: Type::Fn(
+                        vec![
+                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Unit)),
+                            Type::Int,
+                        ],
+                        Box::new(Type::Unit),
                     ),
                 },
             );
@@ -3056,5 +3305,44 @@ mod tests {
             [catch-errors "[+ 1 2]"]
         "#);
         assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    #[test]
+    fn builtin_parity_interp_subset_of_checker() {
+        // Checker builtins
+        let checker = Checker::new();
+        let checker_names: std::collections::HashSet<String> = checker
+            .env
+            .global_scope()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+
+        // Interpreter builtins (core + DOM)
+        let mut interp_env = crate::interp::Env::new();
+        crate::interp::builtins::register_builtins(&mut interp_env);
+        crate::interp::dom_builtins::register_dom_builtins(&mut interp_env);
+        let interp_names: std::collections::HashSet<String> = interp_env
+            .globals()
+            .keys()
+            .cloned()
+            .collect();
+
+        let missing: Vec<&String> = interp_names
+            .iter()
+            .filter(|name| !checker_names.contains(*name))
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "Interpreter builtins missing from checker: {:?}\n\
+             Add type signatures for these in register_builtins() or register_dom_builtins().",
+            {
+                let mut sorted = missing.clone();
+                sorted.sort();
+                sorted
+            }
+        );
     }
 }
