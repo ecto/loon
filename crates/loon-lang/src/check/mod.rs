@@ -1120,19 +1120,28 @@ impl Checker {
             }
 
             ExprKind::Map(pairs) => {
-                let key_t = self.subst.fresh();
-                let val_t = self.subst.fresh();
-                for (k, v) in pairs {
-                    let kt = self.infer(k);
-                    let vt = self.infer(v);
-                    if let Err(e) = unify(&mut self.subst, &key_t, &kt) {
-                        self.errors.push(e.with_span(expr.span));
+                // Check if all keys are keywords — if so, infer a Record type
+                let all_keywords = !pairs.is_empty()
+                    && pairs
+                        .iter()
+                        .all(|(k, _)| matches!(&k.kind, ExprKind::Keyword(_)));
+                if all_keywords {
+                    self.infer_record_literal(pairs, expr.span)
+                } else {
+                    let key_t = self.subst.fresh();
+                    let val_t = self.subst.fresh();
+                    for (k, v) in pairs {
+                        let kt = self.infer(k);
+                        let vt = self.infer(v);
+                        if let Err(e) = unify(&mut self.subst, &key_t, &kt) {
+                            self.errors.push(e.with_span(expr.span));
+                        }
+                        if let Err(e) = unify(&mut self.subst, &val_t, &vt) {
+                            self.errors.push(e.with_span(expr.span));
+                        }
                     }
-                    if let Err(e) = unify(&mut self.subst, &val_t, &vt) {
-                        self.errors.push(e.with_span(expr.span));
-                    }
+                    Type::Con("Map".to_string(), vec![key_t, val_t])
                 }
-                Type::Con("Map".to_string(), vec![key_t, val_t])
             }
 
             ExprKind::Tuple(items) => {
@@ -1144,6 +1153,41 @@ impl Checker {
 
             ExprKind::List(items) => self.infer_list(items, expr.span),
         }
+    }
+
+    /// Infer a record literal from a map where all keys are keywords.
+    /// Produces Record(Row([("field1", T1), ("field2", T2), ...], None))
+    fn infer_record_literal(&mut self, pairs: &[(Expr, Expr)], _span: Span) -> Type {
+        let fields: Vec<(String, Type)> = pairs
+            .iter()
+            .map(|(k, v)| {
+                let name = if let ExprKind::Keyword(s) = &k.kind {
+                    s.clone()
+                } else {
+                    unreachable!("infer_record_literal called with non-keyword key")
+                };
+                let vt = self.infer(v);
+                (name, vt)
+            })
+            .collect();
+        Type::Record(Box::new(Type::Row(fields, None)))
+    }
+
+    /// Infer the type of accessing a field on a record via `get`.
+    /// Uses row unification to support structural subtyping.
+    fn infer_record_get(&mut self, rec_ty: &Type, field_name: &str, span: Span) -> Type {
+        let field_ty = self.subst.fresh();
+        let rest = self.subst.fresh_var();
+        // Build an open row type that requires the given field
+        let expected_row = Type::Row(
+            vec![(field_name.to_string(), field_ty.clone())],
+            Some(rest),
+        );
+        let expected_record = Type::Record(Box::new(expected_row));
+        if let Err(e) = unify(&mut self.subst, rec_ty, &expected_record) {
+            self.errors.push(e.with_span(span));
+        }
+        self.subst.resolve(&field_ty)
     }
 
     fn infer_list(&mut self, items: &[Expr], span: Span) -> Type {
@@ -1200,6 +1244,17 @@ impl Checker {
                         return self.infer_list(&items[1..], span);
                     }
                     return Type::Unit;
+                }
+                // Record field access: [get record :key]
+                "get" if items.len() == 3 => {
+                    if let ExprKind::Keyword(field_name) = &items[2].kind {
+                        let rec_ty = self.infer(&items[1]);
+                        let resolved = self.subst.resolve(&rec_ty);
+                        // Use row-based get for Record types or unresolved type vars
+                        if matches!(resolved, Type::Record(_) | Type::Var(_)) {
+                            return self.infer_record_get(&rec_ty, field_name, span);
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -2611,5 +2666,45 @@ mod tests {
             [defn pure [x] / #{} [+ x 1]]
         "#);
         assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    // --- Row polymorphism / Record tests ---
+
+    #[test]
+    fn record_literal_has_record_row_type() {
+        let (ty, errors) = infer_type("{:x 1 :y 2}");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        match ty {
+            Type::Record(inner) => match *inner {
+                Type::Row(fields, None) => {
+                    assert_eq!(fields.len(), 2);
+                    assert!(fields.iter().any(|(n, t)| n == "x" && *t == Type::Int));
+                    assert!(fields.iter().any(|(n, t)| n == "y" && *t == Type::Int));
+                }
+                other => panic!("expected closed Row, got {:?}", other),
+            },
+            other => panic!("expected Record, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn record_structural_subtyping_via_get() {
+        // A function that accesses :x should accept a wider record with extra fields
+        let (ty, errors) = infer_type(r#"
+            [defn get-x [r] [get r :x]]
+            [get-x {:x 42 :y "hello"}]
+        "#);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        assert_eq!(ty, Type::Int);
+    }
+
+    #[test]
+    fn record_field_type_mismatch_errors() {
+        // Passing a record where :x is a String to a function expecting :x as Int
+        let errors = check_errors(r#"
+            [defn add-x [r] [+ [get r :x] 1]]
+            [add-x {:x "oops"}]
+        "#);
+        assert!(!errors.is_empty(), "should have type error for field type mismatch");
     }
 }

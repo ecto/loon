@@ -26,6 +26,11 @@ pub enum Type {
     Tuple(Vec<Type>),
     /// Effect set on a function type
     Effect(Box<Type>, EffectSet),
+    /// Row type for structural records: maps field names to types with an optional extension variable
+    /// Row(fields, rest) where rest is None (closed) or Some(TypeVar) (open/extensible)
+    Row(Vec<(String, Type)>, Option<TypeVar>),
+    /// Record type: a map with a row type
+    Record(Box<Type>),
 }
 
 /// Set of effect names.
@@ -118,6 +123,25 @@ impl fmt::Display for Type {
                 }
                 write!(f, "}}")
             }
+            Type::Row(fields, rest) => {
+                write!(f, "{{")?;
+                for (i, (name, ty)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{name}: {ty}")?;
+                }
+                if let Some(r) = rest {
+                    if !fields.is_empty() {
+                        write!(f, " | ")?;
+                    }
+                    write!(f, "t{}", r.0)?;
+                }
+                write!(f, "}}")
+            }
+            Type::Record(row) => {
+                write!(f, "Record{row}")
+            }
         }
     }
 }
@@ -147,6 +171,14 @@ impl Subst {
         self.next_var += 1;
         self.bindings.push(None);
         Type::Var(v)
+    }
+
+    /// Create a fresh TypeVar and return just the variable (not wrapped in Type).
+    pub fn fresh_var(&mut self) -> TypeVar {
+        let v = TypeVar(self.next_var);
+        self.next_var += 1;
+        self.bindings.push(None);
+        v
     }
 
     pub fn bind(&mut self, v: TypeVar, ty: Type) {
@@ -181,6 +213,30 @@ impl Subst {
             Type::Effect(inner, effects) => {
                 Type::Effect(Box::new(self.resolve(inner)), effects.clone())
             }
+            Type::Row(fields, rest) => {
+                let resolved_fields: Vec<(String, Type)> = fields
+                    .iter()
+                    .map(|(n, t)| (n.clone(), self.resolve(t)))
+                    .collect();
+                if let Some(rv) = rest {
+                    let idx = rv.0 as usize;
+                    if idx < self.bindings.len() {
+                        if let Some(ref bound) = self.bindings[idx] {
+                            let resolved_rest = self.resolve(bound);
+                            if let Type::Row(extra_fields, new_rest) = resolved_rest {
+                                let mut all_fields = resolved_fields;
+                                all_fields.extend(extra_fields);
+                                return Type::Row(all_fields, new_rest);
+                            }
+                            if let Type::Var(new_rv) = resolved_rest {
+                                return Type::Row(resolved_fields, Some(new_rv));
+                            }
+                        }
+                    }
+                }
+                Type::Row(resolved_fields, *rest)
+            }
+            Type::Record(inner) => Type::Record(Box::new(self.resolve(inner))),
             _ => ty.clone(),
         }
     }
@@ -195,6 +251,11 @@ impl Subst {
             Type::Con(_, args) => args.iter().any(|a| self.occurs_in(v, a)),
             Type::Tuple(items) => items.iter().any(|t| self.occurs_in(v, t)),
             Type::Effect(inner, _) => self.occurs_in(v, &inner),
+            Type::Row(fields, rest) => {
+                fields.iter().any(|(_, t)| self.occurs_in(v, t))
+                    || rest.is_some_and(|r| r == v)
+            }
+            Type::Record(inner) => self.occurs_in(v, &inner),
             _ => false,
         }
     }
@@ -327,7 +388,83 @@ pub fn unify(subst: &mut Subst, a: &Type, b: &Type) -> Result<(), TypeError> {
             }
             Ok(())
         }
+        (Type::Record(r1), Type::Record(r2)) => unify(subst, r1, r2),
+        (Type::Row(fields_a, rest_a), Type::Row(fields_b, rest_b)) => {
+            unify_rows(subst, fields_a, *rest_a, fields_b, *rest_b)
+        }
         _ => Err(TypeError::bare(format!("cannot unify {a} with {b}"))),
+    }
+}
+
+/// Row unification: unify two row types by matching fields by name.
+fn unify_rows(
+    subst: &mut Subst,
+    fields_a: &[(String, Type)],
+    rest_a: Option<TypeVar>,
+    fields_b: &[(String, Type)],
+    rest_b: Option<TypeVar>,
+) -> Result<(), TypeError> {
+    let map_a: HashMap<&str, &Type> = fields_a.iter().map(|(n, t)| (n.as_str(), t)).collect();
+    let map_b: HashMap<&str, &Type> = fields_b.iter().map(|(n, t)| (n.as_str(), t)).collect();
+
+    // Unify fields present in both rows
+    for (name, ty_a) in &map_a {
+        if let Some(ty_b) = map_b.get(name) {
+            unify(subst, ty_a, ty_b)?;
+        }
+    }
+
+    // Fields only in A (not in B)
+    let only_a: Vec<(String, Type)> = fields_a
+        .iter()
+        .filter(|(n, _)| !map_b.contains_key(n.as_str()))
+        .cloned()
+        .collect();
+
+    // Fields only in B (not in A)
+    let only_b: Vec<(String, Type)> = fields_b
+        .iter()
+        .filter(|(n, _)| !map_a.contains_key(n.as_str()))
+        .cloned()
+        .collect();
+
+    match (rest_a, rest_b) {
+        (None, None) => {
+            if !only_a.is_empty() || !only_b.is_empty() {
+                return Err(TypeError::bare(format!(
+                    "record field mismatch: extra fields {:?} / {:?}",
+                    only_a.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+                    only_b.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+                )));
+            }
+            Ok(())
+        }
+        (Some(ra), None) => {
+            if !only_a.is_empty() {
+                return Err(TypeError::bare(format!(
+                    "closed record missing fields: {:?}",
+                    only_a.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+                )));
+            }
+            subst.bind(ra, Type::Row(only_b, None));
+            Ok(())
+        }
+        (None, Some(rb)) => {
+            if !only_b.is_empty() {
+                return Err(TypeError::bare(format!(
+                    "closed record missing fields: {:?}",
+                    only_b.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+                )));
+            }
+            subst.bind(rb, Type::Row(only_a, None));
+            Ok(())
+        }
+        (Some(ra), Some(rb)) => {
+            let fresh_rest = subst.fresh_var();
+            subst.bind(ra, Type::Row(only_b, Some(fresh_rest)));
+            subst.bind(rb, Type::Row(only_a, Some(fresh_rest)));
+            Ok(())
+        }
     }
 }
 
@@ -435,6 +572,15 @@ fn free_vars_ty(ty: &Type, out: &mut BTreeSet<TypeVar>) {
             }
         }
         Type::Effect(inner, _) => free_vars_ty(inner, out),
+        Type::Row(fields, rest) => {
+            for (_, t) in fields {
+                free_vars_ty(t, out);
+            }
+            if let Some(r) = rest {
+                out.insert(*r);
+            }
+        }
+        Type::Record(inner) => free_vars_ty(inner, out),
         _ => {}
     }
 }
@@ -488,6 +634,21 @@ fn substitute(ty: &Type, mapping: &HashMap<TypeVar, Type>) -> Type {
         Type::Effect(inner, effects) => {
             Type::Effect(Box::new(substitute(inner, mapping)), effects.clone())
         }
+        Type::Row(fields, rest) => {
+            let new_fields = fields
+                .iter()
+                .map(|(n, t)| (n.clone(), substitute(t, mapping)))
+                .collect();
+            let new_rest = rest.map(|r| {
+                if let Some(Type::Var(v)) = mapping.get(&r) {
+                    *v
+                } else {
+                    r
+                }
+            });
+            Type::Row(new_fields, new_rest)
+        }
+        Type::Record(inner) => Type::Record(Box::new(substitute(inner, mapping))),
         _ => ty.clone(),
     }
 }
