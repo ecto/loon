@@ -7,16 +7,23 @@
     [div {:style {:text-align "center"
                   :padding "4rem 2rem 0"}}
       [a-el {:href "/"
-             :style {:display "inline-flex"
-                     :align-items "center"
-                     :gap "0.75rem"
-                     :text-decoration "none"}}
-        [img-el {:src "loon-bird.svg" :alt "Loon" :style {:width "56px" :height "56px"}}]
+             :style {:display "inline-block"
+                     :text-decoration "none"
+                     :color [color :text]
+                     :font-family [font :mono]}}
+        [pre-el {:style {:font-size "0.7rem"
+                      :line-height "1.2"
+                      :letter-spacing "0.05em"
+                      :margin "0 0 0.5rem"}}
+          [str
+            "   __\n"
+            "  / o`>\n"
+            "  \\_.~\n"
+            "~~~~~~~\n"]]
         [span {:style {:font-size "2.2rem"
                        :font-weight "400"
-                       :color [color :text]
-                       :font-family [font :serif]}}
-          "Loon"]]]
+                       :letter-spacing "0.05em"}}
+          "loon"]]]
 
     ; --- Hero ---
     [section-el {:style {:max-width "640px"
