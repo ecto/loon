@@ -1,3 +1,5 @@
+pub mod typed;
+
 use crate::syntax::Span;
 use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
