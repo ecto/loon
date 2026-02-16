@@ -1,5 +1,5 @@
-[pub defn double [x] [+ x x]]
+[pub fn double [x] [+ x x]]
 
-[pub defn triple [x] [+ x [+ x x]]]
+[pub fn triple [x] [+ x [+ x x]]]
 
-[defn internal-helper [x] [+ x 1]]
+[fn internal-helper [x] [+ x 1]]

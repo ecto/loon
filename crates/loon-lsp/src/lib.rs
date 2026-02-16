@@ -323,8 +323,8 @@ fn collect_inlay_hints(
                             }
                         }
                     }
-                    "defn" => {
-                        // [defn name [params...] body...]
+                    "fn" if items.len() >= 2 && matches!(&items[1].kind, ExprKind::Symbol(_)) => {
+                        // [fn name [params...] body...]
                         if items.len() >= 3 {
                             if let ExprKind::List(params) = &items[2].kind {
                                 for param in params {
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn completion_returns_visible_names() {
-        let src = "[defn add [x y] [+ x y]]";
+        let src = "[fn add [x y] [+ x y]]";
         let state = DocumentState::new(src, 1);
         assert!(state.checker.is_some());
 
@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn definition_and_reference_tracking() {
-        let src = "[defn add [x y] [+ x y]]\n[add 1 2]";
+        let src = "[fn add [x y] [+ x y]]\n[add 1 2]";
         let state = DocumentState::new(src, 1);
         assert!(state.checker.is_some());
 

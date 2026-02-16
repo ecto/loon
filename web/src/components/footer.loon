@@ -1,18 +1,17 @@
 ; footer.loon — Minimal centered footer
 
-[defn footer-component []
+[fn footer-component []
   [footer-el {:class "footer"
               :style {:padding "3rem 2rem"
                       :margin-top "4rem"
-                      :text-align "center"
-                      :border-top [str "1px solid " [color :border]]}}
-    [p {:style {:font-family [font :serif]
-                :font-size "1.1rem"
-                :color [color :muted]
-                :margin-bottom "0.5rem"}}
-      "Loon — A LISP that flies."]
-    [a-el {:href "https://github.com/loon-lang/loon"
-           :class "link"
-           :style {:color [color :primary]
-                   :font-size "0.9rem"}}
-      "GitHub"]]]
+                      :text-align "center"}}
+    [a-el {:href "/"
+           :style {:display "inline-flex"
+                   :align-items "center"
+                   :gap "0.5rem"
+                   :text-decoration "none"
+                   :color [color :muted]
+                   :font-family [font :serif]
+                   :font-size "1rem"}}
+      [img-el {:src "loon-bird.svg" :alt "Loon" :style {:width "24px" :height "24px" :opacity "0.5"}}]
+      "Loon"]]]

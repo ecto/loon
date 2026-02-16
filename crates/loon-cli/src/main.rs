@@ -381,7 +381,7 @@ version = "0.1.0"
     );
     std::fs::write(dir.join("loon.toml"), toml_content).unwrap();
 
-    let main_content = r#"[defn main []
+    let main_content = r#"[fn main []
   [println "hello, world!"]]
 "#;
     std::fs::write(src_dir.join("main.loon"), main_content).unwrap();
@@ -426,13 +426,20 @@ fn test_file(path: &PathBuf) {
                         if items.len() >= 3 {
                             if let loon_lang::ast::ExprKind::Symbol(s) = &items[0].kind {
                                 if s == "test" {
+                                    // [test name [params] body...] or [test fn name [params] body...]
                                     if let loon_lang::ast::ExprKind::Symbol(s2) = &items[1].kind {
-                                        if s2 == "defn" {
-                                            if let loon_lang::ast::ExprKind::Symbol(name) =
-                                                &items[2].kind
-                                            {
-                                                names.push(name.clone());
+                                        if s2 == "fn" {
+                                            // [test fn name ...] — name is items[2]
+                                            if items.len() >= 4 {
+                                                if let loon_lang::ast::ExprKind::Symbol(name) =
+                                                    &items[2].kind
+                                                {
+                                                    names.push(name.clone());
+                                                }
                                             }
+                                        } else {
+                                            // [test name [params] body...] — name is items[1]
+                                            names.push(s2.clone());
                                         }
                                     }
                                 }
@@ -878,7 +885,7 @@ mod tests {
     #[test]
     fn wasm_magic_number() {
         // A minimal Loon program that compiles to WASM should produce valid WASM bytes
-        let source = r#"[defn main [] 42]"#;
+        let source = r#"[fn main [] 42]"#;
         let exprs = loon_lang::parser::parse(source).expect("parse failed");
         let wasm = loon_lang::codegen::compile(&exprs).expect("compile failed");
         assert!(wasm.len() >= 8, "WASM output too small: {} bytes", wasm.len());
@@ -889,7 +896,7 @@ mod tests {
 
     #[test]
     fn optimize_wasm_preserves_magic() {
-        let source = r#"[defn main [] 42]"#;
+        let source = r#"[fn main [] 42]"#;
         let exprs = loon_lang::parser::parse(source).expect("parse failed");
         let wasm = loon_lang::codegen::compile(&exprs).expect("compile failed");
         let optimized = optimize_wasm(&wasm);
@@ -901,7 +908,7 @@ mod tests {
     #[test]
     fn optimize_wasm_strips_name_section() {
         // Build a WASM binary with a custom "name" section appended
-        let source = r#"[defn main [] 42]"#;
+        let source = r#"[fn main [] 42]"#;
         let exprs = loon_lang::parser::parse(source).expect("parse failed");
         let mut wasm = loon_lang::codegen::compile(&exprs).expect("compile failed");
 

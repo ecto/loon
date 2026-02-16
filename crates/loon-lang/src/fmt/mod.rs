@@ -231,8 +231,14 @@ fn list_to_doc(items: &[Expr]) -> Doc {
     };
 
     match head_name {
-        Some("defn") => defn_to_doc(items),
-        Some("fn") => fn_to_doc(items),
+        Some("fn") => {
+            // Named fn: [fn name [params] body...] vs anonymous: [fn [params] body...]
+            if items.len() >= 2 && matches!(&items[1].kind, ExprKind::Symbol(_)) {
+                defn_to_doc(items)
+            } else {
+                fn_to_doc(items)
+            }
+        }
         Some("let") => let_to_doc(items),
         Some("if") => if_to_doc(items),
         Some("match") => match_to_doc(items),
@@ -243,7 +249,7 @@ fn list_to_doc(items: &[Expr]) -> Doc {
     }
 }
 
-/// `[defn name [params...] body...]`
+/// `[fn name [params...] body...]`
 /// Name+params on first line, body indented 2. Blank line between top-level defns
 /// is handled in `format_program`.
 fn defn_to_doc(items: &[Expr]) -> Doc {
@@ -530,7 +536,7 @@ fn is_top_level_defn(expr: &Expr) -> bool {
     if let ExprKind::List(items) = &expr.kind {
         if let Some(head) = items.first() {
             if let ExprKind::Symbol(s) = &head.kind {
-                return matches!(s.as_str(), "defn" | "type" | "effect");
+                return matches!(s.as_str(), "fn" | "type" | "effect");
             }
         }
     }
@@ -566,7 +572,7 @@ mod tests {
 
     #[test]
     fn idempotent_defn() {
-        assert_idempotent("[defn add [x y] [+ x y]]");
+        assert_idempotent("[fn add [x y] [+ x y]]");
     }
 
     #[test]
@@ -581,7 +587,7 @@ mod tests {
 
     #[test]
     fn idempotent_nested() {
-        assert_idempotent("[defn foo [x] [if [> x 0] [+ x 1] [- x 1]]]");
+        assert_idempotent("[fn foo [x] [if [> x 0] [+ x 1] [- x 1]]]");
     }
 
     #[test]
@@ -621,7 +627,7 @@ mod tests {
 
     #[test]
     fn idempotent_multiline_defn() {
-        let src = "[defn complex [a b c] [let x [+ a b]] [let y [* x c]] [if [> y 0] y [- 0 y]]]";
+        let src = "[fn complex [a b c] [let x [+ a b]] [let y [* x c]] [if [> y 0] y [- 0 y]]]";
         assert_idempotent(src);
     }
 
@@ -629,8 +635,8 @@ mod tests {
 
     #[test]
     fn format_defn() {
-        let result = fmt("[defn add [x y] [+ x y]]");
-        assert!(result.contains("[defn add [x y]"));
+        let result = fmt("[fn add [x y] [+ x y]]");
+        assert!(result.contains("[fn add [x y]"));
         assert!(result.contains("[+ x y]"));
     }
 
@@ -673,7 +679,7 @@ mod tests {
 
     #[test]
     fn format_blank_lines_between_defns() {
-        let result = fmt("[defn foo [] 1] [defn bar [] 2]");
+        let result = fmt("[fn foo [] 1] [fn bar [] 2]");
         assert!(
             result.contains("\n\n"),
             "expected blank line between defns, got: {result}"

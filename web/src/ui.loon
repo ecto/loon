@@ -17,7 +17,7 @@
 ; --- Coerce children ---
 ; Strings become Txt nodes, VNodes pass through
 
-[defn coerce-child [c]
+[fn coerce-child [c]
   [if [vec? c]
     [Fragment [coerce-children c]]
     [match c
@@ -27,52 +27,52 @@
       Empty => Empty
       _ => [Txt [str c]]]]]
 
-[defn coerce-children [children]
+[fn coerce-children [children]
   [map [fn [c] [coerce-child c]] children]]
 
 ; --- Element constructor helper ---
 ; If first arg is a map, treat as props. Otherwise treat as first child.
 
-[defn make-element [tag first rest]
+[fn make-element [tag first rest]
   [if [map? first]
     [El tag first [coerce-children rest]]
     [El tag {} [coerce-children [cons first rest]]]]]
 
 ; --- Element constructors ---
 
-[defn div [first & rest]          [make-element "div" first rest]]
-[defn span [first & rest]         [make-element "span" first rest]]
-[defn p [first & rest]            [make-element "p" first rest]]
-[defn h1 [first & rest]           [make-element "h1" first rest]]
-[defn h2 [first & rest]           [make-element "h2" first rest]]
-[defn h3 [first & rest]           [make-element "h3" first rest]]
-[defn h4 [first & rest]           [make-element "h4" first rest]]
-[defn a-el [first & rest]         [make-element "a" first rest]]
-[defn button-el [first & rest]    [make-element "button" first rest]]
-[defn input-el [props]            [El "input" props #[]]]
-[defn textarea-el [first & rest]  [make-element "textarea" first rest]]
-[defn img-el [props]              [El "img" props #[]]]
-[defn nav-el [first & rest]       [make-element "nav" first rest]]
-[defn header-el [first & rest]    [make-element "header" first rest]]
-[defn footer-el [first & rest]    [make-element "footer" first rest]]
-[defn main-el [first & rest]      [make-element "main" first rest]]
-[defn section-el [first & rest]   [make-element "section" first rest]]
-[defn article-el [first & rest]   [make-element "article" first rest]]
-[defn ul-el [first & rest]        [make-element "ul" first rest]]
-[defn ol-el [first & rest]        [make-element "ol" first rest]]
-[defn li-el [first & rest]        [make-element "li" first rest]]
-[defn pre-el [first & rest]       [make-element "pre" first rest]]
-[defn code-el [first & rest]      [make-element "code" first rest]]
-[defn strong-el [first & rest]    [make-element "strong" first rest]]
-[defn em-el [first & rest]        [make-element "em" first rest]]
-[defn br-el []                    [El "br" {} #[]]]
-[defn hr-el []                    [El "hr" {} #[]]]
+[fn div [first & rest]          [make-element "div" first rest]]
+[fn span [first & rest]         [make-element "span" first rest]]
+[fn p [first & rest]            [make-element "p" first rest]]
+[fn h1 [first & rest]           [make-element "h1" first rest]]
+[fn h2 [first & rest]           [make-element "h2" first rest]]
+[fn h3 [first & rest]           [make-element "h3" first rest]]
+[fn h4 [first & rest]           [make-element "h4" first rest]]
+[fn a-el [first & rest]         [make-element "a" first rest]]
+[fn button-el [first & rest]    [make-element "button" first rest]]
+[fn input-el [props]            [El "input" props #[]]]
+[fn textarea-el [first & rest]  [make-element "textarea" first rest]]
+[fn img-el [props]              [El "img" props #[]]]
+[fn nav-el [first & rest]       [make-element "nav" first rest]]
+[fn header-el [first & rest]    [make-element "header" first rest]]
+[fn footer-el [first & rest]    [make-element "footer" first rest]]
+[fn main-el [first & rest]      [make-element "main" first rest]]
+[fn section-el [first & rest]   [make-element "section" first rest]]
+[fn article-el [first & rest]   [make-element "article" first rest]]
+[fn ul-el [first & rest]        [make-element "ul" first rest]]
+[fn ol-el [first & rest]        [make-element "ol" first rest]]
+[fn li-el [first & rest]        [make-element "li" first rest]]
+[fn pre-el [first & rest]       [make-element "pre" first rest]]
+[fn code-el [first & rest]      [make-element "code" first rest]]
+[fn strong-el [first & rest]    [make-element "strong" first rest]]
+[fn em-el [first & rest]        [make-element "em" first rest]]
+[fn br-el []                    [El "br" {} #[]]]
+[fn hr-el []                    [El "hr" {} #[]]]
 
 ; --- Text helper ---
-[defn text [s] [Txt s]]
+[fn text [s] [Txt s]]
 
 ; --- Fragment helper ---
-[defn fragment [& children] [Fragment [coerce-children children]]]
+[fn fragment [& children] [Fragment [coerce-children children]]]
 
 ; --- UI Effect ---
 
@@ -86,7 +86,7 @@
 
 ; --- Render VNode to real DOM ---
 
-[defn render-props [node props]
+[fn render-props [node props]
   [each [fn [entry]
     [let k [nth entry 0]]
     [let v [nth entry 1]]
@@ -104,7 +104,7 @@
           [dom/set-attribute node key-str [str v]]]]]]
     [entries props]]]
 
-[defn render-vnode [vnode]
+[fn render-vnode [vnode]
   [match vnode
     [El tag props children] => [do
       [let node [dom/create-element tag]]
@@ -127,14 +127,14 @@
 
 ; --- Mount ---
 
-[defn mount [selector vnode]
+[fn mount [selector vnode]
   [let root [dom/query-selector selector]]
   [let rendered [render-vnode vnode]]
   [dom/set-inner-html root ""]
   [dom/append-child root rendered]
   rendered]
 
-[defn rerender [selector build-fn]
+[fn rerender [selector build-fn]
   [let root [dom/query-selector selector]]
   [let vnode [build-fn]]
   [let rendered [render-vnode vnode]]

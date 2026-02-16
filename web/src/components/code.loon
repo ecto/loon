@@ -1,14 +1,15 @@
 ; code.loon — Syntax-highlighted code block component
 
-[defn highlight-loon [source]
+[fn highlight-loon [source]
   [pre-el {:class "code-block"}
     [code-el {:class "language-loon"} source]]]
 
-[defn code-block [first & rest]
+[fn code-block [first & rest]
   [let props [if [map? first] first {}]]
   [let source [if [map? first] [nth rest 0] first]]
   [let label [get props :label ""]]
-  [div {:class "code-block-wrapper"}
+  [let cls [get props :class ""]]
+  [div {:class [cx "code-block-wrapper" cls]}
     [if [not [= label ""]]
       [div {:class "code-block-label"} label]
       Empty]

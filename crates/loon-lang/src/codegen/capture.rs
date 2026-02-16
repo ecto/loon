@@ -183,8 +183,12 @@ fn collect_free(expr: &Expr, bound: &HashSet<String>, free: &mut HashSet<String>
                         }
                     }
                     "fn" => {
-                        // [fn [params] body...] — inner lambda
                         if items.len() >= 2 {
+                            if matches!(&items[1].kind, ExprKind::Symbol(_)) {
+                                // Named fn [fn name [params] body] — skip (defines a name)
+                                return;
+                            }
+                            // Anonymous [fn [params] body...] — inner lambda
                             if let ExprKind::List(params) = &items[1].kind {
                                 let mut inner_bound = bound.clone();
                                 for p in params {
@@ -198,10 +202,6 @@ fn collect_free(expr: &Expr, bound: &HashSet<String>, free: &mut HashSet<String>
                                 return;
                             }
                         }
-                    }
-                    "defn" => {
-                        // Skip defn — it defines a name, not a free var reference
-                        return;
                     }
                     _ => {}
                 }

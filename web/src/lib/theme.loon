@@ -2,14 +2,14 @@
 
 ; --- Color Tokens ---
 [let colors {
-  :primary   "#1e3a5f"
-  :accent    "#d4a843"
-  :bg        "#faf8f5"
-  :white     "#ffffff"
-  :black     "#1a1a1a"
-  :text      "#2c2c2c"
-  :muted     "#5a5a5a"
-  :border    "#e0ddd8"
+  :primary   "var(--blue)"
+  :accent    "var(--gold)"
+  :bg        "var(--bg)"
+  :white     "var(--white)"
+  :black     "var(--black)"
+  :text      "var(--fg)"
+  :muted     "var(--muted)"
+  :border    "var(--border)"
   :green     "#2d5016"
   :red       "#c0392b"
 }]
@@ -25,28 +25,28 @@
 
 ; --- Font Tokens ---
 [let fonts {
-  :serif "'Crimson Pro', 'Georgia', 'Times New Roman', serif"
-  :sans "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif"
-  :mono "'SF Mono', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace"
+  :serif "'Times New Roman', 'Georgia', serif"
+  :sans "system-ui, sans-serif"
+  :mono "ui-monospace, monospace"
 }]
 
 ; --- Radius Tokens ---
 [let radii {
-  :sm "4px"
-  :md "8px"
-  :lg "16px"
+  :sm "0"
+  :md "0"
+  :lg "0"
 }]
 
 ; --- Shadow Tokens ---
 [let shadows {
-  :light "0 2px 8px rgba(30, 58, 95, 0.08)"
-  :medium "0 4px 16px rgba(30, 58, 95, 0.12)"
-  :heavy "0 8px 32px rgba(30, 58, 95, 0.18)"
+  :light "0 2px 8px rgba(0, 0, 0, 0.08)"
+  :medium "0 4px 16px rgba(0, 0, 0, 0.12)"
+  :heavy "0 8px 32px rgba(0, 0, 0, 0.18)"
 }]
 
 ; --- Token Accessors ---
-[defn color [key] [get colors key]]
-[defn space [key] [get spacing key]]
-[defn font [key] [get fonts key]]
-[defn radius [key] [get radii key]]
-[defn shadow [key] [get shadows key]]
+[fn color [key] [get colors key]]
+[fn space [key] [get spacing key]]
+[fn font [key] [get fonts key]]
+[fn radius [key] [get radii key]]
+[fn shadow [key] [get shadows key]]

@@ -127,12 +127,12 @@ impl MacroExpander {
     }
 
     fn expand_toplevel(&mut self, expr: &Expr) -> Result<Option<Expr>, String> {
-        // Check for defmacro / defmacro+ forms
+        // Check for macro / macro+ forms
         if let ExprKind::List(items) = &expr.kind {
             if !items.is_empty() {
                 if let ExprKind::Symbol(s) = &items[0].kind {
-                    if s == "defmacro" || s == "defmacro+" {
-                        let is_type_aware = s == "defmacro+";
+                    if s == "macro" || s == "macro+" {
+                        let is_type_aware = s == "macro+";
                         self.parse_and_register_macro(&items[1..], is_type_aware, expr.span)?;
                         return Ok(None); // consumed
                     }
@@ -158,8 +158,8 @@ impl MacroExpander {
             ExprKind::List(items) if !items.is_empty() => {
                 // Check if head is a known macro
                 if let ExprKind::Symbol(name) = &items[0].kind {
-                    // Skip defmacro forms (already handled at toplevel)
-                    if name == "defmacro" || name == "defmacro+" {
+                    // Skip macro forms (already handled at toplevel)
+                    if name == "macro" || name == "macro+" {
                         return Ok(expr.clone());
                     }
 
@@ -248,14 +248,14 @@ impl MacroExpander {
         is_type_aware: bool,
         span: Span,
     ) -> Result<(), String> {
-        // [defmacro name [params] body]
-        // [defmacro name [params] / {Effects} body]
+        // [macro name [params] body]
+        // [macro name [params] / {Effects} body]
         if args.len() < 2 {
-            return Err("defmacro requires a name and body".to_string());
+            return Err("macro requires a name and body".to_string());
         }
         let name = match &args[0].kind {
             ExprKind::Symbol(s) => s.clone(),
-            _ => return Err("defmacro name must be a symbol".to_string()),
+            _ => return Err("macro name must be a symbol".to_string()),
         };
         let params = self.parse_macro_params(&args[1])?;
 
@@ -275,7 +275,7 @@ impl MacroExpander {
         }
 
         if body_start >= args.len() {
-            return Err(format!("defmacro '{name}' missing body"));
+            return Err(format!("macro '{name}' missing body"));
         }
         let body = args[body_start].clone();
 
@@ -848,7 +848,7 @@ mod tests {
     #[test]
     fn template_macro_when() {
         let src = r#"
-            [defmacro when [cond body]
+            [macro when [cond body]
               `[if ~cond ~body None]]
             [when true 42]
         "#;
@@ -867,7 +867,7 @@ mod tests {
     #[test]
     fn template_macro_rest_params() {
         let src = r#"
-            [defmacro unless [cond & body]
+            [macro unless [cond & body]
               `[if ~cond None [do ~@body]]]
             [unless false 1 2 3]
         "#;
@@ -887,7 +887,7 @@ mod tests {
     #[test]
     fn macroexpand_returns_string() {
         let src = r#"
-            [defmacro when [cond body]
+            [macro when [cond body]
               `[if ~cond ~body None]]
             [macroexpand [when true 42]]
         "#;
@@ -906,9 +906,9 @@ mod tests {
     #[test]
     fn nested_macro_expansion() {
         let src = r#"
-            [defmacro when [cond body]
+            [macro when [cond body]
               `[if ~cond ~body None]]
-            [defmacro when2 [a b]
+            [macro when2 [a b]
               `[when ~a ~b]]
             [when2 true 99]
         "#;
@@ -924,7 +924,7 @@ mod tests {
     #[test]
     fn expansion_trace_recorded() {
         let src = r#"
-            [defmacro when [cond body]
+            [macro when [cond body]
               `[if ~cond ~body None]]
             [when true 42]
         "#;

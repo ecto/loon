@@ -1,7 +1,7 @@
 ; app.loon — Root component, route table, layout
 
 ; --- Route Table ---
-[defn route-table []
+[fn route-table []
   #[
     #["/" home-page]
     #["/tour" tour-page]
@@ -11,7 +11,7 @@
 
 ; --- App Component ---
 
-[defn app []
+[fn app []
   [let path [dom/location]]
   [let routes [route-table]]
   [let page-fn [match-route path routes]]
@@ -20,5 +20,5 @@
 
 ; --- Boot ---
 
-[defn main []
+[fn main []
   [mount "#app" [app]]]

@@ -1,9 +1,9 @@
-[defn greet
+[fn greet
   ([name]
     [str "hello, " name "!"])
   ([greeting name]
     [str greeting ", " name "!"])]
 
-[defn main []
+[fn main []
   [println [greet "world"]]
   [println [greet "hey" "world"]]]

@@ -1,10 +1,10 @@
-[defn count-words [text]
+[fn count-words [text]
   [|> [split text " "]
     [filter [fn [w] [not [empty? w]]]]
     [fold {} [fn [acc word]
       [update acc word [fn [n] [+ [or n 0] 1]]]]]]]
 
-[defn main []
+[fn main []
   [let text "the quick brown fox jumps over the lazy dog the fox"]
   [let counts [count-words text]]
   [|> [entries counts]

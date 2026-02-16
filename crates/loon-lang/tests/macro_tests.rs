@@ -57,7 +57,7 @@ fn parse_unquote_splice() {
 fn template_when_macro() {
     let s = expand_first(
         r#"
-        [defmacro when [cond body]
+        [macro when [cond body]
           `[if ~cond ~body None]]
         [when true 42]
     "#,
@@ -69,7 +69,7 @@ fn template_when_macro() {
 fn template_unless_macro() {
     let s = expand_first(
         r#"
-        [defmacro unless [cond & body]
+        [macro unless [cond & body]
           `[if ~cond None [do ~@body]]]
         [unless false 1 2 3]
     "#,
@@ -84,9 +84,9 @@ fn template_unless_macro() {
 fn nested_macro_expansion() {
     let s = expand_first(
         r#"
-        [defmacro when [cond body]
+        [macro when [cond body]
           `[if ~cond ~body None]]
-        [defmacro when2 [a b]
+        [macro when2 [a b]
           `[when ~a ~b]]
         [when2 true 99]
     "#,
@@ -98,7 +98,7 @@ fn nested_macro_expansion() {
 fn macroexpand_debugging() {
     let expanded = expand(
         r#"
-        [defmacro when [cond body]
+        [macro when [cond body]
           `[if ~cond ~body None]]
         [macroexpand [when true 42]]
     "#,
@@ -117,7 +117,7 @@ fn macroexpand_debugging() {
 fn eval_when_macro() {
     let result = eval(
         r#"
-        [defmacro when [cond body]
+        [macro when [cond body]
           `[if ~cond ~body None]]
         [when true 42]
     "#,
@@ -129,7 +129,7 @@ fn eval_when_macro() {
 fn eval_when_macro_false() {
     let result = eval(
         r#"
-        [defmacro when [cond body]
+        [macro when [cond body]
           `[if ~cond ~body None]]
         [when false 42]
     "#,
@@ -145,7 +145,7 @@ fn eval_when_macro_false() {
 fn eval_unless_with_rest() {
     let result = eval(
         r#"
-        [defmacro unless [cond & body]
+        [macro unless [cond & body]
           `[if ~cond None [do ~@body]]]
         [unless false 1 2 42]
     "#,
@@ -158,7 +158,7 @@ fn eval_unless_with_rest() {
 fn eval_macro_with_complex_body() {
     let result = eval(
         r#"
-        [defmacro swap-if [cond a b]
+        [macro swap-if [cond a b]
           `[if ~cond ~b ~a]]
         [swap-if true 1 2]
     "#,
@@ -171,7 +171,7 @@ fn eval_macro_with_complex_body() {
 fn eval_macro_preserves_lexical_scope() {
     let result = eval(
         r#"
-        [defmacro my-let [name val body]
+        [macro my-let [name val body]
           `[let ~name ~val ~body]]
         [my-let x 10 [+ x 5]]
     "#,
@@ -188,10 +188,10 @@ fn eval_macro_preserves_lexical_scope() {
 fn eval_macro_used_in_defn() {
     let result = eval(
         r#"
-        [defmacro when [cond body]
+        [macro when [cond body]
           `[if ~cond ~body None]]
 
-        [defn maybe-double [n flag]
+        [fn maybe-double [n flag]
           [when flag [* n 2]]]
 
         [maybe-double 21 true]
@@ -206,7 +206,7 @@ fn eval_macro_used_in_defn() {
 fn expansion_trace_is_recorded() {
     let exprs = parse(
         r#"
-        [defmacro when [cond body]
+        [macro when [cond body]
           `[if ~cond ~body None]]
         [when true 42]
     "#,
@@ -229,7 +229,7 @@ fn expansion_trace_is_recorded() {
 fn type_check_macro_expanded_code() {
     // Use a macro that produces type-safe code
     let src = r#"
-        [defmacro double [x]
+        [macro double [x]
           `[+ ~x ~x]]
         [double 21]
     "#;
@@ -247,19 +247,19 @@ fn type_check_macro_expanded_code() {
     );
 }
 
-// ── defmacro+ (type-aware) ──────────────────────────────────────────
+// ── macro+ (type-aware) ──────────────────────────────────────────
 
 #[test]
-fn defmacro_plus_collected_but_not_expanded_in_phase_1() {
+fn macro_plus_collected_but_not_expanded_in_phase_1() {
     let src = r#"
-        [defmacro+ my-derive [T]
+        [macro+ my-derive [T]
           `[let __derived true]]
         [my-derive Point]
     "#;
     let exprs = parse(src).unwrap();
     let mut expander = MacroExpander::new();
     let expanded = expander.expand_program(&exprs).unwrap();
-    // defmacro+ should be consumed (not in output)
+    // macro+ should be consumed (not in output)
     // my-derive should remain unexpanded (it's type-aware)
     assert!(expander.has_type_aware_macros());
     // The my-derive call should still be there (not expanded yet)
@@ -270,9 +270,9 @@ fn defmacro_plus_collected_but_not_expanded_in_phase_1() {
 }
 
 #[test]
-fn defmacro_plus_expanded_in_phase_2() {
+fn macro_plus_expanded_in_phase_2() {
     let src = r#"
-        [defmacro+ my-derive [T]
+        [macro+ my-derive [T]
           `[let __derived true]]
         [my-derive Point]
     "#;
@@ -296,7 +296,7 @@ fn defmacro_plus_expanded_in_phase_2() {
 #[test]
 fn parse_compile_effects_annotation() {
     let src = r#"
-        [defmacro include-str [path] / #{IO}
+        [macro include-str [path] / #{IO}
           `[IO.read-file ~path]]
         [include-str "test.txt"]
     "#;
@@ -315,7 +315,7 @@ fn parse_compile_effects_annotation() {
 fn existing_programs_still_work() {
     let result = eval(
         r#"
-        [defn fib [n]
+        [fn fib [n]
           [match n
             0 => 0
             1 => 1

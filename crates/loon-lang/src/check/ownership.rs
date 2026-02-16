@@ -299,7 +299,7 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::List(items) if !items.is_empty() => {
                 if let ExprKind::Symbol(head) = &items[0].kind {
                     match head.as_str() {
-                        "defn" | "fn" | "type" | "trait" | "impl" | "sig" | "pub" | "test" | "derive" => {
+                        "fn" | "type" | "trait" | "impl" | "sig" | "pub" | "test" | "derive" => {
                             // Don't descend into nested definitions
                         }
                         "let" => {
@@ -474,7 +474,8 @@ impl<'a> OwnershipChecker<'a> {
         let head = &items[0];
         if let ExprKind::Symbol(s) = &head.kind {
             match s.as_str() {
-                "defn" => {
+                "fn" if items.len() > 1 && matches!(&items[1].kind, ExprKind::Symbol(_)) => {
+                    // Named function: [fn name [params] body...]
                     self.check_defn(&items[1..]);
                     return;
                 }
@@ -708,8 +709,8 @@ mod tests {
     fn use_after_move() {
         let errors = check(
             r#"
-            [defn take [s] s]
-            [defn main []
+            [fn take [s] s]
+            [fn main []
               [let name "alice"]
               [take name]
               [println name]]
@@ -727,7 +728,7 @@ mod tests {
     fn mut_borrow_immutable() {
         let errors = check(
             r#"
-            [defn main []
+            [fn main []
               [let v #[1 2 3]]
               [push! v 4]]
         "#,
@@ -743,7 +744,7 @@ mod tests {
     fn mut_borrow_ok() {
         let errors = check(
             r#"
-            [defn main []
+            [fn main []
               [let mut v #[1 2 3]]
               [push! v 4]]
         "#,
@@ -756,7 +757,7 @@ mod tests {
         // Int is Copy, so using x after passing to a function should be fine
         let errors = check_with_types(
             r#"
-            [defn take [s] s]
+            [fn take [s] s]
             [let x 42]
             [take x]
             [println x]
@@ -770,7 +771,7 @@ mod tests {
         // Vec is not Copy, so using v after passing to a function should error
         let errors = check_with_types(
             r#"
-            [defn consume [v] v]
+            [fn consume [v] v]
             [let v #[1 2 3]]
             [consume v]
             [println v]
@@ -788,7 +789,7 @@ mod tests {
         // A function that only reads its param (passes to println) should not move it
         let errors = check(
             r#"
-            [defn greet [name] [println name]]
+            [fn greet [name] [println name]]
             [let name "alice"]
             [greet name]
             [println name]
@@ -802,7 +803,7 @@ mod tests {
         // A function that returns its param should move it
         let errors = check(
             r#"
-            [defn identity [x] x]
+            [fn identity [x] x]
             [let name "alice"]
             [identity name]
             [println name]
@@ -820,7 +821,7 @@ mod tests {
         // One param is read-only, one is returned — only the returned one should move
         let errors = check(
             r#"
-            [defn pick_second [a b] [println a] b]
+            [fn pick_second [a b] [println a] b]
             [let x "hello"]
             [let y "world"]
             [pick_second x y]
@@ -836,7 +837,7 @@ mod tests {
         // The returned param should be moved
         let errors = check(
             r#"
-            [defn pick_second [a b] [println a] b]
+            [fn pick_second [a b] [println a] b]
             [let x "hello"]
             [let y "world"]
             [pick_second x y]
@@ -855,7 +856,7 @@ mod tests {
         // A type with [derive Copy] should not trigger move errors
         let exprs = parse(r#"
             [derive Copy [type Point [Point Int Int]]]
-            [defn take [p] p]
+            [fn take [p] p]
             [let p [Point 1 2]]
             [take p]
             [println p]

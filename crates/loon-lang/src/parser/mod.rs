@@ -402,16 +402,16 @@ mod tests {
 
     #[test]
     fn parse_hello_world() {
-        let src = r#"[defn main [] [println "hello, world!"]]"#;
+        let src = r#"[fn main [] [println "hello, world!"]]"#;
         let exprs = parse(src).unwrap();
         assert_eq!(exprs.len(), 1);
-        assert_eq!(exprs[0].to_string(), r#"[defn main [] [println "hello, world!"]]"#);
+        assert_eq!(exprs[0].to_string(), r#"[fn main [] [println "hello, world!"]]"#);
     }
 
     #[test]
     fn parse_fib() {
         let src = r#"
-[defn fib [n]
+[fn fib [n]
   [match n
     0 => 0
     1 => 1
@@ -450,7 +450,7 @@ mod tests {
     #[test]
     fn parse_multi_arity() {
         let src = r#"
-[defn greet
+[fn greet
   ([name]
     [str "hello, " name])
   ([greeting name]
@@ -474,7 +474,7 @@ mod tests {
 
     #[test]
     fn parse_effect_annotation() {
-        let src = r#"[defn load-config [path] / {IO Fail} [IO.read-file path]]"#;
+        let src = r#"[fn load-config [path] / {IO Fail} [IO.read-file path]]"#;
         let exprs = parse(src).unwrap();
         assert_eq!(exprs.len(), 1);
     }

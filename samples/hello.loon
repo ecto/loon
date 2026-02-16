@@ -1,2 +1,2 @@
-[defn main []
+[fn main []
   [println "hello, world!"]]

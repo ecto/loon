@@ -1,16 +1,16 @@
 ; nav.loon — Minimal navigation: Tour, Playground, GitHub
 
-[defn nav-links []
+[fn nav-links []
   #[#["/tour" "Tour"] #["/play" "Playground"]]]
 
-[defn make-nav-link [current-path link-item]
+[fn make-nav-link [current-path link-item]
   [let href [nth link-item 0]]
   [let label [nth link-item 1]]
   [a-el {:class [cx "nav-link" [when-class [= current-path href] "nav-link-active"]]
          :href href}
     label]]
 
-[defn nav-component [current-path]
+[fn nav-component [current-path]
   [nav-el {:class "nav"}
     [div {:style {:max-width "1000px"
                   :margin "0 auto"

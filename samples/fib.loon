@@ -1,10 +1,10 @@
-[defn fib [n]
+[fn fib [n]
   [match n
     0 => 0
     1 => 1
     n => [+ [fib [- n 1]] [fib [- n 2]]]]]
 
-[defn main []
+[fn main []
   [|> [range 0 10]
     [map fib]
     [each [fn [x] [println x]]]]]

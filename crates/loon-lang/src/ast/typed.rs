@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn fn_def_has_fn_type() {
-        let (typed, checker) = typed_program("[defn add [x y] [+ x y]]\nadd");
+        let (typed, checker) = typed_program("[fn add [x y] [+ x y]]\nadd");
         assert_eq!(typed.len(), 2);
         // The reference to `add` should carry a Fn type (may contain type vars
         // from let-polymorphism, so resolve through subst).

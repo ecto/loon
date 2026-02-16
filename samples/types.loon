@@ -3,13 +3,13 @@
   [Rect f64 f64]
   Point]
 
-[defn area [shape]
+[fn area [shape]
   [match shape
     [Circle r] => [* 3.14159 [* r r]]
     [Rect w h] => [* w h]
     Point      => 0.0]]
 
-[defn main []
+[fn main []
   [let c [Circle 5.0]]
   [let r [Rect 3.0 4.0]]
   [println [area c]]

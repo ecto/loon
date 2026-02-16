@@ -30,7 +30,7 @@ fn let_binding() {
 fn defn_and_call() {
     assert_eq!(
         run(r#"
-            [defn add [x y] [+ x y]]
+            [fn add [x y] [+ x y]]
             [add 3 4]
         "#),
         Value::Int(7)
@@ -41,7 +41,7 @@ fn defn_and_call() {
 fn fibonacci() {
     assert_eq!(
         run(r#"
-            [defn fib [n]
+            [fn fib [n]
               [match n
                 0 => 0
                 1 => 1
@@ -129,7 +129,7 @@ fn set_operations() {
 fn multi_arity() {
     assert_eq!(
         run(r#"
-            [defn greet
+            [fn greet
               ([name] [str "hello, " name])
               ([greeting name] [str greeting ", " name])]
             [greet "world"]
@@ -138,7 +138,7 @@ fn multi_arity() {
     );
     assert_eq!(
         run(r#"
-            [defn greet
+            [fn greet
               ([name] [str "hello, " name])
               ([greeting name] [str greeting ", " name])]
             [greet "hey" "world"]
@@ -155,7 +155,7 @@ fn adt_pattern_matching() {
               [Circle f64]
               [Rect f64 f64]
               Point]
-            [defn area [shape]
+            [fn area [shape]
               [match shape
                 [Circle r] => [* 3.14 [* r r]]
                 [Rect w h] => [* w h]
@@ -170,7 +170,7 @@ fn adt_pattern_matching() {
 fn match_with_guard() {
     assert_eq!(
         run(r#"
-            [defn classify [n]
+            [fn classify [n]
               [match n
                 0 => "zero"
                 n [when [> n 0]] => "positive"
@@ -181,7 +181,7 @@ fn match_with_guard() {
     );
     assert_eq!(
         run(r#"
-            [defn classify [n]
+            [fn classify [n]
               [match n
                 0 => "zero"
                 n [when [> n 0]] => "positive"
@@ -227,7 +227,7 @@ fn boolean_logic() {
 fn effect_handle_resume() {
     assert_eq!(
         run(r#"
-            [defn load [path]
+            [fn load [path]
               [IO.read-file path]]
             [handle [load "test.txt"]
               [IO.read-file path] => [resume "mock data"]]
@@ -240,7 +240,7 @@ fn effect_handle_resume() {
 fn effect_handle_no_resume() {
     assert_eq!(
         run(r#"
-            [defn risky []
+            [fn risky []
               [Fail.fail "boom"]]
             [handle [risky]
               [Fail.fail msg] => [str "caught: " msg]]
@@ -253,7 +253,7 @@ fn effect_handle_no_resume() {
 fn fn_param_destructuring() {
     assert_eq!(
         run(r#"
-            [defn first-of-pair [[a b]] a]
+            [fn first-of-pair [[a b]] a]
             [first-of-pair (1 2)]
         "#),
         Value::Int(1)
@@ -468,8 +468,8 @@ fn io_read_file_mock_handler_still_works() {
 fn question_in_defn_propagates_fail() {
     assert_eq!(
         run(r#"
-            [defn wrap [x] x]
-            [defn try-it [x] [wrap x]?]
+            [fn wrap [x] x]
+            [fn try-it [x] [wrap x]?]
             [handle [try-it [Err "bad"]]
               [Fail.fail msg] => [str "got: " msg]]
         "#),
@@ -603,11 +603,11 @@ fn stdlib_string_ops() {
         Value::Str("hello".to_string())
     );
     assert_eq!(
-        run(r#"[contains-str? "hello world" "world"]"#),
+        run(r#"[contains? "hello world" "world"]"#),
         Value::Bool(true)
     );
     assert_eq!(
-        run(r#"[contains-str? "hello world" "xyz"]"#),
+        run(r#"[contains? "hello world" "xyz"]"#),
         Value::Bool(false)
     );
     assert_eq!(
@@ -660,8 +660,8 @@ fn stdlib_min_max_sum() {
 
 #[test]
 fn stdlib_to_string() {
-    assert_eq!(run(r#"[to-string 42]"#), Value::Str("42".to_string()));
-    assert_eq!(run(r#"[to-string true]"#), Value::Str("true".to_string()));
+    assert_eq!(run(r#"[str 42]"#), Value::Str("42".to_string()));
+    assert_eq!(run(r#"[str true]"#), Value::Str("true".to_string()));
 }
 
 #[test]
@@ -761,7 +761,7 @@ fn module_use() {
     let _ = std::fs::create_dir_all(&dir);
     std::fs::write(
         dir.join("mymath.loon"),
-        "[pub defn double [x] [* x 2]]\n[pub defn triple [x] [* x 3]]\n",
+        "[pub fn double [x] [* x 2]]\n[pub fn triple [x] [* x 3]]\n",
     )
     .unwrap();
 
@@ -811,7 +811,7 @@ fn catch_errors_invalid_code_returns_errors() {
 
 #[test]
 fn catch_errors_parse_error_returns_errors() {
-    let result = run(r#"[catch-errors "[defn"]"#);
+    let result = run(r#"[catch-errors "[fn"]"#);
     match result {
         Value::Vec(v) => assert!(!v.is_empty(), "parse error should return errors"),
         other => panic!("expected Vec, got: {:?}", other),

@@ -589,7 +589,13 @@ pub fn register_builtins(env: &mut Env) {
             Value::Set(s) => Ok(Value::Bool(s.contains(&args[1]))),
             Value::Map(m) => Ok(Value::Bool(m.iter().any(|(k, _)| k == &args[1]))),
             Value::Vec(v) => Ok(Value::Bool(v.contains(&args[1]))),
-            _ => Err(err("contains? requires a collection")),
+            Value::Str(s) => {
+                match &args[1] {
+                    Value::Str(needle) => Ok(Value::Bool(s.contains(needle.as_str()))),
+                    _ => Err(err("contains? on string requires a string needle")),
+                }
+            }
+            _ => Err(err("contains? requires a collection or string")),
         }
     });
 
@@ -1002,15 +1008,6 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "contains-str?", |_, args: &[Value]| {
-        match (&args[0], &args[1]) {
-            (Value::Str(haystack), Value::Str(needle)) => {
-                Ok(Value::Bool(haystack.contains(needle.as_str())))
-            }
-            _ => Err(err("contains-str? requires two strings")),
-        }
-    });
-
     builtin!(env, "index-of", |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Str(haystack), Value::Str(needle)) => {
@@ -1179,10 +1176,6 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     // --- Conversion ---
-
-    builtin!(env, "to-string", |_, args: &[Value]| {
-        Ok(Value::Str(args[0].display_str()))
-    });
 
     builtin!(env, "into-map", |_, args: &[Value]| {
         match &args[0] {

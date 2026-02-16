@@ -1,6 +1,6 @@
 ; blog.loon — Blog index page
 
-[defn blog-features []
+[fn blog-features []
   [ul-el {:style {:margin-left "1.5rem" :color [color :muted] :line-height "1.8"}}
     [li-el "Full interpreter with 50+ builtins"]
     [li-el "Hindley-Milner type inference"]
@@ -12,7 +12,7 @@
     [li-el "REPL with time travel and forking"]
     [li-el "Basic WASM codegen"]]]
 
-[defn blog-page []
+[fn blog-page []
   [div {:class "page"}
     [page-header]
     [main-el {:style {:max-width "720px"

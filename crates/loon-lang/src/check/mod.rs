@@ -897,9 +897,9 @@ impl Checker {
             Scheme::mono(Type::Fn(vec![Type::Str, Type::Int, Type::Int], Box::new(Type::Str))),
         );
 
-        // contains-str?: Str → Str → Bool
+        // contains?: Str → Str → Bool
         self.env.set_global(
-            "contains-str?".to_string(),
+            "contains?".to_string(),
             Scheme::mono(Type::Fn(vec![Type::Str, Type::Str], Box::new(Type::Bool))),
         );
 
@@ -997,12 +997,12 @@ impl Checker {
             )),
         );
 
-        // to-string: ∀a. a → Str
+        // str: ∀a. a → Str
         {
             let a = self.subst.fresh();
             let tv = if let Type::Var(v) = a { v } else { unreachable!() };
             self.env.set_global(
-                "to-string".to_string(),
+                "str".to_string(),
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
@@ -1596,9 +1596,8 @@ impl Checker {
         let head = &items[0];
         if let ExprKind::Symbol(s) = &head.kind {
             match s.as_str() {
-                "defn" => return self.infer_defn(&items[1..], span),
+                "fn" => return self.infer_fn(&items[1..], span),
                 "let" => return self.infer_let(&items[1..]),
-                "fn" => return self.infer_lambda(&items[1..]),
                 "if" => return self.infer_if(&items[1..], span),
                 "do" => return self.infer_do(&items[1..]),
                 "match" => return self.infer_match(&items[1..], span),
@@ -1629,7 +1628,7 @@ impl Checker {
                     // Track the name being made public
                     if items.len() > 2 {
                         if let ExprKind::Symbol(kind) = &items[1].kind {
-                            if matches!(kind.as_str(), "defn" | "let" | "type") {
+                            if matches!(kind.as_str(), "fn" | "let" | "type") {
                                 if let ExprKind::Symbol(name) = &items[2].kind {
                                     self.pub_names.insert(name.clone());
                                 }
@@ -1648,7 +1647,7 @@ impl Checker {
                     return Type::Unit;
                 }
                 "derive" => return self.infer_derive(&items[1..], span),
-                "defmacro" | "defmacro+" | "macroexpand" => return Type::Unit,
+                "macro" | "macro+" | "macroexpand" => return Type::Unit,
                 "catch-errors" => {
                     // [catch-errors expr] — arg should be Str, returns Vec of error maps
                     if items.len() >= 2 {
@@ -1707,25 +1706,48 @@ impl Checker {
         ret
     }
 
-    fn infer_defn(&mut self, args: &[Expr], span: Span) -> Type {
-        if args.len() < 2 {
+    fn infer_fn(&mut self, args: &[Expr], span: Span) -> Type {
+        if args.is_empty() {
+            return self.subst.fresh();
+        }
+
+        // If first arg is a symbol, treat as named function
+        if let ExprKind::Symbol(name) = &args[0].kind {
+            return self.infer_named_fn(name.clone(), &args[1..], args[0].span, span);
+        }
+
+        // Otherwise anonymous lambda: [fn [params] body...]
+        if let ExprKind::List(params) = &args[0].kind {
+            self.push_scope();
+            let param_types = self.infer_params(params);
+
+            let mut body_ty = Type::Unit;
+            for expr in &args[1..] {
+                body_ty = self.infer(expr);
+            }
+            self.pop_scope();
+
+            return Type::Fn(param_types, Box::new(body_ty));
+        }
+
+        self.subst.fresh()
+    }
+
+    fn infer_named_fn(&mut self, name: String, args: &[Expr], name_span: Span, span: Span) -> Type {
+        if args.is_empty() {
             return Type::Unit;
         }
-        let name = match &args[0].kind {
-            ExprKind::Symbol(s) => s.clone(),
-            _ => return Type::Unit,
-        };
 
         // Record definition
-        self.add_definition(&name, args[0].span, span);
+        self.add_definition(&name, name_span, span);
 
         // Save and reset current_fn_effects
         let saved_effects = std::mem::replace(&mut self.current_fn_effects, EffectSet::empty());
 
         // Multi-arity check
-        if matches!(args[1].kind, ExprKind::Tuple(_)) {
+        if matches!(args[0].kind, ExprKind::Tuple(_)) {
             let ret = self.subst.fresh();
-            for clause_expr in &args[1..] {
+            for clause_expr in &args[0..] {
                 if let ExprKind::Tuple(clause_items) = &clause_expr.kind {
                     if clause_items.len() >= 2 {
                         let clause_ret = self.infer_fn_clause(&clause_items[0], &clause_items[1..]);
@@ -1744,9 +1766,9 @@ impl Checker {
         }
 
         // Single-arity
-        if let ExprKind::List(params) = &args[1].kind {
+        if let ExprKind::List(params) = &args[0].kind {
             // Parse effect annotation: / #{IO Fail}
-            let mut body_start = 2;
+            let mut body_start = 1;
             let mut declared_effects: Option<EffectSet> = None;
             if body_start < args.len() {
                 if let ExprKind::Symbol(s) = &args[body_start].kind {
@@ -1971,27 +1993,6 @@ impl Checker {
         }
 
         val_ty
-    }
-
-    fn infer_lambda(&mut self, args: &[Expr]) -> Type {
-        if args.is_empty() {
-            return self.subst.fresh();
-        }
-
-        if let ExprKind::List(params) = &args[0].kind {
-            self.push_scope();
-            let param_types = self.infer_params(params);
-
-            let mut body_ty = Type::Unit;
-            for expr in &args[1..] {
-                body_ty = self.infer(expr);
-            }
-            self.pop_scope();
-
-            Type::Fn(param_types, Box::new(body_ty))
-        } else {
-            self.subst.fresh()
-        }
     }
 
     fn infer_if(&mut self, args: &[Expr], span: Span) -> Type {
@@ -2890,7 +2891,7 @@ impl Checker {
 
     /// Check an entire program. Returns list of diagnostics.
     ///
-    /// Pipeline: parse → expand(defmacro) → typecheck → expand(defmacro+) → re-typecheck
+    /// Pipeline: parse → expand(macro) → typecheck → expand(macro+) → re-typecheck
     pub fn check_program(&mut self, exprs: &[Expr]) -> Vec<LoonDiagnostic> {
         // Phase 1: Regular macro expansion
         let mut expander = crate::macros::MacroExpander::new();
@@ -2910,7 +2911,7 @@ impl Checker {
             self.infer(expr);
         }
 
-        // Phase 3: Type-aware macro expansion (defmacro+)
+        // Phase 3: Type-aware macro expansion (macro+)
         let final_exprs = if expander.has_type_aware_macros() {
             match expander.expand_type_aware(&expanded) {
                 Ok(re_expanded) => {
@@ -3003,7 +3004,7 @@ mod tests {
     #[test]
     fn infer_defn() {
         let (ty, errors) = infer_type(
-            "[defn add [x y] [+ x y]]
+            "[fn add [x y] [+ x y]]
              [add 3 4]",
         );
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -3041,7 +3042,7 @@ mod tests {
     fn infer_fib() {
         let (ty, errors) = infer_type(
             r#"
-            [defn fib [n]
+            [fn fib [n]
               [match n
                 0 => 0
                 1 => 1
@@ -3082,7 +3083,7 @@ mod tests {
     fn sig_matching_passes() {
         let errors = check_errors(r#"
             [sig add Int -> Int -> Int]
-            [defn add [x y] [+ x y]]
+            [fn add [x y] [+ x y]]
         "#);
         assert!(errors.is_empty(), "errors: {:?}", errors);
     }
@@ -3091,7 +3092,7 @@ mod tests {
     fn sig_mismatch_errors() {
         let errors = check_errors(r#"
             [sig add Int -> String -> Int]
-            [defn add [x y] [+ x y]]
+            [fn add [x y] [+ x y]]
         "#);
         assert!(!errors.is_empty(), "should have sig mismatch error");
         assert!(errors[0].message().contains("does not match"), "error: {}", errors[0].message());
@@ -3107,7 +3108,7 @@ mod tests {
     #[test]
     fn polymorphic_add_in_defn() {
         let (ty, errors) = infer_type(
-            "[defn double [x] [+ x x]]
+            "[fn double [x] [+ x x]]
              [double 5]",
         );
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -3145,7 +3146,7 @@ mod tests {
 
     #[test]
     fn effect_infer_io_read_file() {
-        let (effects, errors) = infer_effects(r#"[defn load [p] [IO.read-file p]]"#);
+        let (effects, errors) = infer_effects(r#"[fn load [p] [IO.read-file p]]"#);
         assert!(errors.is_empty(), "errors: {:?}", errors);
         let load_effects = effects.get("load").unwrap();
         assert!(load_effects.contains("IO"), "load should have IO effect");
@@ -3154,8 +3155,8 @@ mod tests {
     #[test]
     fn effect_propagation() {
         let (effects, errors) = infer_effects(r#"
-            [defn load [p] [IO.read-file p]]
-            [defn main [] [load "x"]]
+            [fn load [p] [IO.read-file p]]
+            [fn main [] [load "x"]]
         "#);
         assert!(errors.is_empty(), "errors: {:?}", errors);
         let main_effects = effects.get("main").unwrap();
@@ -3165,7 +3166,7 @@ mod tests {
     #[test]
     fn effect_handle_subtracts() {
         let (effects, errors) = infer_effects(r#"
-            [defn safe []
+            [fn safe []
               [handle [IO.read-file "x"]
                 [IO.read-file p] => [resume "y"]]]
         "#);
@@ -3177,7 +3178,7 @@ mod tests {
     #[test]
     fn effect_annotation_passes() {
         let errors = check_errors(r#"
-            [defn load [path] / #{IO} [IO.read-file path]]
+            [fn load [path] / #{IO} [IO.read-file path]]
         "#);
         assert!(errors.is_empty(), "errors: {:?}", errors);
     }
@@ -3185,7 +3186,7 @@ mod tests {
     #[test]
     fn effect_annotation_extra_ok() {
         let errors = check_errors(r#"
-            [defn load [path] / #{IO Fail} [IO.read-file path]]
+            [fn load [path] / #{IO Fail} [IO.read-file path]]
         "#);
         assert!(errors.is_empty(), "errors: {:?}", errors);
     }
@@ -3193,7 +3194,7 @@ mod tests {
     #[test]
     fn effect_annotation_missing_errors() {
         let errors = check_errors(r#"
-            [defn load [path] / #{Fail} [IO.read-file path]]
+            [fn load [path] / #{Fail} [IO.read-file path]]
         "#);
         assert!(!errors.is_empty(), "should error for undeclared IO effect");
         assert!(errors[0].message().contains("undeclared effect"), "error: {}", errors[0].message());
@@ -3202,7 +3203,7 @@ mod tests {
     #[test]
     fn effect_question_infers_fail() {
         let (effects, errors) = infer_effects(r#"
-            [defn try-it [x] [do x]?]
+            [fn try-it [x] [do x]?]
         "#);
         assert!(errors.is_empty(), "errors: {:?}", errors);
         let eff = effects.get("try-it").unwrap();
@@ -3212,7 +3213,7 @@ mod tests {
     #[test]
     fn effect_annotation_pure_passes() {
         let errors = check_errors(r#"
-            [defn pure [x] / #{} [+ x 1]]
+            [fn pure [x] / #{} [+ x 1]]
         "#);
         assert!(errors.is_empty(), "errors: {:?}", errors);
     }
@@ -3240,7 +3241,7 @@ mod tests {
     fn record_structural_subtyping_via_get() {
         // A function that accesses :x should accept a wider record with extra fields
         let (ty, errors) = infer_type(r#"
-            [defn get-x [r] [get r :x]]
+            [fn get-x [r] [get r :x]]
             [get-x {:x 42 :y "hello"}]
         "#);
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -3251,7 +3252,7 @@ mod tests {
     fn record_field_type_mismatch_errors() {
         // Passing a record where :x is a String to a function expecting :x as Int
         let errors = check_errors(r#"
-            [defn add-x [r] [+ [get r :x] 1]]
+            [fn add-x [r] [+ [get r :x] 1]]
             [add-x {:x "oops"}]
         "#);
         assert!(!errors.is_empty(), "should have type error for field type mismatch");
@@ -3259,7 +3260,7 @@ mod tests {
 
     #[test]
     fn definitions_populated_for_defn() {
-        let exprs = parse("[defn add [x y] [+ x y]]").unwrap();
+        let exprs = parse("[fn add [x y] [+ x y]]").unwrap();
         let mut checker = Checker::new();
         checker.check_program(&exprs);
         let def = checker.lookup_definition("add");
@@ -3299,7 +3300,7 @@ mod tests {
 
     #[test]
     fn scheme_has_add_bound_for_double() {
-        let exprs = parse("[defn double [x] [+ x x]]").unwrap();
+        let exprs = parse("[fn double [x] [+ x x]]").unwrap();
         let mut checker = Checker::new();
         checker.check_program(&exprs);
         let scheme = checker.env.get("double").unwrap();
@@ -3315,7 +3316,7 @@ mod tests {
 
     #[test]
     fn scheme_display_shows_bounds() {
-        let exprs = parse("[defn double [x] [+ x x]]").unwrap();
+        let exprs = parse("[fn double [x] [+ x x]]").unwrap();
         let mut checker = Checker::new();
         checker.check_program(&exprs);
         let scheme = checker.env.get("double").unwrap();

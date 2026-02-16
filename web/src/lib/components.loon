@@ -1,7 +1,7 @@
 ; components.loon — Styled component constructors using theme tokens
 
 ; --- Container: centered max-width wrapper ---
-[defn container [first & rest]
+[fn container [first & rest]
   [let props [if [map? first] first {}]]
   [let children [if [map? first] rest [cons first rest]]]
   [let wide [get props :wide false]]
@@ -14,7 +14,7 @@
     [|> children [map coerce-child]]]]
 
 ; --- Stack: vertical flex with gap ---
-[defn stack [first & rest]
+[fn stack [first & rest]
   [let props [if [map? first] first {}]]
   [let children [if [map? first] rest [cons first rest]]]
   [let gap-key [get props :gap :md]]
@@ -26,7 +26,7 @@
     [|> children [map coerce-child]]]]
 
 ; --- Row: horizontal flex with gap ---
-[defn row [first & rest]
+[fn row [first & rest]
   [let props [if [map? first] first {}]]
   [let children [if [map? first] rest [cons first rest]]]
   [let gap-key [get props :gap :sm]]
@@ -39,7 +39,7 @@
     [|> children [map coerce-child]]]]
 
 ; --- Prose: serif text container ---
-[defn prose [first & rest]
+[fn prose [first & rest]
   [let props [if [map? first] first {}]]
   [let children [if [map? first] rest [cons first rest]]]
   [let cls [get props :class ""]]
@@ -51,7 +51,7 @@
     [|> children [map coerce-child]]]]
 
 ; --- Heading: serif headings with lake-blue color ---
-[defn heading [level first & rest]
+[fn heading [level first & rest]
   [let props [if [map? first] first {}]]
   [let children [if [map? first] rest [cons first rest]]]
   [let cls [get props :class ""]]
@@ -69,23 +69,21 @@
     [coerce-children [if [map? first] rest [cons first rest]]]]]
 
 ; --- Card: white bg, subtle border, optional accent ---
-[defn card [first & rest]
+[fn card [first & rest]
   [let props [if [map? first] first {}]]
   [let children [if [map? first] rest [cons first rest]]]
   [let accent [get props :accent false]]
   [let cls [get props :class ""]]
   [div {:class [cx "card" cls]
-        :style [sx {:background [color :white]
-                    :border [str "1px solid " [color :border]]
-                    :border-radius [radius :md]
-                    :padding [space :md]}
+        :style [sx {:padding [str [space :md] " 0"]
+                    :border-top [str "1px solid " [color :border]]}
                    [if accent
-                     {:border-left [str "4px solid " [color :accent]]}
+                     {:border-top [str "2px solid " [color :accent]]}
                      {}]]}
     [|> children [map coerce-child]]]]
 
 ; --- Badge: small inline label ---
-[defn badge [text variant]
+[fn badge [text variant]
   [let bg [match variant
     "success" => "rgba(45, 80, 22, 0.1)"
     "warning" => "rgba(212, 168, 67, 0.1)"
@@ -106,7 +104,7 @@
     text]]
 
 ; --- Buttons: use classes for hover states ---
-[defn btn [first & rest]
+[fn btn [first & rest]
   [let props [if [map? first] first {}]]
   [let children [if [map? first] rest [cons first rest]]]
   [let href [get props :href ""]]
@@ -118,7 +116,7 @@
     [button-el {:class [cx "btn" cls] :onclick onclick}
       [|> children [map coerce-child]]]]]
 
-[defn btn-secondary [first & rest]
+[fn btn-secondary [first & rest]
   [let props [if [map? first] first {}]]
   [let children [if [map? first] rest [cons first rest]]]
   [let href [get props :href ""]]
@@ -131,30 +129,30 @@
       [|> children [map coerce-child]]]]]
 
 ; --- Code Display: wraps code-block with dark theme ---
-[defn code-display [first & rest]
+[fn code-display [first & rest]
   [let props [if [map? first] first {}]]
   [let source [if [map? first] [nth rest 0] first]]
   [let label [get props :label ""]]
   [code-block props source]]
 
 ; --- Mono: inline monospace text ---
-[defn mono [text]
+[fn mono [text]
   [span {:style {:font-family [font :mono]
                  :font-size "0.9em"
-                 :background "rgba(30, 58, 95, 0.05)"
+                 :background "rgba(128, 128, 128, 0.1)"
                  :padding "0.2em 0.4em"
                  :border-radius [radius :sm]}}
     text]]
 
 ; --- Muted: secondary/gray text ---
-[defn muted [first & rest]
+[fn muted [first & rest]
   [let props [if [map? first] first {}]]
   [let children [if [map? first] rest [cons first rest]]]
   [p {:style {:color [color :muted] :font-size "0.95rem"}}
     [|> children [map coerce-child]]]]
 
 ; --- Page Header: small back-to-home link for subpages ---
-[defn page-header []
+[fn page-header []
   [div {:style {:max-width "900px"
                 :margin "0 auto"
                 :padding "1rem 2rem 0"}}
@@ -170,7 +168,7 @@
       "Loon"]]]
 
 ; --- Link: styled anchor ---
-[defn link [first & rest]
+[fn link [first & rest]
   [let props [if [map? first] first {}]]
   [let children [if [map? first] rest [cons first rest]]]
   [let href [get props :href "#"]]

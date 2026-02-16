@@ -243,7 +243,7 @@ fn tutorial_arity_mismatch() -> Tutorial {
                     .to_string(),
             ),
             TutorialStep::Demo {
-                code: r#"[defn greet [name] [str "hi " name]]
+                code: r#"[fn greet [name] [str "hi " name]]
 [greet "alice" "bob"]  ;; error: arity mismatch"#
                     .to_string(),
                 explanation: "`greet` takes 1 argument but was called with 2.".to_string(),
@@ -256,7 +256,7 @@ fn tutorial_arity_mismatch() -> Tutorial {
             },
             TutorialStep::Try {
                 prompt: "Define a 2-argument function and call it correctly.".to_string(),
-                hint: "Try: [defn add [a b] [+ a b]] [add 1 2]".to_string(),
+                hint: "Try: [fn add [a b] [+ a b]] [add 1 2]".to_string(),
                 expected_output: None,
             },
         ],
@@ -276,20 +276,20 @@ fn tutorial_infinite_type() -> Tutorial {
                     .to_string(),
             ),
             TutorialStep::Demo {
-                code: r#"[defn apply [f] [f f]]  ;; error: infinite type"#.to_string(),
+                code: r#"[fn apply [f] [f f]]  ;; error: infinite type"#.to_string(),
                 explanation: "`f` would need type `(a -> b)` where `a = (a -> b)`, \
                               creating an infinite loop in the type."
                     .to_string(),
             },
             TutorialStep::Fix {
-                before: r#"[defn apply [f] [f f]]"#.to_string(),
-                after: r#"[defn apply [f x] [f x]]"#.to_string(),
+                before: r#"[fn apply [f] [f f]]"#.to_string(),
+                after: r#"[fn apply [f x] [f x]]"#.to_string(),
                 explanation: "Restructure so the function receives a separate argument."
                     .to_string(),
             },
             TutorialStep::Try {
                 prompt: "Write a function that applies a function to a value.".to_string(),
-                hint: "Try: [defn apply [f x] [f x]] [apply str 42]".to_string(),
+                hint: "Try: [fn apply [f x] [f x]] [apply str 42]".to_string(),
                 expected_output: None,
             },
         ],
@@ -308,19 +308,19 @@ fn tutorial_signature_mismatch() -> Tutorial {
                     .to_string(),
             ),
             TutorialStep::Demo {
-                code: r#"[defn double [x : Int] : String [* x 2]]  ;; error: signature mismatch"#
+                code: r#"[fn double [x : Int] : String [* x 2]]  ;; error: signature mismatch"#
                     .to_string(),
                 explanation: "The body returns an Int, but the signature says String.".to_string(),
             },
             TutorialStep::Fix {
-                before: r#"[defn double [x : Int] : String [* x 2]]"#.to_string(),
-                after: r#"[defn double [x : Int] : Int [* x 2]]"#.to_string(),
+                before: r#"[fn double [x : Int] : String [* x 2]]"#.to_string(),
+                after: r#"[fn double [x : Int] : Int [* x 2]]"#.to_string(),
                 explanation: "Fix the return type to match what the body actually returns."
                     .to_string(),
             },
             TutorialStep::Try {
                 prompt: "Write a function with a correct type annotation.".to_string(),
-                hint: "Try: [defn inc [x : Int] : Int [+ x 1]]".to_string(),
+                hint: "Try: [fn inc [x : Int] : Int [+ x 1]]".to_string(),
                 expected_output: None,
             },
         ],
@@ -445,7 +445,7 @@ fn tutorial_use_after_move() -> Tutorial {
                     .to_string(),
             ),
             TutorialStep::Demo {
-                code: r#"[defn take [s] s]
+                code: r#"[fn take [s] s]
 [let name "alice"]
 [take name]
 [println name]     ;; error: use of moved value 'name'"#
@@ -468,7 +468,7 @@ fn tutorial_use_after_move() -> Tutorial {
             TutorialStep::Try {
                 prompt: "Use clone to keep a value alive after passing it to a function."
                     .to_string(),
-                hint: r#"Try: [defn consume [s] s] [let x "hi"] [consume [clone x]] [println x]"#
+                hint: r#"Try: [fn consume [s] s] [let x "hi"] [consume [clone x]] [println x]"#
                     .to_string(),
                 expected_output: None,
             },
@@ -560,20 +560,20 @@ fn tutorial_unhandled_effect() -> Tutorial {
                     .to_string(),
             ),
             TutorialStep::Demo {
-                code: r#"[defn load [path] / #{Fail}
+                code: r#"[fn load [path] / #{Fail}
   [IO.read-file path]]  ;; error: undeclared effect 'IO'"#
                     .to_string(),
                 explanation: "The function performs IO but only declares Fail.".to_string(),
             },
             TutorialStep::Fix {
-                before: r#"[defn load [path] / #{Fail} [IO.read-file path]]"#.to_string(),
-                after: r#"[defn load [path] / #{IO Fail} [IO.read-file path]]"#.to_string(),
+                before: r#"[fn load [path] / #{Fail} [IO.read-file path]]"#.to_string(),
+                after: r#"[fn load [path] / #{IO Fail} [IO.read-file path]]"#.to_string(),
                 explanation: "Add IO to the effect set, or wrap the call in a handle block."
                     .to_string(),
             },
             TutorialStep::Try {
                 prompt: "Write a pure function (no effects) that adds two numbers.".to_string(),
-                hint: "Try: [defn add [a b] [+ a b]] [add 3 4]".to_string(),
+                hint: "Try: [fn add [a b] [+ a b]] [add 3 4]".to_string(),
                 expected_output: None,
             },
         ],
@@ -592,19 +592,19 @@ fn tutorial_undeclared_effect() -> Tutorial {
                     .to_string(),
             ),
             TutorialStep::Demo {
-                code: r#"[defn save [data] / #{}
+                code: r#"[fn save [data] / #{}
   [IO.write-file "out.txt" data]]  ;; error: undeclared effect 'IO'"#
                     .to_string(),
                 explanation: "The effect set is empty `#{}` but the body performs IO.".to_string(),
             },
             TutorialStep::Fix {
-                before: r#"[defn save [data] / #{} [IO.write-file "out.txt" data]]"#.to_string(),
-                after: r#"[defn save [data] / #{IO} [IO.write-file "out.txt" data]]"#.to_string(),
+                before: r#"[fn save [data] / #{} [IO.write-file "out.txt" data]]"#.to_string(),
+                after: r#"[fn save [data] / #{IO} [IO.write-file "out.txt" data]]"#.to_string(),
                 explanation: "Add the missing effect to the annotation.".to_string(),
             },
             TutorialStep::Try {
                 prompt: "Write a pure function with no effects.".to_string(),
-                hint: "Try: [defn square [x] [* x x]] [square 5]".to_string(),
+                hint: "Try: [fn square [x] [* x x]] [square 5]".to_string(),
                 expected_output: None,
             },
         ],
@@ -637,7 +637,7 @@ fn tutorial_unresolved_module() -> Tutorial {
                  \n\
                  \x20   ;; Create utils.loon in the same directory:\n\
                  \x20   ;; utils.loon\n\
-                 \x20   [defn helper [] 42]\n\
+                 \x20   [fn helper [] 42]\n\
                  \n\
                  \x20   ;; main.loon\n\
                  \x20   [import utils]\n\
@@ -655,7 +655,7 @@ fn tutorial_private_symbol() -> Tutorial {
         steps: vec![
             TutorialStep::Text(
                 "This error occurs when you try to use a symbol from another \
-                 module that isn't exported. By default, only top-level `defn` \
+                 module that isn't exported. By default, only top-level `fn` \
                  definitions are public."
                     .to_string(),
             ),
@@ -671,10 +671,10 @@ fn tutorial_private_symbol() -> Tutorial {
                     .to_string(),
             ),
             TutorialStep::Text(
-                "  Fix: Use `defn` to export, or access through a public function.\n\
+                "  Fix: Use `fn` to export, or access through a public function.\n\
                  \n\
                  \x20   ;; helpers.loon\n\
-                 \x20   [defn get-secret [] 42]\n\
+                 \x20   [fn get-secret [] 42]\n\
                  \n\
                  \x20   ;; main.loon\n\
                  \x20   [import helpers]\n\
@@ -710,7 +710,7 @@ fn tutorial_circular_dependency() -> Tutorial {
                 "  Fix: Break the cycle by extracting shared code into a third module.\n\
                  \n\
                  \x20   ;; shared.loon\n\
-                 \x20   [defn helper [] 42]\n\
+                 \x20   [fn helper [] 42]\n\
                  \n\
                  \x20   ;; a.loon\n\
                  \x20   [import shared]\n\

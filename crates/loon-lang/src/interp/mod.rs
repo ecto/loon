@@ -466,9 +466,8 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
             // Check for special forms
             if let ExprKind::Symbol(s) = &head.kind {
                 match s.as_str() {
-                    "defn" => return eval_defn(&items[1..], env),
+                    "fn" => return eval_fn(&items[1..], env),
                     "let" => return eval_let(&items[1..], env),
-                    "fn" => return eval_lambda(&items[1..], env),
                     "if" => return eval_if(&items[1..], env),
                     "do" => return eval_do(&items[1..], env),
                     "match" => return eval_match(&items[1..], env),
@@ -499,17 +498,17 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                         return Ok(Value::Vec(vec![]));
                     }
                     "impl" => return eval_impl_def(&items[1..], env),
-                    "defmacro" | "defmacro+" => return Ok(Value::Unit), // macro defs are compile-time
+                    "macro" | "macro+" => return Ok(Value::Unit), // macro defs are compile-time
                     "macroexpand" => return Ok(Value::Unit), // no-op at runtime
                     "handle" => return eval_handle(&items[1..], env),
                     "try" => return eval_try(&items[1..], env),
                     "pub" => {
-                        // [pub defn name ...] — eval the inner form and mark as pub
+                        // [pub fn name ...] — eval the inner form and mark as pub
                         if items.len() > 1 {
                             // Extract the name being defined (for pub tracking)
                             if items.len() > 2 {
                                 if let ExprKind::Symbol(ref defn_kind) = items[1].kind {
-                                    if defn_kind == "defn" || defn_kind == "let" {
+                                    if defn_kind == "fn" || defn_kind == "let" {
                                         if let ExprKind::Symbol(ref name) = items[2].kind {
                                             env.pub_names.insert(name.clone());
                                         }
@@ -573,59 +572,73 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
     }
 }
 
-fn eval_defn(args: &[Expr], env: &mut Env) -> IResult {
-    if args.len() < 2 {
-        return Err(err("defn requires a name and body"));
+fn eval_fn(args: &[Expr], env: &mut Env) -> IResult {
+    if args.is_empty() {
+        return Err(err("fn requires params or a name"));
     }
-    let name = match &args[0].kind {
-        ExprKind::Symbol(s) => s.clone(),
-        _ => return Err(err("defn name must be a symbol")),
-    };
 
-    // Check for multi-arity: [defn name (params body) (params body) ...]
-    if matches!(args[1].kind, ExprKind::Tuple(_)) {
-        let mut clauses = Vec::new();
-        for clause_expr in &args[1..] {
-            if let ExprKind::Tuple(clause_items) = &clause_expr.kind {
-                if clause_items.len() < 2 {
-                    return Err(err("multi-arity clause needs params and body"));
+    // If first arg is a symbol (not a vec/tuple), treat as named function
+    if let ExprKind::Symbol(name) = &args[0].kind {
+        // Named function: [fn name [params] body...] or [fn name (clause) (clause) ...]
+        let name = name.clone();
+        if args.len() < 2 {
+            return Err(err("fn requires a name and body"));
+        }
+
+        // Check for multi-arity: [fn name (params body) (params body) ...]
+        if matches!(args[1].kind, ExprKind::Tuple(_)) {
+            let mut clauses = Vec::new();
+            for clause_expr in &args[1..] {
+                if let ExprKind::Tuple(clause_items) = &clause_expr.kind {
+                    if clause_items.len() < 2 {
+                        return Err(err("multi-arity clause needs params and body"));
+                    }
+                    let params = extract_params(&clause_items[0])?;
+                    let body = clause_items[1..].to_vec();
+                    clauses.push((params, body));
+                } else {
+                    return Err(err("expected multi-arity clause (params body)"));
                 }
-                let params = extract_params(&clause_items[0])?;
-                let body = clause_items[1..].to_vec();
-                clauses.push((params, body));
-            } else {
-                return Err(err("expected multi-arity clause (params body)"));
+            }
+            let lf = value::LoonFn {
+                name: Some(name.clone()),
+                clauses,
+                captured_env: None,
+            };
+            env.set_global(name, Value::Fn(lf));
+            return Ok(Value::Unit);
+        }
+
+        // Single-arity: [fn name [params] body...]
+        let params = extract_params(&args[1])?;
+        // Skip effect annotation: / {effects}
+        let mut body_start = 2;
+        if body_start < args.len() {
+            if let ExprKind::Symbol(s) = &args[body_start].kind {
+                if s == "/" {
+                    body_start += 2; // skip / and the effect set
+                }
             }
         }
+        let body = args[body_start..].to_vec();
+
         let lf = value::LoonFn {
             name: Some(name.clone()),
-            clauses,
+            clauses: vec![(params, body)],
             captured_env: None,
         };
         env.set_global(name, Value::Fn(lf));
         return Ok(Value::Unit);
     }
 
-    // Single-arity: [defn name [params] body...]
-    let params = extract_params(&args[1])?;
-    // Skip effect annotation: / {effects}
-    let mut body_start = 2;
-    if body_start < args.len() {
-        if let ExprKind::Symbol(s) = &args[body_start].kind {
-            if s == "/" {
-                body_start += 2; // skip / and the effect set
-            }
-        }
-    }
-    let body = args[body_start..].to_vec();
-
-    let lf = value::LoonFn {
-        name: Some(name.clone()),
+    // Anonymous lambda: [fn [params] body...]
+    let params = extract_params(&args[0])?;
+    let body = args[1..].to_vec();
+    Ok(Value::Fn(value::LoonFn {
+        name: None,
         clauses: vec![(params, body)],
-        captured_env: None, // Will be resolved at call time from caller's env
-    };
-    env.set_global(name, Value::Fn(lf));
-    Ok(Value::Unit)
+        captured_env: Some(env.clone()),
+    }))
 }
 
 fn eval_let(args: &[Expr], env: &mut Env) -> IResult {
@@ -650,19 +663,6 @@ fn eval_let(args: &[Expr], env: &mut Env) -> IResult {
     bind_param(&param, &val, env)?;
 
     Ok(val)
-}
-
-fn eval_lambda(args: &[Expr], env: &mut Env) -> IResult {
-    if args.is_empty() {
-        return Err(err("fn requires params"));
-    }
-    let params = extract_params(&args[0])?;
-    let body = args[1..].to_vec();
-    Ok(Value::Fn(value::LoonFn {
-        name: None,
-        clauses: vec![(params, body)],
-        captured_env: Some(env.clone()),
-    }))
 }
 
 fn eval_if(args: &[Expr], env: &mut Env) -> IResult {
@@ -1235,12 +1235,16 @@ fn eval_try(args: &[Expr], env: &mut Env) -> IResult {
 }
 
 fn eval_test_def(args: &[Expr], env: &mut Env) -> IResult {
-    // [test defn name [] body...] — register as a test function
+    // [test name [params] body...] — register as a named test function
+    // Also supports [test fn name ...] for backward compat
     if args.len() >= 2 {
         if let ExprKind::Symbol(s) = &args[0].kind {
-            if s == "defn" {
-                return eval_defn(&args[1..], env);
+            if s == "fn" {
+                // [test fn name ...] — strip fn and delegate
+                return eval_fn(&args[1..], env);
             }
+            // [test name [params] body...] — treat as named fn
+            return eval_fn(args, env);
         }
     }
     Ok(Value::Unit)
