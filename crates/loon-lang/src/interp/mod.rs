@@ -308,6 +308,25 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                     "effect" => return Ok(Value::Unit), // effect declarations are compile-time
                     "trait" => return Ok(Value::Unit), // trait declarations are compile-time
                     "sig" => return Ok(Value::Unit),   // sig assertions are compile-time
+                    "derive" => {
+                        // [derive Copy [type Name ...]] — evaluate the inner type form
+                        if items.len() >= 3 {
+                            return eval(&items[2], env);
+                        }
+                        return Ok(Value::Unit);
+                    }
+                    "catch-errors" => {
+                        // [catch-errors "source code"] — parse+check, return errors as data
+                        if items.len() >= 2 {
+                            let src_val = eval(&items[1], env)?;
+                            let src = match &src_val {
+                                Value::Str(s) => s.clone(),
+                                _ => return Err(err("catch-errors requires a string argument")),
+                            };
+                            return Ok(eval_catch_errors(&src));
+                        }
+                        return Ok(Value::Vec(vec![]));
+                    }
                     "impl" => return eval_impl_def(&items[1..], env),
                     "handle" => return eval_handle(&items[1..], env),
                     "try" => return eval_try(&items[1..], env),
@@ -1281,6 +1300,57 @@ pub fn eval_use_with_cache(
         env.set_global(format!("{module_path}.{name}"), val.clone());
     }
     Ok(Value::Unit)
+}
+
+fn eval_catch_errors(source: &str) -> Value {
+    let exprs = match crate::parser::parse(source) {
+        Ok(exprs) => exprs,
+        Err(e) => {
+            let error_map = vec![
+                (Value::Keyword("code".to_string()), Value::Str("E0000".to_string())),
+                (Value::Keyword("what".to_string()), Value::Str(e.message)),
+                (Value::Keyword("why".to_string()), Value::Str("parse error".to_string())),
+                (Value::Keyword("fix".to_string()), Value::Str("check syntax".to_string())),
+                (Value::Keyword("spans".to_string()), Value::Vec(vec![])),
+            ];
+            return Value::Vec(vec![Value::Map(error_map)]);
+        }
+    };
+
+    let mut checker = crate::check::Checker::new();
+    let type_errors = checker.check_program(&exprs);
+
+    let mut ownership =
+        crate::check::ownership::OwnershipChecker::with_type_info(
+            &checker.type_of,
+            &checker.subst,
+        )
+        .with_derived_copy_types(&checker.derived_copy_types);
+    let ownership_errors = ownership.check_program(&exprs);
+
+    let all_errors: Vec<_> = type_errors.into_iter().chain(ownership_errors).collect();
+
+    let error_maps: Vec<Value> = all_errors
+        .iter()
+        .map(|diag| {
+            let spans: Vec<Value> = diag.labels.iter().map(|l| {
+                Value::Map(vec![
+                    (Value::Keyword("start".to_string()), Value::Int(l.span.start as i64)),
+                    (Value::Keyword("end".to_string()), Value::Int(l.span.end as i64)),
+                    (Value::Keyword("label".to_string()), Value::Str(l.label.clone())),
+                ])
+            }).collect();
+            Value::Map(vec![
+                (Value::Keyword("code".to_string()), Value::Str(format!("{}", diag.code))),
+                (Value::Keyword("what".to_string()), Value::Str(diag.what.clone())),
+                (Value::Keyword("why".to_string()), Value::Str(diag.why.clone())),
+                (Value::Keyword("fix".to_string()), Value::Str(diag.fix.clone())),
+                (Value::Keyword("spans".to_string()), Value::Vec(spans)),
+            ])
+        })
+        .collect();
+
+    Value::Vec(error_maps)
 }
 
 fn register_builtins(env: &mut Env) {
