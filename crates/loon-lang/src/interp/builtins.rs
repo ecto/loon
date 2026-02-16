@@ -2,14 +2,88 @@ use super::value::{ChannelId, Value};
 use super::{call_fn, err, get_global_env, Env, InterpError};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 type IResult = Result<Value, InterpError>;
+
+/// Bit flag to distinguish shared (cross-thread) channels from thread-local ones.
+const SHARED_CHANNEL_BIT: u32 = 0x8000_0000;
 
 thread_local! {
     static CHANNELS: RefCell<HashMap<ChannelId, VecDeque<Value>>> = RefCell::new(HashMap::new());
     static NEXT_CHAN: Cell<ChannelId> = const { Cell::new(0) };
     static PRINT_BUF: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+}
+
+// --- Shared (cross-thread) channels ---
+
+type SharedChannelMap = Mutex<HashMap<ChannelId, Arc<Mutex<VecDeque<Value>>>>>;
+
+fn shared_channels() -> &'static SharedChannelMap {
+    static INSTANCE: OnceLock<SharedChannelMap> = OnceLock::new();
+    INSTANCE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn shared_next_id() -> &'static std::sync::atomic::AtomicU32 {
+    static INSTANCE: OnceLock<std::sync::atomic::AtomicU32> = OnceLock::new();
+    INSTANCE.get_or_init(|| std::sync::atomic::AtomicU32::new(0))
+}
+
+/// Create a shared channel and return (tx_id, rx_id) with the high bit set.
+pub fn create_shared_channel() -> (ChannelId, ChannelId) {
+    let id = shared_next_id().fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let id = id | SHARED_CHANNEL_BIT;
+    shared_channels()
+        .lock()
+        .unwrap()
+        .insert(id, Arc::new(Mutex::new(VecDeque::new())));
+    (id, id)
+}
+
+/// Send a value on a shared channel.
+pub fn shared_send(id: ChannelId, val: Value) -> IResult {
+    let map = shared_channels().lock().unwrap();
+    if let Some(buf) = map.get(&id) {
+        buf.lock().unwrap().push_back(val);
+        Ok(Value::Unit)
+    } else {
+        Err(err(format!("shared channel {id} does not exist")))
+    }
+}
+
+/// Blocking recv on a shared channel — spins with 1ms sleep.
+pub fn shared_recv(id: ChannelId) -> IResult {
+    loop {
+        {
+            let map = shared_channels().lock().unwrap();
+            if let Some(buf) = map.get(&id) {
+                if let Some(val) = buf.lock().unwrap().pop_front() {
+                    return Ok(val);
+                }
+            } else {
+                return Err(err(format!("shared channel {id} does not exist")));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// Non-blocking recv on a shared channel.
+pub fn shared_try_recv(id: ChannelId) -> IResult {
+    let map = shared_channels().lock().unwrap();
+    if let Some(buf) = map.get(&id) {
+        if let Some(val) = buf.lock().unwrap().pop_front() {
+            Ok(Value::Adt("Some".to_string(), vec![val]))
+        } else {
+            Ok(Value::Adt("None".to_string(), vec![]))
+        }
+    } else {
+        Err(err(format!("shared channel {id} does not exist")))
+    }
+}
+
+fn is_shared(id: ChannelId) -> bool {
+    id & SHARED_CHANNEL_BIT != 0
 }
 
 /// Run `f` while capturing all println/print output into a buffer.
@@ -1146,15 +1220,19 @@ pub fn register_builtins(env: &mut Env) {
         if let Value::ChannelTx(id) = &args[0] {
             let id = *id;
             let val = args.get(1).cloned().unwrap_or(Value::Unit);
-            CHANNELS.with(|ch| {
-                let mut channels = ch.borrow_mut();
-                if let Some(buf) = channels.get_mut(&id) {
-                    buf.push_back(val);
-                    Ok(Value::Unit)
-                } else {
-                    Err(err(format!("channel {id} does not exist")))
-                }
-            })
+            if is_shared(id) {
+                shared_send(id, val)
+            } else {
+                CHANNELS.with(|ch| {
+                    let mut channels = ch.borrow_mut();
+                    if let Some(buf) = channels.get_mut(&id) {
+                        buf.push_back(val);
+                        Ok(Value::Unit)
+                    } else {
+                        Err(err(format!("channel {id} does not exist")))
+                    }
+                })
+            }
         } else {
             Err(err("send requires a channel tx"))
         }
@@ -1163,18 +1241,22 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "recv", |_, args: &[Value]| {
         if let Value::ChannelRx(id) = &args[0] {
             let id = *id;
-            CHANNELS.with(|ch| {
-                let mut channels = ch.borrow_mut();
-                if let Some(buf) = channels.get_mut(&id) {
-                    if let Some(val) = buf.pop_front() {
-                        Ok(val)
+            if is_shared(id) {
+                shared_recv(id)
+            } else {
+                CHANNELS.with(|ch| {
+                    let mut channels = ch.borrow_mut();
+                    if let Some(buf) = channels.get_mut(&id) {
+                        if let Some(val) = buf.pop_front() {
+                            Ok(val)
+                        } else {
+                            Err(err("recv on empty channel"))
+                        }
                     } else {
-                        Err(err("recv on empty channel"))
+                        Err(err(format!("channel {id} does not exist")))
                     }
-                } else {
-                    Err(err(format!("channel {id} does not exist")))
-                }
-            })
+                })
+            }
         } else {
             Err(err("recv requires a channel rx"))
         }
@@ -1183,18 +1265,22 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "try-recv", |_, args: &[Value]| {
         if let Value::ChannelRx(id) = &args[0] {
             let id = *id;
-            CHANNELS.with(|ch| {
-                let mut channels = ch.borrow_mut();
-                if let Some(buf) = channels.get_mut(&id) {
-                    if let Some(val) = buf.pop_front() {
-                        Ok(Value::Adt("Some".to_string(), vec![val]))
+            if is_shared(id) {
+                shared_try_recv(id)
+            } else {
+                CHANNELS.with(|ch| {
+                    let mut channels = ch.borrow_mut();
+                    if let Some(buf) = channels.get_mut(&id) {
+                        if let Some(val) = buf.pop_front() {
+                            Ok(Value::Adt("Some".to_string(), vec![val]))
+                        } else {
+                            Ok(Value::Adt("None".to_string(), vec![]))
+                        }
                     } else {
-                        Ok(Value::Adt("None".to_string(), vec![]))
+                        Err(err(format!("channel {id} does not exist")))
                     }
-                } else {
-                    Err(err(format!("channel {id} does not exist")))
-                }
-            })
+                })
+            }
         } else {
             Err(err("try-recv requires a channel rx"))
         }

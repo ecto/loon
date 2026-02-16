@@ -140,6 +140,91 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
             // Mock: no-op, just return Unit
             Some(Ok(Value::Unit))
         }
+        ("IO", "list-dir") => {
+            if let Some(Value::Str(path)) = performed.args.first() {
+                match std::fs::read_dir(path) {
+                    Ok(entries) => {
+                        let names: Vec<Value> = entries
+                            .filter_map(|e| e.ok())
+                            .map(|e| Value::Str(e.file_name().to_string_lossy().into_owned()))
+                            .collect();
+                        Some(Ok(Value::Vec(names)))
+                    }
+                    Err(e) => Some(Err(perform_effect(
+                        "Fail",
+                        "fail",
+                        vec![Value::Str(e.to_string())],
+                    ))),
+                }
+            } else {
+                Some(Err(err("IO.list-dir requires a string path")))
+            }
+        }
+        ("IO", "mtime") => {
+            if let Some(Value::Str(path)) = performed.args.first() {
+                match std::fs::metadata(path).and_then(|m| m.modified()) {
+                    Ok(time) => {
+                        let millis = time
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as i64;
+                        Some(Ok(Value::Int(millis)))
+                    }
+                    Err(e) => Some(Err(perform_effect(
+                        "Fail",
+                        "fail",
+                        vec![Value::Str(e.to_string())],
+                    ))),
+                }
+            } else {
+                Some(Err(err("IO.mtime requires a string path")))
+            }
+        }
+        ("IO", "millis") => {
+            let millis = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            Some(Ok(Value::Int(millis)))
+        }
+        ("IO", "sleep") => {
+            if let Some(Value::Int(ms)) = performed.args.first() {
+                std::thread::sleep(std::time::Duration::from_millis(*ms as u64));
+                Some(Ok(Value::Unit))
+            } else {
+                Some(Err(err("IO.sleep requires an integer (milliseconds)")))
+            }
+        }
+        ("IO", "copy-file") => {
+            if let (Some(Value::Str(src)), Some(Value::Str(dst))) =
+                (performed.args.first(), performed.args.get(1))
+            {
+                match std::fs::copy(src, dst) {
+                    Ok(_) => Some(Ok(Value::Unit)),
+                    Err(e) => Some(Err(perform_effect(
+                        "Fail",
+                        "fail",
+                        vec![Value::Str(e.to_string())],
+                    ))),
+                }
+            } else {
+                Some(Err(err("IO.copy-file requires two string paths")))
+            }
+        }
+        ("IO", "mkdir") => {
+            if let Some(Value::Str(path)) = performed.args.first() {
+                match std::fs::create_dir_all(path) {
+                    Ok(()) => Some(Ok(Value::Unit)),
+                    Err(e) => Some(Err(perform_effect(
+                        "Fail",
+                        "fail",
+                        vec![Value::Str(e.to_string())],
+                    ))),
+                }
+            } else {
+                Some(Err(err("IO.mkdir requires a string path")))
+            }
+        }
         ("IO", "read-line") => {
             let mut line = String::new();
             match std::io::stdin().read_line(&mut line) {
