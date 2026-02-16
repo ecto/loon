@@ -192,7 +192,6 @@ async function boot() {
       'src/lib/theme.loon',
       'src/lib/components.loon',
       'src/router.loon',
-      'src/components/nav.loon',
       'src/components/footer.loon',
       'src/components/code.loon',
       'src/components/editor.loon',

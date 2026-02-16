@@ -83,41 +83,6 @@ a:hover { color: var(--gold-accent); }
 .link { position: relative; }
 
 /* ============================================
-   Navigation — hover states
-   ============================================ */
-.nav {
-  position: sticky;
-  top: 0;
-  z-index: 1000;
-  background: rgba(250, 248, 245, 0.95);
-  backdrop-filter: blur(8px);
-  border-bottom: 1px solid var(--border-color);
-}
-
-.nav-link {
-  font-weight: 500;
-  padding: 0.5rem 0.75rem;
-  border-radius: 4px;
-  transition: all var(--transition-fast);
-}
-
-.nav-link:hover {
-  background: rgba(212, 168, 67, 0.1);
-}
-
-.nav-link:hover::after { display: none; }
-
-.nav-link-active {
-  color: var(--gold-accent);
-}
-
-.nav-link-active::after { display: none; }
-
-.nav-logo:hover { color: var(--gold-accent); }
-.nav-logo:hover::after { display: none; }
-.nav-logo-img { width: 28px; height: 28px; object-fit: contain; }
-
-/* ============================================
    Buttons — hover/focus states
    ============================================ */
 .btn {
@@ -326,10 +291,6 @@ a:hover { color: var(--gold-accent); }
     border-top: 1px solid var(--border-color);
   }
 
-  .nav-links {
-    display: none;
-  }
-
   .hero-title {
     font-size: 2.2rem !important;
   }
@@ -345,6 +306,6 @@ a:hover { color: var(--gold-accent); }
    Print
    ============================================ */
 @media print {
-  .nav, .footer, .btn, .btn-secondary { display: none; }
+  .footer, .btn, .btn-secondary { display: none; }
   body { background: white; color: black; }
 }

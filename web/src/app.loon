@@ -16,7 +16,6 @@
   [let routes [route-table]]
   [let page-fn [match-route path routes]]
   [div {:class "app"}
-    [nav-component path]
     [page-fn]]]
 
 ; --- Boot ---

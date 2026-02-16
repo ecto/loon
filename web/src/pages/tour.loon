@@ -22,6 +22,7 @@
 
 [defn tour-page []
   [div {:class "page"}
+    [page-header]
     [main-el {:style {:max-width "720px"
                       :margin "0 auto"
                       :padding "3rem 2rem"}}
