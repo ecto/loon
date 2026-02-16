@@ -696,6 +696,65 @@ fn fmt_interpolation() {
 }
 
 #[test]
+fn async_spawn_await() {
+    // Async.spawn evaluates a thunk immediately, wraps result in Future;
+    // Async.await unwraps it
+    assert_eq!(
+        run(r#"
+            [let f [Async.spawn [fn [] 42]]]
+            [Async.await f]
+        "#),
+        Value::Int(42)
+    );
+}
+
+#[test]
+fn async_sleep_noop() {
+    // Async.sleep is a no-op mock that returns Unit
+    assert_eq!(
+        run("[Async.sleep 100]"),
+        Value::Unit
+    );
+}
+
+#[test]
+fn async_spawn_await_string() {
+    // Spawn a thunk that returns a string
+    assert_eq!(
+        run(r#"
+            [let f [Async.spawn [fn [] [str "hello" " " "async"]]]]
+            [Async.await f]
+        "#),
+        Value::Str("hello async".to_string())
+    );
+}
+
+#[test]
+fn async_handle_override() {
+    // Async effects can be intercepted with handle, just like IO
+    assert_eq!(
+        run(r#"
+            [handle [Async.spawn [fn [] 99]]
+              [Async.spawn thunk] => [resume 77]]
+        "#),
+        Value::Int(77)
+    );
+}
+
+#[test]
+fn async_sequential_spawn_await() {
+    // Multiple spawn/await in sequence
+    assert_eq!(
+        run(r#"
+            [let a [Async.spawn [fn [] 10]]]
+            [let b [Async.spawn [fn [] 20]]]
+            [+ [Async.await a] [Async.await b]]
+        "#),
+        Value::Int(30)
+    );
+}
+
+#[test]
 fn module_use() {
     // Write a temp module and import it
     let dir = std::env::temp_dir().join("loon_test_modules");

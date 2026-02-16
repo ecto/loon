@@ -73,10 +73,20 @@ impl EffectRegistry {
         });
         reg.register(EffectDecl {
             name: "Async".to_string(),
-            operations: vec![EffectOp {
-                name: "await".to_string(),
-                params: vec!["future".to_string()],
-            }],
+            operations: vec![
+                EffectOp {
+                    name: "spawn".to_string(),
+                    params: vec!["thunk".to_string()],
+                },
+                EffectOp {
+                    name: "await".to_string(),
+                    params: vec!["future".to_string()],
+                },
+                EffectOp {
+                    name: "sleep".to_string(),
+                    params: vec!["ms".to_string()],
+                },
+            ],
         });
         reg
     }

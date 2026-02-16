@@ -107,6 +107,39 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
                 std::process::exit(0);
             }
         }
+        ("Async", "spawn") => {
+            // Synchronous mock: evaluate the thunk immediately, wrap in Future
+            if let Some(thunk) = performed.args.first() {
+                match thunk {
+                    Value::Fn(lf) => {
+                        let mut env = get_global_env().unwrap_or_else(Env::new);
+                        match call_fn(lf, &[], &mut env) {
+                            Ok(val) => Some(Ok(Value::Future(Box::new(val)))),
+                            Err(e) => Some(Err(e)),
+                        }
+                    }
+                    Value::Builtin(name, f) => match f(name, &[]) {
+                        Ok(val) => Some(Ok(Value::Future(Box::new(val)))),
+                        Err(e) => Some(Err(e)),
+                    },
+                    _ => Some(Err(err("Async.spawn requires a callable thunk"))),
+                }
+            } else {
+                Some(Err(err("Async.spawn requires a thunk argument")))
+            }
+        }
+        ("Async", "await") => {
+            // Unwrap a Future value
+            if let Some(Value::Future(inner)) = performed.args.first() {
+                Some(Ok(*inner.clone()))
+            } else {
+                Some(Err(err("Async.await requires a Future value")))
+            }
+        }
+        ("Async", "sleep") => {
+            // Mock: no-op, just return Unit
+            Some(Ok(Value::Unit))
+        }
         ("IO", "read-line") => {
             let mut line = String::new();
             match std::io::stdin().read_line(&mut line) {

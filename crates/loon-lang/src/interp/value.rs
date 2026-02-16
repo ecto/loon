@@ -58,6 +58,7 @@ pub enum Value {
     DomNode(DomHandle),
     ChannelTx(ChannelId),
     ChannelRx(ChannelId),
+    Future(Box<Value>),
     Unit,
 }
 
@@ -145,6 +146,7 @@ impl fmt::Display for Value {
             Value::DomNode(h) => write!(f, "<dom-node {h}>"),
             Value::ChannelTx(id) => write!(f, "<channel-tx {id}>"),
             Value::ChannelRx(id) => write!(f, "<channel-rx {id}>"),
+            Value::Future(inner) => write!(f, "<future {inner}>"),
             Value::Unit => write!(f, "()"),
         }
     }
@@ -172,6 +174,7 @@ impl PartialEq for Value {
             (Value::DomNode(a), Value::DomNode(b)) => a == b,
             (Value::ChannelTx(a), Value::ChannelTx(b)) => a == b,
             (Value::ChannelRx(a), Value::ChannelRx(b)) => a == b,
+            (Value::Future(a), Value::Future(b)) => a == b,
             (Value::Unit, Value::Unit) => true,
             _ => false,
         }
