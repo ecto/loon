@@ -9,6 +9,23 @@ type IResult = Result<Value, InterpError>;
 thread_local! {
     static CHANNELS: RefCell<HashMap<ChannelId, VecDeque<Value>>> = RefCell::new(HashMap::new());
     static NEXT_CHAN: Cell<ChannelId> = const { Cell::new(0) };
+    static PRINT_BUF: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+}
+
+/// Run `f` while capturing all println/print output into a buffer.
+/// Returns the result of `f` and the captured output joined by newlines.
+pub fn capture_output<F: FnOnce() -> R, R>(f: F) -> (R, String) {
+    PRINT_BUF.with(|buf| {
+        *buf.borrow_mut() = Some(Vec::new());
+    });
+    let result = f();
+    let output = PRINT_BUF.with(|buf| {
+        buf.borrow_mut()
+            .take()
+            .unwrap_or_default()
+            .join("\n")
+    });
+    (result, output)
 }
 
 pub fn register_builtins(env: &mut Env) {
@@ -141,13 +158,42 @@ pub fn register_builtins(env: &mut Env) {
 
     builtin!(env, "println", |_, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| v.display_str()).collect();
-        println!("{}", parts.join(" "));
+        let line = parts.join(" ");
+        let captured = PRINT_BUF.with(|buf| {
+            let mut guard = buf.borrow_mut();
+            if let Some(ref mut vec) = *guard {
+                vec.push(line.clone());
+                true
+            } else {
+                false
+            }
+        });
+        if !captured {
+            println!("{}", line);
+        }
         Ok(Value::Unit)
     });
 
     builtin!(env, "print", |_, args: &[Value]| {
         let parts: Vec<String> = args.iter().map(|v| v.display_str()).collect();
-        print!("{}", parts.join(" "));
+        let text = parts.join(" ");
+        let captured = PRINT_BUF.with(|buf| {
+            let mut guard = buf.borrow_mut();
+            if let Some(ref mut vec) = *guard {
+                // Append to last line or create new entry
+                if let Some(last) = vec.last_mut() {
+                    last.push_str(&text);
+                } else {
+                    vec.push(text.clone());
+                }
+                true
+            } else {
+                false
+            }
+        });
+        if !captured {
+            print!("{}", text);
+        }
         Ok(Value::Unit)
     });
 

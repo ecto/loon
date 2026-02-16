@@ -115,20 +115,10 @@ function domBridge(op, args) {
       return null;
     }
     case 'evalLoon': {
-      const code = args[0];
-      // Capture console.log output (Loon's println! routes to console.log in WASM)
-      const captured = [];
-      const origLog = console.log;
-      console.log = (...a) => captured.push(a.join(' '));
       try {
-        const result = eval_with_output(code);
-        const output = captured.length > 0 ? captured.join('\n') + '\n' : '';
-        return output + result;
+        return eval_with_output(args[0]);
       } catch (e) {
-        const output = captured.length > 0 ? captured.join('\n') + '\n' : '';
-        return output + 'Error: ' + (e.message || String(e));
-      } finally {
-        console.log = origLog;
+        return 'Error: ' + (e.message || String(e));
       }
     }
     case 'setTitle': {

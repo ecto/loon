@@ -73,9 +73,43 @@ pub fn eval_ui(source: &str) -> Result<(), String> {
 /// Evaluate Loon source and capture all println output.
 #[wasm_bindgen]
 pub fn eval_with_output(source: &str) -> Result<String, String> {
+    let perf = web_sys::window().and_then(|w: web_sys::Window| w.performance());
+    let now = || perf.as_ref().map_or_else(|| js_sys::Date::now(), |p: &web_sys::Performance| p.now());
+
+    let t0 = now();
     let exprs = loon_lang::parser::parse(source).map_err(|e| format!("{e}"))?;
-    let result = loon_lang::interp::eval_program(&exprs).map_err(|e| e.message)?;
-    Ok(format!("{result}"))
+    let t1 = now();
+
+    let mut checker = loon_lang::check::Checker::new();
+    let _errors = checker.check_program(&exprs);
+    let t2 = now();
+
+    let (result, output) = loon_lang::interp::builtins::capture_output(|| {
+        loon_lang::interp::eval_program(&exprs)
+    });
+    let t3 = now();
+
+    let result = result.map_err(|e| e.message)?;
+    let formatted = format!("{result}");
+    let body = if output.is_empty() {
+        formatted
+    } else if formatted == "()" {
+        output
+    } else {
+        format!("{output}\n{formatted}")
+    };
+
+    let fmt = |ms: f64| -> String {
+        if ms < 1.0 {
+            format!("{:.0}\u{00B5}s", ms * 1000.0)
+        } else {
+            format!("{ms:.1}ms")
+        }
+    };
+    let parse_ms = t1 - t0;
+    let check_ms = t2 - t1;
+    let eval_ms = t3 - t2;
+    Ok(format!("{body}\n\u{2014}\nparse: {} | check: {} | eval: {}", fmt(parse_ms), fmt(check_ms), fmt(eval_ms)))
 }
 
 /// Type-check Loon source and return diagnostics.
