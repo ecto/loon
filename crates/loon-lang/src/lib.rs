@@ -3,6 +3,7 @@ pub mod check;
 pub mod codegen;
 pub mod effects;
 pub mod errors;
+pub mod fmt;
 pub mod interp;
 pub mod module;
 pub mod parser;
