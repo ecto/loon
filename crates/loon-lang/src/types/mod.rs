@@ -528,6 +528,18 @@ impl TypeEnv {
         self.bindings.first()
     }
 
+    /// Returns all in-scope (name, Scheme) pairs. Inner scopes shadow outer.
+    pub fn all_visible_names(&self) -> Vec<(String, Scheme)> {
+        let mut seen = HashMap::new();
+        // Iterate from outermost to innermost; later inserts overwrite earlier.
+        for scope in &self.bindings {
+            for (name, scheme) in scope {
+                seen.insert(name.clone(), scheme.clone());
+            }
+        }
+        seen.into_iter().collect()
+    }
+
     /// Free type variables in the environment.
     pub fn free_vars(&self, subst: &Subst) -> BTreeSet<TypeVar> {
         let mut fvs = BTreeSet::new();
@@ -650,5 +662,50 @@ fn substitute(ty: &Type, mapping: &HashMap<TypeVar, Type>) -> Type {
         }
         Type::Record(inner) => Type::Record(Box::new(substitute(inner, mapping))),
         _ => ty.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_visible_names_basic() {
+        let mut env = TypeEnv::new();
+        env.set("x".to_string(), Scheme::mono(Type::Int));
+        env.set("y".to_string(), Scheme::mono(Type::Bool));
+
+        let names = env.all_visible_names();
+        let name_strs: Vec<&str> = names.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(name_strs.contains(&"x"));
+        assert!(name_strs.contains(&"y"));
+    }
+
+    #[test]
+    fn all_visible_names_shadowing() {
+        let mut env = TypeEnv::new();
+        env.set("x".to_string(), Scheme::mono(Type::Int));
+        env.push_scope();
+        env.set("x".to_string(), Scheme::mono(Type::Bool));
+
+        let names = env.all_visible_names();
+        // Should have exactly one "x"
+        let x_entries: Vec<_> = names.iter().filter(|(n, _)| n == "x").collect();
+        assert_eq!(x_entries.len(), 1);
+        // The shadowing entry should be Bool
+        assert_eq!(x_entries[0].1.ty, Type::Bool);
+    }
+
+    #[test]
+    fn all_visible_names_includes_all_scopes() {
+        let mut env = TypeEnv::new();
+        env.set("a".to_string(), Scheme::mono(Type::Int));
+        env.push_scope();
+        env.set("b".to_string(), Scheme::mono(Type::Bool));
+
+        let names = env.all_visible_names();
+        let name_strs: Vec<&str> = names.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(name_strs.contains(&"a"));
+        assert!(name_strs.contains(&"b"));
     }
 }

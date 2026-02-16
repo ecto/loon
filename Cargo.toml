@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/loon-lang", "crates/loon-cli", "crates/loon-wasm"]
+members = ["crates/loon-lang", "crates/loon-cli", "crates/loon-wasm", "crates/loon-lsp"]
 resolver = "2"
 
 [workspace.package]

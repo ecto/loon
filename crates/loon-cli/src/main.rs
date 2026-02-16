@@ -37,6 +37,16 @@ enum Command {
     Check { file: PathBuf },
     /// Explain an error code
     Explain { code: String },
+    /// Start the LSP server
+    Lsp,
+    /// Format Loon source files
+    Fmt {
+        /// Files to format (recursively finds .loon files in directories)
+        files: Vec<PathBuf>,
+        /// Check formatting without modifying files (exit 1 if unformatted)
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 fn main() {
@@ -55,7 +65,16 @@ fn main() {
         Command::New { ref name } => new_project(name),
         Command::Test { ref file } => test_file(file),
         Command::Explain { ref code } => explain_error(code),
+        Command::Lsp => start_lsp(),
+        Command::Fmt {
+            ref files, check, ..
+        } => fmt_files(files, check),
     }
+}
+
+fn start_lsp() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(loon_lsp::run_stdio());
 }
 
 fn run_file(path: &PathBuf) {
@@ -183,7 +202,7 @@ fn check_file(path: &PathBuf) {
                 println!("{}", "OK — no type errors".green().bold());
             } else {
                 for err in &errors {
-                    loon_lang::errors::report_type_error(&filename, &source, err);
+                    loon_lang::errors::report_diagnostic(&filename, &source, err);
                 }
                 std::process::exit(1);
             }
@@ -499,70 +518,190 @@ fn test_file(path: &PathBuf) {
     }
 }
 
-fn explain_error(code: &str) {
-    let explanation = match code {
-        "E0001" => {
-            "E0001: Use after move\n\n\
-             A value was used after it was moved to another binding.\n\
-             In Loon, when a non-Copy value is assigned or passed to a\n\
-             function, ownership transfers and the original binding\n\
-             becomes invalid.\n\n\
-             Example:\n\
-               [let xs [vec 1 2 3]]\n\
-               [let ys xs]          ;; xs moved to ys\n\
-               [println xs]         ;; error: xs was moved\n\n\
-             Fix: clone the value if you need both bindings.\n\
-               [let ys [clone xs]]"
+fn fmt_files(files: &[PathBuf], check: bool) {
+    let paths = if files.is_empty() {
+        collect_loon_files(&PathBuf::from("."))
+    } else {
+        let mut all = Vec::new();
+        for f in files {
+            if f.is_dir() {
+                all.extend(collect_loon_files(f));
+            } else {
+                all.push(f.clone());
+            }
         }
-        "E0002" => {
-            "E0002: Mutating an immutable binding\n\n\
-             Attempted to mutate a binding that was not declared with `mut`.\n\n\
-             Example:\n\
-               [let xs [vec 1 2 3]]\n\
-               [push! xs 4]         ;; error: xs is not mutable\n\n\
-             Fix: declare the binding as mutable.\n\
-               [let mut xs [vec 1 2 3]]\n\
-               [push! xs 4]         ;; ok"
-        }
-        "E0003" => {
-            "E0003: Double mutable borrow\n\n\
-             A value was mutably borrowed while another mutable borrow\n\
-             was still active. Loon enforces exclusive mutable access\n\
-             to prevent data races.\n\n\
-             Example:\n\
-               [let mut xs [vec 1 2 3]]\n\
-               [push! xs [len xs]]  ;; error: xs borrowed mutably and immutably\n\n\
-             Fix: compute the value before mutating.\n\
-               [let n [len xs]]\n\
-               [push! xs n]"
-        }
-        "E0010" => {
-            "E0010: Type mismatch\n\n\
-             The inferred type of an expression does not match the\n\
-             expected type from context.\n\n\
-             Example:\n\
-               [+ 1 \"hello\"]       ;; error: expected Int, got Str\n\n\
-             Fix: ensure operand types match."
-        }
-        "E0020" => {
-            "E0020: Unhandled effect\n\n\
-             A function performs an effect that is not handled by\n\
-             any enclosing `handle` block.\n\n\
-             Example:\n\
-               [IO.println \"hello\"]  ;; error if no IO handler\n\n\
-             Fix: wrap in a handle block or add the effect to the\n\
-             function's effect annotation.\n\
-               [handle [IO.println \"hello\"]\n\
-                 IO => [fn [op args resume]\n\
-                         [resume [println [nth args 0]]]]]"
-        }
-        _ => {
-            eprintln!("Unknown error code: {code}");
-            eprintln!("Known codes: E0001, E0002, E0003, E0010, E0020");
-            std::process::exit(1);
-        }
+        all
     };
-    println!("{explanation}");
+
+    if paths.is_empty() {
+        println!("No .loon files found");
+        return;
+    }
+
+    let mut changed_count = 0;
+    let mut error_count = 0;
+
+    for path in &paths {
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{} reading {}: {e}", "error".red().bold(), path.display());
+                error_count += 1;
+                continue;
+            }
+        };
+
+        let exprs = match loon_lang::parser::parse(&source) {
+            Ok(exprs) => exprs,
+            Err(e) => {
+                eprintln!(
+                    "{} parsing {}: {}",
+                    "error".red().bold(),
+                    path.display(),
+                    e.message
+                );
+                error_count += 1;
+                continue;
+            }
+        };
+
+        let formatted = loon_lang::fmt::format_program(&exprs);
+
+        if formatted != source {
+            changed_count += 1;
+            if check {
+                println!("  {} {}", "would format".yellow().bold(), path.display());
+            } else {
+                if let Err(e) = std::fs::write(path, &formatted) {
+                    eprintln!("{} writing {}: {e}", "error".red().bold(), path.display());
+                    error_count += 1;
+                    continue;
+                }
+                println!("  {} {}", "formatted".green().bold(), path.display());
+            }
+        }
+    }
+
+    if check {
+        if changed_count > 0 {
+            println!(
+                "\n{} file(s) would be reformatted",
+                changed_count.to_string().yellow().bold()
+            );
+            std::process::exit(1);
+        } else if error_count == 0 {
+            println!("{}", "All files already formatted".green().bold());
+        }
+    } else if changed_count == 0 && error_count == 0 {
+        println!("{}", "All files already formatted".green().bold());
+    } else if changed_count > 0 {
+        println!("\n{} file(s) formatted", changed_count);
+    }
+
+    if error_count > 0 {
+        std::process::exit(1);
+    }
+}
+
+fn collect_loon_files(dir: &PathBuf) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return result,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            // Skip hidden directories and target/
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if !name.starts_with('.') && name != "target" {
+                result.extend(collect_loon_files(&path));
+            }
+        } else if path.extension().is_some_and(|e| e == "loon") {
+            result.push(path);
+        }
+    }
+    result.sort();
+    result
+}
+
+fn explain_error(code: &str) {
+    use loon_lang::errors::codes::ErrorCode;
+    use loon_lang::errors::tutorials::{get_tutorial, TutorialStep};
+
+    // Map old codes to new codes for backwards compatibility
+    let error_code = match code {
+        "E0001" | "E0300" => Some(ErrorCode::E0300),
+        "E0002" | "E0301" => Some(ErrorCode::E0301),
+        "E0003" | "E0302" => Some(ErrorCode::E0302),
+        "E0010" | "E0200" => Some(ErrorCode::E0200),
+        "E0020" | "E0400" => Some(ErrorCode::E0400),
+        "E0100" => Some(ErrorCode::E0100),
+        "E0101" => Some(ErrorCode::E0101),
+        "E0102" => Some(ErrorCode::E0102),
+        "E0103" => Some(ErrorCode::E0103),
+        "E0201" => Some(ErrorCode::E0201),
+        "E0202" => Some(ErrorCode::E0202),
+        "E0203" => Some(ErrorCode::E0203),
+        "E0204" => Some(ErrorCode::E0204),
+        "E0205" => Some(ErrorCode::E0205),
+        "E0206" => Some(ErrorCode::E0206),
+        "E0207" => Some(ErrorCode::E0207),
+        "E0401" => Some(ErrorCode::E0401),
+        "E0500" => Some(ErrorCode::E0500),
+        "E0501" => Some(ErrorCode::E0501),
+        "E0502" => Some(ErrorCode::E0502),
+        _ => None,
+    };
+
+    let Some(ec) = error_code else {
+        eprintln!("Unknown error code: {code}");
+        eprintln!("Known codes:");
+        eprintln!("  E01xx: parse errors    (E0100-E0103)");
+        eprintln!("  E02xx: type errors     (E0200-E0207)");
+        eprintln!("  E03xx: ownership errors (E0300-E0302)");
+        eprintln!("  E04xx: effect errors   (E0400-E0401)");
+        eprintln!("  E05xx: module errors   (E0500-E0502)");
+        eprintln!("Legacy codes: E0001 -> E0300, E0002 -> E0301, E0003 -> E0302, E0010 -> E0200, E0020 -> E0400");
+        std::process::exit(1);
+    };
+
+    println!("{}: {}\n", ec, ec.title());
+
+    if let Some(tutorial) = get_tutorial(ec) {
+        for step in &tutorial.steps {
+            match step {
+                TutorialStep::Text(text) => {
+                    println!("{text}\n");
+                }
+                TutorialStep::Demo { code, explanation } => {
+                    println!("  Example:");
+                    for line in code.lines() {
+                        println!("    {line}");
+                    }
+                    println!("  {explanation}\n");
+                }
+                TutorialStep::Fix {
+                    before,
+                    after,
+                    explanation,
+                } => {
+                    println!("  Before:");
+                    for line in before.lines() {
+                        println!("    {line}");
+                    }
+                    println!("  After:");
+                    for line in after.lines() {
+                        println!("    {line}");
+                    }
+                    println!("  {explanation}\n");
+                }
+            }
+        }
+    } else {
+        println!("Category: {}", ec.category());
+        println!("No tutorial available for this error code yet.");
+    }
 }
 
 #[cfg(test)]

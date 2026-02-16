@@ -17,3 +17,5 @@ dirs = "6"
 owo-colors = "4"
 wasmtime = "29"
 wasmtime-wasi = "29"
+loon-lsp = { path = "../loon-lsp" }
+tokio = { version = "1", features = ["full"] }

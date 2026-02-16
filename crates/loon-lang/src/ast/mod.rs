@@ -115,6 +115,87 @@ impl fmt::Display for Expr {
     }
 }
 
+/// Walk the AST to find the deepest node whose span contains the given byte offset.
+pub fn node_at_offset(exprs: &[Expr], offset: usize) -> Option<&Expr> {
+    fn walk<'a>(expr: &'a Expr, offset: usize) -> Option<&'a Expr> {
+        if offset < expr.span.start || offset >= expr.span.end {
+            return None;
+        }
+        // Try to find a deeper match in children
+        match &expr.kind {
+            ExprKind::List(items) | ExprKind::Vec(items) | ExprKind::Set(items) | ExprKind::Tuple(items) => {
+                for item in items {
+                    if let Some(deeper) = walk(item, offset) {
+                        return Some(deeper);
+                    }
+                }
+            }
+            ExprKind::Map(pairs) => {
+                for (k, v) in pairs {
+                    if let Some(deeper) = walk(k, offset) {
+                        return Some(deeper);
+                    }
+                    if let Some(deeper) = walk(v, offset) {
+                        return Some(deeper);
+                    }
+                }
+            }
+            _ => {}
+        }
+        // No deeper child matched, this node is the deepest
+        Some(expr)
+    }
+
+    for expr in exprs {
+        if let Some(found) = walk(expr, offset) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse;
+
+    #[test]
+    fn node_at_offset_finds_symbol() {
+        // "[+ x y]" — x is at offset 3..4
+        let exprs = parse("[+ x y]").unwrap();
+        let node = node_at_offset(&exprs, 3);
+        assert!(node.is_some());
+        let node = node.unwrap();
+        assert!(matches!(&node.kind, ExprKind::Symbol(s) if s == "x"));
+    }
+
+    #[test]
+    fn node_at_offset_finds_int() {
+        // "42" — the int literal at offset 0
+        let exprs = parse("42").unwrap();
+        let node = node_at_offset(&exprs, 0);
+        assert!(node.is_some());
+        assert!(matches!(&node.unwrap().kind, ExprKind::Int(42)));
+    }
+
+    #[test]
+    fn node_at_offset_returns_none_out_of_range() {
+        let exprs = parse("42").unwrap();
+        let node = node_at_offset(&exprs, 100);
+        assert!(node.is_none());
+    }
+
+    #[test]
+    fn node_at_offset_deepest_in_nested() {
+        // "[+ [* 2 3] 4]" — offset of "2" should find the int, not the list
+        let exprs = parse("[+ [* 2 3] 4]").unwrap();
+        // '2' is at offset 6
+        let node = node_at_offset(&exprs, 6);
+        assert!(node.is_some());
+        assert!(matches!(&node.unwrap().kind, ExprKind::Int(2)));
+    }
+}
+
 /// Pretty-print an AST with indentation.
 pub fn pretty_print(expr: &Expr, indent: usize) -> String {
     let pad = "  ".repeat(indent);
