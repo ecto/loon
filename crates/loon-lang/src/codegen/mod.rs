@@ -12,6 +12,7 @@ use wasm_encoder::*;
 pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, String> {
     let mut compiler = Compiler::new();
     compiler.compile_program(exprs)?;
+    compiler.tree_shake();
     Ok(compiler.finish())
 }
 
@@ -20,6 +21,7 @@ pub fn compile_with_imports(exprs: &[Expr], base_dir: &std::path::Path) -> Resul
     let mut compiler = Compiler::new();
     compiler.base_dir = Some(base_dir.to_path_buf());
     compiler.compile_program(exprs)?;
+    compiler.tree_shake();
     Ok(compiler.finish())
 }
 
@@ -51,6 +53,7 @@ struct Compiler {
     base_dir: Option<std::path::PathBuf>,
     compiled_modules: std::collections::HashSet<std::path::PathBuf>,
     force_heap: bool,
+    used_wasi_imports: Option<Vec<u32>>,
 }
 
 struct FunctionBody { params: Vec<ValType>, results: Vec<ValType>, locals: Vec<ValType>, instructions: Vec<WasmInstruction> }
@@ -128,7 +131,7 @@ impl Compiler {
             lambda_counter: 0, adt_constructors: HashMap::new(), adt_types: Vec::new(),
             table_entries: Vec::new(), table_map: HashMap::new(), indirect_type_cache: HashMap::new(),
             type_count: PRE_ALLOC_TYPES, string_runtime: None, collections_runtime: None,
-            base_dir: None, compiled_modules: std::collections::HashSet::new(), force_heap: false,
+            base_dir: None, compiled_modules: std::collections::HashSet::new(), force_heap: false, used_wasi_imports: None,
         }
     }
     fn ensure_in_table(&mut self, func_idx: u32) -> u32 {
@@ -158,6 +161,69 @@ impl Compiler {
         for expr in exprs { if let ExprKind::List(items) = &expr.kind { if items.len() >= 3 { if let ExprKind::Symbol(s) = &items[0].kind { if s == "defn" { if let ExprKind::Symbol(name) = &items[1].kind { if self.fn_map.contains_key(name) { continue; } if let ExprKind::List(params) = &items[2].kind { let arity = params.len(); let idx = self.next_fn_idx; self.fn_map.insert(name.clone(), FnDef { func_idx: idx, arity, is_closure: false }); self.next_fn_idx += 1; } } } } } } }
         for expr in exprs { if let ExprKind::List(items) = &expr.kind { if items.len() >= 3 { if let ExprKind::Symbol(s) = &items[0].kind { if s == "defn" { self.compile_defn(&items[1..])?; } } } } }
         Ok(())
+    }
+    fn tree_shake(&mut self) {
+        let main_idx = match self.fn_map.get("main") {
+            Some(def) => def.func_idx,
+            None => return,
+        };
+        let mut reachable = std::collections::HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        reachable.insert(main_idx);
+        queue.push_back(main_idx);
+        while let Some(idx) = queue.pop_front() {
+            if idx < WASI_IMPORT_COUNT { continue; }
+            let fn_offset = (idx - WASI_IMPORT_COUNT) as usize;
+            if fn_offset >= self.functions.len() { continue; }
+            let mut has_indirect = false;
+            for instr in &self.functions[fn_offset].instructions {
+                match instr {
+                    WasmInstruction::Call(target) => {
+                        if reachable.insert(*target) { queue.push_back(*target); }
+                    }
+                    WasmInstruction::CallIndirect(_) => { has_indirect = true; }
+                    _ => {}
+                }
+            }
+            if has_indirect {
+                for &entry in &self.table_entries {
+                    if reachable.insert(entry) { queue.push_back(entry); }
+                }
+            }
+        }
+        // Build remap: old func index → new func index
+        let used_wasi: Vec<u32> = (0..WASI_IMPORT_COUNT).filter(|i| reachable.contains(i)).collect();
+        let mut remap = HashMap::new();
+        let mut new_idx = 0u32;
+        for &old in &used_wasi { remap.insert(old, new_idx); new_idx += 1; }
+        let new_import_count = new_idx;
+        let mut kept_fn_indices = Vec::new();
+        for i in 0..self.functions.len() {
+            let old = WASI_IMPORT_COUNT + i as u32;
+            if reachable.contains(&old) { remap.insert(old, new_idx); kept_fn_indices.push(i); new_idx += 1; }
+        }
+        // Filter functions
+        let mut old_fns: Vec<Option<FunctionBody>> = std::mem::take(&mut self.functions).into_iter().map(Some).collect();
+        self.functions = kept_fn_indices.iter().map(|&i| old_fns[i].take().unwrap()).collect();
+        // Rewrite Call targets
+        for func in &mut self.functions {
+            for instr in &mut func.instructions {
+                if let WasmInstruction::Call(ref mut target) = instr {
+                    if let Some(&new) = remap.get(target) { *target = new; }
+                }
+            }
+        }
+        // Remap table entries
+        self.table_entries = self.table_entries.iter().filter_map(|&old| remap.get(&old).copied()).collect();
+        self.table_map.clear();
+        for (ti, &func_idx) in self.table_entries.iter().enumerate() { self.table_map.insert(func_idx, ti as u32); }
+        // Update fn_map
+        for def in self.fn_map.values_mut() {
+            if let Some(&new) = remap.get(&def.func_idx) { def.func_idx = new; }
+        }
+        self.used_wasi_imports = Some(used_wasi);
+        self.import_count = new_import_count;
+        self.next_fn_idx = new_idx;
     }
     fn compile_use(&mut self, args: &[Expr]) -> Result<(), String> {
         if args.is_empty() { return Ok(()); }
@@ -221,15 +287,20 @@ impl Compiler {
         for func in &self.functions { let ti = types.len(); types.ty().function(func.params.clone(), func.results.clone()); fn_type_indices.push(ti); }
         let mut ie: Vec<(usize, u32)> = self.indirect_type_cache.iter().map(|(&a, &t)| (a, t)).collect();
         ie.sort_by_key(|&(_, idx)| idx);
+        let indirect_type_remap: HashMap<u32, u32> = ie.iter().enumerate().map(|(i, &(_, cached_idx))| {
+            (cached_idx, PRE_ALLOC_TYPES + self.functions.len() as u32 + i as u32)
+        }).collect();
         for (arity, _) in &ie { types.ty().function(vec![ValType::I64; *arity], vec![ValType::I64]); }
         module.section(&types);
+        let wasi_defs: [(u32, &str, u32); 6] = [
+            (0, "fd_write", 0), (1, "fd_read", 2), (2, "args_get", 3),
+            (3, "args_sizes_get", 4), (4, "environ_get", 5), (5, "environ_sizes_get", 6),
+        ];
         let mut imports = ImportSection::new();
-        imports.import("wasi_snapshot_preview1", "fd_write", EntityType::Function(0));
-        imports.import("wasi_snapshot_preview1", "fd_read", EntityType::Function(2));
-        imports.import("wasi_snapshot_preview1", "args_get", EntityType::Function(3));
-        imports.import("wasi_snapshot_preview1", "args_sizes_get", EntityType::Function(4));
-        imports.import("wasi_snapshot_preview1", "environ_get", EntityType::Function(5));
-        imports.import("wasi_snapshot_preview1", "environ_sizes_get", EntityType::Function(6));
+        match &self.used_wasi_imports {
+            Some(used) => { for &idx in used { let (_, name, type_idx) = wasi_defs[idx as usize]; imports.import("wasi_snapshot_preview1", name, EntityType::Function(type_idx)); } }
+            None => { for &(_, name, type_idx) in &wasi_defs { imports.import("wasi_snapshot_preview1", name, EntityType::Function(type_idx)); } }
+        }
         module.section(&imports);
         let mut functions = FunctionSection::new();
         for idx in &fn_type_indices { functions.function(*idx); }
@@ -242,7 +313,16 @@ impl Compiler {
         module.section(&exports);
         if !self.table_entries.is_empty() { let mut e = ElementSection::new(); e.active(Some(0), &ConstExpr::i32_const(0), Elements::Functions(self.table_entries.clone().into())); module.section(&e); }
         let mut code = CodeSection::new();
-        for func in &self.functions { let mut f = Function::new(func.locals.iter().map(|t| (1, *t)).collect::<Vec<_>>()); for instr in &func.instructions { emit_instruction(&mut f, instr); } f.instruction(&Instruction::End); code.function(&f); }
+        for func in &self.functions {
+            let mut f = Function::new(func.locals.iter().map(|t| (1, *t)).collect::<Vec<_>>());
+            for instr in &func.instructions {
+                if let WasmInstruction::CallIndirect(ty) = instr {
+                    let actual_ty = indirect_type_remap.get(ty).copied().unwrap_or(*ty);
+                    f.instruction(&Instruction::CallIndirect { type_index: actual_ty, table_index: 0 });
+                } else { emit_instruction(&mut f, instr); }
+            }
+            f.instruction(&Instruction::End); code.function(&f);
+        }
         module.section(&code);
         if !self.strings.is_empty() { let mut d = DataSection::new(); for (s, offset) in &self.strings { d.active(0, &ConstExpr::i32_const(*offset as i32), s.as_bytes().iter().copied()); } module.section(&d); }
         module.finish()
@@ -475,4 +555,18 @@ mod tests {
         let _ = std::fs::remove_file(tmp.join("math.loon")); let _ = std::fs::remove_dir(&tmp);
     }
     #[test] fn compile_string_packed_representation() { ok(r#"[defn main [] "hi"]"#); }
+    #[test] fn tree_shake_removes_unused_function() {
+        let with_unused = compile(&parse(r#"[defn unused [x] [+ x 1]] [defn main [] 42]"#).unwrap()).unwrap();
+        let without = compile(&parse(r#"[defn main [] 42]"#).unwrap()).unwrap();
+        assert!(with_unused.len() == without.len(), "unused function should be stripped: {} vs {}", with_unused.len(), without.len());
+    }
+    #[test] fn tree_shake_arithmetic_no_wasi() {
+        let wasm = compile(&parse(r#"[defn main [] [+ 1 2]]"#).unwrap()).unwrap();
+        assert!(!String::from_utf8_lossy(&wasm).contains("fd_write"), "pure arithmetic should not import fd_write");
+    }
+    #[test] fn tree_shake_closure_still_works() {
+        let with_unused = compile(&parse(r#"[defn unused [] 99] [defn main [] [let f [fn [x] [+ x 1]]] [f 41]]"#).unwrap()).unwrap();
+        let without = compile(&parse(r#"[defn main [] [let f [fn [x] [+ x 1]]] [f 41]]"#).unwrap()).unwrap();
+        assert_eq!(with_unused.len(), without.len(), "unused fn should be stripped even with closures");
+    }
 }
