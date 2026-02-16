@@ -40,7 +40,7 @@ impl CheckerState {
             .into_iter()
             .map(|(name, scheme)| {
                 let resolved_ty = checker.resolve(&scheme.ty);
-                (name, Scheme { vars: scheme.vars, ty: resolved_ty })
+                (name, Scheme { bounds: scheme.bounds.clone(), vars: scheme.vars, ty: resolved_ty })
             })
             .collect();
 
@@ -114,7 +114,8 @@ impl DocumentState {
             loon_lang::check::ownership::OwnershipChecker::with_type_info(
                 &checker.type_of,
                 &checker.subst,
-            );
+            )
+            .with_derived_copy_types(&checker.derived_copy_types);
         let ownership_errors = ownership.check_program(&exprs);
         self.diagnostics.extend(ownership_errors);
 

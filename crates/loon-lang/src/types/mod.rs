@@ -473,11 +473,37 @@ fn unify_rows(
 pub struct Scheme {
     pub vars: Vec<TypeVar>,
     pub ty: Type,
+    /// Trait bounds on quantified type variables (e.g., Add a => ...)
+    pub bounds: Vec<(TypeVar, Vec<TraitBound>)>,
 }
 
 impl Scheme {
     pub fn mono(ty: Type) -> Self {
-        Self { vars: vec![], ty }
+        Self {
+            vars: vec![],
+            ty,
+            bounds: vec![],
+        }
+    }
+
+    pub fn poly(vars: Vec<TypeVar>, ty: Type) -> Self {
+        Self {
+            vars,
+            ty,
+            bounds: vec![],
+        }
+    }
+}
+
+impl fmt::Display for Scheme {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.bounds.is_empty() {
+            let bound_strs: Vec<String> = self.bounds.iter().flat_map(|(tv, bounds)| {
+                bounds.iter().map(move |b| format!("{} t{}", b.trait_name, tv.0))
+            }).collect();
+            write!(f, "{} => ", bound_strs.join(", "))?;
+        }
+        write!(f, "{}", self.ty)
     }
 }
 
@@ -604,9 +630,18 @@ pub fn generalize(env: &TypeEnv, subst: &Subst, ty: &Type) -> Scheme {
     let mut ty_fvs = BTreeSet::new();
     free_vars_ty(&resolved, &mut ty_fvs);
     let vars: Vec<TypeVar> = ty_fvs.difference(&env_fvs).copied().collect();
+    // Collect trait bounds for quantified variables
+    let bounds: Vec<(TypeVar, Vec<TraitBound>)> = vars
+        .iter()
+        .filter_map(|v| {
+            subst.constraints.get(v).map(|bs| (*v, bs.clone()))
+        })
+        .filter(|(_, bs)| !bs.is_empty())
+        .collect();
     Scheme {
         vars,
         ty: resolved,
+        bounds,
     }
 }
 
@@ -624,6 +659,14 @@ pub fn instantiate(subst: &mut Subst, scheme: &Scheme) -> Type {
                 for bound in bounds {
                     subst.add_constraint(*new_var, bound);
                 }
+            }
+        }
+    }
+    // Also propagate bounds stored in the scheme itself
+    for (old_var, bounds) in &scheme.bounds {
+        if let Some(Type::Var(new_var)) = mapping.get(old_var) {
+            for bound in bounds {
+                subst.add_constraint(*new_var, bound.clone());
             }
         }
     }

@@ -97,6 +97,8 @@ pub struct Checker {
     pub definitions: Vec<HashMap<String, DefInfo>>,
     /// All references to names (for go-to-definition lookups)
     pub references: Vec<RefInfo>,
+    /// Types with `[derive Copy]` — automatically copy instead of move
+    pub derived_copy_types: HashSet<String>,
 }
 
 impl Checker {
@@ -118,6 +120,7 @@ impl Checker {
             module_cache: Rc::new(RefCell::new(TypeModuleCache::new())),
             definitions: vec![HashMap::new()],
             references: Vec::new(),
+            derived_copy_types: HashSet::new(),
         };
         checker.register_builtins();
         checker.register_prelude();
@@ -151,6 +154,7 @@ impl Checker {
             let tv = if let Type::Var(v) = a { v } else { unreachable!() };
             self.subst.add_constraint(tv, TraitBound { trait_name: "Add".to_string() });
             let add_scheme = Scheme {
+                bounds: vec![(tv, vec![TraitBound { trait_name: "Add".to_string() }])],
                 vars: vec![tv],
                 ty: Type::Fn(vec![Type::Var(tv), Type::Var(tv)], Box::new(Type::Var(tv))),
             };
@@ -165,6 +169,7 @@ impl Checker {
             let tv = if let Type::Var(v) = a { v } else { unreachable!() };
             self.subst.add_constraint(tv, TraitBound { trait_name: "Ord".to_string() });
             let ord_scheme = Scheme {
+                bounds: vec![(tv, vec![TraitBound { trait_name: "Ord".to_string() }])],
                 vars: vec![tv],
                 ty: Type::Fn(vec![Type::Var(tv), Type::Var(tv)], Box::new(Type::Bool)),
             };
@@ -181,6 +186,7 @@ impl Checker {
             self.env.set_global(
                 "=".to_string(),
                 Scheme {
+                    bounds: vec![(tv, vec![TraitBound { trait_name: "Eq".to_string() }])],
                     vars: vec![tv],
                     ty: Type::Fn(vec![Type::Var(tv), Type::Var(tv)], Box::new(Type::Bool)),
                 },
@@ -202,6 +208,7 @@ impl Checker {
             self.env.set_global(
                 "str".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva, tvb],
                     ty: Type::Fn(vec![Type::Var(tva), Type::Var(tvb)], Box::new(Type::Str)),
                 },
@@ -215,6 +222,7 @@ impl Checker {
             self.env.set_global(
                 "println".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tv],
                     ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Unit)),
                 },
@@ -228,6 +236,7 @@ impl Checker {
             self.env.set_global(
                 "len".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tv],
                     ty: Type::Fn(
                         vec![Type::Con("Vec".to_string(), vec![Type::Var(tv)])],
@@ -244,6 +253,7 @@ impl Checker {
             self.env.set_global(
                 "nth".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tv],
                     ty: Type::Fn(
                         vec![
@@ -272,6 +282,7 @@ impl Checker {
             self.env.set_global(
                 "empty?".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tv],
                     ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Bool)),
                 },
@@ -285,6 +296,7 @@ impl Checker {
             self.env.set_global(
                 "contains?".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tv],
                     ty: Type::Fn(
                         vec![
@@ -304,6 +316,7 @@ impl Checker {
             self.env.set_global(
                 "conj".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tv],
                     ty: Type::Fn(
                         vec![
@@ -323,6 +336,7 @@ impl Checker {
             self.env.set_global(
                 "get".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tv],
                     ty: Type::Fn(
                         vec![
@@ -343,6 +357,7 @@ impl Checker {
             self.env.set_global(
                 "assoc".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tv],
                     ty: Type::Fn(
                         vec![map_t.clone(), Type::Keyword, Type::Var(tv)],
@@ -361,6 +376,7 @@ impl Checker {
             self.env.set_global(
                 "map".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva, tvb],
                     ty: Type::Fn(
                         vec![
@@ -380,6 +396,7 @@ impl Checker {
             self.env.set_global(
                 "filter".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
@@ -401,6 +418,7 @@ impl Checker {
             self.env.set_global(
                 "fold".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva, tvb],
                     ty: Type::Fn(
                         vec![
@@ -424,6 +442,7 @@ impl Checker {
             self.env.set_global(
                 "each".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
@@ -444,6 +463,7 @@ impl Checker {
             self.env.set_global(
                 "collect".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva],
                     ty: Type::Fn(vec![vec_a.clone()], Box::new(vec_a)),
                 },
@@ -457,6 +477,7 @@ impl Checker {
             self.env.set_global(
                 "assert-eq".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tv],
                     ty: Type::Fn(vec![Type::Var(tv), Type::Var(tv)], Box::new(Type::Unit)),
                 },
@@ -482,6 +503,7 @@ impl Checker {
             self.env.set_global(
                 "print".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tv],
                     ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Unit)),
                 },
@@ -540,6 +562,7 @@ impl Checker {
             self.env.set_global(
                 "sort-by".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva, tvb],
                     ty: Type::Fn(
                         vec![
@@ -561,6 +584,7 @@ impl Checker {
             self.env.set_global(
                 "take".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva],
                     ty: Type::Fn(vec![Type::Int, vec_a.clone()], Box::new(vec_a)),
                 },
@@ -575,6 +599,7 @@ impl Checker {
             self.env.set_global(
                 "drop".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva],
                     ty: Type::Fn(vec![Type::Int, vec_a.clone()], Box::new(vec_a)),
                 },
@@ -589,6 +614,7 @@ impl Checker {
             self.env.set_global(
                 "reverse".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva],
                     ty: Type::Fn(vec![vec_a.clone()], Box::new(vec_a)),
                 },
@@ -603,6 +629,7 @@ impl Checker {
             self.env.set_global(
                 "flatten".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![Type::Con("Vec".to_string(), vec![vec_a.clone()])],
@@ -620,6 +647,7 @@ impl Checker {
             self.env.set_global(
                 "chunk".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![Type::Int, vec_a.clone()],
@@ -638,6 +666,7 @@ impl Checker {
             self.env.set_global(
                 "zip".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva, tvb],
                     ty: Type::Fn(
                         vec![
@@ -660,6 +689,7 @@ impl Checker {
             self.env.set_global(
                 "find".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
@@ -679,6 +709,7 @@ impl Checker {
             self.env.set_global(
                 "any?".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
@@ -698,6 +729,7 @@ impl Checker {
             self.env.set_global(
                 "all?".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
@@ -718,6 +750,7 @@ impl Checker {
             self.env.set_global(
                 "update".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tv],
                     ty: Type::Fn(
                         vec![
@@ -740,6 +773,7 @@ impl Checker {
             self.env.set_global(
                 "entries".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tvk, tvv],
                     ty: Type::Fn(
                         vec![Type::Con("Map".to_string(), vec![Type::Var(tvk), Type::Var(tvv)])],
@@ -761,6 +795,7 @@ impl Checker {
             self.env.set_global(
                 "keys".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tvk, tvv],
                     ty: Type::Fn(
                         vec![Type::Con("Map".to_string(), vec![Type::Var(tvk), Type::Var(tvv)])],
@@ -779,6 +814,7 @@ impl Checker {
             self.env.set_global(
                 "values".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tvk, tvv],
                     ty: Type::Fn(
                         vec![Type::Con("Map".to_string(), vec![Type::Var(tvk), Type::Var(tvv)])],
@@ -796,6 +832,7 @@ impl Checker {
             self.env.set_global(
                 "merge".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tv],
                     ty: Type::Fn(vec![map_t.clone(), map_t.clone()], Box::new(map_t)),
                 },
@@ -810,6 +847,7 @@ impl Checker {
             self.env.set_global(
                 "remove".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tv],
                     ty: Type::Fn(vec![map_t.clone(), Type::Keyword], Box::new(map_t)),
                 },
@@ -824,6 +862,7 @@ impl Checker {
             self.env.set_global(
                 "push!".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tv],
                     ty: Type::Fn(vec![vec_a.clone(), Type::Var(tv)], Box::new(vec_a)),
                 },
@@ -875,6 +914,7 @@ impl Checker {
             self.env.set_global(
                 "group-by".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva, tvk],
                     ty: Type::Fn(
                         vec![
@@ -899,6 +939,7 @@ impl Checker {
             self.env.set_global(
                 "flat-map".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva, tvb],
                     ty: Type::Fn(
                         vec![
@@ -919,6 +960,7 @@ impl Checker {
             self.env.set_global(
                 "sort".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva],
                     ty: Type::Fn(vec![vec_a.clone()], Box::new(vec_a)),
                 },
@@ -934,6 +976,7 @@ impl Checker {
                 self.env.set_global(
                     name.to_string(),
                     Scheme {
+                        bounds: vec![],
                         vars: vec![tva],
                         ty: Type::Fn(vec![vec_a.clone()], Box::new(Type::Var(tva))),
                     },
@@ -957,6 +1000,7 @@ impl Checker {
             self.env.set_global(
                 "to-string".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tv],
                     ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Str)),
                 },
@@ -972,6 +1016,7 @@ impl Checker {
             self.env.set_global(
                 "into-map".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tvk, tvv],
                     ty: Type::Fn(
                         vec![Type::Con("Vec".to_string(), vec![Type::Tuple(vec![Type::Var(tvk), Type::Var(tvv)])])],
@@ -988,6 +1033,7 @@ impl Checker {
             self.env.set_global(
                 "channel".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![],
@@ -1007,6 +1053,7 @@ impl Checker {
             self.env.set_global(
                 "send".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
@@ -1026,6 +1073,7 @@ impl Checker {
             self.env.set_global(
                 "recv".to_string(),
                 Scheme {
+                    bounds: vec![],
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![Type::Con("Rx".to_string(), vec![Type::Var(tva)])],
@@ -1343,6 +1391,18 @@ impl Checker {
                         return self.infer_list(&items[1..], span);
                     }
                     return Type::Unit;
+                }
+                "derive" => return self.infer_derive(&items[1..], span),
+                "catch-errors" => {
+                    // [catch-errors expr] — arg should be Str, returns Vec of error maps
+                    if items.len() >= 2 {
+                        let arg_ty = self.infer(&items[1]);
+                        if let Err(e) = unify(&mut self.subst, &arg_ty, &Type::Str) {
+                            self.push_unify_error(e, items[1].span);
+                        }
+                    }
+                    let elem = self.subst.fresh();
+                    return Type::Con("Vec".to_string(), vec![elem]);
                 }
                 // Record field access: [get record :key]
                 "get" if items.len() == 3 => {
@@ -1900,6 +1960,7 @@ impl Checker {
                         let vars: Vec<TypeVar> =
                             type_params.iter().map(|(_, v)| *v).collect();
                         let scheme = Scheme {
+                            bounds: vec![],
                             vars,
                             ty: ctor_ty,
                         };
@@ -1916,6 +1977,7 @@ impl Checker {
                     let vars: Vec<TypeVar> =
                         type_params.iter().map(|(_, v)| *v).collect();
                     let scheme = Scheme {
+                        bounds: vec![],
                         vars,
                         ty: result_ty.clone(),
                     };
@@ -2173,6 +2235,39 @@ impl Checker {
             }
             _ => self.subst.fresh(),
         }
+    }
+
+    /// Handle [derive Copy [type Name ...]]
+    fn infer_derive(&mut self, args: &[Expr], span: Span) -> Type {
+        if args.is_empty() {
+            return Type::Unit;
+        }
+        // First arg should be the trait to derive (e.g., Copy)
+        let trait_name = match &args[0].kind {
+            ExprKind::Symbol(s) => s.clone(),
+            _ => return Type::Unit,
+        };
+
+        if trait_name == "Copy" {
+            // The inner form should be a type definition: [type Name ...]
+            if args.len() >= 2 {
+                if let ExprKind::List(inner) = &args[1].kind {
+                    if !inner.is_empty() {
+                        if let ExprKind::Symbol(ref kw) = inner[0].kind {
+                            if kw == "type" && inner.len() >= 2 {
+                                if let ExprKind::Symbol(ref type_name) = inner[1].kind {
+                                    self.derived_copy_types.insert(type_name.clone());
+                                }
+                            }
+                        }
+                    }
+                    // Infer the inner type definition
+                    return self.infer_list(inner, span);
+                }
+            }
+        }
+
+        Type::Unit
     }
 
     /// Post-inference pass: check that all trait constraints are satisfied.
@@ -2902,5 +2997,64 @@ mod tests {
         checker.check_program(&exprs);
         let x_refs: Vec<_> = checker.references.iter().filter(|r| r.name == "x").collect();
         assert!(!x_refs.is_empty(), "should have references to 'x'");
+    }
+
+    // --- Trait bounds in schemes ---
+
+    #[test]
+    fn scheme_has_add_bound_for_double() {
+        let exprs = parse("[defn double [x] [+ x x]]").unwrap();
+        let mut checker = Checker::new();
+        checker.check_program(&exprs);
+        let scheme = checker.env.get("double").unwrap();
+        assert!(
+            !scheme.bounds.is_empty(),
+            "double's scheme should have bounds, got: {:?}", scheme.bounds
+        );
+        assert!(
+            scheme.bounds.iter().any(|(_, bs)| bs.iter().any(|b| b.trait_name == "Add")),
+            "double should have Add bound, got: {:?}", scheme.bounds
+        );
+    }
+
+    #[test]
+    fn scheme_display_shows_bounds() {
+        let exprs = parse("[defn double [x] [+ x x]]").unwrap();
+        let mut checker = Checker::new();
+        checker.check_program(&exprs);
+        let scheme = checker.env.get("double").unwrap();
+        let display = format!("{}", scheme);
+        assert!(display.contains("Add"), "display should show Add bound: {}", display);
+    }
+
+    // --- derive Copy ---
+
+    #[test]
+    fn derive_copy_type_checks() {
+        let errors = check_errors(r#"
+            [derive Copy [type Point [Point Int Int]]]
+        "#);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    #[test]
+    fn derive_copy_registered() {
+        let exprs = parse(r#"[derive Copy [type Point [Point Int Int]]]"#).unwrap();
+        let mut checker = Checker::new();
+        checker.check_program(&exprs);
+        assert!(
+            checker.derived_copy_types.contains("Point"),
+            "Point should be in derived_copy_types"
+        );
+    }
+
+    // --- catch-errors ---
+
+    #[test]
+    fn catch_errors_type_checks() {
+        let errors = check_errors(r#"
+            [catch-errors "[+ 1 2]"]
+        "#);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
     }
 }
