@@ -1,4 +1,6 @@
 use crate::ast::{Expr, ExprKind, NodeId};
+use crate::errors::codes::ErrorCode;
+use crate::errors::{LoonDiagnostic, OwnershipDiagram};
 use crate::syntax::Span;
 use crate::types::{Subst, Type};
 use std::collections::HashMap;
@@ -50,7 +52,7 @@ struct Binding {
 
 pub struct OwnershipChecker<'a> {
     scopes: Vec<HashMap<String, Binding>>,
-    pub errors: Vec<OwnershipError>,
+    pub errors: Vec<LoonDiagnostic>,
     /// Functions known to only borrow (not move) their args
     borrow_fns: std::collections::HashSet<String>,
     /// Types known to be Copy
@@ -158,20 +160,36 @@ impl<'a> OwnershipChecker<'a> {
         None
     }
 
+    /// Build an ownership diagram showing the lifecycle of a binding.
+    fn make_move_diagram(&self, name: &str, defined: Span, moved: Span, used: Span) -> OwnershipDiagram {
+        OwnershipDiagram {
+            lines: vec![
+                format!("  {name} defined at {}..{}", defined.start, defined.end),
+                format!("  {name} moved   at {}..{}  -- ownership transferred", moved.start, moved.end),
+                format!("  {name} used    at {}..{}  -- ERROR: value no longer available", used.start, used.end),
+            ],
+        }
+    }
+
     fn use_binding(&mut self, name: &str, span: Span) {
         if let Some(binding) = self.get_binding(name) {
             if binding.state == BindingState::Moved {
                 let defined = binding.defined_at;
                 let moved = binding.moved_at.unwrap_or(defined);
-                self.errors.push(OwnershipError {
-                    message: format!("use of moved value '{name}'"),
-                    span,
-                    why: format!(
-                        "'{name}' was moved at {}..{} and can no longer be used",
-                        moved.start, moved.end
-                    ),
-                    fix: format!("clone '{name}' before moving, or restructure to avoid the move"),
-                });
+                let why_msg = format!(
+                    "'{name}' was moved at {}..{} and can no longer be used",
+                    moved.start, moved.end
+                );
+                let fix_msg = format!("clone '{name}' before moving, or restructure to avoid the move");
+                let diagram = self.make_move_diagram(name, defined, moved, span);
+                self.errors.push(
+                    LoonDiagnostic::new(ErrorCode::E0300, format!("use of moved value '{name}'"))
+                        .with_why(&why_msg)
+                        .with_fix(&fix_msg)
+                        .with_label(span, format!("'{name}' used after move"), true)
+                        .with_label(moved, format!("'{name}' moved here"), false)
+                        .with_ownership_diagram(diagram),
+                );
             }
         }
     }
@@ -184,15 +202,18 @@ impl<'a> OwnershipChecker<'a> {
             if binding.state == BindingState::Moved {
                 let defined = binding.defined_at;
                 let moved = binding.moved_at.unwrap_or(defined);
-                self.errors.push(OwnershipError {
-                    message: format!("use of moved value '{name}'"),
-                    span,
-                    why: format!(
-                        "'{name}' was already moved at {}..{}",
-                        moved.start, moved.end
-                    ),
-                    fix: format!("clone '{name}' before the first move"),
-                });
+                let diagram = self.make_move_diagram(name, defined, moved, span);
+                self.errors.push(
+                    LoonDiagnostic::new(ErrorCode::E0300, format!("use of moved value '{name}'"))
+                        .with_why(format!(
+                            "'{name}' was already moved at {}..{}",
+                            moved.start, moved.end
+                        ))
+                        .with_fix(format!("clone '{name}' before the first move"))
+                        .with_label(span, format!("'{name}' used after move"), true)
+                        .with_label(moved, format!("'{name}' moved here"), false)
+                        .with_ownership_diagram(diagram),
+                );
                 return;
             }
         }
@@ -207,23 +228,27 @@ impl<'a> OwnershipChecker<'a> {
     fn mut_borrow(&mut self, name: &str, span: Span) {
         if let Some(binding) = self.get_binding(name) {
             if !binding.is_mut {
-                self.errors.push(OwnershipError {
-                    message: format!("cannot mutably borrow immutable binding '{name}'"),
-                    span,
-                    why: "only bindings declared with [let mut ...] can be mutably borrowed"
-                        .to_string(),
-                    fix: format!("declare '{name}' as [let mut {name} ...]"),
-                });
+                self.errors.push(
+                    LoonDiagnostic::new(
+                        ErrorCode::E0301,
+                        format!("cannot mutably borrow immutable binding '{name}'"),
+                    )
+                    .with_why("only bindings declared with [let mut ...] can be mutably borrowed")
+                    .with_fix(format!("declare '{name}' as [let mut {name} ...]"))
+                    .with_label(span, "mutable borrow of immutable binding", true),
+                );
                 return;
             }
             if binding.state == BindingState::MutBorrowed {
-                self.errors.push(OwnershipError {
-                    message: format!("cannot borrow '{name}' as mutable more than once"),
-                    span,
-                    why: "Loon prevents aliased mutable references to eliminate data races"
-                        .to_string(),
-                    fix: "ensure the first mutable borrow is no longer in use".to_string(),
-                });
+                self.errors.push(
+                    LoonDiagnostic::new(
+                        ErrorCode::E0302,
+                        format!("cannot borrow '{name}' as mutable more than once"),
+                    )
+                    .with_why("Loon prevents aliased mutable references to eliminate data races")
+                    .with_fix("ensure the first mutable borrow is no longer in use")
+                    .with_label(span, "second mutable borrow", true),
+                );
             }
         }
         if let Some(binding) = self.get_binding_mut(name) {
@@ -630,7 +655,7 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    pub fn check_program(&mut self, exprs: &[Expr]) -> Vec<OwnershipError> {
+    pub fn check_program(&mut self, exprs: &[Expr]) -> Vec<LoonDiagnostic> {
         for expr in exprs {
             self.check_expr(expr);
         }
@@ -649,13 +674,13 @@ mod tests {
     use super::*;
     use crate::parser::parse;
 
-    fn check(src: &str) -> Vec<OwnershipError> {
+    fn check(src: &str) -> Vec<LoonDiagnostic> {
         let exprs = parse(src).unwrap();
         let mut checker = OwnershipChecker::new();
         checker.check_program(&exprs)
     }
 
-    fn check_with_types(src: &str) -> Vec<OwnershipError> {
+    fn check_with_types(src: &str) -> Vec<LoonDiagnostic> {
         let exprs = parse(src).unwrap();
         let mut type_checker = crate::check::Checker::new();
         for expr in &exprs {
@@ -684,7 +709,7 @@ mod tests {
         );
         // `take` is not in borrow_fns, so `name` gets moved, then used
         assert!(
-            errors.iter().any(|e| e.message.contains("moved")),
+            errors.iter().any(|e| e.message().contains("moved")),
             "expected use-after-move error, got: {:?}",
             errors
         );
@@ -700,7 +725,7 @@ mod tests {
         "#,
         );
         assert!(
-            errors.iter().any(|e| e.message.contains("immutable")),
+            errors.iter().any(|e| e.message().contains("immutable")),
             "expected immutable borrow error, got: {:?}",
             errors
         );
@@ -744,7 +769,7 @@ mod tests {
         "#,
         );
         assert!(
-            errors.iter().any(|e| e.message.contains("moved")),
+            errors.iter().any(|e| e.message().contains("moved")),
             "Vec is not Copy, should error: {:?}",
             errors
         );
@@ -776,7 +801,7 @@ mod tests {
         "#,
         );
         assert!(
-            errors.iter().any(|e| e.message.contains("moved")),
+            errors.iter().any(|e| e.message().contains("moved")),
             "returned param should move: {:?}",
             errors
         );
@@ -811,7 +836,7 @@ mod tests {
         "#,
         );
         assert!(
-            errors.iter().any(|e| e.message.contains("moved")),
+            errors.iter().any(|e| e.message().contains("moved")),
             "returned param y should move: {:?}",
             errors
         );

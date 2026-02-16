@@ -10,7 +10,7 @@ fn check_file(path: &str) -> Vec<String> {
     let base_dir = full.parent().unwrap();
     let mut checker = Checker::with_base_dir(base_dir);
     let errors = checker.check_program(&exprs);
-    errors.into_iter().map(|e| e.message).collect()
+    errors.into_iter().map(|e| e.what).collect()
 }
 
 #[test]
@@ -32,7 +32,7 @@ fn use_unexported_name_errors() {
     let exprs = parse(source).expect("parse");
     let mut checker = Checker::with_base_dir(base_dir);
     let errors = checker.check_program(&exprs);
-    let msgs: Vec<String> = errors.into_iter().map(|e| e.message).collect();
+    let msgs: Vec<String> = errors.into_iter().map(|e| e.what).collect();
     assert!(
         msgs.iter().any(|m| m.contains("does not export")),
         "expected 'does not export' error, got: {msgs:?}"
@@ -48,7 +48,7 @@ fn use_qualified_import() {
     let exprs = parse(source).expect("parse");
     let mut checker = Checker::with_base_dir(base_dir);
     let errors = checker.check_program(&exprs);
-    let msgs: Vec<String> = errors.into_iter().map(|e| e.message).collect();
+    let msgs: Vec<String> = errors.into_iter().map(|e| e.what).collect();
     assert!(
         msgs.is_empty(),
         "expected no errors for qualified import, got: {msgs:?}"
@@ -64,7 +64,7 @@ fn use_aliased_import() {
     let exprs = parse(source).expect("parse");
     let mut checker = Checker::with_base_dir(base_dir);
     let errors = checker.check_program(&exprs);
-    let msgs: Vec<String> = errors.into_iter().map(|e| e.message).collect();
+    let msgs: Vec<String> = errors.into_iter().map(|e| e.what).collect();
     assert!(
         msgs.is_empty(),
         "expected no errors for aliased import, got: {msgs:?}"

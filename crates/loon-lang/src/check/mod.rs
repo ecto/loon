@@ -1,6 +1,8 @@
 pub mod ownership;
 
 use crate::ast::{Expr, ExprKind, NodeId};
+use crate::errors::codes::ErrorCode;
+use crate::errors::LoonDiagnostic;
 use crate::module::ModuleCache as ResolveHelper;
 use crate::syntax::Span;
 use crate::types::*;
@@ -45,12 +47,30 @@ impl Default for TypeModuleCache {
     }
 }
 
+// ── LSP support types ────────────────────────────────────────────────
+
+/// Information about a definition site (function, let binding, type, constructor).
+#[derive(Debug, Clone)]
+pub struct DefInfo {
+    pub name_span: Span,
+    pub file: Option<PathBuf>,
+    pub form_span: Span,
+}
+
+/// Information about a reference to a name.
+#[derive(Debug, Clone)]
+pub struct RefInfo {
+    pub span: Span,
+    pub name: String,
+    pub node_id: NodeId,
+}
+
 // ── Checker ──────────────────────────────────────────────────────────
 
 pub struct Checker {
     pub subst: Subst,
     pub env: TypeEnv,
-    pub errors: Vec<TypeError>,
+    pub errors: Vec<LoonDiagnostic>,
     /// ADT constructor types: name → scheme
     pub constructors: HashMap<String, Scheme>,
     /// ADT type → constructor names (for exhaustiveness checking)
@@ -73,6 +93,10 @@ pub struct Checker {
     pub pub_names: HashSet<String>,
     /// Shared cache for type-checked modules
     module_cache: Rc<RefCell<TypeModuleCache>>,
+    /// Scoped definition map (for go-to-definition)
+    pub definitions: Vec<HashMap<String, DefInfo>>,
+    /// All references to names (for go-to-definition lookups)
+    pub references: Vec<RefInfo>,
 }
 
 impl Checker {
@@ -92,6 +116,8 @@ impl Checker {
             base_dir: None,
             pub_names: HashSet::new(),
             module_cache: Rc::new(RefCell::new(TypeModuleCache::new())),
+            definitions: vec![HashMap::new()],
+            references: Vec::new(),
         };
         checker.register_builtins();
         checker.register_prelude();
@@ -1070,6 +1096,72 @@ impl Checker {
         }
     }
 
+    /// Convert a TypeError from unify() into a LoonDiagnostic and push it.
+    fn push_unify_error(&mut self, e: TypeError, span: Span) {
+        let code = if e.message.contains("infinite type") {
+            ErrorCode::E0203
+        } else if e.message.contains("arity mismatch") {
+            ErrorCode::E0202
+        } else if e.message.contains("field mismatch") || e.message.contains("missing fields") {
+            ErrorCode::E0207
+        } else {
+            ErrorCode::E0200
+        };
+        let mut diag = LoonDiagnostic::new(code, &e.message)
+            .with_label(span, &e.message, true);
+        if code == ErrorCode::E0200 {
+            diag = diag
+                .with_why("the types are incompatible")
+                .with_fix("ensure the types match");
+        } else if code == ErrorCode::E0202 {
+            diag = diag
+                .with_why("the function expects a different number of arguments")
+                .with_fix("pass the correct number of arguments");
+        } else if code == ErrorCode::E0203 {
+            diag = diag
+                .with_why("a type variable refers to itself, creating an infinite loop")
+                .with_fix("break the cycle by adding a type annotation or restructuring");
+        } else if code == ErrorCode::E0207 {
+            diag = diag
+                .with_why("the record fields do not match")
+                .with_fix("add or remove fields to make the records compatible");
+        }
+        self.errors.push(diag);
+    }
+
+    fn push_scope(&mut self) {
+        self.env.push_scope();
+        self.definitions.push(HashMap::new());
+    }
+
+    fn pop_scope(&mut self) {
+        self.env.pop_scope();
+        if self.definitions.len() > 1 {
+            self.definitions.pop();
+        }
+    }
+
+    fn add_definition(&mut self, name: &str, name_span: Span, form_span: Span) {
+        let info = DefInfo {
+            name_span,
+            file: None,
+            form_span,
+        };
+        if let Some(scope) = self.definitions.last_mut() {
+            scope.insert(name.to_string(), info);
+        }
+    }
+
+    /// Look up definition info for a name across all scopes (innermost first).
+    pub fn lookup_definition(&self, name: &str) -> Option<&DefInfo> {
+        for scope in self.definitions.iter().rev() {
+            if let Some(info) = scope.get(name) {
+                return Some(info);
+            }
+        }
+        None
+    }
+
     /// Infer the type of an expression, recording it in the type side-table.
     pub fn infer(&mut self, expr: &Expr) -> Type {
         let ty = self.infer_inner(expr);
@@ -1087,12 +1179,19 @@ impl Checker {
 
             ExprKind::Symbol(name) => {
                 if let Some(scheme) = self.env.get(name) {
+                    self.references.push(RefInfo {
+                        span: expr.span,
+                        name: name.clone(),
+                        node_id: expr.id,
+                    });
                     instantiate(&mut self.subst, scheme)
                 } else {
-                    self.errors.push(TypeError::at(
-                        format!("unbound symbol '{name}'"),
-                        expr.span,
-                    ));
+                    self.errors.push(
+                        LoonDiagnostic::new(ErrorCode::E0201, format!("unbound symbol '{name}'"))
+                            .with_why(format!("'{name}' is not defined in this scope"))
+                            .with_fix("check the spelling or add a definition")
+                            .with_label(expr.span, format!("'{name}' not found"), true),
+                    );
                     self.subst.fresh()
                 }
             }
@@ -1102,7 +1201,7 @@ impl Checker {
                 for item in items {
                     let t = self.infer(item);
                     if let Err(e) = unify(&mut self.subst, &elem, &t) {
-                        self.errors.push(e.with_span(expr.span));
+                        self.push_unify_error(e, expr.span);
                     }
                 }
                 Type::Con("Vec".to_string(), vec![elem])
@@ -1113,7 +1212,7 @@ impl Checker {
                 for item in items {
                     let t = self.infer(item);
                     if let Err(e) = unify(&mut self.subst, &elem, &t) {
-                        self.errors.push(e.with_span(expr.span));
+                        self.push_unify_error(e, expr.span);
                     }
                 }
                 Type::Con("Set".to_string(), vec![elem])
@@ -1134,10 +1233,10 @@ impl Checker {
                         let kt = self.infer(k);
                         let vt = self.infer(v);
                         if let Err(e) = unify(&mut self.subst, &key_t, &kt) {
-                            self.errors.push(e.with_span(expr.span));
+                            self.push_unify_error(e, expr.span);
                         }
                         if let Err(e) = unify(&mut self.subst, &val_t, &vt) {
-                            self.errors.push(e.with_span(expr.span));
+                            self.push_unify_error(e, expr.span);
                         }
                     }
                     Type::Con("Map".to_string(), vec![key_t, val_t])
@@ -1185,7 +1284,7 @@ impl Checker {
         );
         let expected_record = Type::Record(Box::new(expected_row));
         if let Err(e) = unify(&mut self.subst, rec_ty, &expected_record) {
-            self.errors.push(e.with_span(span));
+            self.push_unify_error(e, span);
         }
         self.subst.resolve(&field_ty)
     }
@@ -1279,7 +1378,7 @@ impl Checker {
 
         let expected_fn = Type::Fn(arg_types, Box::new(ret.clone()));
         if let Err(e) = unify(&mut self.subst, &func_ty, &expected_fn) {
-            self.errors.push(e.with_span(span));
+            self.push_unify_error(e, span);
         }
 
         // Propagate callee effects
@@ -1301,6 +1400,9 @@ impl Checker {
             _ => return Type::Unit,
         };
 
+        // Record definition
+        self.add_definition(&name, args[0].span, span);
+
         // Save and reset current_fn_effects
         let saved_effects = std::mem::replace(&mut self.current_fn_effects, EffectSet::empty());
 
@@ -1312,7 +1414,7 @@ impl Checker {
                     if clause_items.len() >= 2 {
                         let clause_ret = self.infer_fn_clause(&clause_items[0], &clause_items[1..]);
                         if let Err(e) = unify(&mut self.subst, &ret, &clause_ret) {
-                            self.errors.push(e.with_span(span));
+                            self.push_unify_error(e, span);
                         }
                     }
                 }
@@ -1342,7 +1444,7 @@ impl Checker {
                 }
             }
 
-            self.env.push_scope();
+            self.push_scope();
             let param_types = self.infer_params(params);
 
             let temp_ret = self.subst.fresh();
@@ -1358,10 +1460,10 @@ impl Checker {
             }
 
             if let Err(e) = unify(&mut self.subst, &temp_ret, &body_ty) {
-                self.errors.push(e.with_span(span));
+                self.push_unify_error(e, span);
             }
 
-            self.env.pop_scope();
+            self.pop_scope();
 
             let fn_ty = Type::Fn(param_types, Box::new(body_ty));
 
@@ -1370,13 +1472,18 @@ impl Checker {
                 if let Err(_e) = unify(&mut self.subst, &fn_ty, &sig_ty) {
                     let resolved_fn = self.subst.resolve(&fn_ty);
                     let resolved_sig = self.subst.resolve(&sig_ty);
-                    self.errors.push(TypeError::at(
-                        format!(
-                            "inferred type `{}` does not match declared signature `{}`",
-                            resolved_fn, resolved_sig
-                        ),
-                        sig_span,
-                    ));
+                    self.errors.push(
+                        LoonDiagnostic::new(
+                            ErrorCode::E0204,
+                            format!(
+                                "inferred type `{}` does not match declared signature `{}`",
+                                resolved_fn, resolved_sig
+                            ),
+                        )
+                        .with_why("the function body infers a different type than declared")
+                        .with_fix("update the signature or the function body to match")
+                        .with_label(sig_span, "signature declared here", true),
+                    );
                 }
             }
 
@@ -1388,10 +1495,15 @@ impl Checker {
                 if !inferred.is_subset_of(declared) {
                     for eff in &inferred.0 {
                         if !declared.contains(eff) {
-                            self.errors.push(TypeError::at(
-                                format!("function `{name}` performs undeclared effect `{eff}`"),
-                                span,
-                            ));
+                            self.errors.push(
+                                LoonDiagnostic::new(
+                                    ErrorCode::E0401,
+                                    format!("function `{name}` performs undeclared effect `{eff}`"),
+                                )
+                                .with_why(format!("effect `{eff}` is used but not listed in the effect annotation"))
+                                .with_fix(format!("add `{eff}` to the effect set: / #{{{eff} ...}}"))
+                                .with_label(span, "function with missing effect", true),
+                            );
                         }
                     }
                 }
@@ -1438,7 +1550,7 @@ impl Checker {
                 if let ExprKind::Symbol(arrow) = &handler_args[i + 1].kind {
                     if arrow == "=>" {
                         // Bind handler params and resume in scope for handler body
-                        self.env.push_scope();
+                        self.push_scope();
                         if let ExprKind::List(pattern) = &handler_args[i].kind {
                             for p in &pattern[1..] {
                                 if let ExprKind::Symbol(name) = &p.kind {
@@ -1457,7 +1569,7 @@ impl Checker {
                             )),
                         );
                         self.infer(&handler_args[i + 2]);
-                        self.env.pop_scope();
+                        self.pop_scope();
                         i += 3;
                         continue;
                     }
@@ -1499,7 +1611,7 @@ impl Checker {
 
     fn infer_fn_clause(&mut self, params_expr: &Expr, body: &[Expr]) -> Type {
         if let ExprKind::List(params) = &params_expr.kind {
-            self.env.push_scope();
+            self.push_scope();
             let _param_types = self.infer_params(params);
 
             let mut body_ty = Type::Unit;
@@ -1507,7 +1619,7 @@ impl Checker {
                 body_ty = self.infer(expr);
             }
 
-            self.env.pop_scope();
+            self.pop_scope();
             body_ty
         } else {
             self.subst.fresh()
@@ -1534,6 +1646,10 @@ impl Checker {
             ExprKind::Symbol(name) if name != "_" => {
                 let scheme = generalize(&self.env, &self.subst, &val_ty);
                 self.env.set(name.clone(), scheme);
+                self.type_of.insert(binding.id, val_ty.clone());
+                // Compute the full let-form span from binding to value
+                let form_span = Span::new(binding.span.start, args[val_idx].span.end);
+                self.add_definition(name, binding.span, form_span);
             }
             _ => {}
         }
@@ -1547,14 +1663,14 @@ impl Checker {
         }
 
         if let ExprKind::List(params) = &args[0].kind {
-            self.env.push_scope();
+            self.push_scope();
             let param_types = self.infer_params(params);
 
             let mut body_ty = Type::Unit;
             for expr in &args[1..] {
                 body_ty = self.infer(expr);
             }
-            self.env.pop_scope();
+            self.pop_scope();
 
             Type::Fn(param_types, Box::new(body_ty))
         } else {
@@ -1568,13 +1684,13 @@ impl Checker {
         }
         let cond_ty = self.infer(&args[0]);
         if let Err(e) = unify(&mut self.subst, &cond_ty, &Type::Bool) {
-            self.errors.push(e.with_span(args[0].span));
+            self.push_unify_error(e, args[0].span);
         }
         let then_ty = self.infer(&args[1]);
         if args.len() > 2 {
             let else_ty = self.infer(&args[2]);
             if let Err(e) = unify(&mut self.subst, &then_ty, &else_ty) {
-                self.errors.push(e.with_span(span));
+                self.push_unify_error(e, span);
             }
         }
         then_ty
@@ -1631,14 +1747,14 @@ impl Checker {
                 if s == "=>"
                     && i + 1 < arms.len() {
                         // Bind pattern variables in a new scope for the body
-                        self.env.push_scope();
+                        self.push_scope();
                         if let Some(pat) = last_pattern.take() {
                             self.bind_pattern_vars(pat, &scrutinee_ty);
                         }
                         let body_ty = self.infer(&arms[i + 1]);
-                        self.env.pop_scope();
+                        self.pop_scope();
                         if let Err(e) = unify(&mut self.subst, &result_ty, &body_ty) {
-                            self.errors.push(e.with_span(arms[i + 1].span));
+                            self.push_unify_error(e, arms[i + 1].span);
                         }
                         i += 2;
                         continue;
@@ -1656,14 +1772,16 @@ impl Checker {
                         .filter(|c| !covered_ctors.contains(c))
                         .collect();
                     if !missing.is_empty() {
-                        self.errors.push(TypeError::at(
-                            format!(
-                                "non-exhaustive match on {}: missing {}",
-                                type_name,
-                                missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
-                            ),
-                            span,
-                        ));
+                        let missing_str = missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
+                        self.errors.push(
+                            LoonDiagnostic::new(
+                                ErrorCode::E0206,
+                                format!("non-exhaustive match on {type_name}: missing {missing_str}"),
+                            )
+                            .with_why(format!("not all constructors of `{type_name}` are covered"))
+                            .with_fix(format!("add arms for: {missing_str}, or add a wildcard `_` arm"))
+                            .with_label(span, "non-exhaustive match", true),
+                        );
                     }
                 }
             }
@@ -1694,7 +1812,7 @@ impl Checker {
                     let ret = self.subst.fresh();
                     let expected = Type::Fn(arg_tys, Box::new(ret.clone()));
                     if let Err(e) = unify(&mut self.subst, &func_ty, &expected) {
-                        self.errors.push(e.with_span(step.span));
+                        self.push_unify_error(e, step.span);
                     }
                     current = ret;
                 }
@@ -1703,7 +1821,7 @@ impl Checker {
                     let ret = self.subst.fresh();
                     let expected = Type::Fn(vec![current], Box::new(ret.clone()));
                     if let Err(e) = unify(&mut self.subst, &func_ty, &expected) {
-                        self.errors.push(e.with_span(step.span));
+                        self.push_unify_error(e, step.span);
                     }
                     current = ret;
                 }
@@ -1721,6 +1839,14 @@ impl Checker {
             ExprKind::Symbol(s) => s.clone(),
             _ => return Type::Unit,
         };
+
+        // Record type name definition
+        let type_form_span = if let Some(last) = args.last() {
+            Span::new(args[0].span.start, last.span.end)
+        } else {
+            args[0].span
+        };
+        self.add_definition(&type_name, args[0].span, type_form_span);
 
         let mut type_params = Vec::new();
         let mut ctor_start = 1;
@@ -1780,6 +1906,7 @@ impl Checker {
                         self.constructors
                             .insert(ctor_name.clone(), scheme.clone());
                         self.env.set_global(ctor_name.clone(), scheme);
+                        self.add_definition(ctor_name, items[0].span, arg.span);
                         ctor_names.push(ctor_name.clone());
                     }
                 }
@@ -1795,6 +1922,7 @@ impl Checker {
                     self.constructors
                         .insert(ctor_name.clone(), scheme.clone());
                     self.env.set_global(ctor_name.clone(), scheme);
+                    self.add_definition(ctor_name, arg.span, arg.span);
                     ctor_names.push(ctor_name.clone());
                 }
                 _ => {}
@@ -1899,10 +2027,12 @@ impl Checker {
         let trait_decl = match self.traits.get(&trait_name) {
             Some(t) => t.clone(),
             None => {
-                self.errors.push(TypeError::at(
-                    format!("unknown trait '{trait_name}'"),
-                    span,
-                ));
+                self.errors.push(
+                    LoonDiagnostic::new(ErrorCode::E0205, format!("unknown trait '{trait_name}'"))
+                        .with_why(format!("trait `{trait_name}` has not been declared"))
+                        .with_fix("declare the trait before implementing it")
+                        .with_label(span, "unknown trait", true),
+                );
                 return Type::Unit;
             }
         };
@@ -1919,7 +2049,7 @@ impl Checker {
                                 let trait_method = trait_decl.methods.iter().find(|m| m.name == *method_name);
 
                                 if let ExprKind::List(ref params) = items[2].kind {
-                                    self.env.push_scope();
+                                    self.push_scope();
 
                                     let mut param_types = Vec::new();
                                     for p in params {
@@ -1947,11 +2077,11 @@ impl Checker {
                                             tm.ret_type.clone()
                                         };
                                         if let Err(e) = unify(&mut self.subst, &body_ty, &expected_ret) {
-                                            self.errors.push(e.with_span(span));
+                                            self.push_unify_error(e, span);
                                         }
                                     }
 
-                                    self.env.pop_scope();
+                                    self.pop_scope();
 
                                     let fn_ty = Type::Fn(param_types, Box::new(body_ty));
                                     let scheme = generalize(&self.env, &self.subst, &fn_ty);
@@ -2066,10 +2196,17 @@ impl Checker {
                 for bound in &bounds {
                     let key = (bound.trait_name.clone(), type_name.clone());
                     if !self.trait_impls.contains_key(&key) {
-                        self.errors.push(TypeError::bare(format!(
-                            "no `{}` implementation for type `{}`",
-                            bound.trait_name, type_name
-                        )));
+                        self.errors.push(
+                            LoonDiagnostic::new(
+                                ErrorCode::E0205,
+                                format!(
+                                    "no `{}` implementation for type `{}`",
+                                    bound.trait_name, type_name
+                                ),
+                            )
+                            .with_why(format!("type `{type_name}` does not implement `{}`", bound.trait_name))
+                            .with_fix(format!("add an impl block: [impl {} {type_name} ...]", bound.trait_name)),
+                        );
                     }
                 }
             }
@@ -2089,6 +2226,7 @@ impl Checker {
             ExprKind::Symbol(s) => {
                 let t = self.subst.fresh();
                 self.env.set(s.clone(), Scheme::mono(t.clone()));
+                self.type_of.insert(expr.id, t.clone());
                 t
             }
             ExprKind::List(items) => {
@@ -2144,16 +2282,20 @@ impl Checker {
 
     fn infer_use(&mut self, args: &[Expr], span: Span) -> Type {
         if args.is_empty() {
-            self.errors
-                .push(TypeError::at("use requires a module path", span));
+            self.errors.push(
+                LoonDiagnostic::new(ErrorCode::E0500, "use requires a module path")
+                    .with_label(span, "missing module path", true),
+            );
             return Type::Unit;
         }
 
         let module_path = match &args[0].kind {
             ExprKind::Symbol(s) => s.clone(),
             _ => {
-                self.errors
-                    .push(TypeError::at("use module path must be a symbol", span));
+                self.errors.push(
+                    LoonDiagnostic::new(ErrorCode::E0500, "use module path must be a symbol")
+                        .with_label(span, "expected symbol", true),
+                );
                 return Type::Unit;
             }
         };
@@ -2180,10 +2322,15 @@ impl Checker {
             if let Some(state) = cached {
                 match state {
                     TypeModuleState::Loading => {
-                        self.errors.push(TypeError::at(
-                            format!("circular module dependency: {module_path}"),
-                            span,
-                        ));
+                        self.errors.push(
+                            LoonDiagnostic::new(
+                                ErrorCode::E0502,
+                                format!("circular module dependency: {module_path}"),
+                            )
+                            .with_why("this module is already being loaded, creating a cycle")
+                            .with_fix("break the cycle by restructuring module dependencies")
+                            .with_label(span, "circular use", true),
+                        );
                         return Type::Unit;
                     }
                     TypeModuleState::Loaded(exports) => {
@@ -2204,14 +2351,17 @@ impl Checker {
         let source = match std::fs::read_to_string(&file_path) {
             Ok(s) => s,
             Err(e) => {
-                self.errors.push(TypeError::at(
-                    format!(
-                        "cannot read module '{}' at {}: {e}",
-                        module_path,
-                        file_path.display()
-                    ),
-                    span,
-                ));
+                self.errors.push(
+                    LoonDiagnostic::new(
+                        ErrorCode::E0500,
+                        format!(
+                            "cannot read module '{}' at {}: {e}",
+                            module_path,
+                            file_path.display()
+                        ),
+                    )
+                    .with_label(span, "module not found", true),
+                );
                 self.module_cache.borrow_mut().modules.remove(&canonical);
                 return Type::Unit;
             }
@@ -2220,10 +2370,13 @@ impl Checker {
         let exprs = match crate::parser::parse(&source) {
             Ok(e) => e,
             Err(e) => {
-                self.errors.push(TypeError::at(
-                    format!("parse error in module '{module_path}': {}", e.message),
-                    span,
-                ));
+                self.errors.push(
+                    LoonDiagnostic::new(
+                        ErrorCode::E0500,
+                        format!("parse error in module '{module_path}': {}", e.message),
+                    )
+                    .with_label(span, "parse error in module", true),
+                );
                 self.module_cache.borrow_mut().modules.remove(&canonical);
                 return Type::Unit;
             }
@@ -2249,13 +2402,11 @@ impl Checker {
             .modules
             .insert(canonical, TypeModuleState::Loaded(exports.clone()));
 
-        // Propagate any type errors from the module
-        self.errors.extend(
-            mod_checker
-                .errors
-                .into_iter()
-                .map(|e| TypeError::bare(format!("in module '{module_path}': {}", e.message))),
-        );
+        // Propagate any diagnostics from the module
+        for mut e in mod_checker.errors {
+            e.what = format!("in module '{module_path}': {}", e.what);
+            self.errors.push(e);
+        }
 
         self.import_exports(&module_path, &args[1..], &exports, span);
         Type::Unit
@@ -2355,13 +2506,20 @@ impl Checker {
                 for name in &names {
                     if let Some(scheme) = exports.schemes.get(name) {
                         self.env.set_global(name.clone(), scheme.clone());
+                        self.add_definition(name, span, span);
                     } else if let Some(scheme) = exports.constructors.get(name) {
                         self.constructors.insert(name.clone(), scheme.clone());
+                        self.add_definition(name, span, span);
                     } else {
-                        self.errors.push(TypeError::at(
-                            format!("module '{module_path}' does not export '{name}'"),
-                            span,
-                        ));
+                        self.errors.push(
+                            LoonDiagnostic::new(
+                                ErrorCode::E0501,
+                                format!("module '{module_path}' does not export '{name}'"),
+                            )
+                            .with_why(format!("'{name}' is not a public export of this module"))
+                            .with_fix("check the module's public declarations")
+                            .with_label(span, "not exported", true),
+                        );
                     }
                 }
                 return;
@@ -2379,8 +2537,8 @@ impl Checker {
         }
     }
 
-    /// Check an entire program. Returns list of type errors.
-    pub fn check_program(&mut self, exprs: &[Expr]) -> Vec<TypeError> {
+    /// Check an entire program. Returns list of diagnostics.
+    pub fn check_program(&mut self, exprs: &[Expr]) -> Vec<LoonDiagnostic> {
         for expr in exprs {
             self.infer(expr);
         }
@@ -2405,7 +2563,7 @@ mod tests {
     use super::*;
     use crate::parser::parse;
 
-    fn infer_type(src: &str) -> (Type, Vec<TypeError>) {
+    fn infer_type(src: &str) -> (Type, Vec<LoonDiagnostic>) {
         let exprs = parse(src).unwrap();
         let mut checker = Checker::new();
         let mut ty = Type::Unit;
@@ -2417,7 +2575,7 @@ mod tests {
         (resolved, errors)
     }
 
-    fn check_errors(src: &str) -> Vec<TypeError> {
+    fn check_errors(src: &str) -> Vec<LoonDiagnostic> {
         let exprs = parse(src).unwrap();
         let mut checker = Checker::new();
         checker.check_program(&exprs)
@@ -2508,7 +2666,7 @@ mod tests {
     fn type_error_has_span() {
         let errors = check_errors("[if 42 1 2]");
         assert!(!errors.is_empty());
-        assert!(errors[0].span.is_some(), "type error should have span");
+        assert!(errors[0].span().is_some(), "type error should have span");
     }
 
     #[test]
@@ -2545,7 +2703,7 @@ mod tests {
             [defn add [x y] [+ x y]]
         "#);
         assert!(!errors.is_empty(), "should have sig mismatch error");
-        assert!(errors[0].message.contains("does not match"), "error: {}", errors[0].message);
+        assert!(errors[0].message().contains("does not match"), "error: {}", errors[0].message());
     }
 
     #[test]
@@ -2570,7 +2728,7 @@ mod tests {
         let errors = check_errors("[+ true false]");
         assert!(!errors.is_empty(), "should error: no Add impl for Bool");
         assert!(
-            errors.iter().any(|e| e.message.contains("Add")),
+            errors.iter().any(|e| e.message().contains("Add")),
             "error should mention Add: {:?}", errors
         );
     }
@@ -2584,7 +2742,7 @@ mod tests {
 
     // --- Effect inference tests ---
 
-    fn infer_effects(src: &str) -> (std::collections::HashMap<String, EffectSet>, Vec<TypeError>) {
+    fn infer_effects(src: &str) -> (std::collections::HashMap<String, EffectSet>, Vec<LoonDiagnostic>) {
         let exprs = parse(src).unwrap();
         let mut checker = Checker::new();
         for expr in &exprs {
@@ -2647,7 +2805,7 @@ mod tests {
             [defn load [path] / #{Fail} [IO.read-file path]]
         "#);
         assert!(!errors.is_empty(), "should error for undeclared IO effect");
-        assert!(errors[0].message.contains("undeclared effect"), "error: {}", errors[0].message);
+        assert!(errors[0].message().contains("undeclared effect"), "error: {}", errors[0].message());
     }
 
     #[test]
@@ -2706,5 +2864,43 @@ mod tests {
             [add-x {:x "oops"}]
         "#);
         assert!(!errors.is_empty(), "should have type error for field type mismatch");
+    }
+
+    #[test]
+    fn definitions_populated_for_defn() {
+        let exprs = parse("[defn add [x y] [+ x y]]").unwrap();
+        let mut checker = Checker::new();
+        checker.check_program(&exprs);
+        let def = checker.lookup_definition("add");
+        assert!(def.is_some(), "should have definition for 'add'");
+    }
+
+    #[test]
+    fn definitions_populated_for_let() {
+        let exprs = parse("[let x 42]").unwrap();
+        let mut checker = Checker::new();
+        checker.check_program(&exprs);
+        let def = checker.lookup_definition("x");
+        assert!(def.is_some(), "should have definition for 'x'");
+    }
+
+    #[test]
+    fn definitions_populated_for_type_def() {
+        let exprs = parse("[type Color Red Green Blue]").unwrap();
+        let mut checker = Checker::new();
+        checker.check_program(&exprs);
+        let def = checker.lookup_definition("Color");
+        assert!(def.is_some(), "should have definition for 'Color'");
+        let red_def = checker.lookup_definition("Red");
+        assert!(red_def.is_some(), "should have definition for 'Red'");
+    }
+
+    #[test]
+    fn references_populated_for_symbols() {
+        let exprs = parse("[let x 42]\n[+ x 1]").unwrap();
+        let mut checker = Checker::new();
+        checker.check_program(&exprs);
+        let x_refs: Vec<_> = checker.references.iter().filter(|r| r.name == "x").collect();
+        assert!(!x_refs.is_empty(), "should have references to 'x'");
     }
 }
