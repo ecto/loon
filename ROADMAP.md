@@ -110,7 +110,7 @@ What's left to finish v0.2 properly.
 ### Error messages that teach
 - [x] Three-part errors: what / why / how to fix
 - [x] Visual ownership diagrams in error output
-- [ ] `[explain EXXXX]` interactive REPL tutorials (not just text)
+- [x] `[explain EXXXX]` interactive REPL tutorials (not just text)
 - [x] Structured errors as data: `[catch-errors "[source]"]`
 
 ### LSP server
@@ -118,7 +118,7 @@ What's left to finish v0.2 properly.
 - [x] Type-on-hover (the invisible type system, made visible)
 - [x] Autocomplete
 - [x] Inline diagnostics
-- [ ] Inlay hints for inferred types (the three rendering modes from DESIGN.md)
+- [x] Inlay hints for inferred types (the three rendering modes from DESIGN.md)
 
 ### Formatter
 - [x] `loon fmt` — deterministic structural formatting

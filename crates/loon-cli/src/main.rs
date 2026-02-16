@@ -625,9 +625,60 @@ fn collect_loon_files(dir: &PathBuf) -> Vec<PathBuf> {
     result
 }
 
+/// Try to parse, type-check, and eval a snippet. Returns true on success.
+/// Prints diagnostics or the result value.
+fn run_code_live(code: &str) -> bool {
+    use loon_lang::check::Checker;
+    use loon_lang::check::ownership::OwnershipChecker;
+
+    let exprs = match loon_lang::parser::parse(code) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("    {} {}", "parse error:".red(), e.message);
+            return false;
+        }
+    };
+
+    // Type check
+    let mut checker = Checker::new();
+    let type_errors = checker.check_program(&exprs);
+    if !type_errors.is_empty() {
+        for diag in &type_errors {
+            eprintln!("    {} {}", format!("[{}]", diag.code).red(), diag.what);
+        }
+        return false;
+    }
+
+    // Ownership check
+    let mut own = OwnershipChecker::new();
+    let own_errors = own.check_program(&exprs);
+    if !own_errors.is_empty() {
+        for diag in &own_errors {
+            eprintln!("    {} {}", format!("[{}]", diag.code).red(), diag.what);
+        }
+        return false;
+    }
+
+    // Eval
+    match loon_lang::interp::eval_program(&exprs) {
+        Ok(val) => {
+            let s = format!("{val}");
+            if s != "()" {
+                println!("    => {}", s.green());
+            }
+            true
+        }
+        Err(e) => {
+            eprintln!("    {} {e}", "runtime error:".red());
+            false
+        }
+    }
+}
+
 fn explain_error(code: &str) {
     use loon_lang::errors::codes::ErrorCode;
     use loon_lang::errors::tutorials::{get_tutorial, TutorialStep};
+    use rustyline::DefaultEditor;
 
     // Map old codes to new codes for backwards compatibility
     let error_code = match code {
@@ -666,42 +717,158 @@ fn explain_error(code: &str) {
         std::process::exit(1);
     };
 
-    println!("{}: {}\n", ec, ec.title());
+    let Some(tutorial) = get_tutorial(ec) else {
+        println!("{}: {}\n", ec, ec.title());
+        println!("Category: {}", ec.category());
+        println!("No tutorial available for this error code yet.");
+        return;
+    };
 
-    if let Some(tutorial) = get_tutorial(ec) {
-        for step in &tutorial.steps {
-            match step {
-                TutorialStep::Text(text) => {
-                    println!("{text}\n");
+    let total = tutorial.steps.len();
+    let mut idx = 0;
+    let mut rl = DefaultEditor::new().expect("failed to create editor");
+
+    println!(
+        "\n{} {} — {}\n",
+        "Tutorial:".bold(),
+        ec.to_string().cyan().bold(),
+        tutorial.title.bold()
+    );
+    println!(
+        "  {} steps · press {} to advance, {} to go back, {} to quit\n",
+        total,
+        "Enter".bold(),
+        "b".bold(),
+        "q".bold(),
+    );
+
+    while idx < total {
+        let step = &tutorial.steps[idx];
+        println!(
+            "  {} {}/{total}",
+            "Step".dimmed(),
+            (idx + 1),
+        );
+        println!();
+
+        match step {
+            TutorialStep::Text(text) => {
+                println!("{text}\n");
+            }
+            TutorialStep::Demo { code, explanation } => {
+                println!("  {}", "Example:".cyan().bold());
+                for line in code.lines() {
+                    println!("    {}", line.dimmed());
                 }
-                TutorialStep::Demo { code, explanation } => {
-                    println!("  Example:");
-                    for line in code.lines() {
-                        println!("    {line}");
-                    }
-                    println!("  {explanation}\n");
+                println!();
+                println!("  {}", "Running...".dimmed());
+                // Strip trailing comments for execution
+                let exec_code: String = code
+                    .lines()
+                    .map(|l| l.split(";;").next().unwrap_or(l).trim_end())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                run_code_live(&exec_code);
+                println!();
+                println!("  {explanation}\n");
+            }
+            TutorialStep::Fix {
+                before,
+                after,
+                explanation,
+            } => {
+                println!("  {} (should fail):", "Before".red().bold());
+                for line in before.lines() {
+                    println!("    {}", line.dimmed());
                 }
-                TutorialStep::Fix {
-                    before,
-                    after,
-                    explanation,
-                } => {
-                    println!("  Before:");
-                    for line in before.lines() {
-                        println!("    {line}");
+                println!();
+                run_code_live(before);
+                println!();
+
+                println!("  {} (should succeed):", "After".green().bold());
+                for line in after.lines() {
+                    println!("    {}", line.dimmed());
+                }
+                println!();
+                run_code_live(after);
+                println!();
+
+                println!("  {explanation}\n");
+            }
+            TutorialStep::Try {
+                prompt,
+                hint,
+                expected_output: _,
+            } => {
+                println!("  {}", "Your turn!".yellow().bold());
+                println!("  {prompt}");
+                println!(
+                    "  Type {} for a hint, {} to skip.\n",
+                    ":hint".bold(),
+                    ":skip".bold(),
+                );
+
+                loop {
+                    match rl.readline("  try> ") {
+                        Ok(line) => {
+                            let trimmed = line.trim();
+                            if trimmed.is_empty() {
+                                continue;
+                            }
+                            let _ = rl.add_history_entry(trimmed);
+                            match trimmed {
+                                ":hint" | ":h" => {
+                                    println!("  {}: {hint}\n", "Hint".yellow());
+                                    continue;
+                                }
+                                ":skip" | ":s" => {
+                                    println!("  {}\n", "Skipped.".dimmed());
+                                    break;
+                                }
+                                ":quit" | ":q" => return,
+                                _ => {}
+                            }
+                            if run_code_live(trimmed) {
+                                println!("  {}\n", "Correct!".green().bold());
+                                break;
+                            }
+                            println!("  {}\n", "Try again, or type :hint for help.".dimmed());
+                        }
+                        Err(_) => return,
                     }
-                    println!("  After:");
-                    for line in after.lines() {
-                        println!("    {line}");
-                    }
-                    println!("  {explanation}\n");
                 }
             }
         }
-    } else {
-        println!("Category: {}", ec.category());
-        println!("No tutorial available for this error code yet.");
+
+        // Navigation prompt (skip for Try steps which handle their own flow)
+        if !matches!(step, TutorialStep::Try { .. }) {
+            if idx + 1 >= total {
+                println!("  {}", "Tutorial complete!".green().bold());
+                return;
+            }
+            match rl.readline(&format!(
+                "  [step {}/{}] press Enter to continue, (b)ack, (q)uit: ",
+                idx + 1,
+                total
+            )) {
+                Ok(line) => {
+                    let t = line.trim().to_lowercase();
+                    if t == "q" || t == "quit" {
+                        return;
+                    }
+                    if (t == "b" || t == "back") && idx > 0 {
+                        idx -= 1;
+                        continue;
+                    }
+                }
+                Err(_) => return,
+            }
+        }
+
+        idx += 1;
     }
+
+    println!("  {}", "Tutorial complete!".green().bold());
 }
 
 #[cfg(test)]
