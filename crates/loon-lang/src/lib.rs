@@ -5,6 +5,7 @@ pub mod effects;
 pub mod errors;
 pub mod fmt;
 pub mod interp;
+pub mod macros;
 pub mod module;
 pub mod parser;
 pub mod prelude;

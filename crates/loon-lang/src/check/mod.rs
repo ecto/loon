@@ -99,6 +99,8 @@ pub struct Checker {
     pub references: Vec<RefInfo>,
     /// Types with `[derive Copy]` — automatically copy instead of move
     pub derived_copy_types: HashSet<String>,
+    /// Expanded program after macro expansion (available after check_program)
+    pub expanded_program: Vec<Expr>,
 }
 
 impl Checker {
@@ -121,6 +123,7 @@ impl Checker {
             definitions: vec![HashMap::new()],
             references: Vec::new(),
             derived_copy_types: HashSet::new(),
+            expanded_program: Vec::new(),
         };
         checker.register_builtins();
         checker.register_dom_builtins();
@@ -1545,6 +1548,9 @@ impl Checker {
                 Type::Tuple(types)
             }
 
+            // Quasiquote nodes should be expanded before type checking
+            ExprKind::Quote(_) | ExprKind::Unquote(_) | ExprKind::UnquoteSplice(_) => Type::Unit,
+
             ExprKind::List(items) if items.is_empty() => Type::Unit,
 
             ExprKind::List(items) => self.infer_list(items, expr.span),
@@ -1642,6 +1648,7 @@ impl Checker {
                     return Type::Unit;
                 }
                 "derive" => return self.infer_derive(&items[1..], span),
+                "defmacro" | "defmacro+" | "macroexpand" => return Type::Unit,
                 "catch-errors" => {
                     // [catch-errors expr] — arg should be Str, returns Vec of error maps
                     if items.len() >= 2 {
@@ -2882,10 +2889,50 @@ impl Checker {
     }
 
     /// Check an entire program. Returns list of diagnostics.
+    ///
+    /// Pipeline: parse → expand(defmacro) → typecheck → expand(defmacro+) → re-typecheck
     pub fn check_program(&mut self, exprs: &[Expr]) -> Vec<LoonDiagnostic> {
-        for expr in exprs {
+        // Phase 1: Regular macro expansion
+        let mut expander = crate::macros::MacroExpander::new();
+        let expanded = match expander.expand_program(exprs) {
+            Ok(e) => e,
+            Err(msg) => {
+                self.errors.push(LoonDiagnostic::new(
+                    ErrorCode::E0100,
+                    msg,
+                ));
+                return std::mem::take(&mut self.errors);
+            }
+        };
+
+        // Phase 2: Type check
+        for expr in &expanded {
             self.infer(expr);
         }
+
+        // Phase 3: Type-aware macro expansion (defmacro+)
+        let final_exprs = if expander.has_type_aware_macros() {
+            match expander.expand_type_aware(&expanded) {
+                Ok(re_expanded) => {
+                    // Re-typecheck the expanded expressions
+                    for expr in &re_expanded {
+                        self.infer(expr);
+                    }
+                    re_expanded
+                }
+                Err(msg) => {
+                    self.errors.push(LoonDiagnostic::new(
+                        ErrorCode::E0100,
+                        msg,
+                    ));
+                    expanded
+                }
+            }
+        } else {
+            expanded
+        };
+
+        self.expanded_program = final_exprs;
         self.check_trait_constraints();
         std::mem::take(&mut self.errors)
     }

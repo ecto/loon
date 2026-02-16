@@ -50,6 +50,12 @@ pub enum ExprKind {
     Map(Vec<(Expr, Expr)>),
     /// Tuple: (a, b)
     Tuple(Vec<Expr>),
+    /// Quasiquote: `expr
+    Quote(Box<Expr>),
+    /// Unquote: ~expr (splice value into template)
+    Unquote(Box<Expr>),
+    /// Unquote-splice: ~@expr (splice list elements into template)
+    UnquoteSplice(Box<Expr>),
 }
 
 impl fmt::Display for Expr {
@@ -111,6 +117,9 @@ impl fmt::Display for Expr {
                 }
                 write!(f, ")")
             }
+            ExprKind::Quote(inner) => write!(f, "`{inner}"),
+            ExprKind::Unquote(inner) => write!(f, "~{inner}"),
+            ExprKind::UnquoteSplice(inner) => write!(f, "~@{inner}"),
         }
     }
 }
@@ -138,6 +147,11 @@ pub fn node_at_offset(exprs: &[Expr], offset: usize) -> Option<&Expr> {
                     if let Some(deeper) = walk(v, offset) {
                         return Some(deeper);
                     }
+                }
+            }
+            ExprKind::Quote(inner) | ExprKind::Unquote(inner) | ExprKind::UnquoteSplice(inner) => {
+                if let Some(deeper) = walk(inner, offset) {
+                    return Some(deeper);
                 }
             }
             _ => {}

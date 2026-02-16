@@ -649,9 +649,9 @@ fn run_code_live(code: &str) -> bool {
         return false;
     }
 
-    // Ownership check
+    // Ownership check (on macro-expanded program)
     let mut own = OwnershipChecker::new();
-    let own_errors = own.check_program(&exprs);
+    let own_errors = own.check_program(&checker.expanded_program);
     if !own_errors.is_empty() {
         for diag in &own_errors {
             eprintln!("    {} {}", format!("[{}]", diag.code).red(), diag.what);

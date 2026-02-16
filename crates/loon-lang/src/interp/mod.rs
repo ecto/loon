@@ -1,6 +1,7 @@
 pub mod builtins;
 pub mod dom_builtins;
 mod env;
+pub mod net;
 mod value;
 
 pub use env::Env;
@@ -41,7 +42,7 @@ impl std::error::Error for InterpError {}
 
 type IResult = Result<Value, InterpError>;
 
-pub(crate) fn err(msg: impl Into<String>) -> InterpError {
+pub fn err(msg: impl Into<String>) -> InterpError {
     InterpError {
         message: msg.into(),
         performed_effect: None,
@@ -108,20 +109,48 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
             }
         }
         ("Async", "spawn") => {
-            // Synchronous mock: evaluate the thunk immediately, wrap in Future
+            // Spawn a real thread to evaluate the thunk.
+            // Returns a Future backed by a shared slot.
             if let Some(thunk) = performed.args.first() {
+                let slot: std::sync::Arc<(std::sync::Mutex<Option<Value>>, std::sync::Condvar)> =
+                    std::sync::Arc::new((std::sync::Mutex::new(None), std::sync::Condvar::new()));
+                let slot2 = slot.clone();
+
                 match thunk {
                     Value::Fn(lf) => {
-                        let mut env = get_global_env().unwrap_or_default();
-                        match call_fn(lf, &[], &mut env) {
-                            Ok(val) => Some(Ok(Value::Future(Box::new(val)))),
-                            Err(e) => Some(Err(e)),
-                        }
+                        let lf = lf.clone();
+                        let env = get_global_env().unwrap_or_default();
+                        std::thread::Builder::new()
+                            .stack_size(64 * 1024 * 1024) // 64MB stack for deep recursion
+                            .spawn(move || {
+                                let mut env = env;
+                                sync_global_env(&env);
+                                register_builtins(&mut env);
+                                let result = eval_spawned_fn(&lf, &mut env);
+                                let (lock, cvar) = &*slot2;
+                                *lock.lock().unwrap() = Some(result);
+                                cvar.notify_one();
+                            })
+                            .expect("failed to spawn thread");
+                        Some(Ok(Value::AsyncSlot(slot)))
                     }
-                    Value::Builtin(name, f) => match f(name, &[]) {
-                        Ok(val) => Some(Ok(Value::Future(Box::new(val)))),
-                        Err(e) => Some(Err(e)),
-                    },
+                    Value::Builtin(name, f) => {
+                        let name = name.clone();
+                        let f = f.clone();
+                        std::thread::spawn(move || {
+                            let result = match f(&name, &[]) {
+                                Ok(val) => val,
+                                Err(e) => {
+                                    eprintln!("[Async.spawn] thread error: {}", e.message);
+                                    Value::Unit
+                                }
+                            };
+                            let (lock, cvar) = &*slot2;
+                            *lock.lock().unwrap() = Some(result);
+                            cvar.notify_one();
+                        });
+                        Some(Ok(Value::AsyncSlot(slot)))
+                    }
                     _ => Some(Err(err("Async.spawn requires a callable thunk"))),
                 }
             } else {
@@ -129,16 +158,59 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
             }
         }
         ("Async", "await") => {
-            // Unwrap a Future value
-            if let Some(Value::Future(inner)) = performed.args.first() {
-                Some(Ok(*inner.clone()))
-            } else {
-                Some(Err(err("Async.await requires a Future value")))
+            match performed.args.first() {
+                Some(Value::Future(inner)) => Some(Ok(*inner.clone())),
+                Some(Value::AsyncSlot(slot)) => {
+                    let (lock, cvar) = &**slot;
+                    let mut guard = lock.lock().unwrap();
+                    while guard.is_none() {
+                        guard = cvar.wait(guard).unwrap();
+                    }
+                    Some(Ok(guard.take().unwrap()))
+                }
+                _ => Some(Err(err("Async.await requires a Future value"))),
             }
         }
         ("Async", "sleep") => {
             // Mock: no-op, just return Unit
             Some(Ok(Value::Unit))
+        }
+        ("Async", "loop") => {
+            // Stateful infinite loop without stack growth.
+            // [Async.loop init-state step-fn] — calls [step-fn state] repeatedly,
+            // using the return value as the next state.
+            if performed.args.len() < 2 {
+                return Some(Err(err("Async.loop requires init-state and step-fn")));
+            }
+            let mut state = performed.args[0].clone();
+            let step = &performed.args[1];
+            loop {
+                let result = match step {
+                    Value::Fn(lf) => {
+                        let mut env = get_global_env().unwrap_or_default();
+                        call_fn(lf, &[state.clone()], &mut env)
+                    }
+                    Value::Builtin(name, f) => f(name, &[state.clone()]),
+                    _ => break Some(Err(err("Async.loop step must be callable"))),
+                };
+                match result {
+                    Ok(new_state) => state = new_state,
+                    Err(e) => {
+                        if let Some(ref performed) = e.performed_effect {
+                            if let Some(inner) = try_builtin_handler(performed) {
+                                match inner {
+                                    Ok(new_state) => state = new_state,
+                                    Err(e2) => break Some(Err(e2)),
+                                }
+                            } else {
+                                break Some(Err(e));
+                            }
+                        } else {
+                            break Some(Err(e));
+                        }
+                    }
+                }
+            }
         }
         ("IO", "list-dir") => {
             if let Some(Value::Str(path)) = performed.args.first() {
@@ -150,11 +222,8 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
                             .collect();
                         Some(Ok(Value::Vec(names)))
                     }
-                    Err(e) => Some(Err(perform_effect(
-                        "Fail",
-                        "fail",
-                        vec![Value::Str(e.to_string())],
-                    ))),
+                    // Not a directory (or doesn't exist) → return empty vec
+                    Err(_) => Some(Ok(Value::Vec(vec![]))),
                 }
             } else {
                 Some(Err(err("IO.list-dir requires a string path")))
@@ -245,7 +314,13 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
                 ))),
             }
         }
-        _ => None,
+        _ => {
+            // Try Net.* effects
+            if performed.effect == "Net" {
+                return net::try_net_handler(performed);
+            }
+            None
+        }
     }
 }
 
@@ -274,6 +349,12 @@ pub fn eval_program(exprs: &[Expr]) -> IResult {
 }
 
 pub fn eval_program_with_base_dir(exprs: &[Expr], base_dir: Option<&Path>) -> IResult {
+    // Macro expansion phase
+    let mut expander = crate::macros::MacroExpander::new();
+    let exprs = expander
+        .expand_program(exprs)
+        .map_err(err)?;
+
     let mut env = Env::new();
     register_builtins(&mut env);
     // Load prelude (Option, Result types)
@@ -287,7 +368,7 @@ pub fn eval_program_with_base_dir(exprs: &[Expr], base_dir: Option<&Path>) -> IR
     let base = base_dir.unwrap_or(&default_base);
 
     let mut last = Value::Unit;
-    for expr in exprs {
+    for expr in &exprs {
         // Intercept [use ...] at the top level
         if let ExprKind::List(items) = &expr.kind {
             if !items.is_empty() {
@@ -373,6 +454,11 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
             Ok(Value::Tuple(vals?))
         }
 
+        // Quasiquote nodes should have been expanded by the macro expander
+        ExprKind::Quote(_) | ExprKind::Unquote(_) | ExprKind::UnquoteSplice(_) => {
+            Err(err("unexpected quasiquote outside of macro definition"))
+        }
+
         ExprKind::List(items) if items.is_empty() => Ok(Value::Unit),
 
         ExprKind::List(items) => {
@@ -413,6 +499,8 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                         return Ok(Value::Vec(vec![]));
                     }
                     "impl" => return eval_impl_def(&items[1..], env),
+                    "defmacro" | "defmacro+" => return Ok(Value::Unit), // macro defs are compile-time
+                    "macroexpand" => return Ok(Value::Unit), // no-op at runtime
                     "handle" => return eval_handle(&items[1..], env),
                     "try" => return eval_try(&items[1..], env),
                     "pub" => {
@@ -1411,7 +1499,7 @@ fn eval_catch_errors(source: &str) -> Value {
             &checker.subst,
         )
         .with_derived_copy_types(&checker.derived_copy_types);
-    let ownership_errors = ownership.check_program(&exprs);
+    let ownership_errors = ownership.check_program(&checker.expanded_program);
 
     let all_errors: Vec<_> = type_errors.into_iter().chain(ownership_errors).collect();
 
@@ -1442,5 +1530,32 @@ fn register_builtins(env: &mut Env) {
     builtins::register_builtins(env);
     if dom_builtins::has_dom_bridge() {
         dom_builtins::register_dom_builtins(env);
+    }
+}
+
+/// Evaluate a Loon function in a spawned thread, handling effects with try_builtin_handler.
+/// Uses eval_program_with_base_dir-style effect handling for the full function body.
+fn eval_spawned_fn(lf: &value::LoonFn, env: &mut Env) -> Value {
+    match call_fn(lf, &[], env) {
+        Ok(val) => val,
+        Err(e) => {
+            if let Some(ref performed) = e.performed_effect {
+                if let Some(result) = try_builtin_handler(performed) {
+                    match result {
+                        Ok(val) => val,
+                        Err(e2) => {
+                            eprintln!("[Async.spawn] effect error: {}", e2.message);
+                            Value::Unit
+                        }
+                    }
+                } else {
+                    eprintln!("[Async.spawn] unhandled effect: {}.{}", performed.effect, performed.operation);
+                    Value::Unit
+                }
+            } else {
+                eprintln!("[Async.spawn] thread error: {}", e.message);
+                Value::Unit
+            }
+        }
     }
 }

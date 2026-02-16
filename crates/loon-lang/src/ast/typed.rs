@@ -62,6 +62,10 @@ pub fn to_typed(expr: &Expr, type_of: &HashMap<NodeId, Type>, subst: &Subst) -> 
         ExprKind::Tuple(items) => {
             TypedExprKind::Tuple(items.iter().map(|e| to_typed(e, type_of, subst)).collect())
         }
+        // Quasiquote nodes should be expanded before type checking
+        ExprKind::Quote(inner) | ExprKind::Unquote(inner) | ExprKind::UnquoteSplice(inner) => {
+            return to_typed(inner, type_of, subst);
+        }
     };
 
     TypedExpr {
@@ -91,7 +95,8 @@ mod tests {
         let exprs = parse(src).unwrap();
         let mut checker = Checker::new();
         checker.check_program(&exprs);
-        let typed = to_typed_program(&exprs, &checker.type_of, &checker.subst);
+        let expanded = checker.expanded_program.clone();
+        let typed = to_typed_program(&expanded, &checker.type_of, &checker.subst);
         (typed, checker)
     }
 

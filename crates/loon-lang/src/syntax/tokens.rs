@@ -59,6 +59,14 @@ pub enum Token {
     #[token("->")]
     Arrow,
 
+    // Macro quasiquoting
+    #[token("`")]
+    Backtick,
+    #[token("~@", priority = 3)]
+    TildeSplice,
+    #[token("~", priority = 2)]
+    Tilde,
+
     // Literals — higher priority than Symbol
     #[regex(r"-?[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?(f32|f64)?", priority = 10, callback = |lex| lex.slice().to_string())]
     Float(String),
@@ -77,6 +85,6 @@ pub enum Token {
 
     // Symbols (identifiers, operators like +, -, etc.)
     // Allows / in the middle for namespaced names like dom/create-element
-    #[regex(r"[a-zA-Z_+\-*!<>=&%][a-zA-Z0-9_\-?!.*%/]*", priority = 1, callback = |lex| lex.slice().to_string())]
+    #[regex(r"[a-zA-Z_+\-*!<>=&%][a-zA-Z0-9_\-?!.*%/+]*", priority = 1, callback = |lex| lex.slice().to_string())]
     Symbol(String),
 }

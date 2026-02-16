@@ -116,7 +116,8 @@ impl DocumentState {
                 &checker.subst,
             )
             .with_derived_copy_types(&checker.derived_copy_types);
-        let ownership_errors = ownership.check_program(&exprs);
+        let expanded = &checker.expanded_program;
+        let ownership_errors = ownership.check_program(expanded);
         self.diagnostics.extend(ownership_errors);
 
         // Extract Send-safe state from the checker

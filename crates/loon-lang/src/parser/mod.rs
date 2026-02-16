@@ -223,6 +223,27 @@ impl<'a> Parser<'a> {
                 Ok(Expr::new(ExprKind::Tuple(items), span.merge(end)))
             }
 
+            // Quasiquote: `expr
+            Token::Backtick => {
+                let inner = self.parse_expr()?;
+                let full_span = span.merge(inner.span);
+                Ok(Expr::new(ExprKind::Quote(Box::new(inner)), full_span))
+            }
+
+            // Unquote-splice: ~@expr (must come before Tilde)
+            Token::TildeSplice => {
+                let inner = self.parse_expr()?;
+                let full_span = span.merge(inner.span);
+                Ok(Expr::new(ExprKind::UnquoteSplice(Box::new(inner)), full_span))
+            }
+
+            // Unquote: ~expr
+            Token::Tilde => {
+                let inner = self.parse_expr()?;
+                let full_span = span.merge(inner.span);
+                Ok(Expr::new(ExprKind::Unquote(Box::new(inner)), full_span))
+            }
+
             _ => Err(ParseError {
                 message: format!("unexpected token: {tok:?}"),
                 span,

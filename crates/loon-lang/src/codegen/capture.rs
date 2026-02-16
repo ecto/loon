@@ -226,6 +226,10 @@ fn collect_free(expr: &Expr, bound: &HashSet<String>, free: &mut HashSet<String>
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_)
         | ExprKind::Keyword(_) => {}
         ExprKind::List(_) => {} // empty list handled above
+        // Macro quasiquote nodes — recurse into inner expr
+        ExprKind::Quote(inner) | ExprKind::Unquote(inner) | ExprKind::UnquoteSplice(inner) => {
+            collect_free(inner, bound, free);
+        }
     }
 }
 

@@ -12,17 +12,25 @@ use wasm_encoder::*;
 
 /// Compile a Loon program to WASM bytes.
 pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, String> {
+    // Macro expansion phase
+    let mut expander = crate::macros::MacroExpander::new();
+    let expanded = expander.expand_program(exprs)?;
+
     let mut compiler = Compiler::new();
-    compiler.compile_program(exprs)?;
+    compiler.compile_program(&expanded)?;
     compiler.tree_shake();
     Ok(compiler.finish())
 }
 
 /// Compile a Loon program with multi-file support.
 pub fn compile_with_imports(exprs: &[Expr], base_dir: &std::path::Path) -> Result<Vec<u8>, String> {
+    // Macro expansion phase
+    let mut expander = crate::macros::MacroExpander::new();
+    let expanded = expander.expand_program(exprs)?;
+
     let mut compiler = Compiler::new();
     compiler.base_dir = Some(base_dir.to_path_buf());
-    compiler.compile_program(exprs)?;
+    compiler.compile_program(&expanded)?;
     compiler.tree_shake();
     Ok(compiler.finish())
 }

@@ -212,6 +212,9 @@ fn expr_to_doc(expr: &Expr) -> Doc {
         ExprKind::Set(items) => collection_to_doc("#{", "}", items),
         ExprKind::Map(pairs) => map_to_doc(pairs),
         ExprKind::Tuple(items) => tuple_to_doc(items),
+        ExprKind::Quote(inner) => concat(text("`"), expr_to_doc(inner)),
+        ExprKind::Unquote(inner) => concat(text("~"), expr_to_doc(inner)),
+        ExprKind::UnquoteSplice(inner) => concat(text("~@"), expr_to_doc(inner)),
     }
 }
 
