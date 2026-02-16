@@ -125,7 +125,6 @@ impl<'a> Parser<'a> {
             Token::Str(s) => Ok(Expr::new(ExprKind::Str(s), span)),
             Token::Keyword(k) => Ok(Expr::new(ExprKind::Keyword(k), span)),
             Token::Symbol(s) => Ok(Expr::new(ExprKind::Symbol(s), span)),
-            Token::Pipe => Ok(Expr::new(ExprKind::Symbol("|>".to_string()), span)),
             Token::Slash => Ok(Expr::new(ExprKind::Symbol("/".to_string()), span)),
             Token::FatArrow => Ok(Expr::new(ExprKind::Symbol("=>".to_string()), span)),
             Token::Arrow => Ok(Expr::new(ExprKind::Symbol("->".to_string()), span)),
@@ -437,11 +436,11 @@ mod tests {
 
     #[test]
     fn parse_pipe() {
-        let src = r#"[|> #[1 2 3] [map inc] [collect]]"#;
+        let src = r#"[pipe #[1 2 3] [map inc] [collect]]"#;
         let exprs = parse(src).unwrap();
         assert_eq!(exprs.len(), 1);
         if let ExprKind::List(items) = &exprs[0].kind {
-            assert!(matches!(items[0].kind, ExprKind::Symbol(ref s) if s == "|>"));
+            assert!(matches!(items[0].kind, ExprKind::Symbol(ref s) if s == "pipe"));
         } else {
             panic!("expected list");
         }

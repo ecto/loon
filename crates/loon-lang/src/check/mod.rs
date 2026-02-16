@@ -1601,7 +1601,7 @@ impl Checker {
                 "if" => return self.infer_if(&items[1..], span),
                 "do" => return self.infer_do(&items[1..]),
                 "match" => return self.infer_match(&items[1..], span),
-                "|>" => return self.infer_pipe(&items[1..], span),
+                "pipe" => return self.infer_pipe(&items[1..], span),
                 "type" => return self.infer_type_def(&items[1..]),
                 "trait" => return self.infer_trait_def(&items[1..]),
                 "impl" => return self.infer_impl_def(&items[1..], span),

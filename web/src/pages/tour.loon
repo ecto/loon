@@ -47,8 +47,8 @@
         [str "[fn square [x] [* x x]]\n\n[fn greet\n  ([name] [str \"Hello, \" name \"!\"])\n  ([first last] [str \"Hello, \" first \" \" last \"!\"])]"]]
 
       [tour-step "4. The Pipe Operator"
-        "Thread data through a pipeline. |> passes the result as the last argument."
-        [str "[|> [range 1 20]\n  [filter [fn [n] [= 0 [% n 2]]]]\n  [map [fn [n] [* n n]]]\n  [take 5]\n  [each println]]"]]
+        "Thread data through a pipeline. pipe passes the result as the last argument."
+        [str "[pipe [range 1 20]\n  [filter [fn [n] [= 0 [% n 2]]]]\n  [map [fn [n] [* n n]]]\n  [take 5]\n  [each println]]"]]
 
       [tour-step "5. Pattern Matching"
         "Match on values, ADT constructors, and more."

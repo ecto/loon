@@ -517,7 +517,7 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                     "if" => return eval_if(&items[1..], env),
                     "do" => return eval_do(&items[1..], env),
                     "match" => return eval_match(&items[1..], env),
-                    "|>" => return eval_pipe(&items[1..], env),
+                    "pipe" => return eval_pipe(&items[1..], env),
                     "mut" => return eval_mut(&items[1..], env),
                     "type" => return eval_type_def(&items[1..], env),
                     "test" => return eval_test_def(&items[1..], env),
@@ -771,7 +771,7 @@ fn eval_do(args: &[Expr], env: &mut Env) -> IResult {
 
 fn eval_pipe(args: &[Expr], env: &mut Env) -> IResult {
     if args.is_empty() {
-        return Err(err("|> requires at least one argument"));
+        return Err(err("pipe requires at least one argument"));
     }
     let mut val = eval(&args[0], env)?;
     for step in &args[1..] {
@@ -784,7 +784,7 @@ fn eval_pipe(args: &[Expr], env: &mut Env) -> IResult {
                 }
 
                 // If there are explicit args, append piped value as last arg
-                // (thread-last semantics: [|> coll [f x]] → [f x coll]).
+                // (thread-last semantics: [pipe coll [f x]] → [f x coll]).
                 // If no explicit args, pass piped value as sole arg.
                 let call_args = if explicit_args.is_empty() {
                     vec![val]

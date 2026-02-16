@@ -242,7 +242,7 @@ fn list_to_doc(items: &[Expr]) -> Doc {
         Some("let") => let_to_doc(items),
         Some("if") => if_to_doc(items),
         Some("match") => match_to_doc(items),
-        Some("|>") => pipe_to_doc(items),
+        Some("pipe") => pipe_to_doc(items),
         Some("type") => type_to_doc(items),
         Some("effect") => type_to_doc(items), // same layout as type
         _ => generic_list_to_doc(items),
@@ -375,7 +375,7 @@ fn match_to_doc(items: &[Expr]) -> Doc {
     ])
 }
 
-/// `[|> expr steps...]` — first expr on same line, each step indented on own line.
+/// `[pipe expr steps...]` — first expr on same line, each step indented on own line.
 fn pipe_to_doc(items: &[Expr]) -> Doc {
     if items.len() < 2 {
         return generic_list_to_doc(items);
@@ -612,7 +612,7 @@ mod tests {
 
     #[test]
     fn idempotent_pipe() {
-        assert_idempotent("[|> x [foo] [bar]]");
+        assert_idempotent("[pipe x [foo] [bar]]");
     }
 
     #[test]
@@ -661,8 +661,8 @@ mod tests {
 
     #[test]
     fn format_pipe() {
-        let result = fmt("[|> x [foo] [bar]]");
-        assert!(result.contains("[|> x"));
+        let result = fmt("[pipe x [foo] [bar]]");
+        assert!(result.contains("[pipe x"));
     }
 
     #[test]

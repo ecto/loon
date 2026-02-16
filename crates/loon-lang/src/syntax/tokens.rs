@@ -50,9 +50,7 @@ pub enum Token {
     // Operators
     #[token("=>")]
     FatArrow,
-    #[token("|>")]
-    Pipe,
-    #[token("?")]
+#[token("?")]
     Question,
     #[token("/")]
     Slash,

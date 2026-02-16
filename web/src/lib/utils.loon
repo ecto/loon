@@ -2,7 +2,7 @@
 
 ; Merge class strings: [cx "foo" "bar"] => "foo bar"
 [fn cx [& classes]
-  [|> classes
+  [pipe classes
     [filter [fn [c] [not [= c ""]]]]
     [filter [fn [c] [not [= c ""]]]]
     [join " "]]]

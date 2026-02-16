@@ -328,7 +328,7 @@ fn existing_programs_still_work() {
 
 #[test]
 fn pipe_still_works() {
-    let result = eval("[|> 5 [+ 3]]");
+    let result = eval("[pipe 5 [+ 3]]");
     assert_eq!(result, interp::Value::Int(8));
 }
 

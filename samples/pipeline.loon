@@ -1,7 +1,7 @@
 [fn square [x] [* x x]]
 
 [fn main []
-  [|> #[1 2 3 4 5]
+  [pipe #[1 2 3 4 5]
     [map [fn [x] [* x x]]]
     [filter [fn [x] [> x 5]]]
     [each [fn [x] [println x]]]]]

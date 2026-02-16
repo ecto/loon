@@ -499,7 +499,7 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     return;
                 }
-                "match" | "|>" | "type" | "test" | "pub" | "trait" | "impl" | "sig" | "derive" => {
+                "match" | "pipe" | "type" | "test" | "pub" | "trait" | "impl" | "sig" | "derive" => {
                     for item in &items[1..] {
                         self.check_expr(item);
                     }

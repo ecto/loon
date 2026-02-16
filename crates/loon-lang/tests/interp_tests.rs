@@ -85,7 +85,7 @@ fn persistent_vector() {
 fn map_filter_pipe() {
     assert_eq!(
         run(r#"
-            [|> #[1 2 3 4 5]
+            [pipe #[1 2 3 4 5]
               [filter [fn [x] [> x 3]]]
               [len]]
         "#),
@@ -195,7 +195,7 @@ fn match_with_guard() {
 #[test]
 fn range_and_map() {
     assert_eq!(
-        run("[|> [range 0 5] [map [fn [x] [* x x]]] [collect]]"),
+        run("[pipe [range 0 5] [map [fn [x] [* x x]]] [collect]]"),
         Value::Vec(vec![
             Value::Int(0),
             Value::Int(1),
@@ -277,7 +277,7 @@ fn pipe_thread_last() {
     // Pipe should thread value as last arg when explicit args present
     assert_eq!(
         run(r#"
-            [|> #[1 2 3 4 5]
+            [pipe #[1 2 3 4 5]
               [map [fn [x] [* x x]]]
               [filter [fn [x] [> x 5]]]
               [len]]

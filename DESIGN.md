@@ -34,13 +34,13 @@ Loon is a LISP that steals the best ideas from Rust, Clojure, and Scheme — the
   [str "hello, " name "!"]]
 
 [defn greet-all [names]
-  [|> names
+  [pipe names
     [map greet]
     [collect]]]
 
 [defn main []
   [let users #["alice" "bob" "carol"]]
-  [|> [greet-all users]
+  [pipe [greet-all users]
     [each println]]]
 ```
 
@@ -347,7 +347,7 @@ UTF-8 by default. Same owned/borrowed distinction as Rust, but inferred:
 ### Pipe Operator
 
 ```loon
-[|> #[1 2 3 4 5]
+[pipe #[1 2 3 4 5]
   [map [fn [x] [* x x]]]
   [filter [fn [x] [> x 5]]]
   [collect]]
@@ -912,7 +912,7 @@ Loon's runtime includes a built-in incremental computation engine, inspired by S
   [checker.check ast]]
 
 [memo defn compile [source]
-  [|> source [parse] [typecheck] [codegen]]]
+  [pipe source [parse] [typecheck] [codegen]]]
 ```
 
 When `source` changes, only the affected stages re-run. The runtime tracks `[memo]` dependencies automatically.
@@ -1070,7 +1070,7 @@ Loon types map cleanly to JSON Schema. The compiler generates schemas from types
   "Classify the sentiment of the given text."]
 
 ; Use like any other function:
-[|> [read-file "feedback.txt"]?
+[pipe [read-file "feedback.txt"]?
   [lines]
   [map [fn [line] {:text line :sentiment [classify-sentiment line]}]]
   [filter [fn [r] [= r.sentiment Sentiment.Negative]]]]
@@ -1176,7 +1176,7 @@ Deps are hash-pinned. WASM is a deterministic target. AI-generated code is cache
     n => [+ [fib [- n 1]] [fib [- n 2]]]]]
 
 [defn main []
-  [|> [range 0 10]
+  [pipe [range 0 10]
     [map fib]
     [each [fn [x] [println x]]]]]
 ```
@@ -1205,7 +1205,7 @@ Deps are hash-pinned. WASM is a deterministic target. AI-generated code is cache
 [use std.collections {HashMap}]
 
 [defn count-words [text]
-  [|> [split text " \n\t"]
+  [pipe [split text " \n\t"]
     [filter [fn [w] [not [empty? w]]]]
     [fold [HashMap.new] [fn [acc word]
       [update acc word [fn [n] [+ [or n 0] 1]]]]]]]
@@ -1213,7 +1213,7 @@ Deps are hash-pinned. WASM is a deterministic target. AI-generated code is cache
 [defn main [] / {IO Fail}
   [let text [read-to-string stdin]?]
   [let counts [count-words text]]
-  [|> [entries counts]
+  [pipe [entries counts]
     [sort-by [fn [[_ n]] n] :desc]
     [take 10]
     [each [fn [[word n]]

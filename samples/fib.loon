@@ -5,6 +5,6 @@
     n => [+ [fib [- n 1]] [fib [- n 2]]]]]
 
 [fn main []
-  [|> [range 0 10]
+  [pipe [range 0 10]
     [map fib]
     [each [fn [x] [println x]]]]]

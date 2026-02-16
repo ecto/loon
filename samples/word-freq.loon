@@ -3,12 +3,12 @@
 
 [fn count-words [text]
   [let words
-    [|> [split text " "]
+    [pipe [split text " "]
       [filter [fn [w] [not [empty? w]]]]
       [map lowercase]]]
   [let counts [group-by [fn [w] w] words]]
   [let pairs
-    [|> [entries counts]
+    [pipe [entries counts]
       [map [fn [[word occ]]
         (word [len occ])]]]]
   [let ranked [sort-by [fn [[_ n]] n] :desc pairs]]

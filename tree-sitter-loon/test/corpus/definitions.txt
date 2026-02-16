@@ -120,7 +120,7 @@ Effect definition
 ================
 Pipe operator
 ================
-[|> data [map inc] [filter even?]]
+[pipe data [map inc] [filter even?]]
 ---
 
 (source_file

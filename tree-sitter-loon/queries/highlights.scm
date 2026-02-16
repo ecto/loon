@@ -10,7 +10,7 @@
 
 ; Keywords: first symbol in list matching known forms
 (list . (symbol) @keyword
-  (#match? @keyword "^(defn|fn|let|if|match|type|use|pub|effect|handle|do|when|sig|trait|impl|test|try|mut|str|fmt)$"))
+  (#match? @keyword "^(defn|fn|let|if|match|pipe|type|use|pub|effect|handle|do|when|sig|trait|impl|test|try|mut|str|fmt)$"))
 
 ; Function definitions: symbol after defn
 (list . (symbol) @keyword (symbol) @function
@@ -30,7 +30,7 @@
 
 ; Fat arrow and operators
 (symbol) @operator
-  (#match? @operator "^(=>|\\|>|->|\\+|-|\\*|/|%|>|<|>=|<=|=|not|and|or)$")
+  (#match? @operator "^(=>|->|\\+|-|\\*|/|%|>|<|>=|<=|=|not|and|or)$")
 
 ; Function calls: first symbol in list (when not a keyword)
 (list . (symbol) @function.call)
