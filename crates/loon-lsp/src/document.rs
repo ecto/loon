@@ -9,7 +9,7 @@ use ropey::Rope;
 /// Per-document state including source text, parsed AST, and checker results.
 pub struct DocumentState {
     pub rope: Rope,
-    pub version: i32,
+    pub _version: i32,
     pub exprs: Vec<Expr>,
     pub checker: Option<CheckerState>,
     pub diagnostics: Vec<LoonDiagnostic>,
@@ -18,7 +18,7 @@ pub struct DocumentState {
 /// Extracted, Send-safe results from a type-check pass.
 /// (Checker itself contains Rc<RefCell<..>> which is not Send.)
 pub struct CheckerState {
-    pub type_of: HashMap<NodeId, Type>,
+    pub _type_of: HashMap<NodeId, Type>,
     pub subst_resolved: HashMap<NodeId, Type>,
     pub definitions: Vec<HashMap<String, DefInfo>>,
     pub references: Vec<RefInfo>,
@@ -45,7 +45,7 @@ impl CheckerState {
             .collect();
 
         Self {
-            type_of: checker.type_of.clone(),
+            _type_of: checker.type_of.clone(),
             subst_resolved,
             definitions: checker.definitions.clone(),
             references: checker.references.clone(),
@@ -78,7 +78,7 @@ impl DocumentState {
     pub fn new(text: &str, version: i32) -> Self {
         let mut state = Self {
             rope: Rope::from_str(text),
-            version,
+            _version: version,
             exprs: Vec::new(),
             checker: None,
             diagnostics: Vec::new(),

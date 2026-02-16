@@ -117,7 +117,7 @@ impl fmt::Display for Expr {
 
 /// Walk the AST to find the deepest node whose span contains the given byte offset.
 pub fn node_at_offset(exprs: &[Expr], offset: usize) -> Option<&Expr> {
-    fn walk<'a>(expr: &'a Expr, offset: usize) -> Option<&'a Expr> {
+    fn walk(expr: &Expr, offset: usize) -> Option<&Expr> {
         if offset < expr.span.start || offset >= expr.span.end {
             return None;
         }

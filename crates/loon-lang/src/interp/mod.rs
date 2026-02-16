@@ -112,7 +112,7 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
             if let Some(thunk) = performed.args.first() {
                 match thunk {
                     Value::Fn(lf) => {
-                        let mut env = get_global_env().unwrap_or_else(Env::new);
+                        let mut env = get_global_env().unwrap_or_default();
                         match call_fn(lf, &[], &mut env) {
                             Ok(val) => Some(Ok(Value::Future(Box::new(val)))),
                             Err(e) => Some(Err(e)),

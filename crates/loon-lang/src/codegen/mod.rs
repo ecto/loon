@@ -1,5 +1,7 @@
 mod capture;
+#[allow(clippy::vec_init_then_push)]
 pub mod collections;
+#[allow(clippy::vec_init_then_push)]
 pub mod strings;
 
 use crate::ast::{Expr, ExprKind};
@@ -158,6 +160,7 @@ impl Compiler {
     fn compile_program(&mut self, exprs: &[Expr]) -> Result<(), String> {
         for expr in exprs { if let ExprKind::List(items) = &expr.kind { if !items.is_empty() { if let ExprKind::Symbol(s) = &items[0].kind { if s == "use" { self.compile_use(&items[1..])?; } } } } }
         for expr in exprs { if let ExprKind::List(items) = &expr.kind { if items.len() >= 2 { if let ExprKind::Symbol(s) = &items[0].kind { if s == "type" { self.collect_adt_def(&items[1..])?; } } } } }
+        #[allow(clippy::possible_missing_else)]
         for expr in exprs { if let ExprKind::List(items) = &expr.kind { if items.len() >= 3 { if let ExprKind::Symbol(s) = &items[0].kind { if s == "defn" { if let ExprKind::Symbol(name) = &items[1].kind { if self.fn_map.contains_key(name) { continue; } if let ExprKind::List(params) = &items[2].kind { let arity = params.len(); let idx = self.next_fn_idx; self.fn_map.insert(name.clone(), FnDef { func_idx: idx, arity, is_closure: false }); self.next_fn_idx += 1; } } } } } } }
         for expr in exprs { if let ExprKind::List(items) = &expr.kind { if items.len() >= 3 { if let ExprKind::Symbol(s) = &items[0].kind { if s == "defn" { self.compile_defn(&items[1..])?; } } } } }
         Ok(())

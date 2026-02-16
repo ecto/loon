@@ -85,7 +85,7 @@ pub fn eval_ui(source: &str) -> Result<(), String> {
 #[wasm_bindgen]
 pub fn eval_with_output(source: &str) -> Result<String, String> {
     let perf = web_sys::window().and_then(|w: web_sys::Window| w.performance());
-    let now = || perf.as_ref().map_or_else(|| js_sys::Date::now(), |p: &web_sys::Performance| p.now());
+    let now = || perf.as_ref().map_or_else(js_sys::Date::now, |p: &web_sys::Performance| p.now());
 
     let t0 = now();
     let exprs = loon_lang::parser::parse(source).map_err(|e| format!("{e}"))?;
