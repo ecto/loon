@@ -1,0 +1,88 @@
+================
+Integer numbers
+================
+42
+-7
+0
+---
+
+(source_file
+  (number)
+  (number)
+  (number))
+
+================
+Typed integers
+================
+42i32
+100u64
+---
+
+(source_file
+  (number)
+  (number))
+
+================
+Float literals
+================
+3.14
+-0.5
+1.0e10
+2.5E-3
+---
+
+(source_file
+  (float_literal)
+  (float_literal)
+  (float_literal)
+  (float_literal))
+
+================
+Typed floats
+================
+3.14f32
+1.0f64
+---
+
+(source_file
+  (float_literal)
+  (float_literal))
+
+================
+Strings
+================
+"hello"
+"world\nfoo"
+""
+"escaped \"quote\""
+---
+
+(source_file
+  (string)
+  (string)
+  (string)
+  (string))
+
+================
+Booleans
+================
+true
+false
+---
+
+(source_file
+  (boolean)
+  (boolean))
+
+================
+Keywords
+================
+:name
+:foo-bar
+:_private
+---
+
+(source_file
+  (keyword)
+  (keyword)
+  (keyword))

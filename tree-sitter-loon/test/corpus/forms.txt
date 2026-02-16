@@ -1,0 +1,116 @@
+================
+Empty list
+================
+[]
+---
+
+(source_file
+  (list))
+
+================
+Simple list
+================
+[println "hello"]
+---
+
+(source_file
+  (list
+    (symbol)
+    (string)))
+
+================
+Nested lists
+================
+[if true [println "yes"] [println "no"]]
+---
+
+(source_file
+  (list
+    (symbol)
+    (boolean)
+    (list
+      (symbol)
+      (string))
+    (list
+      (symbol)
+      (string))))
+
+================
+Persistent vector
+================
+#[1 2 3]
+---
+
+(source_file
+  (vector
+    (number)
+    (number)
+    (number)))
+
+================
+Set
+================
+#{a b c}
+---
+
+(source_file
+  (set
+    (symbol)
+    (symbol)
+    (symbol)))
+
+================
+Map
+================
+{:name "Alice" :age 30}
+---
+
+(source_file
+  (map
+    (keyword)
+    (string)
+    (keyword)
+    (number)))
+
+================
+Tuple
+================
+(1, 2, 3)
+---
+
+(source_file
+  (tuple
+    (number)
+    (number)
+    (number)))
+
+================
+Tuple without commas
+================
+(a b)
+---
+
+(source_file
+  (tuple
+    (symbol)
+    (symbol)))
+
+================
+Mixed nested forms
+================
+[let [x #[1 2 3]] [map inc x]]
+---
+
+(source_file
+  (list
+    (symbol)
+    (list
+      (symbol)
+      (vector
+        (number)
+        (number)
+        (number)))
+    (list
+      (symbol)
+      (symbol)
+      (symbol))))

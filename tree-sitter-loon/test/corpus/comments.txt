@@ -1,0 +1,47 @@
+================
+Line comment
+================
+; this is a comment
+---
+
+(source_file
+  (comment))
+
+================
+Comment after code
+================
+[println "hi"] ; greet the user
+---
+
+(source_file
+  (list
+    (symbol)
+    (string))
+  (comment))
+
+================
+Multiple comments
+================
+; first comment
+; second comment
+---
+
+(source_file
+  (comment)
+  (comment))
+
+================
+Comment between forms
+================
+[defn foo []
+  ; compute result
+  42]
+---
+
+(source_file
+  (list
+    (symbol)
+    (symbol)
+    (list)
+    (comment)
+    (number)))

@@ -1,0 +1,45 @@
+{
+  "name": "tree-sitter-loon",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Loon programming language",
+  "license": "MIT",
+  "main": "bindings/node",
+  "keywords": [
+    "parser",
+    "tree-sitter",
+    "loon"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/loon-lang/tree-sitter-loon"
+  },
+  "files": [
+    "grammar.js",
+    "binding.gyp",
+    "prebuilds/**",
+    "bindings/node/*",
+    "queries/*",
+    "src/**"
+  ],
+  "dependencies": {
+    "nan": "^2.18.0"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.22.0"
+  },
+  "scripts": {
+    "build": "tree-sitter generate && node-gyp build",
+    "test": "tree-sitter test",
+    "parse": "tree-sitter parse"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.loon",
+      "injection-regex": "^loon$",
+      "file-types": [
+        "loon"
+      ],
+      "highlights": "queries/highlights.scm"
+    }
+  ]
+}

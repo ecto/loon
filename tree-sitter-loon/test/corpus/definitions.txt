@@ -1,0 +1,135 @@
+================
+Function definition
+================
+[defn main [] [println "hello"]]
+---
+
+(source_file
+  (list
+    (symbol)
+    (symbol)
+    (list)
+    (list
+      (symbol)
+      (string))))
+
+================
+Function with parameters
+================
+[defn add [x y] [+ x y]]
+---
+
+(source_file
+  (list
+    (symbol)
+    (symbol)
+    (list
+      (symbol)
+      (symbol))
+    (list
+      (symbol)
+      (symbol)
+      (symbol))))
+
+================
+Let binding
+================
+[let [x 42] x]
+---
+
+(source_file
+  (list
+    (symbol)
+    (list
+      (symbol)
+      (number))
+    (symbol)))
+
+================
+Type definition
+================
+[type Option [None [Some T]]]
+---
+
+(source_file
+  (list
+    (symbol)
+    (symbol)
+    (list
+      (symbol)
+      (list
+        (symbol)
+        (symbol)))))
+
+================
+If expression
+================
+[if [> x 0] "positive" "non-positive"]
+---
+
+(source_file
+  (list
+    (symbol)
+    (list
+      (symbol)
+      (symbol)
+      (number))
+    (string)
+    (string)))
+
+================
+Match expression
+================
+[match x
+  0 => "zero"
+  _ => "other"]
+---
+
+(source_file
+  (list
+    (symbol)
+    (symbol)
+    (number)
+    (symbol)
+    (string)
+    (symbol)
+    (symbol)
+    (string)))
+
+================
+Effect definition
+================
+[effect Console
+  [print String Unit]
+  [read-line Unit String]]
+---
+
+(source_file
+  (list
+    (symbol)
+    (symbol)
+    (list
+      (symbol)
+      (symbol)
+      (symbol))
+    (list
+      (symbol)
+      (symbol)
+      (symbol))))
+
+================
+Pipe operator
+================
+[|> data [map inc] [filter even?]]
+---
+
+(source_file
+  (list
+    (symbol)
+    (symbol)
+    (list
+      (symbol)
+      (symbol))
+    (list
+      (symbol)
+      (symbol))))
