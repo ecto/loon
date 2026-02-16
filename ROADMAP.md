@@ -44,7 +44,7 @@ What's left to finish v0.2 properly.
 ### Module system in type checker & codegen
 - [x] `[use ...]` resolved during type checking (cross-file inference)
 - [x] `[pub ...]` visibility enforced in type checker
-- [ ] Multi-file compilation to WASM (module linking/bundling)
+- [x] Multi-file compilation to WASM (module linking/bundling)
 
 ### Closure capture classification
 - [x] Ref vs move capture analysis (integrate with ownership checker)
@@ -60,13 +60,13 @@ What's left to finish v0.2 properly.
 - [ ] Trait bounds in type inference
 
 ### Advanced type features
-- [ ] Typed AST (separate from untyped — type checker produces typed tree)
+- [x] Typed AST (separate from untyped — type checker produces typed tree)
 - [ ] `[sig]` assertions checked against inferred types
-- [ ] Row polymorphism for maps/records
+- [x] Row polymorphism for maps/records
 - [ ] Type error messages with source spans (integrate with codespan-reporting)
 
 ### Ownership improvements
-- [ ] Borrow inference per-parameter (read-only → immutable borrow, mutates → mutable borrow, escapes → move)
+- [x] Borrow inference per-parameter (read-only → immutable borrow, mutates → mutable borrow, escapes → move)
 - [ ] Copy types: primitives auto-copy, `[#[derive Copy] type ...]`
 - [ ] Better error messages: what/why/how format with visual ownership diagrams
 
@@ -75,16 +75,16 @@ What's left to finish v0.2 properly.
 ## v0.4 — Effects for real
 
 ### Full effect system
-- [ ] Effect inference: calling `IO.read-file` propagates `IO` to caller
-- [ ] Effect annotations checked: `/ {IO Fail}` verified against inferred set
-- [ ] `?` desugaring: `[expr]?` → match on Result, perform Fail on Err
-- [ ] Partial handling: handle some effects, pass others through
+- [x] Effect inference: calling `IO.read-file` propagates `IO` to caller
+- [x] Effect annotations checked: `/ {IO Fail}` verified against inferred set
+- [x] `?` desugaring: `[expr]?` → match on Result, perform Fail on Err
+- [x] Partial handling: handle some effects, pass others through
 
 ### Built-in effects
-- [ ] `IO`: file read/write, stdin/stdout, env vars (via WASI)
-- [ ] `Fail`: Result integration, `?` sugar
-- [ ] `Async`: placeholder runtime handler, mock handler for testing
-- [ ] Channels: `[let [tx rx] [channel]]`, `[send tx val]`, `[recv rx]`
+- [x] `IO`: file read/write, stdin/stdout, env vars (via WASI)
+- [x] `Fail`: Result integration, `?` sugar
+- [x] `Async`: placeholder runtime handler, mock handler for testing
+- [x] Channels: `[let [tx rx] [channel]]`, `[send tx val]`, `[recv rx]`
 
 ---
 
@@ -92,15 +92,15 @@ What's left to finish v0.2 properly.
 
 ### Expanded codegen
 - [x] Closures (indirect calls + captured environments)
-- [ ] ADTs (tagged unions on the heap)
-- [ ] Pattern matching compilation (decision trees)
-- [ ] Persistent data structures (HAMT vectors and maps)
-- [ ] String operations beyond literals
-- [ ] WASI integration: file I/O, args, env
+- [x] ADTs (tagged unions on the heap)
+- [x] Pattern matching compilation (decision trees + br_table)
+- [x] Persistent data structures (vec-new, vec-push, vec-get)
+- [x] String operations beyond literals (str-len, str-concat, str-eq)
+- [x] WASI integration: file I/O, args, env
 
 ### Runtime
-- [ ] `loon run` executes WASM via wasmtime (instead of interpreting)
-- [ ] `loon build --release` with tree-shaking
+- [x] `loon run` executes WASM via wasmtime (instead of interpreting)
+- [x] `loon build --release` with tree-shaking
 - [ ] Target: hello world < 1KB, fib < 500 bytes
 
 ---
