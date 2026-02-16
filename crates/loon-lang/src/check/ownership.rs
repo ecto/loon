@@ -28,6 +28,17 @@ enum BindingState {
     MutBorrowed,
 }
 
+/// How a function uses a particular parameter.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ParamMode {
+    /// Parameter is only read — immutable borrow at call site.
+    Borrow,
+    /// Parameter is mutated (push!, set!) — mutable borrow at call site.
+    MutBorrow,
+    /// Parameter escapes (returned, stored in data structure) — move at call site.
+    Move,
+}
+
 #[derive(Debug, Clone)]
 struct Binding {
     state: BindingState,
@@ -48,6 +59,8 @@ pub struct OwnershipChecker<'a> {
     type_of: Option<&'a HashMap<NodeId, Type>>,
     /// Substitution for resolving type variables
     subst: Option<&'a Subst>,
+    /// Per-parameter borrow/move modes for analyzed user-defined functions
+    fn_param_modes: HashMap<String, Vec<ParamMode>>,
 }
 
 impl<'a> OwnershipChecker<'a> {
@@ -71,6 +84,7 @@ impl<'a> OwnershipChecker<'a> {
             copy_types,
             type_of: None,
             subst: None,
+            fn_param_modes: HashMap::new(),
         }
     }
 
@@ -217,6 +231,186 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// Analyze a function body to determine how each parameter is used.
+    /// `param_names` is the list of parameter names, `body` is the function body expressions.
+    fn analyze_param_modes(&self, param_names: &[String], body: &[Expr]) -> Vec<ParamMode> {
+        let mut modes: Vec<ParamMode> = vec![ParamMode::Borrow; param_names.len()];
+        for expr in body {
+            self.classify_expr(expr, param_names, &mut modes, false);
+        }
+        // The last expression in the body is in return position
+        if let Some(last) = body.last() {
+            self.classify_expr(last, param_names, &mut modes, true);
+        }
+        modes
+    }
+
+    /// Walk an expression classifying how each parameter is used.
+    /// `in_return_pos` is true when this expression is the tail/return position.
+    fn classify_expr(
+        &self,
+        expr: &Expr,
+        param_names: &[String],
+        modes: &mut [ParamMode],
+        in_return_pos: bool,
+    ) {
+        match &expr.kind {
+            ExprKind::Symbol(name) => {
+                if in_return_pos {
+                    // A bare symbol in return position means it escapes
+                    if let Some(idx) = param_names.iter().position(|p| p == name) {
+                        Self::escalate(&mut modes[idx], ParamMode::Move);
+                    }
+                }
+            }
+            ExprKind::List(items) if !items.is_empty() => {
+                if let ExprKind::Symbol(head) = &items[0].kind {
+                    match head.as_str() {
+                        "defn" | "fn" | "type" | "trait" | "impl" | "sig" | "pub" | "test" => {
+                            // Don't descend into nested definitions
+                        }
+                        "let" => {
+                            // Analyze value expressions but not the binding name
+                            // [let name val] or [let mut name val]
+                            let val_start = if items.len() > 2 {
+                                if matches!(&items[1].kind, ExprKind::Symbol(s) if s == "mut") {
+                                    3
+                                } else {
+                                    2
+                                }
+                            } else {
+                                2
+                            };
+                            for item in items.iter().skip(val_start) {
+                                self.classify_expr(item, param_names, modes, false);
+                            }
+                        }
+                        "if" => {
+                            // condition is not in return position
+                            if items.len() > 1 {
+                                self.classify_expr(&items[1], param_names, modes, false);
+                            }
+                            // then and else branches inherit return position
+                            for item in items.iter().skip(2) {
+                                self.classify_expr(item, param_names, modes, in_return_pos);
+                            }
+                        }
+                        "do" => {
+                            // All but last are not in return position
+                            let body = &items[1..];
+                            if !body.is_empty() {
+                                for item in &body[..body.len() - 1] {
+                                    self.classify_expr(item, param_names, modes, false);
+                                }
+                                self.classify_expr(
+                                    &body[body.len() - 1],
+                                    param_names,
+                                    modes,
+                                    in_return_pos,
+                                );
+                            }
+                        }
+                        "push!" | "set!" => {
+                            // First arg is mutably borrowed
+                            if items.len() > 1 {
+                                if let ExprKind::Symbol(name) = &items[1].kind {
+                                    if let Some(idx) = param_names.iter().position(|p| p == name) {
+                                        Self::escalate(&mut modes[idx], ParamMode::MutBorrow);
+                                    }
+                                }
+                            }
+                            // Remaining args: analyze normally
+                            for item in items.iter().skip(2) {
+                                self.classify_expr(item, param_names, modes, false);
+                            }
+                        }
+                        fname if self.borrow_fns.contains(fname) => {
+                            // Builtin borrow function — args are only borrowed
+                            for item in items.iter().skip(1) {
+                                // Still recurse for nested exprs, but symbols here are just borrowed
+                                if !matches!(&item.kind, ExprKind::Symbol(name) if param_names.contains(name))
+                                {
+                                    self.classify_expr(item, param_names, modes, false);
+                                }
+                                // If it's a param symbol passed to a borrow fn, mode stays Borrow (no-op)
+                            }
+                        }
+                        fname => {
+                            // User-defined or unknown function call.
+                            // Check if we have analyzed param modes for this callee.
+                            let callee_modes = self.fn_param_modes.get(fname).cloned();
+                            for (i, item) in items.iter().skip(1).enumerate() {
+                                if let ExprKind::Symbol(name) = &item.kind {
+                                    if let Some(idx) =
+                                        param_names.iter().position(|p| p == name)
+                                    {
+                                        // Determine what mode the callee uses for this arg position
+                                        let arg_mode = callee_modes
+                                            .as_ref()
+                                            .and_then(|m| m.get(i).copied())
+                                            .unwrap_or(ParamMode::Move);
+                                        Self::escalate(&mut modes[idx], arg_mode);
+                                        continue;
+                                    }
+                                }
+                                self.classify_expr(item, param_names, modes, false);
+                            }
+                        }
+                    }
+                } else {
+                    // Head is not a symbol — generic call, treat all args as Move
+                    for item in items.iter().skip(1) {
+                        if let ExprKind::Symbol(name) = &item.kind {
+                            if let Some(idx) = param_names.iter().position(|p| p == name) {
+                                Self::escalate(&mut modes[idx], ParamMode::Move);
+                                continue;
+                            }
+                        }
+                        self.classify_expr(item, param_names, modes, false);
+                    }
+                }
+            }
+            ExprKind::Vec(items) | ExprKind::Set(items) | ExprKind::Tuple(items) => {
+                // Stored in a data structure → Move
+                for item in items {
+                    if let ExprKind::Symbol(name) = &item.kind {
+                        if let Some(idx) = param_names.iter().position(|p| p == name) {
+                            Self::escalate(&mut modes[idx], ParamMode::Move);
+                            continue;
+                        }
+                    }
+                    self.classify_expr(item, param_names, modes, false);
+                }
+            }
+            ExprKind::Map(pairs) => {
+                for (k, v) in pairs {
+                    for item in [k, v] {
+                        if let ExprKind::Symbol(name) = &item.kind {
+                            if let Some(idx) = param_names.iter().position(|p| p == name) {
+                                Self::escalate(&mut modes[idx], ParamMode::Move);
+                                continue;
+                            }
+                        }
+                        self.classify_expr(item, param_names, modes, false);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Escalate a param mode: Borrow < MutBorrow < Move
+    fn escalate(mode: &mut ParamMode, new: ParamMode) {
+        let rank = |m: &ParamMode| match m {
+            ParamMode::Borrow => 0,
+            ParamMode::MutBorrow => 1,
+            ParamMode::Move => 2,
+        };
+        if rank(&new) > rank(mode) {
+            *mode = new;
+        }
+    }
+
     pub fn check_expr(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Symbol(name) => {
@@ -300,11 +494,32 @@ impl<'a> OwnershipChecker<'a> {
             }
         }
 
-        // Generic function call — head is borrowed, args are moved
+        // Generic function call — head is borrowed, args use per-param modes if available
+        let callee_name = if let ExprKind::Symbol(s) = &items[0].kind {
+            Some(s.clone())
+        } else {
+            None
+        };
+        let callee_modes = callee_name.and_then(|n| self.fn_param_modes.get(&n).cloned());
+
         self.check_expr(&items[0]);
-        for item in &items[1..] {
+        for (i, item) in items[1..].iter().enumerate() {
             if let ExprKind::Symbol(ref name) = item.kind {
-                self.move_binding(name, item.span);
+                let mode = callee_modes
+                    .as_ref()
+                    .and_then(|m| m.get(i).copied())
+                    .unwrap_or(ParamMode::Move);
+                match mode {
+                    ParamMode::Borrow => {
+                        self.use_binding(name, item.span);
+                    }
+                    ParamMode::MutBorrow => {
+                        self.mut_borrow(name, item.span);
+                    }
+                    ParamMode::Move => {
+                        self.move_binding(name, item.span);
+                    }
+                }
             } else {
                 self.check_expr(item);
             }
@@ -325,8 +540,33 @@ impl<'a> OwnershipChecker<'a> {
             }
         }
 
+        // Extract function name for param mode registration
+        let fn_name = if let ExprKind::Symbol(name) = &args[0].kind {
+            Some(name.clone())
+        } else {
+            None
+        };
+
         // Register params with type-based Copy detection
         if let ExprKind::List(params) = &args[1].kind {
+            // Analyze param modes before checking the body
+            let param_names: Vec<String> = params
+                .iter()
+                .filter_map(|p| {
+                    if let ExprKind::Symbol(name) = &p.kind {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if let Some(ref name) = fn_name {
+                let body = &args[body_start..];
+                let modes = self.analyze_param_modes(&param_names, body);
+                self.fn_param_modes.insert(name.clone(), modes);
+            }
+
             self.push_scope();
             for p in params {
                 if let ExprKind::Symbol(name) = &p.kind {
@@ -506,6 +746,73 @@ mod tests {
         assert!(
             errors.iter().any(|e| e.message.contains("moved")),
             "Vec is not Copy, should error: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn param_inference_read_only_no_move() {
+        // A function that only reads its param (passes to println) should not move it
+        let errors = check(
+            r#"
+            [defn greet [name] [println name]]
+            [let name "alice"]
+            [greet name]
+            [println name]
+        "#,
+        );
+        assert!(errors.is_empty(), "read-only param should not move: {:?}", errors);
+    }
+
+    #[test]
+    fn param_inference_returned_param_moves() {
+        // A function that returns its param should move it
+        let errors = check(
+            r#"
+            [defn identity [x] x]
+            [let name "alice"]
+            [identity name]
+            [println name]
+        "#,
+        );
+        assert!(
+            errors.iter().any(|e| e.message.contains("moved")),
+            "returned param should move: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn param_inference_mixed_params() {
+        // One param is read-only, one is returned — only the returned one should move
+        let errors = check(
+            r#"
+            [defn pick_second [a b] [println a] b]
+            [let x "hello"]
+            [let y "world"]
+            [pick_second x y]
+            [println x]
+        "#,
+        );
+        // x should NOT be moved (only read via println inside pick_second)
+        assert!(errors.is_empty(), "read-only param x should not move: {:?}", errors);
+    }
+
+    #[test]
+    fn param_inference_mixed_params_escaped_is_moved() {
+        // The returned param should be moved
+        let errors = check(
+            r#"
+            [defn pick_second [a b] [println a] b]
+            [let x "hello"]
+            [let y "world"]
+            [pick_second x y]
+            [println y]
+        "#,
+        );
+        assert!(
+            errors.iter().any(|e| e.message.contains("moved")),
+            "returned param y should move: {:?}",
             errors
         );
     }
