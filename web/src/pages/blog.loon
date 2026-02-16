@@ -1,7 +1,7 @@
 ; blog.loon — Blog index page
 
 [defn blog-features []
-  [ul-el
+  [ul-el {:style {:margin-left "1.5rem" :color [color :muted] :line-height "1.8"}}
     [li-el "Full interpreter with 50+ builtins"]
     [li-el "Hindley-Milner type inference"]
     [li-el "Ownership checking (inferred)"]
@@ -14,20 +14,50 @@
 
 [defn blog-page []
   [div {:class "page"}
-    [main-el {:class "section"}
-      [h1 "Blog"]
-      [p {:class "section-subtitle"} "Dispatches from the lake."]
-      [article-el {:class "blog-post"}
-        [h2 "Hello, World — Introducing Loon"]
-        [p {:class "blog-meta"} "February 2026"]
-        [p "Today we're sharing Loon with the world. It started as a question: what if a LISP had invisible types, Rust-style ownership without annotations, and algebraic effects instead of exceptions?"]
-        [p "Loon is the answer. It's a v0.1 — the interpreter works, type inference works, the effect system works. There's a long road to v1.0, but the foundations are solid."]
-        [p "And this website? It's written entirely in Loon. The Rust interpreter compiles to WebAssembly, evaluates Loon source code in your browser, and manipulates the DOM through a thin bridge. It's Loon all the way down."]
-        [h3 "What works today"]
+    [main-el {:style {:max-width "720px"
+                      :margin "0 auto"
+                      :padding "3rem 2rem"}}
+      [h1 {:style {:font-family [font :serif]
+                   :color [color :primary]
+                   :font-size "2.5rem"
+                   :margin-bottom "0.5rem"}}
+        "Blog"]
+      [p {:style {:color [color :muted]
+                  :font-family [font :serif]
+                  :font-size "1.1rem"
+                  :margin-bottom "2.5rem"}}
+        "Dispatches from the lake."]
+      [article-el {:style {:background [color :white]
+                           :border [str "1px solid " [color :border]]
+                           :border-radius [radius :md]
+                           :padding "2rem"}}
+        [h2 {:style {:font-family [font :serif]
+                     :color [color :primary]
+                     :font-size "1.8rem"
+                     :margin-bottom "0.5rem"}}
+          "Hello, World — Introducing Loon"]
+        [p {:style {:color [color :accent] :font-size "0.9rem" :font-weight "600" :margin-bottom "1rem"}}
+          "February 2026"]
+        [div {:style {:font-family [font :serif] :line-height "1.7" :color [color :text]}}
+          [p "Today we're sharing Loon with the world. It started as a question: what if a LISP had invisible types, Rust-style ownership without annotations, and algebraic effects instead of exceptions?"]
+          [p "Loon is the answer. It's a v0.1 — the interpreter works, type inference works, the effect system works. There's a long road to v1.0, but the foundations are solid."]
+          [p "And this website? It's written entirely in Loon. The Rust interpreter compiles to WebAssembly, evaluates Loon source code in your browser, and manipulates the DOM through a thin bridge. It's Loon all the way down."]]
+        [h3 {:style {:font-family [font :serif]
+                     :color [color :primary]
+                     :font-size "1.3rem"
+                     :margin-top "1.5rem"
+                     :margin-bottom "0.75rem"}}
+          "What works today"]
         [blog-features]
-        [h3 "What's next"]
-        [p "See the roadmap for our full plan. The immediate priorities are traits/protocols, a more complete effect system, and better error messages."]
-        [div {:class "hero-ctas"}
-          [a-el {:class "cta-button" :href "/tour"} "Take the tour"]
-          [a-el {:class "cta-button-secondary" :href "/roadmap"} "See the roadmap"]]]]
+        [h3 {:style {:font-family [font :serif]
+                     :color [color :primary]
+                     :font-size "1.3rem"
+                     :margin-top "1.5rem"
+                     :margin-bottom "0.75rem"}}
+          "What's next"]
+        [p {:style {:color [color :muted] :line-height "1.7"}}
+          "Traits, a more complete effect system, and better error messages are the immediate priorities."]
+        [row {:gap :sm :style {:margin-top "1.5rem"}}
+          [btn {:href "/tour"} "Take the tour"]
+          [btn-secondary {:href "/play"} "Try the playground"]]]]
     [footer-component]]]

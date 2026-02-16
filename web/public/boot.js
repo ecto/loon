@@ -41,7 +41,7 @@ function domBridge(op, args) {
     }
     case 'setStyle': {
       const node = getNode(args[0]);
-      if (node) node.style[args[1]] = args[2];
+      if (node) node.style.setProperty(args[1], args[2]);
       return null;
     }
     case 'appendChild': {
@@ -188,6 +188,9 @@ async function boot() {
     // Load and evaluate Loon source files in order
     const sources = [
       'src/ui.loon',
+      'src/lib/utils.loon',
+      'src/lib/theme.loon',
+      'src/lib/components.loon',
       'src/router.loon',
       'src/components/nav.loon',
       'src/components/footer.loon',
@@ -195,11 +198,8 @@ async function boot() {
       'src/components/editor.loon',
       'src/pages/home.loon',
       'src/pages/tour.loon',
-      'src/pages/install.loon',
       'src/pages/play.loon',
       'src/pages/blog.loon',
-      'src/pages/roadmap.loon',
-      'src/pages/community.loon',
       'src/app.loon',
     ];
 

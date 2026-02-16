@@ -99,7 +99,7 @@
           [each [fn [se]
             [let sk [nth se 0]]
             [let sv [nth se 1]]
-            [dom/set-style node [str sk] [str sv]]]
+            [dom/set-style node [name sk] [str sv]]]
             [entries v]]
           [dom/set-attribute node key-str [str v]]]]]]
     [entries props]]]

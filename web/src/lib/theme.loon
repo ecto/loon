@@ -1,0 +1,52 @@
+; theme.loon — Design tokens and theme helpers
+
+; --- Color Tokens ---
+[let colors {
+  :primary   "#1e3a5f"
+  :accent    "#d4a843"
+  :bg        "#faf8f5"
+  :white     "#ffffff"
+  :black     "#1a1a1a"
+  :text      "#2c2c2c"
+  :muted     "#5a5a5a"
+  :border    "#e0ddd8"
+  :green     "#2d5016"
+  :red       "#c0392b"
+}]
+
+; --- Spacing Tokens ---
+[let spacing {
+  :xs "0.5rem"
+  :sm "1rem"
+  :md "2rem"
+  :lg "4rem"
+  :xl "6rem"
+}]
+
+; --- Font Tokens ---
+[let fonts {
+  :serif "'Crimson Pro', 'Georgia', 'Times New Roman', serif"
+  :sans "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif"
+  :mono "'SF Mono', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace"
+}]
+
+; --- Radius Tokens ---
+[let radii {
+  :sm "4px"
+  :md "8px"
+  :lg "16px"
+}]
+
+; --- Shadow Tokens ---
+[let shadows {
+  :light "0 2px 8px rgba(30, 58, 95, 0.08)"
+  :medium "0 4px 16px rgba(30, 58, 95, 0.12)"
+  :heavy "0 8px 32px rgba(30, 58, 95, 0.18)"
+}]
+
+; --- Token Accessors ---
+[defn color [key] [get colors key]]
+[defn space [key] [get spacing key]]
+[defn font [key] [get fonts key]]
+[defn radius [key] [get radii key]]
+[defn shadow [key] [get shadows key]]

@@ -1,55 +1,97 @@
-; home.loon — Landing page
-
-[defn hero-code-example []
-  [str
-    "[defn greet [name]\n"
-    "  [str \"Hello, \" name \"!\"]]\n"
-    "\n"
-    "[|> [range 1 5]\n"
-    "  [map [fn [n] [* n n]]]\n"
-    "  [filter [fn [n] [> n 4]]]\n"
-    "  [each println]]"]]
+; home.loon — Landing page, simplified centered design
 
 [defn home-page []
   [div {:class "page"}
-    ; --- Hero ---
-    [section-el {:class "hero"}
-      [div {:class "hero-content"}
-        [h1 {:class "hero-title"} "A LISP that flies."]
-        [p {:class "hero-subtitle"}
-          "Invisible types. Ownership without annotations. Effects, not exceptions. A modern language that gets out of your way."]
-        [div {:class "hero-ctas"}
-          [a-el {:class "cta-button" :href "/tour"} "Take the tour"]
-          [a-el {:class "cta-button-secondary" :href "/play"} "Try it now"]]
-        [div {:class "hero-code"}
-          [code-block {:label "hello.loon"} [hero-code-example]]]]
-      [div {:class "hero-illustration"}
-        [img-el {:src "loon-bird.svg" :alt "Loon bird" :class "hero-bird"}]]]
 
-    ; --- Four Pillars ---
-    [section-el {:class "section pillars"}
-      [div {:class "pillars-grid"}
-        [div {:class "pillar-card"}
-          [div {:class "pillar-icon"} "T"]
-          [h3 "Types you never write"]
-          [p "Full Hindley-Milner inference means the compiler knows every type. You never annotate — your editor shows them when you want."]]
-        [div {:class "pillar-card"}
-          [div {:class "pillar-icon"} "O"]
-          [h3 "Ownership without annotations"]
-          [p "Rust-style memory safety, inferred. No lifetime annotations, no borrow checker fights. The compiler figures it out."]]
-        [div {:class "pillar-card"}
-          [div {:class "pillar-icon"} "E"]
-          [h3 "Effects, not exceptions"]
-          [p "Algebraic effects replace try/catch, async/await, and state management. One elegant pattern for all side effects."]]
-        [div {:class "pillar-card"}
-          [div {:class "pillar-icon"} "M"]
-          [h3 "Modern ergonomics"]
-          [p "Pipe operator, pattern matching, destructuring, multi-arity functions. The good parts of every language, unified."]]]]
+    ; --- Hero ---
+    [section-el {:style {:max-width "720px"
+                         :margin "0 auto"
+                         :padding "5rem 2rem 3rem"
+                         :text-align "center"}}
+      [h1 {:class "hero-title"
+           :style {:font-family [font :serif]
+                   :font-size "3.5rem"
+                   :font-weight "700"
+                   :color [color :primary]
+                   :line-height "1.1"
+                   :margin-bottom "1.5rem"}}
+        "A LISP that flies."]
+      [p {:style {:font-size "1.25rem"
+                  :line-height "1.7"
+                  :color [color :muted]
+                  :font-family [font :serif]
+                  :max-width "560px"
+                  :margin "0 auto 2rem"}}
+        "Invisible types. Ownership without annotations. Effects, not exceptions. A modern language that gets out of your way."]
+      [row {:gap :sm :class "hero-ctas"
+            :style {:justify-content "center"}}
+        [btn {:href "/tour"} "Take the tour"]
+        [btn-secondary {:href "/play"} "Try it now"]]]
+
+    ; --- Code Example ---
+    [section-el {:style {:max-width "640px"
+                         :margin "0 auto"
+                         :padding "2rem 2rem"}}
+      [code-block {:label "hello.loon"} [str
+        "[defn greet [name]\n"
+        "  [str \"Hello, \" name \"!\"]]\n"
+        "\n"
+        "[|> [range 1 10]\n"
+        "  [map [fn [n] [* n n]]]\n"
+        "  [filter [fn [n] [> n 4]]]\n"
+        "  [each println]]"]]]
+
+    ; --- Features ---
+    [section-el {:style {:max-width "760px"
+                         :margin "0 auto"
+                         :padding "3rem 2rem"}}
+      [div {:style {:display "grid"
+                    :grid-template-columns "1fr 1fr"
+                    :gap "1.5rem"}}
+        [card
+          [h3 {:style {:font-family [font :serif]
+                       :color [color :primary]
+                       :font-size "1.2rem"
+                       :margin-bottom "0.5rem"}}
+            "Types you never write"]
+          [p {:style {:color [color :muted] :font-size "0.95rem" :line-height "1.6"}}
+            "Full Hindley-Milner inference. The compiler knows every type — you never annotate."]]
+        [card
+          [h3 {:style {:font-family [font :serif]
+                       :color [color :primary]
+                       :font-size "1.2rem"
+                       :margin-bottom "0.5rem"}}
+            "Ownership without annotations"]
+          [p {:style {:color [color :muted] :font-size "0.95rem" :line-height "1.6"}}
+            "Rust-style memory safety, inferred. No lifetime annotations, no borrow checker fights."]]
+        [card
+          [h3 {:style {:font-family [font :serif]
+                       :color [color :primary]
+                       :font-size "1.2rem"
+                       :margin-bottom "0.5rem"}}
+            "Effects, not exceptions"]
+          [p {:style {:color [color :muted] :font-size "0.95rem" :line-height "1.6"}}
+            "Algebraic effects replace try/catch, async/await, and state. One elegant pattern."]]
+        [card
+          [h3 {:style {:font-family [font :serif]
+                       :color [color :primary]
+                       :font-size "1.2rem"
+                       :margin-bottom "0.5rem"}}
+            "Modern ergonomics"]
+          [p {:style {:color [color :muted] :font-size "0.95rem" :line-height "1.6"}}
+            "Pipes, pattern matching, destructuring, multi-arity. The good parts, unified."]]]]
 
     ; --- Interactive Demo ---
-    [section-el {:class "section demo-section"}
-      [h2 "Try it right here"]
-      [p {:class "section-subtitle"} "This editor runs Loon in your browser — the same interpreter that renders this page."]
+    [section-el {:style {:max-width "760px"
+                         :margin "0 auto"
+                         :padding "2rem 2rem"}}
+      [h2 {:style {:font-family [font :serif]
+                   :color [color :primary]
+                   :font-size "2rem"
+                   :margin-bottom "0.5rem"}}
+        "Try it right here"]
+      [p {:style {:color [color :muted] :margin-bottom "1.5rem"}}
+        "This editor runs Loon in your browser — the same interpreter that renders this page."]
       [editor-component [str
         "; Fibonacci with pattern matching\n"
         "[defn fib [n]\n"
@@ -62,24 +104,20 @@
         "  [map fib]\n"
         "  [each println]]"]]]
 
-    ; --- Vision ---
-    [section-el {:class "section vision-section"}
-      [div {:class "vision-content"}
-        [h2 "The language we wished existed"]
-        [p {:class "vision-text"}
-          "We wanted a language with the elegance of Clojure, the safety of Rust, the ergonomics of modern TypeScript, and the simplicity of a LISP. So we built one."]
-        [p {:class "vision-text"}
-          "Loon compiles to WebAssembly. It runs everywhere. And this website? It's written entirely in Loon — interpreted by a Loon runtime compiled to WASM, rendering to the DOM through algebraic effects. Turtles all the way down."]]]
-
-    ; --- Quickstart ---
-    [section-el {:class "section quickstart-section"}
-      [h2 "Get started in 30 seconds"]
-      [div {:class "install-steps"}
-        [code-block {:label "Terminal"} [str
-          "curl -fsSL https://loon-lang.org/install.sh | sh\n"
-          "loon new my-project\n"
-          "loon run src/main.loon"]]
-        [p {:class "section-note"} "Or "]
-        [a-el {:class "cta-button-secondary" :href "/play"} "skip the install and try it in your browser"]]]
+    ; --- Install ---
+    [section-el {:style {:max-width "640px"
+                         :margin "0 auto"
+                         :padding "3rem 2rem"
+                         :text-align "center"}}
+      [h2 {:style {:font-family [font :serif]
+                   :color [color :primary]
+                   :font-size "2rem"
+                   :margin-bottom "1rem"}}
+        "Get started"]
+      [code-block {:label "Terminal"} "curl -fsSL https://loon-lang.org/install.sh | sh"]
+      [p {:style {:color [color :muted] :margin-top "1rem" :font-size "0.95rem"}}
+        "Or "
+        [a-el {:href "/play" :class "link"} "try it in your browser"]
+        "."]]
 
     [footer-component]]]

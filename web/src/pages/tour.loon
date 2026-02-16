@@ -1,22 +1,37 @@
 ; tour.loon — 10-minute language tour
 
 [defn tour-step [title desc code]
-  [article-el {:class "tour-step"}
-    [h2 title]
-    [p desc]
+  [article-el {:class "tour-step"
+               :style {:margin-bottom "2.5rem"
+                       :padding "2rem"
+                       :background [color :white]
+                       :border-radius [radius :md]
+                       :border [str "1px solid " [color :border]]
+                       :border-left [str "4px solid " [color :accent]]}}
+    [h2 {:style {:font-family [font :serif]
+                 :color [color :primary]
+                 :font-size "1.5rem"
+                 :margin-bottom "0.5rem"}} title]
+    [p {:style {:color [color :muted] :margin-bottom "1rem" :line-height "1.7"}} desc]
     [code-block code]]]
 
 [defn tour-ctas []
-  [div {:class "hero-ctas"}
-    [a-el {:class "cta-button" :href "/install"} "Install Loon"]
-    [a-el {:class "cta-button-secondary" :href "/play"} "Try the playground"]
-    [a-el {:class "cta-button-secondary" :href "/roadmap"} "See the roadmap"]]]
+  [row {:gap :sm :style {:margin-top "1.5rem"}}
+    [btn {:href "/play"} "Try the playground"]
+    [btn-secondary {:href "/"} "Back to home"]]]
 
 [defn tour-page []
   [div {:class "page"}
-    [main-el {:class "section tour"}
-      [h1 "A 10-Minute Tour of Loon"]
-      [p {:class "section-subtitle"} "Everything you need to know to start writing Loon."]
+    [main-el {:style {:max-width "720px"
+                      :margin "0 auto"
+                      :padding "3rem 2rem"}}
+      [h1 {:style {:font-family [font :serif]
+                   :color [color :primary]
+                   :font-size "2.5rem"
+                   :margin-bottom "0.5rem"}}
+        "A 10-Minute Tour of Loon"]
+      [p {:style {:color [color :muted] :margin-bottom "2.5rem" :font-size "1.1rem"}}
+        "Everything you need to know to start writing Loon."]
 
       [tour-step "1. Hello, World"
         "Loon uses square brackets for everything. A function call is just a list: [function arg1 arg2]."
@@ -50,8 +65,17 @@
         "Rich collection types with destructuring in function params and let bindings."
         [str "[let #[a b c] #[1 2 3]]\n[let {name age} {:name \"Loon\" :age 1}]\n\n[defn process-pair [[x y]]\n  [+ x y]]"]]
 
-      [article-el {:class "tour-step"}
-        [h2 "What's next?"]
-        [p "You've seen the core of Loon. Traits, row polymorphism, and content-addressed definitions are coming."]
+      [article-el {:style {:margin-bottom "2.5rem"
+                           :padding "2rem"
+                           :background [color :white]
+                           :border-radius [radius :md]
+                           :border [str "1px solid " [color :border]]
+                           :border-left [str "4px solid " [color :accent]]}}
+        [h2 {:style {:font-family [font :serif]
+                     :color [color :primary]
+                     :font-size "1.5rem"
+                     :margin-bottom "0.5rem"}} "What's next?"]
+        [p {:style {:color [color :muted] :line-height "1.7"}}
+          "You've seen the core of Loon. Traits, row polymorphism, and content-addressed definitions are coming."]
         [tour-ctas]]]
     [footer-component]]]

@@ -1,27 +1,39 @@
 ; play.loon — Playground page
 
 [defn play-examples []
-  [div {:class "playground-examples"}
-    [h3 "Examples"]
-    [div {:class "pillars-grid"}
-      [div {:class "pillar-card example-card"}
-        [h4 "Hello World"]
+  [div {:style {:margin-top "2rem"}}
+    [h3 {:style {:font-family [font :serif]
+                 :color [color :primary]
+                 :font-size "1.3rem"
+                 :margin-bottom "1rem"}} "Examples"]
+    [div {:style {:display "grid"
+                  :grid-template-columns "1fr 1fr"
+                  :gap "1rem"}}
+      [card
+        [h4 {:style {:font-family [font :serif] :color [color :primary] :margin-bottom "0.5rem"}} "Hello World"]
         [code-block "[println \"Hello, world!\"]"]]
-      [div {:class "pillar-card example-card"}
-        [h4 "Fibonacci"]
+      [card
+        [h4 {:style {:font-family [font :serif] :color [color :primary] :margin-bottom "0.5rem"}} "Fibonacci"]
         [code-block "[defn fib [n]\n  [match n\n    0 => 0  1 => 1\n    _ => [+ [fib [- n 1]]\n            [fib [- n 2]]]]]\n[fib 10]"]]
-      [div {:class "pillar-card example-card"}
-        [h4 "Effects"]
+      [card
+        [h4 {:style {:font-family [font :serif] :color [color :primary] :margin-bottom "0.5rem"}} "Effects"]
         [code-block "[effect Ask\n  [fn question [q]]]\n\n[handle\n  [Ask.question \"name?\"]\n  [Ask.question q] =>\n    [resume \"Loon\"]]"]]
-      [div {:class "pillar-card example-card"}
-        [h4 "Pipelines"]
+      [card
+        [h4 {:style {:font-family [font :serif] :color [color :primary] :margin-bottom "0.5rem"}} "Pipelines"]
         [code-block "[|> [range 1 100]\n  [filter [fn [n] [= 0 [% n 3]]]]\n  [map [fn [n] [* n n]]]\n  [take 5]]"]]]]]
 
 [defn play-page []
   [div {:class "page"}
-    [main-el {:class "section playground-section"}
-      [h1 "Playground"]
-      [p {:class "section-subtitle"} "Write and run Loon in your browser. This page is itself written in Loon."]
+    [main-el {:style {:max-width "900px"
+                      :margin "0 auto"
+                      :padding "3rem 2rem"}}
+      [h1 {:style {:font-family [font :serif]
+                   :color [color :primary]
+                   :font-size "2.5rem"
+                   :margin-bottom "0.5rem"}}
+        "Playground"]
+      [p {:style {:color [color :muted] :margin-bottom "2rem"}}
+        "Write and run Loon in your browser. This page is itself written in Loon."]
       [editor-component [str
         "; Try some Loon!\n\n"
         "[type Shape [Circle f64] [Rect f64 f64] Point]\n\n"

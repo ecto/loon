@@ -1,17 +1,12 @@
 ; app.loon — Root component, route table, layout
 
 ; --- Route Table ---
-; Each route is a vector [path page-fn]
-
 [defn route-table []
   #[
     #["/" home-page]
     #["/tour" tour-page]
-    #["/install" install-page]
     #["/play" play-page]
     #["/blog" blog-page]
-    #["/roadmap" roadmap-page]
-    #["/community" community-page]
   ]]
 
 ; --- App Component ---

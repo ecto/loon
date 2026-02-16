@@ -1,0 +1,163 @@
+; components.loon — Styled component constructors using theme tokens
+
+; --- Container: centered max-width wrapper ---
+[defn container [first & rest]
+  [let props [if [map? first] first {}]]
+  [let children [if [map? first] rest [cons first rest]]]
+  [let wide [get props :wide false]]
+  [let max-w [if wide "1000px" "720px"]]
+  [let cls [get props :class ""]]
+  [div {:class [cx "container" cls]
+        :style {:max-width max-w
+                :margin "0 auto"
+                :padding [str "0 " [space :md]]}}
+    [|> children [map coerce-child]]]]
+
+; --- Stack: vertical flex with gap ---
+[defn stack [first & rest]
+  [let props [if [map? first] first {}]]
+  [let children [if [map? first] rest [cons first rest]]]
+  [let gap-key [get props :gap :md]]
+  [let cls [get props :class ""]]
+  [div {:class [cx "stack" cls]
+        :style {:display "flex"
+                :flex-direction "column"
+                :gap [space gap-key]}}
+    [|> children [map coerce-child]]]]
+
+; --- Row: horizontal flex with gap ---
+[defn row [first & rest]
+  [let props [if [map? first] first {}]]
+  [let children [if [map? first] rest [cons first rest]]]
+  [let gap-key [get props :gap :sm]]
+  [let cls [get props :class ""]]
+  [div {:class [cx "row" cls]
+        :style {:display "flex"
+                :align-items "center"
+                :gap [space gap-key]
+                :flex-wrap "wrap"}}
+    [|> children [map coerce-child]]]]
+
+; --- Prose: serif text container ---
+[defn prose [first & rest]
+  [let props [if [map? first] first {}]]
+  [let children [if [map? first] rest [cons first rest]]]
+  [let cls [get props :class ""]]
+  [div {:class [cx "prose" cls]
+        :style {:font-family [font :serif]
+                :line-height "1.7"
+                :font-size "1.1rem"
+                :color [color :text]}}
+    [|> children [map coerce-child]]]]
+
+; --- Heading: serif headings with lake-blue color ---
+[defn heading [level first & rest]
+  [let props [if [map? first] first {}]]
+  [let children [if [map? first] rest [cons first rest]]]
+  [let cls [get props :class ""]]
+  [let sizes {"h1" "3rem" "h2" "2.2rem" "h3" "1.5rem" "h4" "1.25rem"}]
+  [let weights {"h1" "700" "h2" "600" "h3" "600" "h4" "600"}]
+  [let tag [str "h" [str level]]]
+  [El tag
+    {:class cls
+     :style {:font-family [font :serif]
+             :color [color :primary]
+             :font-size [get sizes tag "1.5rem"]
+             :font-weight [get weights tag "600"]
+             :line-height "1.2"
+             :margin-bottom [space :sm]}}
+    [coerce-children [if [map? first] rest [cons first rest]]]]]
+
+; --- Card: white bg, subtle border, optional accent ---
+[defn card [first & rest]
+  [let props [if [map? first] first {}]]
+  [let children [if [map? first] rest [cons first rest]]]
+  [let accent [get props :accent false]]
+  [let cls [get props :class ""]]
+  [div {:class [cx "card" cls]
+        :style [sx {:background [color :white]
+                    :border [str "1px solid " [color :border]]
+                    :border-radius [radius :md]
+                    :padding [space :md]}
+                   [if accent
+                     {:border-left [str "4px solid " [color :accent]]}
+                     {}]]}
+    [|> children [map coerce-child]]]]
+
+; --- Badge: small inline label ---
+[defn badge [text variant]
+  [let bg [match variant
+    "success" => "rgba(45, 80, 22, 0.1)"
+    "warning" => "rgba(212, 168, 67, 0.1)"
+    "info"    => "rgba(30, 58, 95, 0.1)"
+    _         => "rgba(30, 58, 95, 0.1)"]]
+  [let fg [match variant
+    "success" => [color :green]
+    "warning" => [color :accent]
+    "info"    => [color :primary]
+    _         => [color :primary]]]
+  [span {:style {:display "inline-block"
+                 :padding "0.25em 0.6em"
+                 :border-radius [radius :sm]
+                 :font-size "0.85rem"
+                 :font-weight "600"
+                 :background bg
+                 :color fg}}
+    text]]
+
+; --- Buttons: use classes for hover states ---
+[defn btn [first & rest]
+  [let props [if [map? first] first {}]]
+  [let children [if [map? first] rest [cons first rest]]]
+  [let href [get props :href ""]]
+  [let onclick [get props :onclick ""]]
+  [let cls [get props :class ""]]
+  [if [not [= href ""]]
+    [a-el {:class [cx "btn" cls] :href href}
+      [|> children [map coerce-child]]]
+    [button-el {:class [cx "btn" cls] :onclick onclick}
+      [|> children [map coerce-child]]]]]
+
+[defn btn-secondary [first & rest]
+  [let props [if [map? first] first {}]]
+  [let children [if [map? first] rest [cons first rest]]]
+  [let href [get props :href ""]]
+  [let onclick [get props :onclick ""]]
+  [let cls [get props :class ""]]
+  [if [not [= href ""]]
+    [a-el {:class [cx "btn-secondary" cls] :href href}
+      [|> children [map coerce-child]]]
+    [button-el {:class [cx "btn-secondary" cls] :onclick onclick}
+      [|> children [map coerce-child]]]]]
+
+; --- Code Display: wraps code-block with dark theme ---
+[defn code-display [first & rest]
+  [let props [if [map? first] first {}]]
+  [let source [if [map? first] [nth rest 0] first]]
+  [let label [get props :label ""]]
+  [code-block props source]]
+
+; --- Mono: inline monospace text ---
+[defn mono [text]
+  [span {:style {:font-family [font :mono]
+                 :font-size "0.9em"
+                 :background "rgba(30, 58, 95, 0.05)"
+                 :padding "0.2em 0.4em"
+                 :border-radius [radius :sm]}}
+    text]]
+
+; --- Muted: secondary/gray text ---
+[defn muted [first & rest]
+  [let props [if [map? first] first {}]]
+  [let children [if [map? first] rest [cons first rest]]]
+  [p {:style {:color [color :muted] :font-size "0.95rem"}}
+    [|> children [map coerce-child]]]]
+
+; --- Link: styled anchor ---
+[defn link [first & rest]
+  [let props [if [map? first] first {}]]
+  [let children [if [map? first] rest [cons first rest]]]
+  [let href [get props :href "#"]]
+  [let external [get props :external false]]
+  [a-el {:class "link" :href href}
+    [|> children [map coerce-child]]]]

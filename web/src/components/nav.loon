@@ -1,23 +1,41 @@
-; nav.loon — Navigation bar component
+; nav.loon — Minimal navigation: Tour, Playground, GitHub
 
 [defn nav-links []
-  #[#["/" "Home"] #["/tour" "Tour"] #["/install" "Install"]
-    #["/play" "Playground"] #["/blog" "Blog"]
-    #["/roadmap" "Roadmap"] #["/community" "Community"]]]
+  #[#["/tour" "Tour"] #["/play" "Playground"]]]
 
 [defn make-nav-link [current-path link-item]
   [let href [nth link-item 0]]
   [let label [nth link-item 1]]
-  [a-el {:class [str "nav-link" [if [= current-path href] " nav-link-active" ""]]
+  [a-el {:class [cx "nav-link" [when-class [= current-path href] "nav-link-active"]]
          :href href}
     label]]
 
 [defn nav-component [current-path]
   [nav-el {:class "nav"}
-    [div {:class "nav-inner"}
-      [a-el {:class "nav-logo" :href "/"}
+    [div {:style {:max-width "1000px"
+                  :margin "0 auto"
+                  :padding "0.75rem 2rem"
+                  :display "flex"
+                  :align-items "center"
+                  :justify-content "space-between"}}
+      [a-el {:class "nav-logo"
+             :href "/"
+             :style {:display "flex"
+                     :align-items "center"
+                     :gap "0.5rem"
+                     :font-size "1.4rem"
+                     :font-weight "700"
+                     :color "#1e3a5f"
+                     :text-decoration "none"}}
         [img-el {:src "loon-bird.svg" :alt "Loon" :class "nav-logo-img"}]
-        [span {:class "nav-logo-text"} "Loon"]]
-      [div {:class "nav-links"}
+        [span "Loon"]]
+      [div {:class "nav-links"
+            :style {:display "flex"
+                    :align-items "center"
+                    :gap "0.5rem"}}
         [|> [nav-links]
-          [map [fn [item] [make-nav-link current-path item]]]]]]]]
+          [map [fn [item] [make-nav-link current-path item]]]]
+        [a-el {:class "nav-link"
+               :href "https://github.com/loon-lang/loon"
+               :target "_blank"}
+          "GitHub"]]]]]

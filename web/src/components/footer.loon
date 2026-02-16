@@ -1,26 +1,18 @@
-; footer.loon — Site footer component
+; footer.loon — Minimal centered footer
 
 [defn footer-component []
-  [footer-el {:class "footer"}
-    [div {:class "footer-inner"}
-      [div {:class "footer-col"}
-        [h4 "Loon"]
-        [p "A LISP that flies."]
-        [p {:class "footer-small"} "Built with Loon, running in your browser."]]
-      [div {:class "footer-col"}
-        [h4 "Learn"]
-        [ul-el
-          [li-el [a-el {:href "/tour"} "Language Tour"]]
-          [li-el [a-el {:href "/install"} "Getting Started"]]
-          [li-el [a-el {:href "/play"} "Playground"]]]]
-      [div {:class "footer-col"}
-        [h4 "Community"]
-        [ul-el
-          [li-el [a-el {:href "https://github.com/loon-lang/loon"} "GitHub"]]
-          [li-el [a-el {:href "/community"} "Discord & Forums"]]
-          [li-el [a-el {:href "/blog"} "Blog"]]]]
-      [div {:class "footer-col"}
-        [h4 "More"]
-        [ul-el
-          [li-el [a-el {:href "/roadmap"} "Roadmap"]]
-          [li-el [a-el {:href "https://github.com/loon-lang/loon/blob/main/LICENSE"} "MIT License"]]]]]]]
+  [footer-el {:class "footer"
+              :style {:padding "3rem 2rem"
+                      :margin-top "4rem"
+                      :text-align "center"
+                      :border-top [str "1px solid " [color :border]]}}
+    [p {:style {:font-family [font :serif]
+                :font-size "1.1rem"
+                :color [color :muted]
+                :margin-bottom "0.5rem"}}
+      "Loon — A LISP that flies."]
+    [a-el {:href "https://github.com/loon-lang/loon"
+           :class "link"
+           :style {:color [color :primary]
+                   :font-size "0.9rem"}}
+      "GitHub"]]]
