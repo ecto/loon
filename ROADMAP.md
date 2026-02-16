@@ -54,21 +54,21 @@ What's left to finish v0.2 properly.
 ## v0.3 — Types get serious
 
 ### Traits / protocols
-- [ ] `[trait Display [fn display [self] → String]]`
-- [ ] `[impl Display Shape ...]`
-- [ ] Trait-based operator overloading (`Add`, `Eq`, `Ord`)
-- [ ] Trait bounds in type inference
+- [x] `[trait Display [fn display [self] → String]]`
+- [x] `[impl Display Shape ...]`
+- [x] Trait-based operator overloading (`Add`, `Eq`, `Ord`)
+- [x] Trait bounds in type inference
 
 ### Advanced type features
 - [x] Typed AST (separate from untyped — type checker produces typed tree)
-- [ ] `[sig]` assertions checked against inferred types
+- [x] `[sig]` assertions checked against inferred types
 - [x] Row polymorphism for maps/records
-- [ ] Type error messages with source spans (integrate with codespan-reporting)
+- [x] Type error messages with source spans (integrate with codespan-reporting)
 
 ### Ownership improvements
 - [x] Borrow inference per-parameter (read-only → immutable borrow, mutates → mutable borrow, escapes → move)
-- [ ] Copy types: primitives auto-copy, `[#[derive Copy] type ...]`
-- [ ] Better error messages: what/why/how format with visual ownership diagrams
+- [x] Copy types: primitives auto-copy, `[derive Copy [type ...]]`
+- [x] Better error messages: what/why/how format with visual ownership diagrams
 
 ---
 
@@ -101,31 +101,31 @@ What's left to finish v0.2 properly.
 ### Runtime
 - [x] `loon run` executes WASM via wasmtime (instead of interpreting)
 - [x] `loon build --release` with tree-shaking
-- [ ] Target: hello world < 1KB, fib < 500 bytes
+- [x] Target: hello world < 1KB, fib < 500 bytes
 
 ---
 
 ## v0.6 — Developer experience
 
 ### Error messages that teach
-- [ ] Three-part errors: what / why / how to fix
-- [ ] Visual ownership diagrams in error output
+- [x] Three-part errors: what / why / how to fix
+- [x] Visual ownership diagrams in error output
 - [ ] `[explain EXXXX]` interactive REPL tutorials (not just text)
-- [ ] Structured errors as data: `[catch-errors [compile "file.loon"]]`
+- [x] Structured errors as data: `[catch-errors "[source]"]`
 
 ### LSP server
-- [ ] Go-to-definition
-- [ ] Type-on-hover (the invisible type system, made visible)
-- [ ] Autocomplete
-- [ ] Inline diagnostics
+- [x] Go-to-definition
+- [x] Type-on-hover (the invisible type system, made visible)
+- [x] Autocomplete
+- [x] Inline diagnostics
 - [ ] Inlay hints for inferred types (the three rendering modes from DESIGN.md)
 
 ### Formatter
-- [ ] `loon fmt` — deterministic structural formatting
-- [ ] No config, no debates — one true style
+- [x] `loon fmt` — deterministic structural formatting
+- [x] No config, no debates — one true style
 
 ### Tree-sitter grammar
-- [ ] Syntax highlighting for editors
+- [x] Syntax highlighting for editors
 
 ---
 
