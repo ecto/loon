@@ -98,6 +98,14 @@ impl<'a> OwnershipChecker<'a> {
         checker
     }
 
+    /// Register additional user-defined Copy types (from `[derive Copy ...]`).
+    pub fn with_derived_copy_types(mut self, types: &std::collections::HashSet<String>) -> Self {
+        for t in types {
+            self.copy_types.insert(t.clone());
+        }
+        self
+    }
+
     /// Check if a type is a Copy type.
     fn is_copy_type(&self, ty: &Type) -> bool {
         match ty {
@@ -291,7 +299,7 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::List(items) if !items.is_empty() => {
                 if let ExprKind::Symbol(head) = &items[0].kind {
                     match head.as_str() {
-                        "defn" | "fn" | "type" | "trait" | "impl" | "sig" | "pub" | "test" => {
+                        "defn" | "fn" | "type" | "trait" | "impl" | "sig" | "pub" | "test" | "derive" => {
                             // Don't descend into nested definitions
                         }
                         "let" => {
@@ -490,7 +498,7 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     return;
                 }
-                "match" | "|>" | "type" | "test" | "pub" | "trait" | "impl" | "sig" => {
+                "match" | "|>" | "type" | "test" | "pub" | "trait" | "impl" | "sig" | "derive" => {
                     for item in &items[1..] {
                         self.check_expr(item);
                     }
@@ -840,5 +848,25 @@ mod tests {
             "returned param y should move: {:?}",
             errors
         );
+    }
+
+    #[test]
+    fn derive_copy_no_move_error() {
+        // A type with [derive Copy] should not trigger move errors
+        let exprs = parse(r#"
+            [derive Copy [type Point [Point Int Int]]]
+            [defn take [p] p]
+            [let p [Point 1 2]]
+            [take p]
+            [println p]
+        "#).unwrap();
+        let mut type_checker = crate::check::Checker::new();
+        for expr in &exprs {
+            type_checker.infer(expr);
+        }
+        let mut checker = OwnershipChecker::with_type_info(&type_checker.type_of, &type_checker.subst)
+            .with_derived_copy_types(&type_checker.derived_copy_types);
+        let errors = checker.check_program(&exprs);
+        assert!(errors.is_empty(), "derive Copy type should not trigger move error: {:?}", errors);
     }
 }
