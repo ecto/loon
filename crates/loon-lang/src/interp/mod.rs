@@ -9,18 +9,38 @@ pub use value::Value;
 
 use crate::ast::{Expr, ExprKind};
 use crate::module::ModuleCache;
-use std::cell::RefCell;
+use crate::syntax::Span;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
 thread_local! {
     static GLOBAL_ENV: RefCell<Option<Env>> = const { RefCell::new(None) };
+    static CALL_STACK: RefCell<Vec<StackFrame>> = RefCell::new(Vec::new());
+    static SOURCE_TEXT: RefCell<Option<String>> = const { RefCell::new(None) };
+    static EFFECT_LOG_ENABLED: Cell<bool> = const { Cell::new(false) };
+    static EFFECT_LOG: RefCell<Vec<EffectEntry>> = RefCell::new(Vec::new());
+}
+
+#[derive(Debug, Clone)]
+pub struct StackFrame {
+    pub fn_name: String,
+    pub call_site: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct EffectEntry {
+    pub effect: String,
+    pub operation: String,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct InterpError {
     pub message: String,
+    pub span: Option<Span>,
+    pub stack: Vec<StackFrame>,
     /// If set, this is a performed effect that needs handling
     pub performed_effect: Option<PerformedEffect>,
 }
@@ -45,8 +65,16 @@ type IResult = Result<Value, InterpError>;
 pub fn err(msg: impl Into<String>) -> InterpError {
     InterpError {
         message: msg.into(),
+        span: None,
+        stack: CALL_STACK.with(|s| s.borrow().clone()),
         performed_effect: None,
     }
+}
+
+pub fn err_at(msg: impl Into<String>, span: Span) -> InterpError {
+    let mut e = err(msg);
+    e.span = Some(span);
+    e
 }
 
 /// Try to handle an effect with a built-in handler (for IO at the top level).
@@ -188,7 +216,7 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
                 let result = match step {
                     Value::Fn(lf) => {
                         let mut env = get_global_env().unwrap_or_default();
-                        call_fn(lf, &[state.clone()], &mut env)
+                        call_fn(lf, &[state.clone()], &mut env, Span::ZERO)
                     }
                     Value::Builtin(name, f) => f(name, &[state.clone()]),
                     _ => break Some(Err(err("Async.loop step must be callable"))),
@@ -327,6 +355,8 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
 fn perform_effect(effect: &str, op: &str, args: Vec<Value>) -> InterpError {
     InterpError {
         message: format!("unhandled effect: {effect}.{op}"),
+        span: None,
+        stack: CALL_STACK.with(|s| s.borrow().clone()),
         performed_effect: Some(PerformedEffect {
             effect: effect.to_string(),
             operation: op.to_string(),
@@ -342,6 +372,22 @@ pub fn register_builtins_pub(env: &mut Env) {
 
 pub fn sync_global_env_pub(env: &Env) {
     sync_global_env(env);
+}
+
+pub fn set_source_text(source: &str) {
+    SOURCE_TEXT.with(|s| *s.borrow_mut() = Some(source.to_string()));
+}
+
+pub fn enable_effect_log(enabled: bool) {
+    EFFECT_LOG_ENABLED.with(|e| e.set(enabled));
+}
+
+pub fn get_effect_log() -> Vec<EffectEntry> {
+    EFFECT_LOG.with(|l| l.borrow().clone())
+}
+
+pub fn clear_effect_log() {
+    EFFECT_LOG.with(|l| l.borrow_mut().clear());
 }
 
 pub fn eval_program(exprs: &[Expr]) -> IResult {
@@ -400,7 +446,7 @@ pub fn eval_program_with_base_dir(exprs: &[Expr], base_dir: Option<&Path>) -> IR
     }
     // If there's a main function, call it
     if let Some(Value::Fn(main_fn)) = env.get("main") {
-        match call_fn(&main_fn, &[], &mut env) {
+        match call_fn(&main_fn, &[], &mut env, Span::ZERO) {
             Ok(val) => return Ok(val),
             Err(e) => {
                 if let Some(ref performed) = e.performed_effect {
@@ -432,7 +478,7 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
         ExprKind::Bool(b) => Ok(Value::Bool(*b)),
         ExprKind::Str(s) => Ok(Value::Str(s.clone())),
         ExprKind::Keyword(k) => Ok(Value::Keyword(k.clone())),
-        ExprKind::Symbol(s) => env.get(s).ok_or_else(|| err(format!("unbound symbol '{s}'"))),
+        ExprKind::Symbol(s) => env.get(s).ok_or_else(|| err_at(format!("unbound symbol '{s}'"), expr.span)),
 
         ExprKind::Vec(items) => {
             let vals: Result<Vec<_>, _> = items.iter().map(|e| eval(e, env)).collect();
@@ -500,6 +546,26 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                     "impl" => return eval_impl_def(&items[1..], env),
                     "macro" | "macro+" => return Ok(Value::Unit), // macro defs are compile-time
                     "macroexpand" => return Ok(Value::Unit), // no-op at runtime
+                    "inspect" => {
+                        if items.len() >= 2 {
+                            let expr_to_inspect = &items[1];
+                            let val = eval(expr_to_inspect, env)?;
+                            let source_text = SOURCE_TEXT.with(|s| {
+                                s.borrow().as_ref().and_then(|src| {
+                                    let sp = expr_to_inspect.span;
+                                    if sp.end <= src.len() {
+                                        Some(src[sp.start..sp.end].to_string())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            });
+                            let label = source_text.unwrap_or_else(|| format!("{val}"));
+                            println!("[inspect] {} = {}", label, val);
+                            return Ok(val);
+                        }
+                        return Ok(Value::Unit);
+                    }
                     "handle" => return eval_handle(&items[1..], env),
                     "try" => return eval_try(&items[1..], env),
                     "pub" => {
@@ -542,6 +608,14 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                         let args: Result<Vec<_>, _> =
                             items[1..].iter().map(|e| eval(e, env)).collect();
                         let args = args?;
+                        // Log effect if enabled
+                        if EFFECT_LOG_ENABLED.with(|e| e.get()) {
+                            EFFECT_LOG.with(|l| l.borrow_mut().push(EffectEntry {
+                                effect: effect.to_string(),
+                                operation: op.to_string(),
+                                span: expr.span,
+                            }));
+                        }
                         // If not inside a handle block, try built-in handler directly
                         if !INSIDE_HANDLE.with(|h| *h.borrow()) {
                             let performed = PerformedEffect {
@@ -564,9 +638,17 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
             let args = args?;
 
             match func {
-                Value::Fn(lf) => call_fn(&lf, &args, env),
-                Value::Builtin(name, f) => f(&name, &args),
-                _ => Err(err(format!("not callable: {func}"))),
+                Value::Fn(lf) => call_fn(&lf, &args, env, expr.span),
+                Value::Builtin(name, f) => {
+                    CALL_STACK.with(|s| s.borrow_mut().push(StackFrame {
+                        fn_name: format!("<builtin: {name}>"),
+                        call_site: expr.span,
+                    }));
+                    let result = f(&name, &args);
+                    CALL_STACK.with(|s| s.borrow_mut().pop());
+                    result
+                }
+                _ => Err(err_at(format!("not callable: {func}"), head.span)),
             }
         }
     }
@@ -713,7 +795,7 @@ fn eval_pipe(args: &[Expr], env: &mut Env) -> IResult {
                 };
 
                 val = match func {
-                    Value::Fn(lf) => call_fn(&lf, &call_args, env)?,
+                    Value::Fn(lf) => call_fn(&lf, &call_args, env, step.span)?,
                     Value::Builtin(name, f) => f(&name, &call_args)?,
                     _ => return Err(err(format!("not callable in pipe: {func}"))),
                 };
@@ -721,7 +803,7 @@ fn eval_pipe(args: &[Expr], env: &mut Env) -> IResult {
             ExprKind::Symbol(_) => {
                 let func = eval(step, env)?;
                 val = match func {
-                    Value::Fn(lf) => call_fn(&lf, &[val], env)?,
+                    Value::Fn(lf) => call_fn(&lf, &[val], env, step.span)?,
                     Value::Builtin(name, f) => f(&name, &[val])?,
                     _ => return Err(err(format!("not callable in pipe: {func}"))),
                 };
@@ -1220,7 +1302,7 @@ fn eval_try(args: &[Expr], env: &mut Env) -> IResult {
                 if performed.effect == "Fail" && performed.operation == "fail" {
                     let msg = performed.args.first().cloned().unwrap_or(Value::Unit);
                     match &on_fail {
-                        Value::Fn(lf) => call_fn(lf, &[msg], env),
+                        Value::Fn(lf) => call_fn(lf, &[msg], env, Span::ZERO),
                         Value::Builtin(name, f) => f(name, &[msg]),
                         _ => Err(err("try: on-fail must be callable")),
                     }
@@ -1274,7 +1356,7 @@ fn extract_params(expr: &Expr) -> Result<Vec<value::Param>, InterpError> {
             }
             Ok(params)
         }
-        _ => Err(err("params must be a list")),
+        _ => Err(err_at("params must be a list", expr.span)),
     }
 }
 
@@ -1345,7 +1427,18 @@ fn bind_param(param: &value::Param, val: &Value, env: &mut Env) -> Result<(), In
     }
 }
 
-pub(crate) fn call_fn(lf: &value::LoonFn, args: &[Value], env: &mut Env) -> IResult {
+pub(crate) fn call_fn(lf: &value::LoonFn, args: &[Value], env: &mut Env, call_span: Span) -> IResult {
+    let fn_name = lf.name.as_deref().unwrap_or("anonymous").to_string();
+    CALL_STACK.with(|s| s.borrow_mut().push(StackFrame {
+        fn_name: fn_name.clone(),
+        call_site: call_span,
+    }));
+    let result = call_fn_inner(lf, args, env);
+    CALL_STACK.with(|s| s.borrow_mut().pop());
+    result
+}
+
+fn call_fn_inner(lf: &value::LoonFn, args: &[Value], env: &mut Env) -> IResult {
     // Use captured env if present (closures), otherwise use caller's env
     let mut use_env = if let Some(ref captured) = lf.captured_env {
         let mut e = captured.clone();
@@ -1540,7 +1633,7 @@ fn register_builtins(env: &mut Env) {
 /// Evaluate a Loon function in a spawned thread, handling effects with try_builtin_handler.
 /// Uses eval_program_with_base_dir-style effect handling for the full function body.
 fn eval_spawned_fn(lf: &value::LoonFn, env: &mut Env) -> Value {
-    match call_fn(lf, &[], env) {
+    match call_fn(lf, &[], env, Span::ZERO) {
         Ok(val) => val,
         Err(e) => {
             if let Some(ref performed) = e.performed_effect {

@@ -16,6 +16,8 @@ fn call_js_bridge(op: &str, args: &[Value]) -> Result<Value, loon_lang::interp::
         let guard = b.borrow();
         let bridge = guard.as_ref().ok_or_else(|| loon_lang::interp::InterpError {
             message: "JS bridge not initialized".to_string(),
+            span: None,
+            stack: vec![],
             performed_effect: None,
         })?;
 
@@ -29,6 +31,8 @@ fn call_js_bridge(op: &str, args: &[Value]) -> Result<Value, loon_lang::interp::
             .call2(&JsValue::NULL, &js_op, &js_args)
             .map_err(|e| loon_lang::interp::InterpError {
                 message: format!("DOM bridge error: {:?}", e),
+                span: None,
+                stack: vec![],
                 performed_effect: None,
             })?;
 
@@ -65,6 +69,7 @@ pub fn init_dom_bridge(bridge: &js_sys::Function) {
 /// Evaluate a Loon UI program. The DOM bridge must be initialized first.
 #[wasm_bindgen]
 pub fn eval_ui(source: &str) -> Result<(), String> {
+    loon_lang::interp::set_source_text(source);
     let exprs = loon_lang::parser::parse(source).map_err(|e| format!("{e}"))?;
 
     // Run type checker — log warnings but don't block boot
@@ -135,6 +140,108 @@ pub fn check_program(source: &str) -> Result<String, String> {
         let msgs: Vec<String> = errors.iter().map(|e| format!("{e}")).collect();
         Err(msgs.join("\n"))
     }
+}
+
+/// Reset the Loon runtime state (callbacks, etc.) for hot reload.
+#[wasm_bindgen]
+pub fn reset_runtime() {
+    dom_builtins::reset_callbacks();
+}
+
+/// Evaluate a Loon UI program, returning structured JSON instead of throwing.
+/// Success: {"ok":true}
+/// Error:   {"ok":false,"error":{"message":"...","span":[start,end],"stack":[{"fn":"name","span":[start,end]},...]}}
+#[wasm_bindgen]
+pub fn eval_ui_checked(source: &str) -> String {
+    loon_lang::interp::set_source_text(source);
+
+    let exprs = match loon_lang::parser::parse(source) {
+        Ok(e) => e,
+        Err(e) => return format!(
+            r#"{{"ok":false,"error":{{"message":"{}","span":null,"stack":[]}}}}"#,
+            escape_json(&format!("{e}"))
+        ),
+    };
+
+    // Run type checker — log warnings but don't block boot
+    let mut checker = loon_lang::check::Checker::new();
+    let errors = checker.check_program(&exprs);
+    if !errors.is_empty() {
+        console_warn(&format!("[loon] {} type warning(s):", errors.len()));
+        for err in &errors {
+            console_warn(&format!("  {err}"));
+        }
+    }
+
+    match loon_lang::interp::eval_program(&exprs) {
+        Ok(_) => r#"{"ok":true}"#.to_string(),
+        Err(e) => {
+            let span_json = match e.span {
+                Some(sp) => format!("[{},{}]", sp.start, sp.end),
+                None => "null".to_string(),
+            };
+            let stack_json: Vec<String> = e.stack.iter().map(|f| {
+                format!(
+                    r#"{{"fn":"{}","span":[{},{}]}}"#,
+                    escape_json(&f.fn_name),
+                    f.call_site.start,
+                    f.call_site.end,
+                )
+            }).collect();
+            format!(
+                r#"{{"ok":false,"error":{{"message":"{}","span":{},"stack":[{}]}}}}"#,
+                escape_json(&e.message),
+                span_json,
+                stack_json.join(","),
+            )
+        }
+    }
+}
+
+/// Enable or disable effect logging.
+#[wasm_bindgen]
+pub fn enable_effect_log(enabled: bool) {
+    loon_lang::interp::enable_effect_log(enabled);
+}
+
+/// Get the effect log as a JSON array.
+#[wasm_bindgen]
+pub fn get_effect_log() -> String {
+    let log = loon_lang::interp::get_effect_log();
+    let entries: Vec<String> = log.iter().map(|e| {
+        format!(
+            r#"{{"effect":"{}","operation":"{}","span":[{},{}]}}"#,
+            escape_json(&e.effect),
+            escape_json(&e.operation),
+            e.span.start,
+            e.span.end,
+        )
+    }).collect();
+    format!("[{}]", entries.join(","))
+}
+
+/// Clear the effect log.
+#[wasm_bindgen]
+pub fn clear_effect_log() {
+    loon_lang::interp::clear_effect_log();
+}
+
+fn escape_json(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 #[wasm_bindgen]

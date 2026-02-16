@@ -1290,7 +1290,7 @@ pub fn apply_value(func: &Value, args: &[Value]) -> IResult {
                 register_builtins(&mut e);
                 e
             };
-            call_fn(lf, args, &mut env)
+            call_fn(lf, args, &mut env, crate::syntax::Span::ZERO)
         }
         Value::Builtin(name, f) => f(name, args),
         _ => Err(err(format!("not callable: {func}"))),

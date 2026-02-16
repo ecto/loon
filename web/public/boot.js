@@ -1,12 +1,90 @@
 // boot.js — Loon website bootstrap
 // Loads WASM interpreter, sets up DOM bridge, evaluates Loon source.
+// Supports hot reload via SSE when served by the Loon dev server.
 
 import init, { init_dom_bridge, eval_ui, eval_program, eval_with_output, invoke_callback } from './loon_wasm.js';
 
-// --- DOM Bridge ---
-// The Loon interpreter calls dom/* builtins which route through this bridge.
-// We maintain a node table mapping integer handles to DOM nodes.
+// Lazy import — these may not exist in older WASM builds
+let reset_runtime = () => {};
+let eval_ui_checked = null;
+let enable_effect_log = null;
+let get_effect_log = null;
+let clear_effect_log = null;
 
+const wasmReady = import('./loon_wasm.js').then(m => {
+  if (m.reset_runtime) reset_runtime = m.reset_runtime;
+  if (m.eval_ui_checked) eval_ui_checked = m.eval_ui_checked;
+  if (m.enable_effect_log) enable_effect_log = m.enable_effect_log;
+  if (m.get_effect_log) get_effect_log = m.get_effect_log;
+  if (m.clear_effect_log) clear_effect_log = m.clear_effect_log;
+});
+
+// --- Source file list ---
+const SOURCE_FILES = [
+  'src/ui.loon',
+  'src/lib/utils.loon',
+  'src/lib/theme.loon',
+  'src/lib/components.loon',
+  'src/router.loon',
+  'src/components/footer.loon',
+  'src/components/code.loon',
+  'src/components/editor.loon',
+  'src/pages/home.loon',
+  'src/pages/tour.loon',
+  'src/pages/play.loon',
+  'src/pages/blog.loon',
+  'src/app.loon',
+];
+
+// --- Source cache & source map ---
+const sourceCache = {};  // path -> string
+let sourceMap = [];      // [{file, offset, headerLength, length}]
+
+async function loadSource(path) {
+  const resp = await fetch(path + '?t=' + Date.now());
+  if (!resp.ok) throw new Error(`Failed to load ${path}: ${resp.status}`);
+  return resp.text();
+}
+
+function buildSourceMap(sources) {
+  sourceMap = [];
+  let offset = 0;
+  for (const path of sources) {
+    const header = `; --- ${path} ---\n`;
+    const content = sourceCache[path] || '';
+    sourceMap.push({
+      file: path,
+      offset,
+      headerLength: header.length,
+      length: header.length + content.length,
+    });
+    offset += header.length + content.length + 2; // +2 for \n\n joiner
+  }
+}
+
+function resolveSpan(byteOffset) {
+  for (const entry of sourceMap) {
+    const localStart = entry.offset + entry.headerLength;
+    const localEnd = entry.offset + entry.length;
+    if (byteOffset >= localStart && byteOffset < localEnd) {
+      const posInFile = byteOffset - localStart;
+      const content = sourceCache[entry.file] || '';
+      let line = 1, col = 1;
+      for (let i = 0; i < posInFile && i < content.length; i++) {
+        if (content[i] === '\n') { line++; col = 1; }
+        else { col++; }
+      }
+      return { file: entry.file, line, col };
+    }
+  }
+  return null;
+}
+
+function concatSources() {
+  return SOURCE_FILES.map(s => `; --- ${s} ---\n${sourceCache[s] || ''}`).join('\n\n');
+}
+
+// --- DOM Bridge ---
 const nodes = [document]; // handle 0 = document
 let nextHandle = 1;
 
@@ -20,9 +98,22 @@ function getNode(handle) {
   return nodes[handle];
 }
 
-// Event listener storage for cleanup
 const listeners = new Map();
 let nextListenerId = 1;
+
+function resetDomState() {
+  // Clear node table (keep handle 0 = document)
+  nodes.length = 1;
+  nextHandle = 1;
+  // Remove all tracked event listeners
+  for (const [, entry] of listeners) {
+    entry.node.removeEventListener(entry.event, entry.handler);
+  }
+  listeners.clear();
+  nextListenerId = 1;
+  // Clear WASM callback registry
+  try { reset_runtime(); } catch (_) {}
+}
 
 function domBridge(op, args) {
   switch (op) {
@@ -76,7 +167,6 @@ function domBridge(op, args) {
     case 'querySelector': {
       const el = document.querySelector(args[0]);
       if (!el) return null;
-      // Check if already tracked
       const existing = nodes.indexOf(el);
       if (existing >= 0) return existing;
       return allocHandle(el);
@@ -84,11 +174,10 @@ function domBridge(op, args) {
     case 'addListener': {
       const node = getNode(args[0]);
       const event = args[1];
-      const callbackId = args[2]; // callback handle from Loon
+      const callbackId = args[2];
       if (!node) return null;
       const id = nextListenerId++;
       const handler = (e) => {
-        // Call back into Loon via a global callback dispatcher
         if (window.__loon_event_handler) {
           window.__loon_event_handler(callbackId, event, e);
         }
@@ -127,7 +216,6 @@ function domBridge(op, args) {
     }
     case 'pushState': {
       history.pushState(null, '', args[0]);
-      // Dispatch popstate-like event for router
       window.dispatchEvent(new CustomEvent('loon:navigate', { detail: { path: args[0] } }));
       return null;
     }
@@ -135,7 +223,6 @@ function domBridge(op, args) {
       return window.location.pathname;
     }
     case 'requestAnimationFrame': {
-      // args[0] is a callback handle
       const cbId = args[0];
       requestAnimationFrame(() => {
         if (window.__loon_raf_handler) {
@@ -160,78 +247,260 @@ function domBridge(op, args) {
   }
 }
 
-// --- Loon Source ---
-// All .loon source files are bundled as string constants.
-// In dev, we fetch them; in prod, they're inlined by the build script.
+// --- Structured eval ---
 
-async function loadSource(path) {
-  const resp = await fetch(path);
-  if (!resp.ok) throw new Error(`Failed to load ${path}: ${resp.status}`);
-  return resp.text();
+function evalChecked(fullSource) {
+  if (eval_ui_checked) {
+    const result = JSON.parse(eval_ui_checked(fullSource));
+    if (!result.ok) {
+      const e = result.error;
+      const loc = e.span ? resolveSpan(e.span[0]) : null;
+      const stack = (e.stack || []).map(f => ({
+        fn: f.fn,
+        loc: resolveSpan(f.span[0]),
+      }));
+      showErrorOverlay(e.message, loc, stack);
+      return false;
+    }
+    dismissErrorOverlay();
+    return true;
+  }
+  // Fallback for older WASM builds
+  try {
+    eval_ui(fullSource);
+    dismissErrorOverlay();
+    return true;
+  } catch (e) {
+    const msg = e.message || String(e);
+    showErrorOverlay(msg, null, []);
+    return false;
+  }
+}
+
+// --- Error Overlay ---
+
+let overlayEl = null;
+
+function showErrorOverlay(errorMsg, loc, stack) {
+  dismissErrorOverlay();
+
+  // Parse structured error: [E0201] message\nwhy: ...\nfix: ...
+  const codeMatch = errorMsg.match(/\[([A-Z]\d{4})\]/);
+  const code = codeMatch ? codeMatch[1] : null;
+
+  const lines = errorMsg.split('\n');
+  let what = lines[0];
+  let why = '';
+  let fix = '';
+
+  for (const line of lines) {
+    if (line.startsWith('why:')) why = line.slice(4).trim();
+    else if (line.startsWith('fix:')) fix = line.slice(4).trim();
+  }
+
+  // Category from error code
+  const categories = {
+    'E01': 'parse error', 'E02': 'type error', 'E03': 'ownership error',
+    'E04': 'effect error', 'E05': 'module error',
+  };
+  const category = code ? (categories[code.slice(0, 3)] || 'error') : 'runtime error';
+
+  // Build source context snippet
+  let sourceSnippet = '';
+  if (loc) {
+    const content = sourceCache[loc.file] || '';
+    const lines = content.split('\n');
+    const lineText = lines[loc.line - 1] || '';
+    const pointer = ' '.repeat(loc.col - 1) + '^^^';
+    sourceSnippet = `
+      <div style="background:#0f0f23;border-radius:6px;padding:0.75rem 1rem;margin:0.75rem 0;overflow-x:auto">
+        <p style="color:#64748b;font-size:0.75rem;margin:0 0 0.5rem">${escapeHtml(loc.file)}:${loc.line}</p>
+        <pre style="color:#e2e8f0;font-size:0.8rem;margin:0;font-family:monospace;white-space:pre;line-height:1.4">${escapeHtml(lineText)}\n<span style="color:#f87171">${escapeHtml(pointer)}</span></pre>
+      </div>`;
+  }
+
+  // Build stack trace
+  let stackHtml = '';
+  if (stack && stack.length > 0) {
+    const frames = stack.map(f => {
+      const locStr = f.loc ? `${f.loc.file}:${f.loc.line}` : '?';
+      return `  at ${escapeHtml(f.fn)} (${escapeHtml(locStr)})`;
+    }).join('\n');
+    stackHtml = `
+      <div style="margin-top:0.75rem">
+        <pre style="color:#64748b;font-size:0.75rem;margin:0;font-family:monospace;white-space:pre;line-height:1.5">${frames}</pre>
+      </div>`;
+  }
+
+  overlayEl = document.createElement('div');
+  overlayEl.id = 'loon-error-overlay';
+  overlayEl.innerHTML = `
+    <div style="position:fixed;inset:0;background:rgba(0,0,0,0.7);backdrop-filter:blur(4px);z-index:99999;display:flex;align-items:center;justify-content:center;font-family:system-ui,-apple-system,sans-serif">
+      <div style="background:#1a1a2e;border-radius:12px;max-width:40rem;width:90%;max-height:80vh;box-shadow:0 20px 60px rgba(0,0,0,0.5);overflow:hidden;display:flex;flex-direction:column">
+        <div style="height:4px;background:linear-gradient(90deg,#6366f1,#8b5cf6,#a78bfa);flex-shrink:0"></div>
+        <div style="padding:1.5rem 2rem;overflow-y:auto">
+          <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1rem">
+            ${code ? `<span style="background:#3730a3;color:#c7d2fe;padding:2px 8px;border-radius:4px;font-size:0.8rem;font-weight:600;font-family:monospace">${code}</span>` : ''}
+            <span style="color:#94a3b8;font-size:0.8rem">${category}</span>
+          </div>
+          <p style="color:#f1f5f9;font-size:1rem;line-height:1.5;margin:0 0 0.5rem;font-family:monospace;word-break:break-word">${escapeHtml(what)}</p>
+          ${sourceSnippet}
+          ${why ? `<p style="color:#94a3b8;font-size:0.85rem;line-height:1.4;margin:0.75rem 0">${escapeHtml(why)}</p>` : ''}
+          ${fix ? `<div style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.2);border-radius:6px;padding:0.75rem 1rem;margin-top:0.75rem"><p style="color:#86efac;font-size:0.85rem;margin:0"><strong>fix:</strong> ${escapeHtml(fix)}</p></div>` : ''}
+          ${stackHtml}
+          <p style="color:#475569;font-size:0.75rem;margin:1rem 0 0;text-align:right">press Escape to dismiss</p>
+        </div>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlayEl);
+
+  const dismiss = (e) => {
+    if (e.key === 'Escape') {
+      dismissErrorOverlay();
+      document.removeEventListener('keydown', dismiss);
+    }
+  };
+  document.addEventListener('keydown', dismiss);
+}
+
+function dismissErrorOverlay() {
+  if (overlayEl) {
+    overlayEl.remove();
+    overlayEl = null;
+  }
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// --- Hot Reload ---
+
+function connectSSE() {
+  const es = new EventSource('/__dev/sse');
+
+  es.addEventListener('loon', (e) => {
+    const t0 = performance.now();
+    handleLoonReload(e.data).then(() => {
+      console.log(`[loon] hot reload in ${Math.round(performance.now() - t0)}ms`);
+    });
+  });
+
+  es.addEventListener('css', () => {
+    // Swap all stylesheets with cache-bust
+    document.querySelectorAll('link[rel="stylesheet"]').forEach(link => {
+      const url = new URL(link.href);
+      url.searchParams.set('t', Date.now());
+      link.href = url.toString();
+    });
+    console.log('[loon] css hot swap');
+  });
+
+  es.addEventListener('full', () => {
+    window.location.reload();
+  });
+
+  es.onopen = () => console.log('[loon] dev server connected');
+  es.onerror = () => {
+    console.log('[loon] dev server disconnected, reconnecting...');
+  };
+}
+
+async function handleLoonReload(changedFiles) {
+  const files = changedFiles ? changedFiles.split(',') : SOURCE_FILES;
+
+  // Save state
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
+  const path = window.location.pathname;
+  const editorEl = document.querySelector('.playground-editor textarea');
+  const editorContent = editorEl ? editorEl.value : null;
+
+  // Re-fetch changed files
+  for (const file of files) {
+    const trimmed = file.trim();
+    if (sourceCache[trimmed] !== undefined) {
+      try {
+        sourceCache[trimmed] = await loadSource(trimmed);
+      } catch (e) {
+        console.warn(`[loon] failed to reload ${trimmed}:`, e);
+      }
+    }
+  }
+
+  // Rebuild and re-eval
+  buildSourceMap(SOURCE_FILES);
+  const fullSource = concatSources();
+
+  // Clear app content
+  const app = document.getElementById('app');
+  if (app) app.innerHTML = '';
+
+  resetDomState();
+  init_dom_bridge(domBridge);
+  window.__loon_event_handler = (callbackId) => invoke_callback(callbackId);
+
+  if (!evalChecked(fullSource)) {
+    console.error('[loon] reload error');
+  }
+
+  // Restore state
+  requestAnimationFrame(() => {
+    window.scrollTo(scrollX, scrollY);
+    if (editorContent && path === '/play') {
+      const el = document.querySelector('.playground-editor textarea');
+      if (el) el.value = editorContent;
+    }
+  });
 }
 
 // --- Boot ---
 
 async function boot() {
   try {
-    // Initialize WASM
     await init();
-
-    // Set up DOM bridge
+    await wasmReady;
     init_dom_bridge(domBridge);
 
-    // Wire up event callback handler
     window.__loon_event_handler = (callbackId) => {
       invoke_callback(callbackId);
     };
 
-    // Load and evaluate Loon source files in order
-    const sources = [
-      'src/ui.loon',
-      'src/lib/utils.loon',
-      'src/lib/theme.loon',
-      'src/lib/components.loon',
-      'src/router.loon',
-      'src/components/footer.loon',
-      'src/components/code.loon',
-      'src/components/editor.loon',
-      'src/pages/home.loon',
-      'src/pages/tour.loon',
-      'src/pages/play.loon',
-      'src/pages/blog.loon',
-      'src/app.loon',
-    ];
-
-    // Load all sources
-    const loaded = {};
-    for (const src of sources) {
-      loaded[src] = await loadSource(src);
+    // Load all sources into cache
+    for (const src of SOURCE_FILES) {
+      sourceCache[src] = await loadSource(src);
     }
 
-    // Concatenate and evaluate as one program
-    const fullSource = sources.map(s => `; --- ${s} ---\n${loaded[s]}`).join('\n\n');
-    eval_ui(fullSource);
+    buildSourceMap(SOURCE_FILES);
+    const fullSource = concatSources();
+    evalChecked(fullSource);
 
     console.log('Loon website booted successfully');
+
+    // Connect to dev server SSE if available
+    connectSSE();
   } catch (e) {
     const msg = e.message || String(e);
     console.error('Loon boot failed:', msg);
-    const app = document.getElementById('app');
-    if (app) {
-      app.innerHTML = `<div style="padding: 2rem; font-family: system-ui, monospace; max-width: 48rem; margin: 0 auto;">
-        <h1 style="color: #c00; margin-bottom: 0.5rem;">Loon failed to start</h1>
-        <p style="color: #666; margin-top: 0;">The interpreter hit a runtime error while booting.</p>
-        <pre style="background: #1a1a2e; color: #e0e0e0; padding: 1.5rem; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; line-height: 1.6;"><code>${msg}</code></pre>
-        <details style="margin-top: 1rem; color: #666;">
-          <summary style="cursor: pointer;">Stack trace</summary>
-          <pre style="background: #f5f5f5; padding: 1rem; border-radius: 4px; margin-top: 0.5rem; font-size: 0.85rem; overflow-x: auto;">${e.stack || 'No stack trace available'}</pre>
-        </details>
-      </div>`;
-    }
+    showErrorOverlay(msg, null, []);
   }
 }
 
-// Make eval_program available globally for the playground
 window.__loon_eval = eval_program;
+window.__loon_enable_effect_log = (v) => enable_effect_log && enable_effect_log(v);
+window.__loon_get_effect_log = () => get_effect_log ? JSON.parse(get_effect_log()) : [];
+window.__loon_clear_effect_log = () => clear_effect_log && clear_effect_log();
+
+// Click-to-copy for .copyable code blocks
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('.copyable');
+  if (!el) return;
+  const text = el.textContent.trim();
+  navigator.clipboard.writeText(text).then(() => {
+    el.classList.add('copied');
+    setTimeout(() => el.classList.remove('copied'), 1500);
+  });
+});
 
 boot();
