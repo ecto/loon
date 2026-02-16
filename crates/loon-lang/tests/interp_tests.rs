@@ -779,3 +779,59 @@ fn module_use() {
     // Cleanup
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- catch-errors tests ---
+
+#[test]
+fn catch_errors_valid_code_returns_empty() {
+    let result = run(r#"[catch-errors "[+ 1 2]"]"#);
+    match result {
+        Value::Vec(v) => assert!(v.is_empty(), "valid code should return empty vec, got: {:?}", v),
+        other => panic!("expected Vec, got: {:?}", other),
+    }
+}
+
+#[test]
+fn catch_errors_invalid_code_returns_errors() {
+    let result = run(r#"[catch-errors "[+ true false]"]"#);
+    match result {
+        Value::Vec(v) => {
+            assert!(!v.is_empty(), "invalid code should return errors");
+            // Each error should be a map with :what key
+            if let Value::Map(pairs) = &v[0] {
+                let has_what = pairs.iter().any(|(k, _)| *k == Value::Keyword("what".to_string()));
+                assert!(has_what, "error map should have :what key, got: {:?}", pairs);
+            } else {
+                panic!("expected Map in error vec, got: {:?}", v[0]);
+            }
+        }
+        other => panic!("expected Vec, got: {:?}", other),
+    }
+}
+
+#[test]
+fn catch_errors_parse_error_returns_errors() {
+    let result = run(r#"[catch-errors "[defn"]"#);
+    match result {
+        Value::Vec(v) => assert!(!v.is_empty(), "parse error should return errors"),
+        other => panic!("expected Vec, got: {:?}", other),
+    }
+}
+
+// --- derive Copy tests ---
+
+#[test]
+fn derive_copy_evaluates_type() {
+    // derive Copy should still register the type constructor
+    let result = run(r#"
+        [derive Copy [type Point [Point Int Int]]]
+        [Point 1 2]
+    "#);
+    match result {
+        Value::Adt(tag, fields) => {
+            assert_eq!(tag, "Point");
+            assert_eq!(fields.len(), 2);
+        }
+        other => panic!("expected Adt, got: {:?}", other),
+    }
+}
