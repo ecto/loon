@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsx build.ts",
-    "dev": "tsx build.ts --dev && npx serve dist",
+    "build": "tsx build.ts --no-rust",
+    "build:full": "tsx build.ts",
+    "dev": "npm run build:full && cargo run -p loon-cli -- run web/dev.loon",
     "wasm": "wasm-pack build ../crates/loon-wasm --target web --out-dir ../../web/public"
   },
   "devDependencies": {

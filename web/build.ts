@@ -9,23 +9,40 @@ const PUBLIC = join(WEB, 'public');
 const SRC = join(WEB, 'src');
 
 const isDev = process.argv.includes('--dev');
+const noRust = process.argv.includes('--no-rust') || process.env.VERCEL === '1';
 
-// Step 1: Build WASM
-console.log('Building loon-wasm...');
-execSync(
-  `wasm-pack build ${join(ROOT, 'crates/loon-wasm')} --target web --out-dir ${join(DIST)}`,
-  { stdio: 'inherit' }
-);
+// Step 1: Build WASM (or copy pre-built artifacts)
+if (noRust) {
+  console.log('Copying pre-built WASM artifacts...');
+  mkdirSync(DIST, { recursive: true });
+  for (const file of readdirSync(join(PUBLIC, 'pkg'))) {
+    if (file === 'package.json') continue;
+    cpSync(join(PUBLIC, 'pkg', file), join(DIST, file));
+  }
+} else {
+  console.log('Building loon-wasm...');
+  execSync(
+    `wasm-pack build ${join(ROOT, 'crates/loon-wasm')} --target web --out-dir ${join(DIST)}`,
+    { stdio: 'inherit' }
+  );
+}
 
 // Step 2: Copy static assets
 console.log('Copying static assets...');
 mkdirSync(DIST, { recursive: true });
-for (const file of ['index.html', 'boot.js', 'style.css', 'loon-bird.svg']) {
+for (const file of ['index.html', 'boot.js', 'style.css']) {
   try {
     cpSync(join(PUBLIC, file), join(DIST, file));
   } catch {
     // File might not exist yet (e.g., loon-bird.svg)
   }
+}
+
+// Copy fonts
+try {
+  copyDir(join(PUBLIC, 'fonts'), join(DIST, 'fonts'));
+} catch {
+  // fonts dir might not exist
 }
 
 // Step 3: Copy Loon source files to dist/src/
@@ -45,22 +62,50 @@ function copyDir(src: string, dest: string) {
 console.log('Copying Loon source files...');
 copyDir(SRC, join(DIST, 'src'));
 
-// Step 4: Type-check Loon sources
-console.log('Type-checking Loon sources...');
-{
+// Step 4: Type-check Loon sources (skip without Rust toolchain)
+if (!noRust) {
+  console.log('Type-checking Loon sources...');
   const bootOrder = [
     'src/ui.loon',
     'src/lib/utils.loon',
     'src/lib/theme.loon',
     'src/lib/components.loon',
+    'src/lib/doc.loon',
     'src/router.loon',
     'src/components/footer.loon',
     'src/components/code.loon',
     'src/components/editor.loon',
+    'src/components/sidebar.loon',
     'src/pages/home.loon',
     'src/pages/tour.loon',
     'src/pages/play.loon',
     'src/pages/blog.loon',
+    'src/pages/roadmap.loon',
+    'src/pages/install.loon',
+    'src/pages/examples.loon',
+    'src/pages/guide/basics.loon',
+    'src/pages/guide/functions.loon',
+    'src/pages/guide/types.loon',
+    'src/pages/guide/collections.loon',
+    'src/pages/guide/pattern-matching.loon',
+    'src/pages/guide/ownership.loon',
+    'src/pages/guide/effects.loon',
+    'src/pages/guide/modules.loon',
+    'src/pages/guide/macros.loon',
+    'src/pages/guide/testing.loon',
+    'src/pages/guide/errors.loon',
+    'src/pages/ref/syntax.loon',
+    'src/pages/ref/builtins.loon',
+    'src/pages/ref/cli.loon',
+    'src/pages/ref/effects.loon',
+    'src/pages/ref/lsp.loon',
+    'src/pages/ref/formatter.loon',
+    'src/pages/concepts/invisible-types.loon',
+    'src/pages/concepts/effects.loon',
+    'src/pages/concepts/ownership.loon',
+    'src/pages/concepts/from-rust.loon',
+    'src/pages/concepts/from-js.loon',
+    'src/pages/concepts/from-clojure.loon',
     'src/app.loon',
   ];
 
@@ -89,6 +134,8 @@ console.log('Type-checking Loon sources...');
 
   // Clean up temp file
   try { unlinkSync(tmpFile); } catch {}
+} else {
+  console.log('Skipping type-check (--no-rust)...');
 }
 
 // Step 5: Generate pre-rendered HTML (if not dev mode)
