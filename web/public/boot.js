@@ -2,7 +2,7 @@
 // Loads WASM interpreter, sets up DOM bridge, evaluates Loon source.
 // Supports hot reload via SSE when served by the Loon dev server.
 
-import init, { init_dom_bridge, eval_ui, eval_program, eval_with_output, invoke_callback } from './loon_wasm.js';
+import init, { init_dom_bridge, eval_ui, eval_program, eval_with_output, invoke_callback } from '/loon_wasm.js';
 
 // Lazy import — these may not exist in older WASM builds
 let reset_runtime = () => {};
@@ -11,7 +11,7 @@ let enable_effect_log = null;
 let get_effect_log = null;
 let clear_effect_log = null;
 
-const wasmReady = import('./loon_wasm.js').then(m => {
+const wasmReady = import('/loon_wasm.js').then(m => {
   if (m.reset_runtime) reset_runtime = m.reset_runtime;
   if (m.eval_ui_checked) eval_ui_checked = m.eval_ui_checked;
   if (m.enable_effect_log) enable_effect_log = m.enable_effect_log;
