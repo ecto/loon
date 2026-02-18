@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { execSync } from 'child_process';
 import { cpSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { join, relative } from 'path';
@@ -10,6 +11,50 @@ const SRC = join(WEB, 'src');
 
 const isDev = process.argv.includes('--dev');
 const noRust = process.argv.includes('--no-rust') || process.env.VERCEL === '1';
+
+const bootOrder = [
+  'src/ui.loon',
+  'src/lib/utils.loon',
+  'src/lib/theme.loon',
+  'src/lib/components.loon',
+  'src/lib/doc.loon',
+  'src/router.loon',
+  'src/components/footer.loon',
+  'src/components/code.loon',
+  'src/components/editor.loon',
+  'src/components/sidebar.loon',
+  'src/pages/home.loon',
+  'src/pages/tour.loon',
+  'src/pages/play.loon',
+  'src/pages/blog.loon',
+  'src/pages/roadmap.loon',
+  'src/pages/install.loon',
+  'src/pages/examples.loon',
+  'src/pages/guide/basics.loon',
+  'src/pages/guide/functions.loon',
+  'src/pages/guide/types.loon',
+  'src/pages/guide/collections.loon',
+  'src/pages/guide/pattern-matching.loon',
+  'src/pages/guide/ownership.loon',
+  'src/pages/guide/effects.loon',
+  'src/pages/guide/modules.loon',
+  'src/pages/guide/macros.loon',
+  'src/pages/guide/testing.loon',
+  'src/pages/guide/errors.loon',
+  'src/pages/ref/syntax.loon',
+  'src/pages/ref/builtins.loon',
+  'src/pages/ref/cli.loon',
+  'src/pages/ref/effects.loon',
+  'src/pages/ref/lsp.loon',
+  'src/pages/ref/formatter.loon',
+  'src/pages/concepts/invisible-types.loon',
+  'src/pages/concepts/effects.loon',
+  'src/pages/concepts/ownership.loon',
+  'src/pages/concepts/from-rust.loon',
+  'src/pages/concepts/from-js.loon',
+  'src/pages/concepts/from-clojure.loon',
+  'src/app.loon',
+];
 
 // Step 1: Build WASM (or copy pre-built artifacts)
 if (noRust) {
@@ -62,53 +107,27 @@ function copyDir(src: string, dest: string) {
 console.log('Copying Loon source files...');
 copyDir(SRC, join(DIST, 'src'));
 
-// Step 4: Type-check Loon sources (skip without Rust toolchain)
+// Step 4: Bundle .loon sources into a single file
+console.log('Bundling Loon sources...');
+const bundleParts: string[] = [];
+for (const file of bootOrder) {
+  const fullPath = join(SRC, '..', file);
+  try {
+    bundleParts.push(`; --- ${file} ---\n${readFileSync(fullPath, 'utf-8')}`);
+  } catch {
+    // File may not exist
+  }
+}
+const bundle = bundleParts.join('\n\n');
+writeFileSync(join(DIST, 'bundle.loon'), bundle);
+const bundleHash = createHash('md5').update(bundle).digest('hex').slice(0, 8);
+writeFileSync(join(DIST, 'bundle.hash'), bundleHash);
+console.log(`  bundle.loon (${(bundle.length / 1024).toFixed(1)}KB, hash: ${bundleHash})`);
+
+// Step 5: Type-check Loon sources (skip without Rust toolchain)
+// (reuses bootOrder from top-level constant)
 if (!noRust) {
   console.log('Type-checking Loon sources...');
-  const bootOrder = [
-    'src/ui.loon',
-    'src/lib/utils.loon',
-    'src/lib/theme.loon',
-    'src/lib/components.loon',
-    'src/lib/doc.loon',
-    'src/router.loon',
-    'src/components/footer.loon',
-    'src/components/code.loon',
-    'src/components/editor.loon',
-    'src/components/sidebar.loon',
-    'src/pages/home.loon',
-    'src/pages/tour.loon',
-    'src/pages/play.loon',
-    'src/pages/blog.loon',
-    'src/pages/roadmap.loon',
-    'src/pages/install.loon',
-    'src/pages/examples.loon',
-    'src/pages/guide/basics.loon',
-    'src/pages/guide/functions.loon',
-    'src/pages/guide/types.loon',
-    'src/pages/guide/collections.loon',
-    'src/pages/guide/pattern-matching.loon',
-    'src/pages/guide/ownership.loon',
-    'src/pages/guide/effects.loon',
-    'src/pages/guide/modules.loon',
-    'src/pages/guide/macros.loon',
-    'src/pages/guide/testing.loon',
-    'src/pages/guide/errors.loon',
-    'src/pages/ref/syntax.loon',
-    'src/pages/ref/builtins.loon',
-    'src/pages/ref/cli.loon',
-    'src/pages/ref/effects.loon',
-    'src/pages/ref/lsp.loon',
-    'src/pages/ref/formatter.loon',
-    'src/pages/concepts/invisible-types.loon',
-    'src/pages/concepts/effects.loon',
-    'src/pages/concepts/ownership.loon',
-    'src/pages/concepts/from-rust.loon',
-    'src/pages/concepts/from-js.loon',
-    'src/pages/concepts/from-clojure.loon',
-    'src/app.loon',
-  ];
-
   const parts: string[] = [];
   for (const file of bootOrder) {
     const fullPath = join(SRC, '..', file);
@@ -138,7 +157,7 @@ if (!noRust) {
   console.log('Skipping type-check (--no-rust)...');
 }
 
-// Step 5: Generate pre-rendered HTML (if not dev mode)
+// Step 6: Generate pre-rendered HTML (if not dev mode)
 if (!isDev) {
   console.log('Pre-rendering pages...');
   // Run native interpreter to generate static HTML for each page

@@ -54,8 +54,7 @@
 
 [fn home-page []
   [div {:class "page"
-        :style {:max-width "960px"
-                :padding "0 2rem"}}
+        :style {:padding "0"}}
 
     ; --- Wordmark ---
     [div {:style {:padding "5rem 0 0"}}
@@ -296,4 +295,4 @@
         "  [map fib]\n"
         "  [each println]]"]]]
 
-    [footer-component]]]
+    ]]

@@ -1,0 +1,56 @@
+; formatter.loon — Reference: Formatter
+
+[fn ref-formatter-page []
+  [doc-page "Formatter" "Automatic code formatting with loon fmt."
+
+    [doc-section "Usage"
+      [doc-text "Format one or more files in place."]
+      [code-block {:label "SHELL"} "loon fmt [files...]"]
+      [doc-text "With no arguments, formats all " [doc-code ".loon"] " files in the current directory recursively."]]
+
+    [doc-section "Check Mode"
+      [doc-text "Verify that files are already formatted without modifying them."]
+      [code-block {:label "SHELL"} "loon fmt --check [files...]"]
+      [doc-text "Exits with code 0 if all files are formatted, 1 if any file would change. "
+        "Useful for CI pipelines."]]
+
+    [doc-section "Formatting Rules"
+      [doc-def "Indentation" "2 spaces. No tabs."]
+      [doc-def "Bracket spacing" "No space after [ or before ]: [fn x [+ x 1]]"]
+      [doc-def "Map formatting" "One key-value pair per line when the map exceeds the line width."]
+      [doc-def "Line width" "Target of 80 characters. Long expressions are wrapped."]
+      [doc-def "Trailing newline" "Every file ends with exactly one newline."]
+      [doc-def "Blank lines" "Consecutive blank lines are collapsed to one. Sections separated by one blank line."]
+      [doc-def "Comment alignment" "Inline comments are not realigned. Leading comments preserved as-is."]]
+
+    [doc-section "CI Integration"
+      [doc-text "Add a formatting check to your CI pipeline to enforce consistent style."]
+      [code-block {:label "YAML"} [str
+        "- name: Check formatting\n"
+        "  run: loon fmt --check\n"]]
+      [doc-text "The " [doc-code "--check"] " flag exits with a non-zero code if any file is unformatted, "
+        "failing the CI step."]]
+
+    [doc-section "Editor Integration"
+      [doc-text "Configure your editor to format on save by running " [doc-code "loon fmt"] " on the current file."]
+      [doc-subsection "VS Code"
+        [doc-text "The Loon VS Code extension supports format-on-save out of the box. "
+          "Enable it in settings:"]
+        [code-block {:label "JSON"} [str
+          "{\n"
+          "  \"editor.formatOnSave\": true,\n"
+          "  \"[loon]\": {\n"
+          "    \"editor.defaultFormatter\": \"loon-lang.loon-vscode\"\n"
+          "  }\n"
+          "}"]]]
+      [doc-subsection "Neovim"
+        [doc-text "Use an autocommand to format on save:"]
+        [code-block {:label "LUA"} [str
+          "vim.api.nvim_create_autocmd('BufWritePre', {\n"
+          "  pattern = '*.loon',\n"
+          "  callback = function()\n"
+          "    vim.lsp.buf.format()\n"
+          "  end,\n"
+          "})"]]]]
+
+    [doc-prev-next "LSP" "/ref/lsp" "Why Invisible Types" "/concepts/invisible-types"]]]

@@ -1,0 +1,120 @@
+; roadmap.loon — Roadmap page
+
+[fn rm-item [txt done]
+  [li-el {:style {:color [if done [color :muted] [color :text]]
+                  :font-family [font :serif]
+                  :font-size "0.95rem"
+                  :margin-bottom "0.2rem"}}
+    [if done
+      [span {:style {:text-decoration "line-through"}} txt]
+      [span txt]]]]
+
+[fn rm-phase [title status & items]
+  [let border-color [match status
+    "Done"        => [color :border]
+    "In Progress" => [color :accent]
+    _             => [color :border]]]
+  [div {:style {:margin-bottom "3rem"
+                :padding-left "1.5rem"
+                :border-left [str "2px solid " border-color]}}
+    [div {:style {:display "flex"
+                  :align-items "baseline"
+                  :gap "0.75rem"
+                  :margin-bottom "0.75rem"}}
+      [h3 {:style {:margin "0"
+                   :font-family [font :serif]
+                   :font-weight "600"
+                   :font-size "1.05rem"}} title]
+      [if [not [= status ""]]
+        [span {:style {:font-family [font :mono]
+                       :font-size "0.75rem"
+                       :color [if [= status "In Progress"] [color :accent] [color :muted]]
+                       :letter-spacing "0.05em"}}
+          status]
+        Empty]]
+    [ul-el {:style {:list-style "none"
+                    :padding "0"
+                    :margin "0"
+                    :line-height "1.8"}}
+      [pipe items [map [fn [txt] [rm-item txt [= status "Done"]]]]]]]]
+
+[fn roadmap-page []
+  [div {:class "page"}
+    [main-el {:style {:padding "3rem 0 5rem"}}
+
+      [h1 {:style {:font-family [font :serif]
+                   :font-weight "400"
+                   :font-size "2rem"
+                   :margin-bottom "0.5rem"}} "Roadmap"]
+      [p {:style {:color [color :muted]
+                  :font-family [font :serif]
+                  :font-size "1rem"
+                  :margin-bottom "3rem"}}
+        "What's shipped, what's next. Built in the open."]
+
+      [rm-phase "v0.1 — Foundation" "Done"
+        "Lexer and parser (square-bracket s-expressions)"
+        "Tree-walking interpreter with ~70 builtins"
+        "Hindley-Milner type inference"
+        "Ownership checker (inferred, no annotations)"
+        "Algebraic effects (declare, perform, handle)"
+        "REPL with time travel and forking"
+        "CLI: new, run, build, test, check, repl"
+        "Basic WASM codegen"]
+
+      [rm-phase "v0.2 — Ergonomics" "Done"
+        "Destructuring in let and function params (vec, map, rest)"
+        "Multi-arity functions"
+        "Module system (use, pub, cycle detection)"
+        "Pipe expressions"
+        "Pattern matching with match/=>"
+        "? sugar for Result/Option"
+        "String interpolation (fmt)"]
+
+      [rm-phase "v0.3 — Tooling" "Done"
+        "Formatter (Wadler-Lindig pretty printer, loon fmt)"
+        "LSP: diagnostics, hover types, go-to-definition"
+        "LSP: completions with types, inlay hints"
+        "Interactive error tutorials (loon explain)"
+        "Error codes (E01xx–E05xx)"]
+
+      [rm-phase "v0.4 — Macros" "Done"
+        "Template macros with quasiquoting and splicing"
+        "Procedural macros (full interpreter at compile time)"
+        "Type-aware macros (macro+)"
+        "Compile-time effects (IO, Net, Env)"
+        "macroexpand for debugging"]
+
+      [rm-phase "v0.5 — Type System" "In Progress"
+        "Row polymorphism for records"
+        "Trait bounds (Add, etc.)"
+        "Typed AST lowering"
+        "Trait declarations and impls"
+        "Type classes"
+        "Full trait resolution"]
+
+      [rm-phase "v0.6 — Effects & Concurrency" ""
+        "Full effect inference"
+        "Effect composition"
+        "Built-in effects: IO, Fail, Process, Async"
+        "Channels (send, recv, try-recv)"
+        "Async spawn/await"]
+
+      [rm-phase "v0.7 — Compilation" ""
+        "WASM codegen for closures and ADTs"
+        "Pattern matching compilation"
+        "Tail call optimization"
+        "Inline caching for interpreter"]
+
+      [rm-phase "v0.8 — Ecosystem" ""
+        "Package manager (Pond)"
+        "Standard library"
+        "Documentation generator"
+        "Tree-sitter grammar"]
+
+      [rm-phase "v1.0 — The Vision" ""
+        "Content-addressed definitions (Unison-inspired)"
+        "Incremental computation"
+        "LLM integration (ai fn, agents)"
+        "Persistent data structures"
+        "Notebooks / literate programming"]]]]

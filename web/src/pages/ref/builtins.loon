@@ -1,0 +1,94 @@
+; builtins.loon — Reference: Built-in Functions
+
+[fn ref-builtins-page []
+  [doc-page "Builtins Reference" "Every built-in function by category."
+
+    [doc-section "Arithmetic"
+      [doc-def "+" "Add two or more numbers."]
+      [doc-def "-" "Subtract. With one argument, negates."]
+      [doc-def "*" "Multiply two or more numbers."]
+      [doc-def "/" "Divide. Integer division for ints, float division for floats."]
+      [doc-def "%" "Modulo (remainder after division)."]]
+
+    [doc-section "Comparison"
+      [doc-def "=" "Structural equality. Works on all types."]
+      [doc-def "!=" "Structural inequality."]
+      [doc-def "<" "Less than. Numbers and strings."]
+      [doc-def ">" "Greater than. Numbers and strings."]
+      [doc-def "<=" "Less than or equal."]
+      [doc-def ">=" "Greater than or equal."]]
+
+    [doc-section "Logic"
+      [doc-def "not" "Logical negation. Returns true if argument is false."]
+      [doc-def "and" "Logical AND. Eager -- evaluates both arguments."]
+      [doc-def "or" "Logical OR. Eager -- evaluates both arguments."]]
+
+    [doc-section "String"
+      [doc-def "str" "Convert to string, or concatenate multiple values into a string."]
+      [doc-def "len" "Return the length of a string or collection."]
+      [doc-def "split" "Split a string by a delimiter: [split \",\" \"a,b,c\"]"]
+      [doc-def "join" "Join a collection into a string with a separator: [join \", \" items]"]
+      [doc-def "trim" "Remove leading and trailing whitespace."]
+      [doc-def "replace" "Replace occurrences in a string: [replace \"old\" \"new\" s]"]
+      [doc-def "uppercase" "Convert a string to uppercase."]
+      [doc-def "lowercase" "Convert a string to lowercase."]
+      [doc-def "starts-with?" "Return true if a string starts with the given prefix."]
+      [doc-def "ends-with?" "Return true if a string ends with the given suffix."]
+      [doc-def "char-at" "Return the character at a given index: [char-at 0 s]"]
+      [doc-def "substring" "Extract a substring: [substring start end s]"]
+      [doc-def "index-of" "Return the index of a substring, or -1 if not found."]
+      [doc-def "contains?" "Return true if a string contains a substring, or a collection contains an element."]]
+
+    [doc-section "Collections"
+      [doc-def "map" "Apply a function to each element: [map f coll]"]
+      [doc-def "filter" "Keep elements where predicate returns true: [filter f coll]"]
+      [doc-def "fold" "Reduce a collection: [fold coll init f] or [fold init f coll]"]
+      [doc-def "conj" "Add an element to a collection: [conj coll elem]"]
+      [doc-def "nth" "Get element at index: [nth idx coll]"]
+      [doc-def "get" "Get a value by key, with optional default: [get m :key default]"]
+      [doc-def "assoc" "Associate a key with a value in a map: [assoc m :key val]"]
+      [doc-def "update" "Update a value in a map by applying a function: [update m :key f]"]
+      [doc-def "keys" "Return the keys of a map as a vector."]
+      [doc-def "values" "Return the values of a map as a vector."]
+      [doc-def "entries" "Return key-value pairs of a map as a vector of vectors."]
+      [doc-def "merge" "Merge two or more maps. Later values win."]
+      [doc-def "remove" "Remove elements matching a predicate, or a key from a map."]
+      [doc-def "sort" "Sort a collection in natural order."]
+      [doc-def "sort-by" "Sort by a key function: [sort-by f coll]"]
+      [doc-def "reverse" "Reverse a collection."]
+      [doc-def "take" "Take the first n elements: [take n coll]"]
+      [doc-def "drop" "Drop the first n elements: [drop n coll]"]
+      [doc-def "each" "Execute a side-effecting function for each element. Returns None."]
+      [doc-def "find" "Return the first element matching a predicate, or None."]
+      [doc-def "any?" "Return true if any element matches the predicate."]
+      [doc-def "all?" "Return true if all elements match the predicate."]
+      [doc-def "zip" "Combine two collections element-wise into pairs."]
+      [doc-def "flatten" "Flatten a nested collection by one level."]
+      [doc-def "chunk" "Split a collection into groups of n: [chunk n coll]"]
+      [doc-def "flat-map" "Map then flatten: [flat-map f coll]"]
+      [doc-def "group-by" "Group elements by a key function: [group-by f coll]"]
+      [doc-def "cons" "Prepend an element to a list: [cons elem coll]"]
+      [doc-def "collect" "Collect a lazy sequence into a vector."]
+      [doc-def "into-map" "Convert a collection of key-value pairs into a map."]
+      [doc-def "range" "Generate a range of integers: [range end] or [range start end]"]
+      [doc-def "push!" "Mutably append to a vector. Use sparingly."]
+      [doc-def "empty?" "Return true if a collection or string is empty."]
+      [doc-def "sum" "Sum all numbers in a collection."]
+      [doc-def "min" "Return the smallest value in a collection."]
+      [doc-def "max" "Return the largest value in a collection."]]
+
+    [doc-section "Type Checks"
+      [doc-def "map?" "Return true if the value is a map."]
+      [doc-def "vec?" "Return true if the value is a vector."]]
+
+    [doc-section "Conversion"
+      [doc-def "name" "Convert a keyword to its string name: [name :foo] => \"foo\""]
+      [doc-def "int" "Convert a value to an integer."]
+      [doc-def "float" "Convert a value to a float."]
+      [doc-def "str" "Convert any value to its string representation."]]
+
+    [doc-section "IO"
+      [doc-def "println" "Print a value followed by a newline."]
+      [doc-def "print" "Print a value without a trailing newline."]]
+
+    [doc-prev-next "Syntax" "/ref/syntax" "CLI" "/ref/cli"]]]

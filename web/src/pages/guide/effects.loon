@@ -1,0 +1,52 @@
+; effects.loon — Algebraic effects guide
+
+[fn guide-effects-page []
+  [doc-page "Effects" "Algebraic effects for IO, errors, and more."
+
+    [doc-section "The Problem"
+      [doc-text "How do you test code that performs IO? In most languages, you mock interfaces or inject dependencies. Loon uses algebraic effects instead — declare what your code needs, and let the caller decide how to provide it."]
+      [doc-note "info" "Effects decouple what a function does from how side effects are handled."]]
+
+    [doc-section "Declaring Effects"
+      [doc-text "An effect declares a set of operations without implementations."]
+      [code-block {:label "LOON"} [str "[effect Store\n" "  [fn get [key]]\n" "  [fn set [key value]]]"]]
+      [doc-text "This is similar to an interface, but the implementation is provided at the call site via a handler."]]
+
+    [doc-section "Performing Effects"
+      [doc-text "Call effect operations like normal functions using dot syntax."]
+      [code-block {:label "LOON"} [str "[fn save-user [name]\n" "  [Store.set \"user\" name]\n" "  [Store.get \"user\"]]"]]]
+
+    [doc-section "Handling Effects"
+      [doc-text "A " [doc-code "handle"] " block intercepts effect operations and defines their behavior."]
+      [code-block {:label "LOON"} [str "[handle [save-user \"Alice\"]\n" "  [Store.get key] => [get db key]\n" "  [Store.set key val] => [insert db key val]]"]]
+      [doc-text "Each clause matches an effect operation and provides a concrete implementation."]]
+
+    [doc-section "Resume"
+      [doc-text "Handlers receive an implicit " [doc-code "resume"] " to continue execution after handling an effect."]
+      [code-block {:label "LOON"} [str "[handle [do [Store.set \"x\" 1] [Store.get \"x\"]]\n" "  [Store.get key] => [resume [get state key]]\n" "  [Store.set key val] => [resume None]]"]]
+      [doc-note "tip" "Calling resume is what makes effects different from exceptions — execution continues where it left off."]]
+
+    [doc-section "Built-in Effects"
+      [doc-subsection "IO"
+        [doc-text "The " [doc-code "IO"] " effect covers printing, file reads, and network access."]
+        [code-block {:label "LOON"} [str "[IO.println \"hello\"]\n" "[let contents [IO.read-file \"data.txt\"]]"]]]
+      [doc-subsection "Fail"
+        [doc-text "The " [doc-code "Fail"] " effect represents recoverable errors."]
+        [code-block {:label "LOON"} [str "[fn divide [a b]\n" "  [if [= b 0]\n" "    [Fail.raise \"division by zero\"]\n" "    [/ a b]]]"]]]]
+
+    [doc-section "The ? Operator"
+      [doc-text "The " [doc-code "?"] " operator unwraps a Result, performing Fail on Err."]
+      [code-block {:label "LOON"} [str "[fn load-config [path]\n" "  [let text [IO.read-file path]?]\n" "  [parse-json text]?]"]]
+      [doc-note "info" "The ? operator is sugar for matching on Result and raising Fail on Err."]]
+
+    [doc-section "Effect Annotations"
+      [doc-text "Functions that perform effects are annotated with " [doc-code "!"] " by convention."]
+      [code-block {:label "LOON"} [str "[fn save-user! [name]\n" "  [Store.set \"user\" name]]"]]
+      [doc-text "This is a naming convention, not enforced by the compiler — but it makes effectful code easy to spot."]]
+
+    [doc-section "Testing with Effects"
+      [doc-text "Effects make testing trivial. Replace real handlers with test doubles."]
+      [code-block {:label "LOON"} [str "[test \"save-user stores correctly\" []\n" "  [let mut log #[]]\n" "  [handle [save-user \"Bob\"]\n" "    [Store.set k v] => [do [push! log v] [resume None]]\n" "    [Store.get k] => [resume \"Bob\"]]\n" "  [assert-eq log #[\"Bob\"]]]"]]
+      [doc-note "tip" "No mocking libraries needed. Handle the effect differently in tests and production."]]
+
+    [doc-prev-next "Ownership" "/guide/ownership" "Modules" "/guide/modules"]]]

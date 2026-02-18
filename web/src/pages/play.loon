@@ -24,10 +24,7 @@
 
 [fn play-page []
   [div {:class "page"}
-    [page-header]
-    [main-el {:style {:max-width "900px"
-                      :margin "0 auto"
-                      :padding "3rem 2rem"}}
+    [main-el {:style {:padding "3rem 0"}}
       [h1 {:style {:font-family [font :serif]
                    :color [color :primary]
                    :font-size "2.5rem"
@@ -45,5 +42,4 @@
         "    Point => 0.0]]\n\n"
         "[each [fn [s] [println [str s \" => \" [area s]]]]\n"
         "  #[[Circle 5.0] [Rect 3.0 4.0] Point]]"]]
-      [play-examples]]
-    [footer-component]]]
+      [play-examples]]]]

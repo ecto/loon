@@ -1,0 +1,85 @@
+; types.loon — Guide: Types
+
+[fn guide-types-page []
+  [doc-page "Types" "Invisible types, ADTs, and what the compiler infers."
+
+    [doc-section "Invisible Types"
+      [doc-text "Loon uses Hindley-Milner type inference. You never need to write type "
+        "annotations. The compiler infers every type from how values are used."]
+      [code-block {} [str
+        "[let x 42]              ; Int\n"
+        "[let name \"Loon\"]       ; Str\n"
+        "[let nums #[1 2 3]]     ; Vec Int\n"
+        "[fn add [a b] [+ a b]]  ; Int -> Int -> Int"]]]
+
+    [doc-section "What Gets Inferred"
+      [doc-text "Inference works through function calls, generics, closures, and "
+        "even higher-order functions."]
+      [code-block {} [str
+        "[fn compose [f g]\n"
+        "  [fn [x] [f [g x]]]]\n"
+        "; (b -> c) -> (a -> b) -> (a -> c)\n"
+        "\n"
+        "[let inc-dbl [compose\n"
+        "  [fn [n] [+ n 1]]\n"
+        "  [fn [n] [* n 2]]]]"]]]
+
+    [doc-section "Viewing Types"
+      [doc-text "The language server shows inferred types on hover and as inlay hints. "
+        "You can see every type without writing any."]
+      [doc-note "tip" "Install the Loon LSP extension to see inferred types inline in your editor."]]
+
+    [doc-section "Algebraic Data Types"
+      [doc-text "Define sum types with " [doc-code "type"] ". Each variant is a constructor "
+        "that can hold data."]
+      [code-block {} [str
+        "[type Shape\n"
+        "  [Circle Float]\n"
+        "  [Rect Float Float]\n"
+        "  Point]\n"
+        "\n"
+        "[let s [Circle 5.0]]"]]]
+
+    [doc-section "Option and Result"
+      [doc-text "Loon has no " [doc-code "nil"] " or " [doc-code "null"] ". Use the built-in "
+        [doc-code "Option"] " and " [doc-code "Result"] " types instead."]
+      [code-block {} [str
+        "; Option is [Some value] or None\n"
+        "[let found [Some 42]]\n"
+        "[let missing None]\n"
+        "\n"
+        "; Result is [Ok value] or [Err msg]\n"
+        "[let ok [Ok 100]]\n"
+        "[let bad [Err \"not found\"]]"]]
+      [doc-note "info" "There is no nil/null in Loon. Use None or the empty string as defaults."]]
+
+    [doc-section "Generics"
+      [doc-text "Generic functions are inferred automatically. The compiler gives each "
+        "unconstrained parameter a type variable."]
+      [code-block {} [str
+        "[fn identity [x] x]\n"
+        "; a -> a\n"
+        "\n"
+        "[fn first [pair]\n"
+        "  [get pair 0]]\n"
+        "; Vec a -> a"]]]
+
+    [doc-section "Type Signatures"
+      [doc-text "You can optionally annotate with " [doc-code "sig"] " for documentation "
+        "or to constrain inference. This is never required."]
+      [code-block {} [str
+        "[sig add : Int -> Int -> Int]\n"
+        "[fn add [a b] [+ a b]]"]]]
+
+    [doc-section "Row Polymorphism"
+      [doc-text "Functions can accept any map that has the required keys, regardless of "
+        "what other keys it contains. This is inferred automatically."]
+      [code-block {} [str
+        "[fn get-name [user]\n"
+        "  [get user :name]]\n"
+        "\n"
+        "; Works with any map containing :name\n"
+        "[get-name {:name \"Ada\" :age 30}]\n"
+        "[get-name {:name \"Alan\" :role \"CS\"}]"]]]
+
+    [doc-prev-next "Functions" "/guide/functions" "Collections" "/guide/collections"]]]

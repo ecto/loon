@@ -1,0 +1,41 @@
+; install.loon — Installation guide
+
+[fn install-page []
+  [doc-page "Installation" "Get Loon running on your machine in under a minute."
+
+    [doc-section "Install Loon"
+      [doc-text "Run the install script to download the latest release for your platform."]
+      [code-block {:label "SHELL"} "curl -fsSL https://loonlang.com/install.sh | sh"]
+      [doc-note "info" "Supports macOS (ARM and Intel) and Linux (x86_64). Windows support is coming via WSL."]]
+
+    [doc-section "Verify Installation"
+      [doc-text "Confirm Loon is installed and on your PATH."]
+      [code-block {:label "SHELL"} [str "$ loon --version\n" "loon 0.1.0"]]
+      [doc-text "If the command is not found, you may need to add " [doc-code "~/.loon/bin"] " to your PATH."]
+      [code-block {:label "SHELL"} "export PATH=\"$HOME/.loon/bin:$PATH\""]]
+
+    [doc-section "Editor Setup"
+      [doc-subsection "VS Code"
+        [doc-text "Install the Loon extension from the VS Code marketplace."]
+        [code-block {:label "SHELL"} "code --install-extension loon-lang.loon-vscode"]
+        [doc-text "The extension provides syntax highlighting, diagnostics, hover types, go-to-definition, and completions."]]
+      [doc-subsection "Other Editors"
+        [doc-text "Loon ships with a built-in language server. Point your editor's LSP client at the " [doc-code "loon lsp"] " command."]
+        [code-block {:label "SHELL"} "loon lsp"]
+        [doc-note "tip" "For Neovim, add a lspconfig entry with cmd = { \"loon\", \"lsp\" } and filetypes = { \"loon\" }."]]]
+
+    [doc-section "Your First Program"
+      [doc-text "Create a file called " [doc-code "hello.loon"] " with the following contents."]
+      [code-block {:label "hello.loon"} [str "[fn main []\n" "  [println \"Hello, world!\"]]\n" "\n" "[main]"]]
+      [doc-text "Run it with the " [doc-code "loon run"] " command."]
+      [code-block {:label "SHELL"} [str "$ loon run hello.loon\n" "Hello, world!"]]
+      [doc-note "tip" "Use loon run --watch to re-run automatically when the file changes."]]
+
+    [doc-section "What's Next"
+      [doc-text "You're all set. Head to By Example for a cookbook of short programs, or jump into the language guide to learn the fundamentals."]
+      [doc-list
+        [span [a-el {:href "/examples"} "By Example"] " — complete annotated programs"]
+        [span [a-el {:href "/guide/basics"} "Language Guide"] " — learn the fundamentals"]
+        [span [a-el {:href "/play"} "Playground"] " — try Loon in the browser"]]]
+
+    [doc-prev-next "Tour" "/tour" "By Example" "/examples"]]]

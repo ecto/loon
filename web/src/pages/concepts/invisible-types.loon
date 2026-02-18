@@ -1,0 +1,117 @@
+; invisible-types.loon — Concepts: Why Invisible Types
+
+[fn concepts-invisible-types-page []
+  [doc-page "Why Invisible Types" "Full type safety without type annotations."
+
+    [doc-section "The Insight"
+      [doc-text "Most statically typed languages ask you to write types. Loon does not. "
+        "This is not because Loon lacks types — it has a full, sound type system with generics, "
+        "algebraic data types, and effect tracking. You just never write them."]
+      [doc-text "The key insight: types exist to help the compiler catch mistakes, not to help "
+        "the programmer express intent. If the compiler can figure out every type on its own, "
+        "the annotations are ceremony — noise that obscures the logic you actually care about."]
+      [doc-text "Loon takes this idea seriously. The compiler infers every type in your program "
+        "using Hindley-Milner inference. You write code. The compiler checks it. If something "
+        "does not line up, you get a clear error. The types are always there — you just do not "
+        "have to write them."]]
+
+    [doc-section "How Hindley-Milner Inference Works"
+      [doc-text "The intuition is straightforward. When you write:"]
+      [code-block {} [str
+        "[fn add [a b]\n"
+        "  [+ a b]]"]]
+      [doc-text "The compiler sees " [doc-code "+"] " applied to " [doc-code "a"]
+        " and " [doc-code "b"] ". It knows " [doc-code "+"]
+        " takes two numbers and returns a number. So " [doc-code "a"] " and " [doc-code "b"]
+        " must be numbers, and " [doc-code "add"] " returns a number. No annotation needed."]
+      [doc-text "This process scales to the entire program. The compiler walks through every "
+        "expression, generating constraints (\"this must be the same type as that\"), then solves "
+        "them all at once. If the constraints are satisfiable, the program type-checks. If not, "
+        "you get an error pointing to exactly where the types conflict."]
+      [doc-note "info" "HM inference is not heuristic or best-effort. It is a complete algorithm — if a valid typing exists, it will find it. If no valid typing exists, it will report an error."]]
+
+    [doc-section "What Gets Inferred"
+      [doc-subsection "Function signatures"
+        [doc-text "Every parameter type, return type, and generic is inferred. A function that "
+          "works on any type is automatically polymorphic:"]
+        [code-block {} [str
+          "[fn identity [x] x]\n"
+          "; Inferred: forall a. a -> a\n"
+          "\n"
+          "[fn first [pair]\n"
+          "  [get pair 0]]\n"
+          "; Inferred: (a, b) -> a"]]]
+
+      [doc-subsection "Generics"
+        [doc-text "You never write generic parameters. The compiler infers them from usage:"]
+        [code-block {} [str
+          "[fn map-pair [f pair]\n"
+          "  #[[f [get pair 0]] [f [get pair 1]]]]\n"
+          "; Inferred: forall a b. (a -> b) -> (a, a) -> (b, b)"]]]
+
+      [doc-subsection "ADTs and pattern matching"
+        [doc-text "When you match on a value, the compiler knows its type from the "
+          "constructors you use:"]
+        [code-block {} [str
+          "[fn describe [opt]\n"
+          "  [match opt\n"
+          "    [Some x] => [str \"got: \" x]\n"
+          "    None     => \"nothing\"]]\n"
+          "; Inferred: Option Str -> Str"]]]
+
+      [doc-subsection "Effects"
+        [doc-text "Effect types are inferred too. If your function performs an effect, "
+          "the compiler tracks it without you declaring it:"]
+        [code-block {} [str
+          "[fn read-name []\n"
+          "  [perform Console.readline \"Name: \"]]\n"
+          "; Inferred: () -> Str / Console"]]]]
+
+    [doc-section "The Editor as Type Viewer"
+      [doc-text "If types are invisible in the source, where do you see them? In your editor. "
+        "The Loon language server provides:"]
+      [doc-list
+        "Hover types — hover over any expression to see its inferred type."
+        "Inlay hints — faded type annotations displayed inline, without editing your code."
+        "Error squiggles — type errors appear instantly as you type."]
+      [doc-text "This is a better workflow than writing types. Written annotations are static "
+        "and can become stale. Editor-provided types are always correct because they come "
+        "directly from the compiler. You get the benefits of seeing types everywhere without "
+        "the cost of maintaining them."]]
+
+    [doc-section "When You Might Want Annotations"
+      [doc-text "Loon provides an optional " [doc-code "sig"] " form for the rare cases "
+        "where you want to declare a type explicitly:"]
+      [code-block {} [str
+        "[sig parse : Str -> Result Int ParseError]\n"
+        "[fn parse [input]\n"
+        "  ...]"]]
+      [doc-text "This is useful for:"]
+      [doc-list
+        "Documentation at module boundaries — making a public API's contract explicit."
+        "Constraining polymorphism — when you want a function to be less general than the compiler would infer."
+        "Debugging type errors — when the compiler's error message is confusing, a sig can help localize the problem."]
+      [doc-note "tip" "sig is always optional. The compiler checks that your annotation matches its inference. If they disagree, you get an error."]]
+
+    [doc-section "Frequently Asked Questions"
+      [doc-subsection "Is this like TypeScript's type inference?"
+        [doc-text "TypeScript infers types within a function, but requires annotations at "
+          "function boundaries. Loon's inference is global — it crosses function boundaries "
+          "freely. You never need to annotate a function parameter or return type."]]
+
+      [doc-subsection "What about documentation?"
+        [doc-text "The common argument for type annotations is that they document intent. "
+          "We think this is better solved by the editor, where types are always accurate, "
+          "and by good naming. A function called " [doc-code "parse-int"] " communicates its "
+          "purpose more clearly than " [doc-code "fn parse_int(s: &str) -> Result<i32, ParseIntError>"] " does."]]
+
+      [doc-subsection "Does inference slow down compilation?"
+        [doc-text "HM inference is fast — it runs in nearly linear time for practical programs. "
+          "It is not a significant factor in compile times."]]
+
+      [doc-subsection "Can the inferred types be surprising?"
+        [doc-text "Occasionally, the compiler infers a more general type than you expected. "
+          "This is always safe — a more general type is strictly more permissive. If you want "
+          "to constrain it, use " [doc-code "sig"] "."]]]
+
+    [doc-prev-next "Formatter" "/ref/formatter" "Understanding Effects" "/concepts/effects"]]]

@@ -1,0 +1,72 @@
+; functions.loon — Guide: Functions
+
+[fn guide-functions-page []
+  [doc-page "Functions" "Named, anonymous, higher-order, and recursive."
+
+    [doc-section "Named Functions"
+      [doc-text "Define functions with " [doc-code "fn"] ". The body is a single expression "
+        "(an implicit " [doc-code "do"] " wraps the body, so multiple expressions are fine)."]
+      [code-block {} [str
+        "[fn greet [name]\n"
+        "  [println [str \"Hello, \" name \"!\"]]]"]]]
+
+    [doc-section "Anonymous Functions"
+      [doc-text "Omit the name to create a lambda. These are first-class values."]
+      [code-block {} [str
+        "[let double [fn [x] [* x 2]]]\n"
+        "[println [double 5]]  ; 10"]]]
+
+    [doc-section "Multi-Arity"
+      [doc-text "A function can have multiple arities. Each arity is wrapped in parentheses."]
+      [code-block {} [str
+        "[fn greet\n"
+        "  ([name] [str \"Hello, \" name \"!\"])\n"
+        "  ([first last]\n"
+        "    [str \"Hello, \" first \" \" last \"!\"])]"]]]
+
+    [doc-section "Variadic Functions"
+      [doc-text "Use " [doc-code "&"] " to collect remaining arguments into a vector."]
+      [code-block {} [str
+        "[fn log [level & msgs]\n"
+        "  [println [str level \": \"\n"
+        "    [join msgs \" \"]]]]"]]]
+
+    [doc-section "Higher-Order Functions"
+      [doc-text "Functions that take or return other functions. The standard library "
+        "provides " [doc-code "map"] ", " [doc-code "filter"] ", and " [doc-code "fold"] "."]
+      [code-block {} [str
+        "[map [fn [x] [* x x]] #[1 2 3 4]]\n"
+        "; => #[1 4 9 16]\n"
+        "\n"
+        "[filter [fn [x] [> x 2]] #[1 2 3 4]]\n"
+        "; => #[3 4]"]]]
+
+    [doc-section "Closures"
+      [doc-text "Functions capture values from their enclosing scope."]
+      [code-block {} [str
+        "[fn make-adder [n]\n"
+        "  [fn [x] [+ x n]]]\n"
+        "\n"
+        "[let add5 [make-adder 5]]\n"
+        "[println [add5 10]]  ; 15"]]]
+
+    [doc-section "Pipe"
+      [doc-text "Use " [doc-code "pipe"] " to thread a value through a series of "
+        "transformations. The result of each step is passed as the last argument to the next."]
+      [code-block {} [str
+        "[pipe #[1 2 3 4 5]\n"
+        "  [filter [fn [x] [> x 2]]]\n"
+        "  [map [fn [x] [* x 10]]]\n"
+        "  [each println]]"]]
+      [doc-note "tip" "pipe eliminates deeply nested calls and temporary variables."]]
+
+    [doc-section "Recursion"
+      [doc-text "Loon supports recursion. Pattern matching is often combined with "
+        "recursion for clear base cases."]
+      [code-block {} [str
+        "[fn factorial [n]\n"
+        "  [match n\n"
+        "    0 => 1\n"
+        "    _ => [* n [factorial [- n 1]]]]]"]]]
+
+    [doc-prev-next "Basics" "/guide/basics" "Types" "/guide/types"]]]

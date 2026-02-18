@@ -1,0 +1,122 @@
+; ownership.loon — Concepts: Ownership Mental Model
+
+[fn concepts-ownership-page []
+  [doc-page "Ownership Mental Model" "How Loon manages memory without garbage collection or annotations."
+
+    [doc-section "Why Ownership"
+      [doc-text "There are three mainstream approaches to memory management: manual "
+        "(C, C++), garbage collection (Java, Go, Python), and ownership (Rust). "
+        "Loon chooses ownership, but with a different set of tradeoffs than Rust."]
+      [doc-text "Garbage collection is convenient but introduces latency spikes, "
+        "increases memory usage, and makes performance unpredictable. Manual management "
+        "is fast but error-prone. Ownership gives you deterministic, zero-overhead "
+        "memory management with compile-time safety guarantees."]
+      [doc-text "The question is: can ownership be made invisible? Rust proved the model "
+        "works. Loon asks whether the programmer needs to see the machinery."]]
+
+    [doc-section "How It Differs from Rust"
+      [doc-text "Rust requires you to participate in ownership decisions. You write "
+        [doc-code "&"] ", " [doc-code "&mut"] ", " [doc-code "'a"]
+        ", and " [doc-code "where T: 'static"] ". You choose between "
+        [doc-code "Box"] ", " [doc-code "Rc"] ", and " [doc-code "Arc"]
+        ". You reason about lifetimes."]
+      [doc-text "Loon takes a different position: the compiler should make these decisions. "
+        "You write code using values. The compiler decides whether to move, borrow, or copy. "
+        "It inserts borrows where safe, clones where necessary, and drops values at the "
+        "right time. You never write a lifetime annotation."]
+      [doc-note "info" "This is not hiding complexity — it is removing unnecessary decisions. The compiler has strictly more information than you do about value lifetimes, so it makes better decisions."]]
+
+    [doc-section "The Compiler's Decision Process"
+      [doc-text "When you pass a value to a function or assign it to a new binding, "
+        "the compiler follows a decision process:"]
+
+      [doc-subsection "1. Copy for primitives"
+        [doc-text "Integers, floats, booleans, and characters are always copied. "
+          "They are small and cheap to duplicate:"]
+        [code-block {} [str
+          "[let x 42]\n"
+          "[let y x]\n"
+          "[println x]  ; fine — Int is copied"]]]
+
+      [doc-subsection "2. Auto-borrow when safe"
+        [doc-text "If the compiler can prove the reference will not outlive the owner, "
+          "it passes a borrow instead of moving:"]
+        [code-block {} [str
+          "[fn length [xs] [len xs]]\n"
+          "\n"
+          "[let items #[1 2 3]]\n"
+          "[println [length items]]\n"
+          "[println [length items]]  ; items not consumed"]]
+        [doc-text "The compiler sees that " [doc-code "length"]
+          " only reads " [doc-code "xs"] " and returns a primitive. "
+          "It is safe to borrow."]]
+
+      [doc-subsection "3. Move by default"
+        [doc-text "If the value cannot be copied and cannot be safely borrowed, "
+          "ownership transfers:"]
+        [code-block {} [str
+          "[fn consume [xs]\n"
+          "  [println [str \"got \" [len xs] \" items\"]]]\n"
+          "\n"
+          "[let items #[1 2 3]]\n"
+          "[consume items]\n"
+          "; items has been moved — using it here is a compile error"]]]]
+
+    [doc-section "Value Lifecycle"
+      [doc-text "Every value in Loon goes through a predictable lifecycle:"]
+
+      [doc-subsection "Creation"
+        [doc-text "A value is created and bound to a name. That name is the owner."]
+        [code-block {} "[let user {:name \"Ada\" :age 30}]"]]
+
+      [doc-subsection "Use"
+        [doc-text "The value is read, passed to functions, or used in expressions. "
+          "The compiler decides whether each use is a borrow or a move."]
+        [code-block {} [str
+          "[println [get user :name]]  ; borrow — user still valid\n"
+          "[save-to-db user]           ; move — ownership transfers"]]]
+
+      [doc-subsection "Drop"
+        [doc-text "When the owner goes out of scope, the value is dropped and its memory "
+          "is reclaimed. This is deterministic — it happens at a known point in the program, "
+          "not whenever a GC decides to run."]
+        [code-block {} [str
+          "[fn process []\n"
+          "  [let data [load-data]]\n"
+          "  [let result [transform data]]\n"
+          "  result]\n"
+          "; data is dropped here (if it was moved to transform,\n"
+          "; it was dropped there instead)"]]]]
+
+    [doc-section "Common Patterns"
+      [doc-subsection "Clone when you need two owners"
+        [doc-text "If you genuinely need the same data in two places, clone it explicitly:"]
+        [code-block {} [str
+          "[let a #[1 2 3]]\n"
+          "[let b [clone a]]\n"
+          "; both a and b are independent owners"]]]
+
+      [doc-subsection "Return instead of mutate"
+        [doc-text "Prefer returning new values over mutating. Ownership makes this efficient — "
+          "the compiler can often reuse the memory of the old value:"]
+        [code-block {} [str
+          "[fn add-item [cart item]\n"
+          "  [append cart item]]\n"
+          "\n"
+          "[let cart #[]]\n"
+          "[let cart [add-item cart \"book\"]]\n"
+          "[let cart [add-item cart \"pen\"]]"]]
+        [doc-note "tip" "Rebinding with the same name is idiomatic in Loon. Each let creates a new binding that shadows the previous one."]]
+
+      [doc-subsection "Pipeline-friendly design"
+        [doc-text "The pipe operator works naturally with ownership because each step "
+          "consumes the previous result:"]
+        [code-block {} [str
+          "[pipe #[1 2 3 4 5]\n"
+          "  [filter [fn [x] [> x 2]]]\n"
+          "  [map [fn [x] [* x 10]]]\n"
+          "  [fold 0 +]]"]]
+        [doc-text "Each intermediate vector is consumed by the next step and its memory "
+          "can be reused. No garbage collector needed."]]]
+
+    [doc-prev-next "Understanding Effects" "/concepts/effects" "Coming from Rust" "/concepts/from-rust"]]]

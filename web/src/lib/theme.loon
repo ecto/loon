@@ -2,8 +2,8 @@
 
 ; --- Color Tokens ---
 [let colors {
-  :primary   "var(--blue)"
-  :accent    "var(--gold)"
+  :primary   "var(--fg)"
+  :accent    "var(--accent)"
   :bg        "var(--bg)"
   :white     "var(--white)"
   :black     "var(--black)"
@@ -25,23 +25,23 @@
 
 ; --- Font Tokens ---
 [let fonts {
-  :serif "'Times New Roman', 'Georgia', serif"
-  :sans "system-ui, sans-serif"
-  :mono "ui-monospace, monospace"
+  :serif "'IBM Plex Serif', Georgia, 'Times New Roman', serif"
+  :sans "'IBM Plex Serif', Georgia, 'Times New Roman', serif"
+  :mono "'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace"
 }]
 
 ; --- Radius Tokens ---
 [let radii {
-  :sm "0"
-  :md "0"
-  :lg "0"
+  :sm "3px"
+  :md "4px"
+  :lg "6px"
 }]
 
 ; --- Shadow Tokens ---
 [let shadows {
-  :light "0 2px 8px rgba(0, 0, 0, 0.08)"
-  :medium "0 4px 16px rgba(0, 0, 0, 0.12)"
-  :heavy "0 8px 32px rgba(0, 0, 0, 0.18)"
+  :light "none"
+  :medium "none"
+  :heavy "none"
 }]
 
 ; --- Token Accessors ---

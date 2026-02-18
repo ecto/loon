@@ -1,0 +1,83 @@
+; pattern-matching.loon — Guide: Pattern Matching
+
+[fn guide-pattern-matching-page []
+  [doc-page "Pattern Matching" "Match on values, destructure data, handle every case."
+
+    [doc-section "Basic Match"
+      [doc-text [doc-code "match"] " compares a value against a series of patterns. "
+        "Each arm uses " [doc-code "=>"] " to separate the pattern from its result."]
+      [code-block {} [str
+        "[match status\n"
+        "  \"ok\"    => [println \"success\"]\n"
+        "  \"error\" => [println \"failed\"]\n"
+        "  _       => [println \"unknown\"]]"]]]
+
+    [doc-section "Literal Patterns"
+      [doc-text "Match on numbers, strings, booleans, and keywords directly."]
+      [code-block {} [str
+        "[match n\n"
+        "  0 => \"zero\"\n"
+        "  1 => \"one\"\n"
+        "  _ => \"many\"]"]]]
+
+    [doc-section "Wildcard"
+      [doc-text "The underscore " [doc-code "_"] " matches anything. Use it as a catch-all "
+        "or to ignore values you don't need."]
+      [code-block {} [str
+        "[match pair\n"
+        "  #[0 _] => \"starts with zero\"\n"
+        "  #[_ 0] => \"ends with zero\"\n"
+        "  _      => \"neither\"]"]]]
+
+    [doc-section "Variable Binding"
+      [doc-text "Names in patterns bind the matched value to a variable in that arm."]
+      [code-block {} [str
+        "[match [Some 42]\n"
+        "  [Some x] => [str \"got \" [str x]]\n"
+        "  None     => \"nothing\"]"]]]
+
+    [doc-section "Constructor Patterns"
+      [doc-text "Match on ADT constructors to extract their data."]
+      [code-block {} [str
+        "[type Shape\n"
+        "  [Circle Float]\n"
+        "  [Rect Float Float]\n"
+        "  Point]\n"
+        "\n"
+        "[fn describe [s]\n"
+        "  [match s\n"
+        "    [Circle r]  => [str \"circle r=\" [str r]]\n"
+        "    [Rect w h]  => [str \"rect \" [str w] \"x\" [str h]]\n"
+        "    Point       => \"point\"]]"]]]
+
+    [doc-section "Destructuring in Let"
+      [doc-text "Use patterns on the left side of " [doc-code "let"] " to destructure values."]
+      [code-block {} [str
+        "[let #[a b c] #[1 2 3]]\n"
+        "[println b]  ; 2\n"
+        "\n"
+        "[let {name age} {:name \"Ada\" :age 30}]\n"
+        "[println name]  ; \"Ada\""]]]
+
+    [doc-section "Destructuring in Function Params"
+      [doc-text "Function parameters support the same destructuring patterns."]
+      [code-block {} [str
+        "[fn area [[Circle r]]\n"
+        "  [* 3.14 r r]]\n"
+        "\n"
+        "[fn full-name [{first last}]\n"
+        "  [str first \" \" last]]"]]]
+
+    [doc-section "Exhaustiveness"
+      [doc-text "The compiler checks that match expressions cover every possible case. "
+        "If you miss a variant, you get a compile error, not a runtime crash."]
+      [code-block {} [str
+        "[type Color Red Green Blue]\n"
+        "\n"
+        "; Compile error: missing Blue\n"
+        "[match c\n"
+        "  Red   => \"red\"\n"
+        "  Green => \"green\"]"]]
+      [doc-note "tip" "Exhaustiveness checking makes refactoring safe. Add a variant to a type and the compiler finds every match that needs updating."]]
+
+    [doc-prev-next "Collections" "/guide/collections" "Ownership" "/guide/ownership"]]]

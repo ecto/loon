@@ -1,0 +1,42 @@
+; modules.loon — Module system guide
+
+[fn guide-modules-page []
+  [doc-page "Modules" "File-based modules with pub visibility."
+
+    [doc-section "File = Module"
+      [doc-text "Every " [doc-code ".loon"] " file is a module. The module name is the file name without the extension."]
+      [code-block {:label "LOON"} [str "; greet.loon\n" "[fn hello [] \"hi\"]\n" "[pub fn world [] \"world\"]"]]
+      [doc-note "info" "By default, all definitions are private to the module. Only pub items are visible to other modules."]]
+
+    [doc-section "Pub Exports"
+      [doc-text "Add " [doc-code "pub"] " before " [doc-code "fn"] ", " [doc-code "let"] ", or " [doc-code "type"] " to export it."]
+      [code-block {:label "LOON"} [str "[pub fn add [a b] [+ a b]]\n" "[pub let version \"0.1.0\"]\n" "[pub type Color\n" "  Red Green Blue]"]]
+      [doc-text "Private helpers stay internal — they support the public API without cluttering it."]]
+
+    [doc-section "Use / Import"
+      [doc-text "Use " [doc-code "use"] " to import a module. Access its exports with dot syntax."]
+      [code-block {:label "LOON"} [str "[use math]\n" "[println [math.add 1 2]]"]]
+      [doc-text "The module name matches the file name."]]
+
+    [doc-section "Aliasing"
+      [doc-text "Rename a module on import with " [doc-code "as"] "."]
+      [code-block {:label "LOON"} [str "[use string-utils as str-u]\n" "[println [str-u.capitalize \"hello\"]]"]]
+      [doc-note "tip" "Aliases are useful for long module names or to avoid ambiguity."]]
+
+    [doc-section "Selective Imports"
+      [doc-text "Import specific items directly into scope."]
+      [code-block {:label "LOON"} [str "[use math [add subtract]]\n" "[println [add 1 2]]"]]
+      [doc-text "Selective imports skip the dot prefix — the names are available directly."]]
+
+    [doc-section "Directory Structure"
+      [doc-text "Nested directories create module paths separated by " [doc-code "/"] "."]
+      [code-block {:label "STRUCTURE"} [str "src/\n" "  main.loon\n" "  math.loon\n" "  utils/\n" "    string.loon\n" "    io.loon"]]
+      [code-block {:label "LOON"} [str "[use utils/string]\n" "[println [string.trim \"  hi  \"]]"]]
+      [doc-note "info" "A directory with a mod.loon file exports that file as the directory module."]]
+
+    [doc-section "Cycle Detection"
+      [doc-text "Loon detects circular imports at compile time and reports a clear error."]
+      [code-block {:label "ERROR"} [str "error: circular dependency detected\n" "  --> a.loon:1\n" "  a.loon -> b.loon -> a.loon"]]
+      [doc-text "Break cycles by extracting shared code into a third module that both can import."]]
+
+    [doc-prev-next "Effects" "/guide/effects" "Macros" "/guide/macros"]]]

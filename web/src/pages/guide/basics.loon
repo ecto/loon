@@ -1,0 +1,76 @@
+; basics.loon — Guide: Basics
+
+[fn guide-basics-page []
+  [doc-page "Basics" "Expressions, bindings, and fundamental syntax."
+
+    [doc-section "Everything is an Expression"
+      [doc-text "Every construct in Loon returns a value. There are no statements. "
+        "An " [doc-code "if"] " returns a value, a " [doc-code "let"] " returns a value, "
+        "and a block of expressions returns its last value."]
+      [code-block {} [str
+        "[let x [if true 1 2]]  ; x = 1\n"
+        "[let y [do\n"
+        "  [println \"side effect\"]\n"
+        "  42]]                  ; y = 42"]]]
+
+    [doc-section "Bracket Syntax"
+      [doc-text "Loon uses square brackets for all calls. The first element is the "
+        "function, the rest are arguments."]
+      [code-block {} [str
+        "[println \"hello\"]      ; call println\n"
+        "[+ 1 2]                ; call +\n"
+        "[map inc #[1 2 3]]     ; call map"]]]
+
+    [doc-section "Primitives"
+      [doc-text "Loon has strings, integers, floats, and booleans."]
+      [code-block {} [str
+        "[let name \"Loon\"]      ; Str\n"
+        "[let age 1]            ; Int\n"
+        "[let pi 3.14159]       ; Float\n"
+        "[let ok true]          ; Bool"]]]
+
+    [doc-section "Let Bindings"
+      [doc-text "Use " [doc-code "let"] " to bind a value to a name. "
+        "Bindings are immutable by default."]
+      [code-block {} [str
+        "[let x 10]\n"
+        "[let y [+ x 5]]\n"
+        "[println y]  ; 15"]]
+      [doc-note "info" "There is no def keyword in Loon. Use let for all bindings."]]
+
+    [doc-section "Comments"
+      [doc-text "Line comments start with a semicolon."]
+      [code-block {} [str
+        "; This is a comment\n"
+        "[let x 42]  ; inline comment"]]]
+
+    [doc-section "Vectors, Maps, and Sets"
+      [doc-text "Vectors use " [doc-code "#[...]"] ", maps use "
+        [doc-code "{:key value}"] ", and sets use " [doc-code "#{...}"] "."]
+      [code-block {} [str
+        "[let nums #[1 2 3]]\n"
+        "[let user {:name \"Ada\" :age 30}]\n"
+        "[let tags #{\"fast\" \"safe\"}]"]]]
+
+    [doc-section "If and Do"
+      [doc-text [doc-code "if"] " takes a condition, a then-branch, and an optional else-branch. "
+        "Each branch is a single expression. For multiple expressions, wrap in " [doc-code "[do ...]"] "."]
+      [code-block {} [str
+        "[if [> x 0]\n"
+        "  \"positive\"\n"
+        "  \"non-positive\"]\n"
+        "\n"
+        "[if ready\n"
+        "  [do\n"
+        "    [println \"starting\"]\n"
+        "    [run]]]"]]
+      [doc-note "warning" "if branches do NOT have implicit do. Use [do ...] to run multiple expressions in a branch."]]
+
+    [doc-section "Printing"
+      [doc-text "Use " [doc-code "println"] " to print a value with a newline, "
+        "or " [doc-code "print"] " without one. Use " [doc-code "str"] " to build strings."]
+      [code-block {} [str
+        "[println \"hello world\"]\n"
+        "[println [str \"x = \" x]]"]]]
+
+    [doc-prev-next "By Example" "/examples" "Functions" "/guide/functions"]]]

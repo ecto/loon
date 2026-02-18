@@ -1,0 +1,71 @@
+; syntax.loon — Reference: Syntax
+
+[fn ref-syntax-page []
+  [doc-page "Syntax Reference" "Complete syntax at a glance."
+
+    [doc-section "Delimiters"
+      [doc-def "[...]" "Function call or special form. First element is the operator."]
+      [doc-def "{...}" "Map literal. Alternating key-value pairs: {:name \"Ada\" :age 30}"]
+      [doc-def "#[...]" "Vector literal: #[1 2 3]"]
+      [doc-def "#{...}" "Set literal: #{\"a\" \"b\" \"c\"}"]
+      [doc-def "(...)" "Reserved. Not used in Loon syntax."]]
+
+    [doc-section "Literals"
+      [doc-def "\"hello\"" "String. Double-quoted, supports escape sequences (\\n, \\t, \\\", \\\\)."]
+      [doc-def "42" "Integer. 64-bit signed."]
+      [doc-def "3.14" "Float. 64-bit double precision."]
+      [doc-def "true / false" "Boolean values."]
+      [doc-def ":name" "Keyword. Lightweight identifier, often used as map keys."]
+      [doc-def "None" "Absence of a value. Part of the Option ADT. There is no nil or null."]
+      [doc-def "Empty" "Empty collection sentinel."]]
+
+    [doc-section "Special Forms"
+      [doc-text "Special forms have evaluation rules different from normal function calls."]
+      [doc-def "fn" "Define a named or anonymous function: [fn name [params] body] or [fn [params] body]"]
+      [doc-def "let" "Bind a value to a name: [let x 42]"]
+      [doc-def "if" "Conditional: [if cond then else]. Branches do NOT have implicit do."]
+      [doc-def "do" "Evaluate multiple expressions, return the last: [do expr1 expr2]"]
+      [doc-def "match" "Pattern matching with => arrows: [match val pat1 => expr1 pat2 => expr2]"]
+      [doc-def "type" "Define an algebraic data type."]
+      [doc-def "effect" "Declare an effect with operations."]
+      [doc-def "handle" "Handle effects with an effect handler."]
+      [doc-def "macro" "Define a macro that operates on syntax."]
+      [doc-def "macro+" "Define a variadic macro."]
+      [doc-def "test" "Define a test: [test \"name\" [params] body]"]
+      [doc-def "use" "Import a module or members from a module."]
+      [doc-def "pub" "Export a binding from a module."]
+      [doc-def "sig" "Type signature annotation."]
+      [doc-def "try" "Attempt an operation that may fail."]
+      [doc-def "pipe" "Thread a value through a series of transformations: [pipe x f g h]"]
+      [doc-def "quote" "Prevent evaluation of an expression."]
+      [doc-def "unquote" "Evaluate inside a quoted expression."]
+      [doc-def "derive" "Derive trait implementations for a type."]]
+
+    [doc-section "Comments"
+      [doc-text "Line comments begin with " [doc-code ";"] " and extend to the end of the line."]
+      [code-block {} [str
+        "; this is a comment\n"
+        "[let x 42]  ; inline comment"]]]
+
+    [doc-section "String Interpolation"
+      [doc-text "Use " [doc-code "fmt"] " to interpolate values into strings with " [doc-code "{}"] " placeholders."]
+      [code-block {} [str
+        "[let name \"world\"]\n"
+        "[fmt \"hello, {}!\" name]  ; \"hello, world!\""]]]
+
+    [doc-section "Quasiquoting"
+      [doc-text "Used primarily in macros to construct syntax templates."]
+      [doc-def "`expr" "Quasiquote. Like quote but allows unquoting inside."]
+      [doc-def "~expr" "Unquote. Evaluate expr inside a quasiquote."]
+      [doc-def "~@expr" "Splice-unquote. Evaluate and splice a list into the surrounding form."]]
+
+    [doc-section "Operators"
+      [doc-text "Operators are regular functions called with bracket syntax."]
+      [doc-def "+ - * / %" "Arithmetic. Work on integers and floats."]
+      [doc-def "= !=" "Equality and inequality. Work on all types."]
+      [doc-def "< > <= >=" "Ordering comparisons. Work on numbers and strings."]
+      [doc-def "not" "Logical negation."]
+      [doc-def "and / or" "Logical conjunction and disjunction. These are eager, not short-circuiting."]
+      [doc-note "warning" "and/or evaluate both arguments eagerly. Use nested if for short-circuit logic."]]
+
+    [doc-prev-next "Error Handling" "/guide/errors" "Builtins" "/ref/builtins"]]]

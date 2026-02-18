@@ -1,0 +1,44 @@
+; effects.loon — Reference: Standard Effects
+
+[fn ref-effects-page []
+  [doc-page "Standard Effects" "Built-in effect operations."
+
+    [doc-section "IO"
+      [doc-text "Basic input and output operations."]
+      [doc-def "println : Str -> ()" "Print a string followed by a newline to stdout."]
+      [doc-def "print : Str -> ()" "Print a string to stdout without a trailing newline."]
+      [doc-def "read-line : () -> Str" "Read a line of input from stdin."]
+      [doc-def "read-file : Str -> Str" "Read the entire contents of a file as a string."]
+      [doc-def "write-file : Str -> Str -> ()" "Write a string to a file, creating or overwriting it."]]
+
+    [doc-section "Fail"
+      [doc-text "Structured error handling via effects."]
+      [doc-def "fail : Str -> a" "Raise an error with a message. Aborts unless handled."]
+      [doc-def "try : (() -> a) -> Result a Str" "Run a computation, catching any fail effect as Err."]
+      [code-block {} [str
+        "[let result [try [fn [] [fail \"oops\"]]]]\n"
+        "[match result\n"
+        "  [Ok val]  => [println val]\n"
+        "  [Err msg] => [println [str \"error: \" msg]]]"]]]
+
+    [doc-section "Async"
+      [doc-text "Concurrent execution with lightweight tasks."]
+      [doc-def "spawn : (() -> a) -> Task a" "Spawn a concurrent task that runs in the background."]
+      [doc-def "await : Task a -> a" "Block until a task completes and return its result."]
+      [code-block {} [str
+        "[let t [spawn [fn [] [+ 1 2]]]]\n"
+        "[println [await t]]  ; 3"]]]
+
+    [doc-section "Process"
+      [doc-text "Interact with the operating system."]
+      [doc-def "exec : Str -> #[Str] -> Result Str Str" "Run an external command with arguments. Returns stdout on success."]
+      [doc-def "env : Str -> Option Str" "Read an environment variable. Returns None if unset."]
+      [doc-def "args : () -> #[Str]" "Return the command-line arguments as a vector of strings."]]
+
+    [doc-section "Net"
+      [doc-text "Networking primitives for HTTP and TCP."]
+      [doc-def "fetch : Str -> Map -> Result Str Str" "Make an HTTP request. The map contains method, headers, and body."]
+      [doc-def "listen : Int -> (Conn -> ()) -> ()" "Listen for TCP connections on a port and handle each one."]
+      [doc-def "serve : Int -> (Request -> Response) -> ()" "Start an HTTP server on a port with a request handler."]]
+
+    [doc-prev-next "CLI" "/ref/cli" "LSP" "/ref/lsp"]]]

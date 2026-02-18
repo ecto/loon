@@ -1,0 +1,57 @@
+; cli.loon — Reference: CLI
+
+[fn ref-cli-page []
+  [doc-page "CLI Reference" "Every command and flag."
+
+    [doc-section "loon run"
+      [doc-text "Execute a Loon source file."]
+      [code-block {:label "SHELL"} "loon run <file> [args...]"]
+      [doc-def "--watch" "Re-run automatically when the source file changes."]
+      [doc-def "--quiet" "Suppress non-error output."]
+      [doc-def "--time" "Print execution time after the program finishes."]]
+
+    [doc-section "loon build"
+      [doc-text "Compile a Loon project to an executable."]
+      [code-block {:label "SHELL"} "loon build <file> [--output <path>]"]
+      [doc-def "--output, -o" "Set the output file path."]
+      [doc-def "--release" "Build with optimizations enabled."]]
+
+    [doc-section "loon test"
+      [doc-text "Discover and run all " [doc-code "test"] " blocks in the given file or directory."]
+      [code-block {:label "SHELL"} "loon test [path]"]
+      [doc-def "--filter <pattern>" "Only run tests whose name matches the pattern."]
+      [doc-def "--verbose" "Print each test name as it runs."]]
+
+    [doc-section "loon check"
+      [doc-text "Type-check a file or project without running it."]
+      [code-block {:label "SHELL"} "loon check <file>"]
+      [doc-def "--watch" "Re-check on file changes."]
+      [doc-text "Exits with code 0 if no errors are found, 1 otherwise."]]
+
+    [doc-section "loon repl"
+      [doc-text "Start an interactive read-eval-print loop."]
+      [code-block {:label "SHELL"} "loon repl"]
+      [doc-text "Evaluate expressions interactively. Use Ctrl-D or " [doc-code ":quit"] " to exit."]]
+
+    [doc-section "loon fmt"
+      [doc-text "Format Loon source files."]
+      [code-block {:label "SHELL"} "loon fmt [files...]"]
+      [doc-def "--check" "Exit with code 1 if any file is not formatted. Does not modify files."]
+      [doc-def "--write" "Write formatted output back to the source files (default)."]]
+
+    [doc-section "loon explain"
+      [doc-text "Show a detailed explanation for an error code."]
+      [code-block {:label "SHELL"} "loon explain <error-code>"]
+      [doc-text "Example: " [doc-code "loon explain E0012"]]]
+
+    [doc-section "loon new"
+      [doc-text "Scaffold a new Loon project in the given directory."]
+      [code-block {:label "SHELL"} "loon new <name>"]
+      [doc-text "Creates a directory with a " [doc-code "main.loon"] " file and a basic project structure."]]
+
+    [doc-section "loon lsp"
+      [doc-text "Start the Loon language server (LSP) over stdin/stdout."]
+      [code-block {:label "SHELL"} "loon lsp"]
+      [doc-text "Intended to be called by an editor. See the " [doc-code "Language Server"] " reference for setup instructions."]]
+
+    [doc-prev-next "Builtins" "/ref/builtins" "Standard Effects" "/ref/effects"]]]

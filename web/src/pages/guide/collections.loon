@@ -1,0 +1,70 @@
+; collections.loon — Guide: Collections
+
+[fn guide-collections-page []
+  [doc-page "Collections" "Vectors, maps, sets, and string operations."
+
+    [doc-section "Vectors"
+      [doc-text "Vectors are ordered, indexed collections. Create them with " [doc-code "#[...]"] "."]
+      [code-block {} [str
+        "[let nums #[1 2 3 4 5]]\n"
+        "[get nums 0]       ; 1\n"
+        "[len nums]         ; 5\n"
+        "[append nums 6]    ; #[1 2 3 4 5 6]"]]]
+
+    [doc-section "Maps"
+      [doc-text "Maps are key-value collections. Keys are usually keywords."]
+      [code-block {} [str
+        "[let user {:name \"Ada\" :age 30}]\n"
+        "[get user :name]           ; \"Ada\"\n"
+        "[get user :email \"none\"]   ; \"none\"\n"
+        "[assoc user :age 31]       ; updated map"]]]
+
+    [doc-section "Sets"
+      [doc-text "Sets are unordered collections of unique values."]
+      [code-block {} [str
+        "[let tags #{\"fast\" \"safe\" \"fun\"}]\n"
+        "[contains? tags \"safe\"]  ; true\n"
+        "[insert tags \"new\"]     ; #{...}"]]]
+
+    [doc-section "Strings"
+      [doc-text "Strings are sequences. Use " [doc-code "str"] " to concatenate, and "
+        "many collection functions work on them."]
+      [code-block {} [str
+        "[let s \"hello\"]\n"
+        "[len s]              ; 5\n"
+        "[contains? s \"ell\"]  ; true\n"
+        "[str s \" world\"]    ; \"hello world\""]]]
+
+    [doc-section "Common Operations"
+      [doc-text [doc-code "map"] ", " [doc-code "filter"] ", and " [doc-code "fold"]
+        " work across all collection types."]
+      [code-block {} [str
+        "[map [fn [x] [* x 2]] #[1 2 3]]\n"
+        "; => #[2 4 6]\n"
+        "\n"
+        "[filter [fn [x] [> x 2]] #[1 2 3 4]]\n"
+        "; => #[3 4]\n"
+        "\n"
+        "[fold 0 + #[1 2 3 4]]\n"
+        "; => 10"]]]
+
+    [doc-section "Pipe Idioms"
+      [doc-text "Pipe is the natural way to chain collection operations."]
+      [code-block {} [str
+        "[pipe #[1 2 3 4 5 6 7 8 9 10]\n"
+        "  [filter [fn [n] [= 0 [% n 2]]]]\n"
+        "  [map [fn [n] [* n n]]]\n"
+        "  [take 3]]  ; => #[4 16 36]"]]
+      [doc-note "tip" "Read pipe chains top to bottom: filter, transform, then limit."]]
+
+    [doc-section "Mutable Variants"
+      [doc-text "For performance-critical code, Loon provides mutable collections with "
+        [doc-code "mut"] ". Mutation functions end with " [doc-code "!"] "."]
+      [code-block {} [str
+        "[let items [mut #[]]]\n"
+        "[push! items 1]\n"
+        "[push! items 2]\n"
+        "[println items]  ; #[1 2]"]]
+      [doc-note "warning" "Mutable collections follow ownership rules. Only one reference can mutate at a time."]]
+
+    [doc-prev-next "Types" "/guide/types" "Pattern Matching" "/guide/pattern-matching"]]]

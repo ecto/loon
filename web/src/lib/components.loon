@@ -11,7 +11,7 @@
         :style {:max-width max-w
                 :margin "0 auto"
                 :padding [str "0 " [space :md]]}}
-    [|> children [map coerce-child]]]]
+    [pipe children [map coerce-child]]]]
 
 ; --- Stack: vertical flex with gap ---
 [fn stack [first & rest]
@@ -23,7 +23,7 @@
         :style {:display "flex"
                 :flex-direction "column"
                 :gap [space gap-key]}}
-    [|> children [map coerce-child]]]]
+    [pipe children [map coerce-child]]]]
 
 ; --- Row: horizontal flex with gap ---
 [fn row [first & rest]
@@ -36,7 +36,7 @@
                 :align-items "center"
                 :gap [space gap-key]
                 :flex-wrap "wrap"}}
-    [|> children [map coerce-child]]]]
+    [pipe children [map coerce-child]]]]
 
 ; --- Prose: serif text container ---
 [fn prose [first & rest]
@@ -48,7 +48,7 @@
                 :line-height "1.7"
                 :font-size "1.1rem"
                 :color [color :text]}}
-    [|> children [map coerce-child]]]]
+    [pipe children [map coerce-child]]]]
 
 ; --- Heading: serif headings with lake-blue color ---
 [fn heading [level first & rest]
@@ -80,7 +80,7 @@
                    [if accent
                      {:border-top [str "2px solid " [color :accent]]}
                      {}]]}
-    [|> children [map coerce-child]]]]
+    [pipe children [map coerce-child]]]]
 
 ; --- Badge: small inline label ---
 [fn badge [text variant]
@@ -112,9 +112,9 @@
   [let cls [get props :class ""]]
   [if [not [= href ""]]
     [a-el {:class [cx "btn" cls] :href href}
-      [|> children [map coerce-child]]]
+      [pipe children [map coerce-child]]]
     [button-el {:class [cx "btn" cls] :onclick onclick}
-      [|> children [map coerce-child]]]]]
+      [pipe children [map coerce-child]]]]]
 
 [fn btn-secondary [first & rest]
   [let props [if [map? first] first {}]]
@@ -124,9 +124,9 @@
   [let cls [get props :class ""]]
   [if [not [= href ""]]
     [a-el {:class [cx "btn-secondary" cls] :href href}
-      [|> children [map coerce-child]]]
+      [pipe children [map coerce-child]]]
     [button-el {:class [cx "btn-secondary" cls] :onclick onclick}
-      [|> children [map coerce-child]]]]]
+      [pipe children [map coerce-child]]]]]
 
 ; --- Code Display: wraps code-block with dark theme ---
 [fn code-display [first & rest]
@@ -149,7 +149,7 @@
   [let props [if [map? first] first {}]]
   [let children [if [map? first] rest [cons first rest]]]
   [p {:style {:color [color :muted] :font-size "0.95rem"}}
-    [|> children [map coerce-child]]]]
+    [pipe children [map coerce-child]]]]
 
 ; --- Page Header: small back-to-home link for subpages ---
 [fn page-header []
@@ -160,12 +160,12 @@
            :class "link"
            :style {:display "inline-flex"
                    :align-items "center"
-                   :gap "0.4rem"
                    :font-size "0.9rem"
                    :text-decoration "none"
-                   :color [color :muted]}}
-      [img-el {:src "loon-bird.svg" :alt "Loon" :style {:width "20px" :height "20px"}}]
-      "Loon"]]]
+                   :color [color :muted]
+                   :font-family [font :mono]
+                   :letter-spacing "0.05em"}}
+      "loon"]]]
 
 ; --- Link: styled anchor ---
 [fn link [first & rest]
@@ -174,4 +174,4 @@
   [let href [get props :href "#"]]
   [let external [get props :external false]]
   [a-el {:class "link" :href href}
-    [|> children [map coerce-child]]]]
+    [pipe children [map coerce-child]]]]

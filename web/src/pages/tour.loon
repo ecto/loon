@@ -22,10 +22,7 @@
 
 [fn tour-page []
   [div {:class "page"}
-    [page-header]
-    [main-el {:style {:max-width "720px"
-                      :margin "0 auto"
-                      :padding "3rem 2rem"}}
+    [main-el {:style {:padding "3rem 0"}}
       [h1 {:style {:font-family [font :serif]
                    :color [color :primary]
                    :font-size "2.5rem"
@@ -78,5 +75,4 @@
                      :margin-bottom "0.5rem"}} "What's next?"]
         [p {:style {:color [color :muted] :line-height "1.7"}}
           "You've seen the core of Loon. Traits, row polymorphism, and content-addressed definitions are coming."]
-        [tour-ctas]]]
-    [footer-component]]]
+        [tour-ctas]]]]]

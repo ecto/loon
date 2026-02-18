@@ -1,0 +1,60 @@
+; sidebar.loon — Fixed left sidebar for docs pages
+
+[fn sidebar-section [label & links]
+  [div {:class "sidebar-section"}
+    [p {:class "sidebar-section-label"} label]
+    [Fragment [coerce-children links]]]]
+
+[fn sidebar-link [text href current-path]
+  [let active [= href current-path]]
+  [a-el {:href href
+         :class [if active "sidebar-link sidebar-link-active" "sidebar-link"]}
+    text]]
+
+[fn sidebar [current-path]
+  [nav-el {:class "sidebar"}
+    [a-el {:href "/" :class "sidebar-wordmark"} "loon"]
+
+    [sidebar-section "Learn"
+      [sidebar-link "Tour" "/tour" current-path]
+      [sidebar-link "Installation" "/install" current-path]
+      [sidebar-link "By Example" "/examples" current-path]]
+
+    [sidebar-section "Guide"
+      [sidebar-link "Basics" "/guide/basics" current-path]
+      [sidebar-link "Functions" "/guide/functions" current-path]
+      [sidebar-link "Types" "/guide/types" current-path]
+      [sidebar-link "Collections" "/guide/collections" current-path]
+      [sidebar-link "Pattern Matching" "/guide/pattern-matching" current-path]
+      [sidebar-link "Ownership" "/guide/ownership" current-path]
+      [sidebar-link "Effects" "/guide/effects" current-path]
+      [sidebar-link "Modules" "/guide/modules" current-path]
+      [sidebar-link "Macros" "/guide/macros" current-path]
+      [sidebar-link "Testing" "/guide/testing" current-path]
+      [sidebar-link "Error Handling" "/guide/errors" current-path]]
+
+    [sidebar-section "Reference"
+      [sidebar-link "Syntax" "/ref/syntax" current-path]
+      [sidebar-link "Builtins" "/ref/builtins" current-path]
+      [sidebar-link "CLI" "/ref/cli" current-path]
+      [sidebar-link "Standard Effects" "/ref/effects" current-path]
+      [sidebar-link "LSP" "/ref/lsp" current-path]
+      [sidebar-link "Formatter" "/ref/formatter" current-path]]
+
+    [sidebar-section "Concepts"
+      [sidebar-link "Why Invisible Types" "/concepts/invisible-types" current-path]
+      [sidebar-link "Understanding Effects" "/concepts/effects" current-path]
+      [sidebar-link "Ownership Mental Model" "/concepts/ownership" current-path]
+      [sidebar-link "Coming from Rust" "/concepts/from-rust" current-path]
+      [sidebar-link "Coming from JS/TS" "/concepts/from-js" current-path]
+      [sidebar-link "Coming from Clojure" "/concepts/from-clojure" current-path]]
+
+    [sidebar-section "Playground"
+      [sidebar-link "Playground" "/play" current-path]]
+
+    [sidebar-section "Project"
+      [sidebar-link "Roadmap" "/roadmap" current-path]
+      [a-el {:href "https://github.com/ecto/loon"
+             :target "_blank"
+             :class "sidebar-link"}
+        "GitHub"]]]]

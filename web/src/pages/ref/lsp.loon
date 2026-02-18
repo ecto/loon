@@ -1,0 +1,44 @@
+; lsp.loon — Reference: Language Server
+
+[fn ref-lsp-page []
+  [doc-page "Language Server" "LSP features and editor setup."
+
+    [doc-section "Features"
+      [doc-text "The Loon language server implements the Language Server Protocol and provides the following capabilities."]
+      [doc-def "Diagnostics" "Real-time type errors and warnings as you type."]
+      [doc-def "Hover Types" "Hover over any expression to see its inferred type."]
+      [doc-def "Go to Definition" "Jump to the definition of any binding or function."]
+      [doc-def "Completions" "Context-aware suggestions for names, keywords, and builtins."]
+      [doc-def "Inlay Hints" "Inline type annotations displayed next to let bindings and function parameters."]]
+
+    [doc-section "VS Code Setup"
+      [doc-text "Install the Loon extension from the VS Code marketplace."]
+      [code-block {:label "SHELL"} "code --install-extension loon-lang.loon-vscode"]
+      [doc-text "The extension automatically starts the language server. No additional configuration is needed."]]
+
+    [doc-section "Neovim Setup"
+      [doc-text "Add a custom server configuration to your Neovim LSP setup."]
+      [code-block {:label "LUA"} [str
+        "vim.api.nvim_create_autocmd('FileType', {\n"
+        "  pattern = 'loon',\n"
+        "  callback = function()\n"
+        "    vim.lsp.start({\n"
+        "      name = 'loon',\n"
+        "      cmd = { 'loon', 'lsp' },\n"
+        "      root_dir = vim.fs.dirname(\n"
+        "        vim.fs.find({ 'main.loon' }, { upward = true })[1]\n"
+        "      ),\n"
+        "    })\n"
+        "  end,\n"
+        "})"]]
+      [doc-note "tip" "Set filetype detection with: vim.filetype.add({ extension = { loon = 'loon' } })"]]
+
+    [doc-section "Generic LSP Setup"
+      [doc-text "For any editor that supports the Language Server Protocol, point the LSP client at the Loon binary."]
+      [doc-def "Command" "loon lsp"]
+      [doc-def "Transport" "stdio (stdin/stdout)"]
+      [doc-def "File types" ".loon"]
+      [doc-text "The server communicates over standard input/output using the LSP JSON-RPC protocol. "
+        "No special flags or initialization options are required."]]
+
+    [doc-prev-next "Standard Effects" "/ref/effects" "Formatter" "/ref/formatter"]]]

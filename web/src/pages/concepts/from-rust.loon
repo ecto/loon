@@ -1,0 +1,130 @@
+; from-rust.loon — Concepts: Coming from Rust
+
+[fn concepts-from-rust-page []
+  [doc-page "Coming from Rust" "What's the same, what's different, and what you can stop worrying about."
+
+    [doc-section "What's Similar"
+      [doc-text "If you know Rust, you already understand the core philosophy. "
+        "Loon shares these fundamental ideas:"]
+      [doc-list
+        "Ownership and move semantics — values have one owner, moves are the default."
+        "Pattern matching — exhaustive, first-class, with destructuring."
+        "Algebraic data types — enums with data, used instead of class hierarchies."
+        "No null — Option replaces null, Result replaces exceptions."
+        "Immutable by default — mutation is explicit and controlled."
+        "Zero-cost abstractions — high-level code compiles to efficient output."]
+      [doc-text "If these ideas are already intuitive to you, Loon will feel familiar "
+        "at the conceptual level."]]
+
+    [doc-section "What's Different"
+      [doc-subsection "No lifetime annotations"
+        [doc-text "This is the biggest change. Loon's compiler infers all borrows "
+          "and lifetimes automatically. You never write " [doc-code "'a"]
+          ", " [doc-code "&"] ", or " [doc-code "&mut"] "."]
+        [code-block {} [str
+          "; Rust:\n"
+          "; fn longest<'a>(x: &'a str, y: &'a str) -> &'a str\n"
+          "\n"
+          "; Loon:\n"
+          "[fn longest [x y]\n"
+          "  [if [> [len x] [len y]] x y]]"]]
+        [doc-text "The compiler figures out the borrowing. You write the logic."]]
+
+      [doc-subsection "Bracket syntax"
+        [doc-text "Loon uses Lisp-style bracket syntax instead of C-style. "
+          "Every call is " [doc-code "[function arg1 arg2]"]
+          ". There are no operators, keywords with special syntax, or precedence rules."]
+        [doc-note "info" "This is a genuine tradeoff. Bracket syntax is more uniform and easier to parse (both for compilers and macros), but less familiar. Most Rust programmers adjust within a day."]]
+
+      [doc-subsection "Hindley-Milner inference"
+        [doc-text "Rust has local type inference — it can infer types within a function "
+          "but requires annotations at function boundaries. Loon's inference is global. "
+          "You never annotate a function signature unless you want to."]]
+
+      [doc-subsection "Effects instead of traits for IO"
+        [doc-text "Where Rust uses traits like " [doc-code "Read"]
+          ", " [doc-code "Write"] ", and " [doc-code "Future"]
+          ", Loon uses algebraic effects. Effects serve a similar purpose — abstracting "
+          "over behavior — but with built-in support for resumption and handler composition."]]]
+
+    [doc-section "Syntax Mapping"
+      [doc-table-header "Rust" "Loon"]
+      [doc-row
+        "let x = 42;"
+        "[let x 42]"]
+      [doc-row
+        "let mut v = vec![1,2,3];"
+        "[let mut v #[1 2 3]]"]
+      [doc-row
+        "fn add(a: i32, b: i32) -> i32 { a + b }"
+        "[fn add [a b] [+ a b]]"]
+      [doc-row
+        "if x > 0 { \"pos\" } else { \"neg\" }"
+        "[if [> x 0] \"pos\" \"neg\"]"]
+      [doc-row
+        "match opt { Some(x) => x, None => 0 }"
+        "[match opt [Some x] => x None => 0]"]
+      [doc-row
+        "v.iter().map(|x| x * 2).collect()"
+        "[map [fn [x] [* x 2]] v]"]
+      [doc-row
+        "x.foo().bar().baz()"
+        "[pipe x [foo] [bar] [baz]]"]
+      [doc-row
+        "println!(\"hello {}\", name);"
+        "[println [str \"hello \" name]]"]
+      [doc-row
+        "struct / enum"
+        "type / ADT"]
+      [doc-row
+        "impl Trait for Type"
+        "[effect Name ...]"]]
+
+    [doc-section "What You Can Stop Worrying About"
+      [doc-subsection "Lifetimes"
+        [doc-text "No " [doc-code "'a"] ", no " [doc-code "'static"]
+          ", no \"does not live long enough\" errors with cryptic suggestions. "
+          "The compiler handles it."]]
+
+      [doc-subsection "Trait bounds"
+        [doc-text "No " [doc-code "where T: Clone + Send + Sync + 'static"]
+          " cascades. Loon's type inference and effect system replace "
+          "the need for most trait bounds."]]
+
+      [doc-subsection "Turbofish"
+        [doc-text "No " [doc-code "::<Type>"] " syntax. The compiler always "
+          "infers type parameters."]]
+
+      [doc-subsection "The borrow checker fight"
+        [doc-text "Loon's ownership model is designed so that the compiler resolves "
+          "borrowing questions silently. You will not find yourself restructuring code "
+          "to satisfy the borrow checker."]]
+
+      [doc-subsection "Async coloring"
+        [doc-text "No " [doc-code "async"] "/" [doc-code ".await"]
+          " coloring problem. Concurrency is an effect, handled at the boundary. "
+          "Functions do not need to declare themselves async."]]]
+
+    [doc-section "New Things to Learn"
+      [doc-subsection "Effects"
+        [doc-text "Algebraic effects replace traits for IO, error handling, and state. "
+          "The mental model is: declare what operations you need, perform them, "
+          "and let a handler decide the implementation."]
+        [doc-note "tip" "If you think of effects as \"dependency injection that the type system tracks,\" you will have the right intuition."]]
+
+      [doc-subsection "Bracket syntax"
+        [doc-text "Every call is " [doc-code "[f x y]"]
+          ". There is no operator precedence — " [doc-code "[+ 1 [* 2 3]]"]
+          " is unambiguous. This takes a day to get used to and then "
+          "becomes invisible."]]
+
+      [doc-subsection "Pipe"
+        [doc-text "Where Rust uses method chains, Loon uses " [doc-code "pipe"]
+          ". The result of each step is passed as the last argument to the next:"]
+        [code-block {} [str
+          "[pipe data\n"
+          "  [filter even?]\n"
+          "  [map [fn [x] [* x 2]]]\n"
+          "  [take 10]]"]]]]
+
+    [doc-prev-next "Ownership Mental Model" "/concepts/ownership" "Coming from JS/TS" "/concepts/from-js"]]]

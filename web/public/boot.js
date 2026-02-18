@@ -25,15 +25,42 @@ const SOURCE_FILES = [
   'src/lib/utils.loon',
   'src/lib/theme.loon',
   'src/lib/components.loon',
+  'src/lib/doc.loon',
   'src/router.loon',
   'src/components/footer.loon',
   'src/components/code.loon',
   'src/components/editor.loon',
+  'src/components/sidebar.loon',
   'src/pages/home.loon',
   'src/pages/tour.loon',
   'src/pages/play.loon',
   'src/pages/blog.loon',
   'src/pages/roadmap.loon',
+  'src/pages/install.loon',
+  'src/pages/examples.loon',
+  'src/pages/guide/basics.loon',
+  'src/pages/guide/functions.loon',
+  'src/pages/guide/types.loon',
+  'src/pages/guide/collections.loon',
+  'src/pages/guide/pattern-matching.loon',
+  'src/pages/guide/ownership.loon',
+  'src/pages/guide/effects.loon',
+  'src/pages/guide/modules.loon',
+  'src/pages/guide/macros.loon',
+  'src/pages/guide/testing.loon',
+  'src/pages/guide/errors.loon',
+  'src/pages/ref/syntax.loon',
+  'src/pages/ref/builtins.loon',
+  'src/pages/ref/cli.loon',
+  'src/pages/ref/effects.loon',
+  'src/pages/ref/lsp.loon',
+  'src/pages/ref/formatter.loon',
+  'src/pages/concepts/invisible-types.loon',
+  'src/pages/concepts/effects.loon',
+  'src/pages/concepts/ownership.loon',
+  'src/pages/concepts/from-rust.loon',
+  'src/pages/concepts/from-js.loon',
+  'src/pages/concepts/from-clojure.loon',
   'src/app.loon',
 ];
 
@@ -41,8 +68,12 @@ const SOURCE_FILES = [
 const sourceCache = {};  // path -> string
 let sourceMap = [];      // [{file, offset, headerLength, length}]
 
+// Dev mode: set by SSE connection to dev server
+let isDev = false;
+
 async function loadSource(path) {
-  const resp = await fetch(path + '?t=' + Date.now());
+  const url = isDev ? `/${path}?t=${Date.now()}` : `/${path}`;
+  const resp = await fetch(url);
   if (!resp.ok) throw new Error(`Failed to load ${path}: ${resp.status}`);
   return resp.text();
 }
@@ -83,6 +114,67 @@ function resolveSpan(byteOffset) {
 
 function concatSources() {
   return SOURCE_FILES.map(s => `; --- ${s} ---\n${sourceCache[s] || ''}`).join('\n\n');
+}
+
+// Parse a bundle back into sourceCache entries
+// File headers match "; --- src/....loon ---" (contain "/" unlike internal section comments)
+function parseBundleIntoCache(bundleText) {
+  const headerRe = /^; --- (src\/\S+\.loon) ---$/gm;
+  const headers = [];
+  let m;
+  while ((m = headerRe.exec(bundleText)) !== null) {
+    headers.push({ path: m[1], start: m.index, contentStart: m.index + m[0].length + 1 }); // +1 for \n
+  }
+  for (let i = 0; i < headers.length; i++) {
+    const contentStart = headers[i].contentStart;
+    // Content ends at start of next file header (minus the \n\n joiner), or end of string
+    const contentEnd = i + 1 < headers.length ? headers[i + 1].start - 2 : bundleText.length;
+    sourceCache[headers[i].path] = bundleText.slice(contentStart, contentEnd);
+  }
+}
+
+// Load sources — bundle in prod, individual files in dev
+async function loadAllSources() {
+  if (isDev) {
+    for (const src of SOURCE_FILES) {
+      sourceCache[src] = await loadSource(src);
+    }
+    buildSourceMap(SOURCE_FILES);
+    return concatSources();
+  }
+
+  // Production: try localStorage cache first, then fetch bundle
+  let fullSource;
+  try {
+    const cachedHash = localStorage.getItem('loon-bundle-hash');
+    const currentHash = await fetch('/bundle.hash').then(r => r.text());
+
+    const cached = localStorage.getItem('loon-bundle');
+    if (cached && cachedHash === currentHash.trim()) {
+      fullSource = cached;
+    } else {
+      fullSource = await fetch('/bundle.loon').then(r => r.text());
+      try {
+        localStorage.setItem('loon-bundle', fullSource);
+        localStorage.setItem('loon-bundle-hash', currentHash.trim());
+      } catch {
+        // localStorage full — that's fine, we'll just re-fetch next time
+      }
+    }
+  } catch {
+    // bundle.hash missing — we're in dev mode, fall back to individual files
+    isDev = true;
+    for (const src of SOURCE_FILES) {
+      sourceCache[src] = await loadSource(src);
+    }
+    buildSourceMap(SOURCE_FILES);
+    return concatSources();
+  }
+
+  // Populate sourceCache from bundle for error resolution
+  parseBundleIntoCache(fullSource);
+  buildSourceMap(SOURCE_FILES);
+  return fullSource;
 }
 
 // --- DOM Bridge ---
@@ -461,8 +553,16 @@ async function handleLoonReload(changedFiles) {
 
 async function boot() {
   try {
-    await init();
-    await wasmReady;
+    performance.mark('boot-start');
+
+    // Parallel: init WASM + load sources
+    // loadAllSources() detects dev vs prod by checking for bundle.hash
+    const [_, fullSource] = await Promise.all([
+      init().then(() => wasmReady),
+      loadAllSources(),
+    ]);
+    performance.mark('sources-loaded');
+
     init_dom_bridge(domBridge);
 
     window.__loon_event_handler = (callbackId) => {
@@ -470,19 +570,23 @@ async function boot() {
     };
     window.__loon_timeout_handler = (callbackId) => invoke_callback(callbackId);
 
-    // Load all sources into cache
-    for (const src of SOURCE_FILES) {
-      sourceCache[src] = await loadSource(src);
-    }
-
-    buildSourceMap(SOURCE_FILES);
-    const fullSource = concatSources();
+    performance.mark('eval-start');
     evalChecked(fullSource);
+    performance.mark('eval-done');
 
-    console.log('Loon website booted successfully');
+    performance.mark('boot-done');
 
-    // Connect to dev server SSE if available
-    connectSSE();
+    // Log performance
+    performance.measure('wasm+fetch', 'boot-start', 'sources-loaded');
+    performance.measure('eval', 'eval-start', 'eval-done');
+    performance.measure('total-boot', 'boot-start', 'boot-done');
+
+    const measures = performance.getEntriesByType('measure');
+    const fmt = m => `${m.name}: ${Math.round(m.duration)}ms`;
+    console.log(`[loon] boot ${measures.map(fmt).join(', ')}`);
+
+    // Connect to dev server SSE for hot reload
+    if (isDev) connectSSE();
   } catch (e) {
     const msg = e.message || String(e);
     console.error('Loon boot failed:', msg);

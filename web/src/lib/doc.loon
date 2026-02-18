@@ -1,0 +1,142 @@
+; doc.loon — Reusable documentation page components
+
+; --- Page wrapper with title + subtitle ---
+[fn doc-page [title subtitle & sections]
+  [div {:class "page"}
+    [main-el {:style {:padding "3rem 0 5rem"}}
+      [h1 {:style {:font-family [font :serif]
+                   :font-weight "400"
+                   :font-size "2rem"
+                   :margin-bottom "0.5rem"}} title]
+      [p {:style {:color [color :muted]
+                  :font-family [font :serif]
+                  :font-size "1rem"
+                  :margin-bottom "3rem"}}
+        subtitle]
+      [Fragment [coerce-children sections]]]]]
+
+; --- Section with h2 heading ---
+[fn doc-section [title & content]
+  [section-el {:style {:margin-bottom "3rem"}}
+    [h2 {:style {:font-family [font :serif]
+                 :font-weight "600"
+                 :font-size "1.35rem"
+                 :color [color :text]
+                 :margin-bottom "1rem"}} title]
+    [Fragment [coerce-children content]]]]
+
+; --- Subsection with h3 heading ---
+[fn doc-subsection [title & content]
+  [div {:style {:margin-bottom "2rem"}}
+    [h3 {:style {:font-family [font :serif]
+                 :font-weight "600"
+                 :font-size "1.1rem"
+                 :color [color :text]
+                 :margin-bottom "0.75rem"}} title]
+    [Fragment [coerce-children content]]]]
+
+; --- Prose paragraph ---
+[fn doc-text [& content]
+  [p {:style {:font-family [font :serif]
+              :font-size "1rem"
+              :line-height "1.75"
+              :color [color :text]
+              :margin-bottom "1rem"}}
+    [Fragment [coerce-children content]]]]
+
+; --- Callout box (info, warning, tip) ---
+[fn doc-note [typ text]
+  [let styles [match typ
+    "tip"     => {:border-color "var(--accent)" :bg "rgba(74, 95, 215, 0.05)"}
+    "warning" => {:border-color "#c0392b" :bg "rgba(192, 57, 43, 0.05)"}
+    _         => {:border-color "var(--border)" :bg "var(--white)"}]]
+  [div {:style {:border-left [str "3px solid " [get styles :border-color]]
+                :background [get styles :bg]
+                :padding "1rem 1.25rem"
+                :margin-bottom "1.5rem"
+                :border-radius "0 4px 4px 0"}}
+    [p {:style {:font-family [font :serif]
+                :font-size "0.9rem"
+                :line-height "1.7"
+                :color [color :text]
+                :margin "0"}}
+      text]]]
+
+; --- Inline code ---
+[fn doc-code [text]
+  [span {:style {:font-family [font :mono]
+                 :font-size "0.88em"
+                 :background "rgba(128, 128, 128, 0.1)"
+                 :padding "0.15em 0.4em"
+                 :border-radius "3px"}}
+    text]]
+
+; --- Bottom prev/next navigation ---
+[fn doc-prev-next [prev-title prev-href next-title next-href]
+  [div {:style {:display "flex"
+                :justify-content "space-between"
+                :padding-top "2rem"
+                :margin-top "3rem"
+                :border-top [str "1px solid " [color :border]]}}
+    [if [not [= prev-title ""]]
+      [a-el {:href prev-href
+             :style {:font-family [font :mono]
+                     :font-size "0.85rem"
+                     :color [color :muted]
+                     :text-decoration "none"}}
+        [str "\u2190 " prev-title]]
+      [span ""]]
+    [if [not [= next-title ""]]
+      [a-el {:href next-href
+             :style {:font-family [font :mono]
+                     :font-size "0.85rem"
+                     :color [color :muted]
+                     :text-decoration "none"}}
+        [str next-title " \u2192"]]
+      [span ""]]]]
+
+; --- Definition list for reference pages ---
+[fn doc-def [term definition]
+  [div {:style {:margin-bottom "1.25rem"
+                :padding-left "1rem"
+                :border-left [str "2px solid " [color :border]]}}
+    [p {:style {:font-family [font :mono]
+                :font-size "0.9rem"
+                :font-weight "600"
+                :color [color :text]
+                :margin-bottom "0.25rem"}} term]
+    [p {:style {:font-family [font :serif]
+                :font-size "0.9rem"
+                :line-height "1.65"
+                :color [color :muted]
+                :margin "0"}} definition]]]
+
+; --- Simple table for comparison pages ---
+[fn doc-row [left right]
+  [div {:style {:display "grid"
+                :grid-template-columns "1fr 1fr"
+                :gap "1.5rem"
+                :padding "0.75rem 0"
+                :border-bottom [str "1px solid " [color :border]]}}
+    [div {:style {:font-family [font :mono] :font-size "0.85rem"}} left]
+    [div {:style {:font-family [font :mono] :font-size "0.85rem"}} right]]]
+
+[fn doc-table-header [left right]
+  [div {:style {:display "grid"
+                :grid-template-columns "1fr 1fr"
+                :gap "1.5rem"
+                :padding "0.75rem 0"
+                :border-bottom [str "2px solid " [color :border]]
+                :font-weight "600"}}
+    [div {:style {:font-family [font :mono] :font-size "0.8rem" :color [color :muted] :text-transform "uppercase" :letter-spacing "0.05em"}} left]
+    [div {:style {:font-family [font :mono] :font-size "0.8rem" :color [color :muted] :text-transform "uppercase" :letter-spacing "0.05em"}} right]]]
+
+; --- Unordered list ---
+[fn doc-list [& items]
+  [ul-el {:style {:padding-left "1.5rem"
+                  :margin-bottom "1.5rem"
+                  :line-height "1.8"}}
+    [pipe items [map [fn [item]
+      [li-el {:style {:font-family [font :serif]
+                      :font-size "0.95rem"
+                      :color [color :text]}} item]]]]]]

@@ -1,0 +1,46 @@
+; macros.loon — Macro system guide
+
+[fn guide-macros-page []
+  [doc-page "Macros" "Template macros, quasiquoting, and compile-time code generation."
+
+    [doc-section "Template Macros"
+      [doc-text "Macros transform code at compile time. Define them with " [doc-code "macro"] "."]
+      [code-block {:label "LOON"} [str "[macro unless [cond body]\n" "  `[if [not ~cond] ~body]]\n" "\n" "[unless false [println \"runs!\"]]"]]
+      [doc-text "The macro receives unevaluated syntax and returns new syntax to compile."]]
+
+    [doc-section "Quasiquoting"
+      [doc-subsection "Backtick"
+        [doc-text "Use " [doc-code "`"] " (backtick) to quote a template. Everything inside is treated as literal syntax."]
+        [code-block {:label "LOON"} "`[+ 1 2]  ; produces the syntax [+ 1 2]"]]
+      [doc-subsection "Unquote ~"
+        [doc-text "Use " [doc-code "~"] " to splice a value into the template."]
+        [code-block {:label "LOON"} [str "[macro double [x]\n" "  `[+ ~x ~x]]"]]]
+      [doc-subsection "Unquote-splicing ~@"
+        [doc-text "Use " [doc-code "~@"] " to splice a list of values into the template."]
+        [code-block {:label "LOON"} [str "[macro do-all [& forms]\n" "  `[do ~@forms]]"]]
+        [doc-note "tip" "~@ flattens a list into the surrounding form. ~@ in [do ~@forms] turns [do-all a b c] into [do a b c]."]]]
+
+    [doc-section "Procedural Macros"
+      [doc-text "For complex transformations, macros can use arbitrary Loon code to build syntax."]
+      [code-block {:label "LOON"} [str "[macro repeat [n body]\n" "  [let forms [map [range 0 n] [fn [_] body]]]\n" "  `[do ~@forms]]"]]
+      [doc-text "The macro body is regular Loon — you can call functions, build lists, and use all language features."]]
+
+    [doc-section "Type-Aware Macros"
+      [doc-text "Use " [doc-code "macro+"] " for macros that need type information at expansion time."]
+      [code-block {:label "LOON"} [str "[macro+ derive-debug [t]\n" "  `[fn debug [val] [str (type-name ~t) \": \" (inspect val)]]]"]]
+      [doc-note "info" "macro+ macros run after type checking, so they can inspect types and generate type-specific code."]]
+
+    [doc-section "Debugging with macroexpand"
+      [doc-text "Use " [doc-code "macroexpand"] " to see what a macro produces."]
+      [code-block {:label "LOON"} [str "[macroexpand [unless false [println \"hi\"]]]\n" "; => [if [not false] [println \"hi\"]]"]]
+      [doc-text "This is invaluable for debugging macro output without running the expanded code."]]
+
+    [doc-section "Common Patterns"
+      [doc-subsection "When / Unless"
+        [code-block {:label "LOON"} [str "[macro when [cond & body]\n" "  `[if ~cond [do ~@body]]]"]]]
+      [doc-subsection "Thread-First"
+        [code-block {:label "LOON"} [str "[macro -> [x & forms]\n" "  [fold forms x [fn [acc form]\n" "    `[~[first form] ~acc ~@[rest form]]]]]"]]]
+      [doc-subsection "Swap"
+        [code-block {:label "LOON"} [str "[macro swap! [a b]\n" "  `[do [let tmp ~a]\n" "     [set! ~a ~b]\n" "     [set! ~b tmp]]]"]]]]
+
+    [doc-prev-next "Modules" "/guide/modules" "Testing" "/guide/testing"]]]

@@ -1,0 +1,182 @@
+; dev.loon — Hot-reload dev server for the Loon website
+; Run with: cargo run -p loon-cli -- run web/dev.loon
+
+; --- Config ---
+[let port 3000]
+[let poll-interval 400]
+[let web-dir "web"]
+[let public-dir [str web-dir "/public"]]
+[let src-dir [str web-dir "/src"]]
+[let dist-dir [str web-dir "/dist"]]
+
+; --- MIME types ---
+[fn mime-type [path]
+  [if [ends-with? path ".html"] "text/html; charset=utf-8"
+  [if [ends-with? path ".css"] "text/css; charset=utf-8"
+  [if [ends-with? path ".js"] "application/javascript; charset=utf-8"
+  [if [ends-with? path ".svg"] "image/svg+xml"
+  [if [ends-with? path ".loon"] "text/plain; charset=utf-8"
+  [if [ends-with? path ".wasm"] "application/wasm"
+  [if [ends-with? path ".otf"] "font/otf"
+  "application/octet-stream"]]]]]]]]
+
+; --- File utilities ---
+[fn walk-dir [dir]
+  [let entries [IO.list-dir dir]]
+  [pipe entries
+    [flat-map [fn [name]
+      [let path [str dir "/" name]]
+      [let children [IO.list-dir path]]
+      [if [empty? children]
+        #[path]
+        [walk-dir path]]]]]]
+
+[fn snapshot-mtimes [dirs]
+  [let files [pipe dirs [flat-map walk-dir]]]
+  [pipe files
+    [map [fn [f] (f [IO.mtime f])]]
+    into-map]]
+
+[fn diff-snapshots [old-snap new-snap]
+  [pipe [entries new-snap]
+    [filter [fn [entry]
+      [let [path mtime] entry]
+      [let old-mtime [get old-snap path 0]]
+      [not [= mtime old-mtime]]]]
+    [map [fn [entry] [let [path _] entry] path]]]]
+
+; --- Asset copy ---
+[fn copy-tree [src-path dest-path]
+  [IO.mkdir dest-path]
+  [let entries [IO.list-dir src-path]]
+  [each [fn [name]
+    [let src [str src-path "/" name]]
+    [let dst [str dest-path "/" name]]
+    [let children [IO.list-dir src]]
+    [if [empty? children]
+      [IO.copy-file src dst]
+      [copy-tree src dst]]]
+    entries]]
+
+[fn initial-copy! []
+  [IO.mkdir dist-dir]
+  [copy-tree public-dir dist-dir]
+  [copy-tree src-dir [str dist-dir "/src"]]]
+
+; --- SSE injection ---
+[let sse-script "<script>(function(){var es=new EventSource('/__dev/sse');es.addEventListener('loon',function(e){window.__loon_sse&&window.__loon_sse('loon',e.data)});es.addEventListener('css',function(e){window.__loon_sse&&window.__loon_sse('css',e.data)});es.addEventListener('full',function(){window.location.reload()});es.onopen=function(){console.log('[loon] dev server connected')};es.onerror=function(){console.log('[loon] reconnecting...')}})();</script>"]
+
+[fn inject-sse [html]
+  [replace html "</body>" [str sse-script "</body>"]]]
+
+; --- Change classification ---
+[fn classify-change [path]
+  [if [ends-with? path ".css"] "css"
+  [if [ends-with? path ".loon"] "loon"
+    "full"]]]
+
+[fn change-type-priority [t]
+  [if [= t "full"] 3
+  [if [= t "loon"] 2
+    1]]]
+
+; --- Copy changed files to dist ---
+[fn copy-changed! [changed]
+  [each [fn [path]
+    [let relative [if [starts-with? path public-dir]
+      [replace path [str public-dir "/"] ""]
+      [if [starts-with? path src-dir]
+        [str "src/" [replace path [str src-dir "/"] ""]]
+        path]]]
+    [let dest [str dist-dir "/" relative]]
+    [let parts [split relative "/"]]
+    [if [> [len parts] 1]
+      [do
+        [let parent-parts [take [- [len parts] 1] parts]]
+        [let parent-dir [str dist-dir "/" [join "/" parent-parts]]]
+        [IO.mkdir parent-dir]]
+      []]
+    [IO.copy-file path dest]]
+    changed]]
+
+; --- Determine reload type and broadcast ---
+[fn notify-changes! [changed]
+  [let types [map classify-change changed]]
+  [let max-priority [pipe types [map change-type-priority] max]]
+  [let reload-type [if [= max-priority 3] "full"
+                   [if [= max-priority 2] "loon"
+                     "css"]]]
+  [let loon-files [pipe changed
+    [filter [fn [p] [ends-with? p ".loon"]]]
+    [map [fn [p]
+      [if [starts-with? p src-dir]
+        [str "src/" [replace p [str src-dir "/"] ""]]
+        p]]]]]
+  [let data [if [= reload-type "loon"] [join "," loon-files] ""]]
+  [IO.println [str "  changed: " [join ", " changed] " -> " reload-type]]
+  [Net.sse-broadcast reload-type data]]
+
+; --- Serve a request ---
+[fn handle-request [req]
+  [let id [get req :id 0]]
+  [let path [get req :path "/"]]
+
+  [if [= path "/__dev/sse"]
+    [Net.sse-open id]
+    [do
+      ; SPA fallback: paths without a dot (no file extension) serve index.html
+      [let file-path [if [= path "/"]
+        [str dist-dir "/index.html"]
+        [if [contains? path "."]
+          [str dist-dir path]
+          [str dist-dir "/index.html"]]]]
+      ; HTML files need SSE injection, so read as text
+      [if [ends-with? file-path ".html"]
+        [do
+          [let body [try [IO.read-file file-path]
+            [fn [_err] ""]]]
+          [if [= body ""]
+            [Net.respond id {:status 404 :body "not found" :headers {}}]
+            [Net.respond id {:status 200
+                            :body [inject-sse body]
+                            :headers {"content-type" "text/html; charset=utf-8"
+                                      "cache-control" "no-cache"}}]]]
+        ; All other files: serve binary-safe via Net.serve-file
+        [Net.serve-file id file-path [mime-type file-path]]]]]]
+
+; --- File watcher step (called by Async.loop, no recursion) ---
+[fn watch-step [snap]
+  [IO.sleep poll-interval]
+  [let new-snap [snapshot-mtimes #[public-dir src-dir]]]
+  [let changed [diff-snapshots snap new-snap]]
+  [if [not [empty? changed]]
+    [do
+      [IO.sleep 50]
+      [let final-snap [snapshot-mtimes #[public-dir src-dir]]]
+      [let changed [diff-snapshots snap final-snap]]
+      [if [not [empty? changed]]
+        [do
+          [copy-changed! changed]
+          [notify-changes! changed]
+          final-snap]
+        final-snap]]
+    new-snap]]
+
+; --- Main ---
+[fn main []
+  [IO.println "Copying assets to dist/..."]
+  [initial-copy!]
+  [IO.println [str "Starting dev server on http://localhost:" [str port]]]
+
+  ; Start HTTP server
+  [let [tx rx] [Net.http-serve port]]
+
+  ; Start file watcher in background (uses Async.loop for no stack growth)
+  [let initial-snap [snapshot-mtimes #[public-dir src-dir]]]
+  [Async.spawn [fn [] [Async.loop initial-snap watch-step]]]
+
+  ; Main request loop (also uses Async.loop)
+  [Async.loop rx [fn [rx]
+    [let req [recv rx]]
+    [handle-request req]
+    rx]]]

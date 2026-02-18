@@ -1,0 +1,49 @@
+; ownership.loon — Ownership and move semantics guide
+
+[fn guide-ownership-page []
+  [doc-page "Ownership" "Move semantics and borrow inference without annotations."
+
+    [doc-section "Three Rules"
+      [doc-text "Ownership in Loon follows three simple rules."]
+      [doc-list
+        "Every value has exactly one owner."
+        "When a value is assigned or passed, ownership transfers (moves)."
+        "When the owner goes out of scope, the value is dropped."]
+      [doc-note "info" "Unlike Rust, you never write lifetime annotations. The compiler infers borrows automatically."]]
+
+    [doc-section "Move Semantics"
+      [doc-text "Assigning a value to a new binding moves it. The original binding is no longer valid."]
+      [code-block {:label "LOON"} [str "[let a #[1 2 3]]\n" "[let b a]\n" "; a is no longer valid here\n" "[println b]"]]
+      [doc-text "The same applies when passing values to functions."]
+      [code-block {:label "LOON"} [str "[fn consume [xs]\n" "  [println [len xs]]]\n" "\n" "[let items #[10 20 30]]\n" "[consume items]\n" "; items has been moved"]]
+      [doc-note "warning" "Using a value after it has been moved is a compile-time error."]]
+
+    [doc-section "Auto Borrow Inference"
+      [doc-text "The compiler automatically borrows values when it can prove the reference does not outlive the owner. No annotations needed."]
+      [code-block {:label "LOON"} [str "[fn total [xs]\n" "  [fold xs 0 +]]\n" "\n" "[let nums #[1 2 3]]\n" "[println [total nums]]\n" "[println [total nums]]  ; works — compiler inferred a borrow"]]
+      [doc-text "If the function only reads the value, the compiler passes a borrow instead of moving."]]
+
+    [doc-section "Copy Types"
+      [doc-text "Primitive types are copied rather than moved. These include:"]
+      [doc-list
+        [span [doc-code "Int"] " and " [doc-code "Float"] " — numeric types"]
+        [span [doc-code "Bool"] " — true and false"]
+        [span [doc-code "Char"] " — single characters"]
+        [span [doc-code "String"] " — strings are immutable and reference-counted"]]
+      [code-block {:label "LOON"} [str "[let x 42]\n" "[let y x]\n" "[println x]  ; still valid — Int is Copy"]]]
+
+    [doc-section "Mutation"
+      [doc-text "Use " [doc-code "mut"] " to create mutable bindings, and " [doc-code "set!"] " or " [doc-code "push!"] " to modify them."]
+      [code-block {:label "LOON"} [str "[let mut items #[1 2 3]]\n" "[push! items 4]\n" "[set! items [map items [fn [n] [* n 2]]]]\n" "[println items]"]]
+      [doc-note "tip" "Only the owner of a mutable binding can mutate it. Borrows are always immutable."]]
+
+    [doc-section "Common Errors"
+      [doc-subsection "Use After Move"
+        [doc-text "This is the most common ownership error."]
+        [code-block {:label "LOON"} [str "[let a #[1 2 3]]\n" "[let b a]\n" "[println a]  ; ERROR: value moved to b"]]]
+      [doc-subsection "Returning References to Locals"
+        [doc-text "The compiler prevents returning a reference to a value that will be dropped."]
+        [code-block {:label "LOON"} [str "[fn bad []\n" "  [let x 42]\n" "  &x]  ; ERROR: x dropped at end of fn"]]
+        [doc-note "tip" "Return the value itself. The compiler will optimize away unnecessary copies."]]]
+
+    [doc-prev-next "Pattern Matching" "/guide/pattern-matching" "Effects" "/guide/effects"]]]

@@ -7,6 +7,32 @@
     #["/tour" tour-page]
     #["/play" play-page]
     #["/blog" blog-page]
+    #["/roadmap" roadmap-page]
+    #["/install" install-page]
+    #["/examples" examples-page]
+    #["/guide/basics" guide-basics-page]
+    #["/guide/functions" guide-functions-page]
+    #["/guide/types" guide-types-page]
+    #["/guide/collections" guide-collections-page]
+    #["/guide/pattern-matching" guide-pattern-matching-page]
+    #["/guide/ownership" guide-ownership-page]
+    #["/guide/effects" guide-effects-page]
+    #["/guide/modules" guide-modules-page]
+    #["/guide/macros" guide-macros-page]
+    #["/guide/testing" guide-testing-page]
+    #["/guide/errors" guide-errors-page]
+    #["/ref/syntax" ref-syntax-page]
+    #["/ref/builtins" ref-builtins-page]
+    #["/ref/cli" ref-cli-page]
+    #["/ref/effects" ref-effects-page]
+    #["/ref/lsp" ref-lsp-page]
+    #["/ref/formatter" ref-formatter-page]
+    #["/concepts/invisible-types" concepts-invisible-types-page]
+    #["/concepts/effects" concepts-effects-page]
+    #["/concepts/ownership" concepts-ownership-page]
+    #["/concepts/from-rust" concepts-from-rust-page]
+    #["/concepts/from-js" concepts-from-js-page]
+    #["/concepts/from-clojure" concepts-from-clojure-page]
   ]]
 
 ; --- App Component ---
@@ -15,8 +41,13 @@
   [let path [dom/location]]
   [let routes [route-table]]
   [let page-fn [match-route path routes]]
+  [let content [page-fn]]
   [div {:class "app"}
-    [page-fn]]]
+    [div {:class "doc-layout"}
+      [sidebar path]
+      [div {:class "doc-content"}
+        content
+        [footer-component]]]]]
 
 ; --- Boot ---
 
