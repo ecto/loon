@@ -3,7 +3,6 @@
   "outputDirectory": "dist",
   "installCommand": "npm install",
   "framework": null,
-  "rootDirectory": "web",
   "rewrites": [
     { "source": "/((?!.*\\.).*)", "destination": "/index.html" }
   ]
