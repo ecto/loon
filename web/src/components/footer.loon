@@ -1,17 +1,29 @@
-; footer.loon — Minimal centered footer
+; footer.loon — Minimal footer
 
 [fn footer-component []
+  [let link-style {:color [color :muted]
+                   :font-family [font :mono]
+                   :font-size "0.78rem"
+                   :letter-spacing "0.05em"
+                   :text-decoration "none"}]
   [footer-el {:class "footer"
-              :style {:padding "3rem 2rem"
-                      :margin-top "4rem"
-                      :text-align "center"}}
-    [a-el {:href "/"
-           :style {:display "inline-flex"
-                   :align-items "center"
-                   :gap "0.5rem"
-                   :text-decoration "none"
-                   :color [color :muted]
-                   :font-family [font :serif]
-                   :font-size "1rem"}}
-      [img-el {:src "loon-bird.svg" :alt "Loon" :style {:width "24px" :height "24px" :opacity "0.5"}}]
-      "Loon"]]]
+              :style {:padding "3rem 1.5rem"
+                      :text-align "center"
+                      :margin-top "2rem"
+                      :display "flex"
+                      :justify-content "center"
+                      :align-items "center"
+                      :gap "1.5rem"}}
+    [span {:style {:color [color :muted]
+                   :font-family [font :mono]
+                   :font-size "0.78rem"
+                   :letter-spacing "0.1em"}}
+      "loon"]
+    [a-el {:href "https://github.com/loon-lang/loon"
+           :target "_blank"
+           :style link-style}
+      "GitHub"]
+    [a-el {:href "https://github.com/loon-lang/loon/blob/main/LICENSE"
+           :target "_blank"
+           :style link-style}
+      "MIT License"]]]
