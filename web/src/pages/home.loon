@@ -89,7 +89,7 @@
     ; --- Install ---
     [section-el {:style {:max-width "400px"
                          :padding "1.5rem 0 2rem"}}
-      [code-block {:class "copyable"} "curl -fsSL https://loon-lang.org/install.sh | sh"]]
+      [code-block {:class "copyable"} "curl -fsSL https://loonlang.com/install.sh | sh"]]
 
     ; --- Nav ---
     [div {:style {:padding "0 0 5rem"

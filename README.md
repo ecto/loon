@@ -2,7 +2,7 @@
 
 A functional language with invisible types, safe ownership, and algebraic effects.
 
-**[Try it in your browser →](https://loon-lang.org/play)**
+**[Try it in your browser →](https://loonlang.com/play)**
 
 ```
 [fn greet [name]
@@ -28,7 +28,7 @@ A functional language with invisible types, safe ownership, and algebraic effect
 ## Quick Start
 
 ```bash
-curl -fsSL https://loon-lang.org/install.sh | sh
+curl -fsSL https://loonlang.com/install.sh | sh
 ```
 
 ```bash
