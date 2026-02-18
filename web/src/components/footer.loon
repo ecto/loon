@@ -7,11 +7,9 @@
                    :letter-spacing "0.05em"
                    :text-decoration "none"}]
   [footer-el {:class "footer"
-              :style {:padding "3rem 1.5rem"
-                      :text-align "center"
+              :style {:padding "3rem 0"
                       :margin-top "2rem"
                       :display "flex"
-                      :justify-content "center"
                       :align-items "center"
                       :gap "1.5rem"}}
     [span {:style {:color [color :muted]
@@ -19,11 +17,11 @@
                    :font-size "0.78rem"
                    :letter-spacing "0.1em"}}
       "loon"]
-    [a-el {:href "https://github.com/loon-lang/loon"
+    [a-el {:href "https://github.com/ecto/loon"
            :target "_blank"
            :style link-style}
       "GitHub"]
-    [a-el {:href "https://github.com/loon-lang/loon/blob/main/LICENSE"
+    [a-el {:href "https://github.com/ecto/loon/blob/main/LICENSE"
            :target "_blank"
            :style link-style}
       "MIT License"]]]
