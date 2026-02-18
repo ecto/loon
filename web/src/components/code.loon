@@ -1,16 +1,169 @@
 ; code.loon — Syntax-highlighted code block component
 
-[fn highlight-loon [source]
-  [pre-el {:class "code-block"}
-    [code-el {:class "language-loon"} source]]]
+[let special-forms #{
+  "fn" "let" "if" "do" "match" "type" "effect" "handle"
+  "macro" "macro+" "test" "use" "pub" "sig" "try"
+  "pipe" "quote" "unquote" "derive"
+}]
+
+[let builtin-names #{
+  "println" "print" "str" "len" "nth" "map" "filter" "fold"
+  "conj" "get" "assoc" "update" "range" "contains?" "empty?"
+  "sort-by" "take" "drop" "each" "entries" "collect" "push!"
+  "zip" "flatten" "chunk" "reverse" "find" "any?" "all?"
+  "cons" "keys" "values" "merge" "remove" "group-by" "flat-map"
+  "sort" "min" "max" "sum" "into-map" "split" "join" "trim"
+  "starts-with?" "ends-with?" "replace" "uppercase" "lowercase"
+  "char-at" "substring" "index-of" "not" "or" "and" "assert-eq"
+  "map?" "vec?" "name" "int" "float" "channel" "send" "recv"
+  "try-recv" "set!" "mount" "+" "-" "*" "/" "%" ">" "<"
+  ">=" "<=" "=" "!="
+}]
+
+[let ws-set #{ " " "\t" "\r" "\n" }]
+[let brk-set #{ "[" "]" "{" "}" "(" ")" }]
+[let dig-set #{ "0" "1" "2" "3" "4" "5" "6" "7" "8" "9" }]
+[let up-set #{ "A" "B" "C" "D" "E" "F" "G" "H" "I" "J" "K" "L" "M"
+               "N" "O" "P" "Q" "R" "S" "T" "U" "V" "W" "X" "Y" "Z" }]
+[let stop-set #{ " " "\t" "\r" "\n" "[" "]" "{" "}" "(" ")" "\"" ";" "#" }]
+
+; --- Scanners ---
+
+[fn scan-ws [s i]
+  [if [< i [len s]]
+    [if [contains? ws-set [char-at s i]] [scan-ws s [+ i 1]] i]
+    i]]
+
+[fn scan-eol [s i]
+  [if [< i [len s]]
+    [if [= [char-at s i] "\n"] i [scan-eol s [+ i 1]]]
+    i]]
+
+[fn scan-str [s i]
+  [if [< i [len s]]
+    [if [= [char-at s i] "\\"] [scan-str s [+ i 2]]
+    [if [= [char-at s i] "\""] [+ i 1] [scan-str s [+ i 1]]]]
+    i]]
+
+[fn scan-word [s i]
+  [if [< i [len s]]
+    [if [contains? stop-set [char-at s i]] i [scan-word s [+ i 1]]]
+    i]]
+
+; --- Word classification ---
+
+[fn word-class [w]
+  [if [= [len w] 0] ""
+  [if [= [char-at w 0] ":"] "syntax-keyword"
+  [if [contains? special-forms w] "syntax-keyword"
+  [if [contains? builtin-names w] "syntax-builtin"
+  [if [contains? dig-set [char-at w 0]] "syntax-number"
+  [if [or [= w "true"] [= w "false"] [= w "None"] [= w "Empty"]] "syntax-number"
+  [if [contains? up-set [char-at w 0]] "syntax-function"
+    ""]]]]]]]]
+
+; --- Emit helpers: each returns #[new-index new-acc] ---
+
+[fn emit-comment [s i acc]
+  [let e [scan-eol s i]]
+  #[e [conj acc #["syntax-comment" [substring s i e]]]]]
+
+[fn emit-string [s i acc]
+  [let e [scan-str s [+ i 1]]]
+  #[e [conj acc #["syntax-string" [substring s i e]]]]]
+
+[fn emit-ws [s i acc]
+  [let e [scan-ws s i]]
+  #[e [conj acc #["" [substring s i e]]]]]
+
+[fn emit-hash [s i acc]
+  [if [< [+ i 1] [len s]]
+    [if [or [= [char-at s [+ i 1]] "["] [= [char-at s [+ i 1]] "{"]]
+      #[[+ i 2] [conj acc #["syntax-paren" [substring s i [+ i 2]]]]]
+      #[[+ i 1] [conj acc #["syntax-paren" "#"]]]]
+    #[[+ i 1] [conj acc #["syntax-paren" "#"]]]]]
+
+[fn emit-bracket [s i acc]
+  #[[+ i 1] [conj acc #["syntax-paren" [char-at s i]]]]]
+
+[fn emit-arrow [s i acc]
+  #[[+ i 2] [conj acc #["syntax-keyword" "=>"]]]]
+
+[fn emit-word [s i acc]
+  [let e [scan-word s i]]
+  [if [= e i]
+    #[[+ i 1] [conj acc #["" [char-at s i]]]]
+    #[e [conj acc #[[word-class [substring s i e]] [substring s i e]]]]]]
+
+; --- Main tokenizer ---
+
+[fn step [src slen i acc]
+  [let ch [char-at src i]]
+  [if [= ch ";"]           [emit-comment src i acc]
+  [if [= ch "\""]          [emit-string src i acc]
+  [if [contains? ws-set ch] [emit-ws src i acc]
+  [if [= ch "#"]           [emit-hash src i acc]
+  [if [contains? brk-set ch] [emit-bracket src i acc]
+  [if [= ch "="]
+    [if [< [+ i 1] slen]
+      [if [= [char-at src [+ i 1]] ">"]
+        [emit-arrow src i acc]
+        [emit-word src i acc]]
+      [emit-word src i acc]]
+    [emit-word src i acc]]]]]]]]
+
+[fn tokenize [src]
+  [let slen [len src]]
+  [fn go [i acc]
+    [if [not [< i slen]] acc
+    [do
+      [let result [step src slen i acc]]
+      [go [nth result 0] [nth result 1]]]]]
+  [go 0 #[]]]
+
+; --- Render ---
+
+[fn render-tokens [tokens]
+  [pipe tokens
+    [map [fn [tok]
+      [let cls [nth tok 0]]
+      [let text [nth tok 1]]
+      [if [= cls ""] text [span {:class cls} text]]]]]]
+
+; --- Build highlighted DOM nodes from tokens ---
+
+[fn render-tokens-to-dom [parent tokens]
+  [each [fn [tok]
+    [let cls [nth tok 0]]
+    [let text [nth tok 1]]
+    [if [= cls ""]
+      [dom/append-child parent [dom/create-text text]]
+      [do
+        [let sp [dom/create-element "span"]]
+        [dom/set-attribute sp "class" cls]
+        [dom/append-child sp [dom/create-text text]]
+        [dom/append-child parent sp]]]]
+    tokens]]
+
+; --- Two-phase code block: plain text first, highlight async ---
 
 [fn code-block [first & rest]
   [let props [if [map? first] first {}]]
   [let source [if [map? first] [nth rest 0] first]]
   [let label [get props :label ""]]
   [let cls [get props :class ""]]
+  [let block-id [str "lc-" [len source] "-" [index-of source "\n"]]]
+  ; Schedule async highlight after paint
+  [dom/set-timeout
+    [fn []
+      [let el [dom/query-selector [str "#" block-id]]]
+      [dom/set-inner-html el ""]
+      [render-tokens-to-dom el [tokenize source]]]
+    0]
+  ; Return plain text immediately
   [div {:class [cx "code-block-wrapper" cls]}
     [if [not [= label ""]]
       [div {:class "code-block-label"} label]
       Empty]
-    [highlight-loon source]]]
+    [pre-el {:class "code-block"}
+      [code-el {:class "language-loon" :id block-id} source]]]]

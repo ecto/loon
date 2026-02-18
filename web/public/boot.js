@@ -33,6 +33,7 @@ const SOURCE_FILES = [
   'src/pages/tour.loon',
   'src/pages/play.loon',
   'src/pages/blog.loon',
+  'src/pages/roadmap.loon',
   'src/app.loon',
 ];
 
@@ -440,6 +441,7 @@ async function handleLoonReload(changedFiles) {
   resetDomState();
   init_dom_bridge(domBridge);
   window.__loon_event_handler = (callbackId) => invoke_callback(callbackId);
+  window.__loon_timeout_handler = (callbackId) => invoke_callback(callbackId);
 
   if (!evalChecked(fullSource)) {
     console.error('[loon] reload error');
@@ -466,6 +468,7 @@ async function boot() {
     window.__loon_event_handler = (callbackId) => {
       invoke_callback(callbackId);
     };
+    window.__loon_timeout_handler = (callbackId) => invoke_callback(callbackId);
 
     // Load all sources into cache
     for (const src of SOURCE_FILES) {

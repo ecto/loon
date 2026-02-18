@@ -63,6 +63,13 @@ pub fn invoke_callback(id: u32) -> IResult {
     }
 }
 
+/// Clear all stored callbacks and reset the counter.
+/// Called during hot reload to prevent stale references.
+pub fn reset_callbacks() {
+    CALLBACKS.with(|cb| cb.borrow_mut().clear());
+    NEXT_CB.with(|n| n.set(1));
+}
+
 macro_rules! builtin {
     ($env:expr, $name:expr, $f:expr) => {
         $env.set(
@@ -157,10 +164,22 @@ pub fn register_dom_builtins(env: &mut Env) {
     });
 
     builtin!(env, "dom/request-animation-frame", |_, args: &[Value]| {
-        call_bridge("requestAnimationFrame", args)
+        if !args.is_empty() && args[0].is_callable() {
+            let cb_id = store_callback(args[0].clone());
+            call_bridge("requestAnimationFrame", &[Value::Int(cb_id as i64)])
+        } else {
+            call_bridge("requestAnimationFrame", args)
+        }
     });
 
     builtin!(env, "dom/set-timeout", |_, args: &[Value]| {
-        call_bridge("setTimeout", args)
+        if args.len() >= 2 && args[0].is_callable() {
+            let cb_id = store_callback(args[0].clone());
+            let mut new_args = args.to_vec();
+            new_args[0] = Value::Int(cb_id as i64);
+            call_bridge("setTimeout", &new_args)
+        } else {
+            call_bridge("setTimeout", args)
+        }
     });
 }
