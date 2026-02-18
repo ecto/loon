@@ -57,7 +57,7 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let rope = Rope::from_str("[defn add [x y]\n  [+ x y]]\n");
+        let rope = Rope::from_str("[fn add [x y]\n  [+ x y]]\n");
         for offset in [0, 1, 5, 10, 16, 20, 25] {
             let pos = offset_to_position(&rope, offset);
             let back = position_to_offset(&rope, pos);

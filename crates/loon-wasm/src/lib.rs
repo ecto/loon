@@ -71,17 +71,6 @@ pub fn init_dom_bridge(bridge: &js_sys::Function) {
 pub fn eval_ui(source: &str) -> Result<(), String> {
     loon_lang::interp::set_source_text(source);
     let exprs = loon_lang::parser::parse(source).map_err(|e| format!("{e}"))?;
-
-    // Run type checker — log warnings but don't block boot
-    let mut checker = loon_lang::check::Checker::new();
-    let errors = checker.check_program(&exprs);
-    if !errors.is_empty() {
-        console_warn(&format!("[loon] {} type warning(s):", errors.len()));
-        for err in &errors {
-            console_warn(&format!("  {err}"));
-        }
-    }
-
     loon_lang::interp::eval_program(&exprs).map_err(|e| e.message)?;
     Ok(())
 }
@@ -153,8 +142,12 @@ pub fn reset_runtime() {
 /// Error:   {"ok":false,"error":{"message":"...","span":[start,end],"stack":[{"fn":"name","span":[start,end]},...]}}
 #[wasm_bindgen]
 pub fn eval_ui_checked(source: &str) -> String {
+    let perf = web_sys::window().and_then(|w: web_sys::Window| w.performance());
+    let now = || perf.as_ref().map_or_else(js_sys::Date::now, |p: &web_sys::Performance| p.now());
+
     loon_lang::interp::set_source_text(source);
 
+    let t0 = now();
     let exprs = match loon_lang::parser::parse(source) {
         Ok(e) => e,
         Err(e) => return format!(
@@ -162,18 +155,15 @@ pub fn eval_ui_checked(source: &str) -> String {
             escape_json(&format!("{e}"))
         ),
     };
+    let t1 = now();
 
-    // Run type checker — log warnings but don't block boot
-    let mut checker = loon_lang::check::Checker::new();
-    let errors = checker.check_program(&exprs);
-    if !errors.is_empty() {
-        console_warn(&format!("[loon] {} type warning(s):", errors.len()));
-        for err in &errors {
-            console_warn(&format!("  {err}"));
-        }
-    }
+    let t2 = now();
+    let result = loon_lang::interp::eval_program(&exprs);
+    let t3 = now();
 
-    match loon_lang::interp::eval_program(&exprs) {
+    console_warn(&format!("[loon-perf] parse: {:.0}ms, eval: {:.0}ms, total: {:.0}ms", t1-t0, t3-t2, t3-t0));
+
+    match result {
         Ok(_) => r#"{"ok":true}"#.to_string(),
         Err(e) => {
             let span_json = match e.span {

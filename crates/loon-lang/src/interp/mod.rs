@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 thread_local! {
-    static GLOBAL_ENV: RefCell<Option<Env>> = const { RefCell::new(None) };
+    static GLOBAL_ENV: RefCell<Option<std::rc::Rc<std::cell::RefCell<HashMap<String, value::Value>>>>> = const { RefCell::new(None) };
     static CALL_STACK: RefCell<Vec<StackFrame>> = RefCell::new(Vec::new());
     static SOURCE_TEXT: RefCell<Option<String>> = const { RefCell::new(None) };
     static EFFECT_LOG_ENABLED: Cell<bool> = const { Cell::new(false) };
@@ -146,8 +146,8 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
 
                 match thunk {
                     Value::Fn(lf) => {
-                        let lf = lf.clone();
-                        let env = get_global_env().unwrap_or_default();
+                        let lf = lf.deep_clone();
+                        let env = get_global_env().unwrap_or_default().deep_clone();
                         std::thread::Builder::new()
                             .stack_size(64 * 1024 * 1024) // 64MB stack for deep recursion
                             .spawn(move || {
@@ -412,6 +412,8 @@ pub fn eval_program_with_base_dir(exprs: &[Expr], base_dir: Option<&Path>) -> IR
     let mut cache = ModuleCache::new();
     let default_base = std::path::PathBuf::from(".");
     let base = base_dir.unwrap_or(&default_base);
+    // Initial sync so spawned threads/callbacks can access the global env
+    sync_global_env(&env);
 
     let mut last = Value::Unit;
     for expr in &exprs {
@@ -421,7 +423,6 @@ pub fn eval_program_with_base_dir(exprs: &[Expr], base_dir: Option<&Path>) -> IR
                 if let ExprKind::Symbol(s) = &items[0].kind {
                     if s == "use" {
                         eval_use_with_cache(&items[1..], &mut env, base, &mut cache)?;
-                        sync_global_env(&env);
                         continue;
                     }
                 }
@@ -441,9 +442,9 @@ pub fn eval_program_with_base_dir(exprs: &[Expr], base_dir: Option<&Path>) -> IR
                 }
             }
         }
-        // Keep global env in sync for apply_value
-        sync_global_env(&env);
     }
+    // Sync global env once before calling main (needed for apply_value in callbacks)
+    sync_global_env(&env);
     // If there's a main function, call it
     if let Some(Value::Fn(main_fn)) = env.get("main") {
         match call_fn(&main_fn, &[], &mut env, Span::ZERO) {
@@ -463,12 +464,16 @@ pub fn eval_program_with_base_dir(exprs: &[Expr], base_dir: Option<&Path>) -> IR
 
 fn sync_global_env(env: &Env) {
     GLOBAL_ENV.with(|g| {
-        *g.borrow_mut() = Some(env.clone());
+        *g.borrow_mut() = Some(env.global_rc().clone());
     });
 }
 
 pub(crate) fn get_global_env() -> Option<Env> {
-    GLOBAL_ENV.with(|g| g.borrow().clone())
+    GLOBAL_ENV.with(|g| {
+        g.borrow().as_ref().map(|global_rc| {
+            Env::from_global_rc(global_rc.clone())
+        })
+    })
 }
 
 pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
@@ -676,7 +681,7 @@ fn eval_fn(args: &[Expr], env: &mut Env) -> IResult {
                         return Err(err("multi-arity clause needs params and body"));
                     }
                     let params = extract_params(&clause_items[0])?;
-                    let body = clause_items[1..].to_vec();
+                    let body: std::rc::Rc<[Expr]> = clause_items[1..].to_vec().into();
                     clauses.push((params, body));
                 } else {
                     return Err(err("expected multi-arity clause (params body)"));
@@ -702,7 +707,7 @@ fn eval_fn(args: &[Expr], env: &mut Env) -> IResult {
                 }
             }
         }
-        let body = args[body_start..].to_vec();
+        let body: std::rc::Rc<[Expr]> = args[body_start..].to_vec().into();
 
         let lf = value::LoonFn {
             name: Some(name.clone()),
@@ -715,7 +720,7 @@ fn eval_fn(args: &[Expr], env: &mut Env) -> IResult {
 
     // Anonymous lambda: [fn [params] body...]
     let params = extract_params(&args[0])?;
-    let body = args[1..].to_vec();
+    let body: std::rc::Rc<[Expr]> = args[1..].to_vec().into();
     Ok(Value::Fn(value::LoonFn {
         name: None,
         clauses: vec![(params, body)],
@@ -988,7 +993,7 @@ fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
                         name: Some(ctor_name.clone()),
                         clauses: vec![(
                             (0..arity).map(|i| value::Param::Simple(format!("__f{i}"))).collect(),
-                            vec![],
+                            std::rc::Rc::from(Vec::<Expr>::new()),
                         )],
                         captured_env: None,
                     };
@@ -1045,7 +1050,7 @@ fn eval_impl_def(args: &[Expr], env: &mut Env) -> IResult {
                     if kw == "fn" {
                         if let ExprKind::Symbol(ref method_name) = items[1].kind {
                             let params = extract_params(&items[2])?;
-                            let body = items[3..].to_vec();
+                            let body: std::rc::Rc<[Expr]> = items[3..].to_vec().into();
                             let lf = value::LoonFn {
                                 name: Some(format!("{type_name}.{method_name}")),
                                 clauses: vec![(params, body)],
@@ -1474,7 +1479,7 @@ fn call_fn_inner(lf: &value::LoonFn, args: &[Value], env: &mut Env) -> IResult {
                 }
             }
             let mut result = Value::Unit;
-            for expr in body {
+            for expr in body.iter() {
                 result = eval(expr, env)?;
             }
             env.pop_scope();

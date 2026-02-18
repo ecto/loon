@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn parse_and_check_valid() {
-        let state = DocumentState::new("[defn add [x y] [+ x y]]", 1);
+        let state = DocumentState::new("[fn add [x y] [+ x y]]", 1);
         assert!(state.diagnostics.is_empty(), "unexpected diagnostics: {:?}", state.diagnostics);
         assert!(state.checker.is_some());
         assert!(!state.exprs.is_empty());
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn parse_error_produces_diagnostic() {
         // Unclosed bracket
-        let state = DocumentState::new("[defn add [x y", 1);
+        let state = DocumentState::new("[fn add [x y", 1);
         assert!(!state.diagnostics.is_empty());
     }
 

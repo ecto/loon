@@ -169,7 +169,7 @@ pub fn register_builtins(env: &mut Env) {
         match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a > b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a > b)),
-            _ => Err(err("> requires numbers")),
+            _ => Err(err(format!("> requires numbers, got {} and {}", args[0], args[1]))),
         }
     });
 
@@ -177,7 +177,7 @@ pub fn register_builtins(env: &mut Env) {
         match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a < b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a < b)),
-            _ => Err(err("< requires numbers")),
+            _ => Err(err(format!("< requires numbers, got {} and {}", args[0], args[1]))),
         }
     });
 
@@ -189,7 +189,7 @@ pub fn register_builtins(env: &mut Env) {
         match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a >= b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a >= b)),
-            _ => Err(err(">= requires numbers")),
+            _ => Err(err(format!(">= requires numbers, got {} and {}", args[0], args[1]))),
         }
     });
 
@@ -197,7 +197,7 @@ pub fn register_builtins(env: &mut Env) {
         match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a <= b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a <= b)),
-            _ => Err(err("<= requires numbers")),
+            _ => Err(err(format!("<= requires numbers, got {} and {}", args[0], args[1]))),
         }
     });
 
@@ -343,7 +343,7 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "len", |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) => Ok(Value::Int(v.len() as i64)),
-            Value::Str(s) => Ok(Value::Int(s.len() as i64)),
+            Value::Str(s) => Ok(Value::Int(if s.is_ascii() { s.len() } else { s.chars().count() } as i64)),
             Value::Map(m) => Ok(Value::Int(m.len() as i64)),
             Value::Set(s) => Ok(Value::Int(s.len() as i64)),
             _ => Err(err("len requires a collection")),
@@ -985,9 +985,19 @@ pub fn register_builtins(env: &mut Env) {
         match (&args[0], &args[1]) {
             (Value::Str(s), Value::Int(i)) => {
                 let idx = *i as usize;
-                s.chars().nth(idx)
-                    .map(|c| Value::Str(c.to_string()))
-                    .ok_or_else(|| err(format!("char-at: index {} out of bounds (len {})", i, s.chars().count())))
+                // Fast path: ASCII strings have byte index == char index
+                if s.is_ascii() {
+                    let bytes = s.as_bytes();
+                    if idx < bytes.len() {
+                        Ok(Value::Str(String::from(bytes[idx] as char)))
+                    } else {
+                        Err(err(format!("char-at: index {} out of bounds (len {})", i, bytes.len())))
+                    }
+                } else {
+                    s.chars().nth(idx)
+                        .map(|c| Value::Str(c.to_string()))
+                        .ok_or_else(|| err(format!("char-at: index {} out of bounds (len {})", i, s.chars().count())))
+                }
             }
             _ => Err(err("char-at requires a string and index")),
         }
@@ -998,11 +1008,18 @@ pub fn register_builtins(env: &mut Env) {
             (Value::Str(s), Value::Int(start), Value::Int(end)) => {
                 let start = *start as usize;
                 let end = *end as usize;
-                let chars: Vec<char> = s.chars().collect();
-                if start > chars.len() || end > chars.len() || start > end {
-                    return Err(err(format!("substring: invalid range {}..{} for len {}", start, end, chars.len())));
+                if s.is_ascii() {
+                    if start > s.len() || end > s.len() || start > end {
+                        return Err(err(format!("substring: invalid range {}..{} for len {}", start, end, s.len())));
+                    }
+                    Ok(Value::Str(s[start..end].to_string()))
+                } else {
+                    let chars: Vec<char> = s.chars().collect();
+                    if start > chars.len() || end > chars.len() || start > end {
+                        return Err(err(format!("substring: invalid range {}..{} for len {}", start, end, chars.len())));
+                    }
+                    Ok(Value::Str(chars[start..end].iter().collect()))
                 }
-                Ok(Value::Str(chars[start..end].iter().collect()))
             }
             _ => Err(err("substring requires a string, start, and end")),
         }
@@ -1278,6 +1295,7 @@ pub fn register_builtins(env: &mut Env) {
             Err(err("try-recv requires a channel rx"))
         }
     });
+
 }
 
 pub fn apply_value(func: &Value, args: &[Value]) -> IResult {

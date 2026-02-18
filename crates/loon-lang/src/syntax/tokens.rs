@@ -83,6 +83,6 @@ pub enum Token {
 
     // Symbols (identifiers, operators like +, -, etc.)
     // Allows / in the middle for namespaced names like dom/create-element
-    #[regex(r"[a-zA-Z_+\-*!<>=&%][a-zA-Z0-9_\-?!.*%/+]*", priority = 1, callback = |lex| lex.slice().to_string())]
+    #[regex(r"[a-zA-Z_+\-*!<>=&%][a-zA-Z0-9_\-?!.*%/+<>=]*", priority = 1, callback = |lex| lex.slice().to_string())]
     Symbol(String),
 }

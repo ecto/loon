@@ -1,5 +1,6 @@
 use std::fmt;
-use std::sync::Arc;
+use std::rc::Rc;
+use std::sync::{Arc, Condvar, Mutex};
 
 use super::InterpError;
 
@@ -24,10 +25,26 @@ pub enum Param {
 #[derive(Clone)]
 pub struct LoonFn {
     pub name: Option<String>,
-    /// Each clause: (params, body_exprs)
-    pub clauses: Vec<(Vec<Param>, Vec<crate::ast::Expr>)>,
+    /// Each clause: (params, body_exprs). Body is Rc-shared so cloning a fn is cheap.
+    pub clauses: Vec<(Vec<Param>, Rc<[crate::ast::Expr]>)>,
     /// Captured environment (for closures and recursive calls)
     pub captured_env: Option<super::env::Env>,
+}
+
+/// SAFETY: LoonFn contains Rc<[Expr]> which is not Send/Sync.
+/// Same rationale as Env — single-threaded in WASM, deep_clone for thread spawns.
+unsafe impl Send for LoonFn {}
+unsafe impl Sync for LoonFn {}
+
+impl LoonFn {
+    /// Deep clone for thread safety — creates independent copies of all Rc's.
+    pub fn deep_clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            clauses: self.clauses.clone(), // Rc<[Expr]> bump is fine, AST is immutable
+            captured_env: self.captured_env.as_ref().map(|e| e.deep_clone()),
+        }
+    }
 }
 
 impl fmt::Debug for LoonFn {
@@ -59,6 +76,8 @@ pub enum Value {
     ChannelTx(ChannelId),
     ChannelRx(ChannelId),
     Future(Box<Value>),
+    /// Async slot — result of a spawned thread, awaitable via Condvar.
+    AsyncSlot(Arc<(Mutex<Option<Value>>, Condvar)>),
     Unit,
 }
 
@@ -147,6 +166,7 @@ impl fmt::Display for Value {
             Value::ChannelTx(id) => write!(f, "<channel-tx {id}>"),
             Value::ChannelRx(id) => write!(f, "<channel-rx {id}>"),
             Value::Future(inner) => write!(f, "<future {inner}>"),
+            Value::AsyncSlot(_) => write!(f, "<async-slot>"),
             Value::Unit => write!(f, "()"),
         }
     }
@@ -175,6 +195,7 @@ impl PartialEq for Value {
             (Value::ChannelTx(a), Value::ChannelTx(b)) => a == b,
             (Value::ChannelRx(a), Value::ChannelRx(b)) => a == b,
             (Value::Future(a), Value::Future(b)) => a == b,
+            (Value::AsyncSlot(_), Value::AsyncSlot(_)) => false,
             (Value::Unit, Value::Unit) => true,
             _ => false,
         }

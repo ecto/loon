@@ -4,6 +4,7 @@ pub mod codegen;
 pub mod effects;
 pub mod errors;
 pub mod fmt;
+pub mod intern;
 pub mod interp;
 pub mod macros;
 pub mod module;

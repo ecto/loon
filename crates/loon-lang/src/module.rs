@@ -115,8 +115,8 @@ impl ModuleCache {
                 e
             };
             for (name, val) in env.globals() {
-                if builtin_env.get(name).is_none() {
-                    values.insert(name.clone(), val.clone());
+                if builtin_env.get(&name).is_none() {
+                    values.insert(name, val);
                 }
             }
         }
