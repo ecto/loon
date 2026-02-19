@@ -47,6 +47,65 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Pre-render a route to static HTML (for SSR/SSG)
+    Render {
+        file: PathBuf,
+        /// The route path to render (e.g. "/guide/basics")
+        #[arg(long)]
+        route: String,
+    },
+    /// Add a dependency to pkg.loon
+    Add {
+        /// Package source (e.g. github.com/cam/json)
+        source: String,
+        /// Version constraint (e.g. ^1.2)
+        #[arg(short, long)]
+        version: Option<String>,
+        /// Effects to grant (e.g. Net,IO)
+        #[arg(short, long)]
+        grant: Option<String>,
+    },
+    /// Remove a dependency from pkg.loon
+    Remove {
+        /// Package source to remove
+        source: String,
+    },
+    /// Update dependencies
+    Update {
+        /// Specific package to update (all if omitted)
+        source: Option<String>,
+    },
+    /// Show why a dependency is included
+    Why {
+        /// Package source to trace
+        source: String,
+    },
+    /// Audit dependencies for security
+    Audit {
+        /// Show capability grants for all deps
+        #[arg(long)]
+        capabilities: bool,
+    },
+    /// Manage the package cache
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
+    },
+    /// Search for packages
+    Search {
+        /// Search query
+        query: String,
+    },
+    /// Initialize pkg.loon in the current directory
+    Init,
+}
+
+#[derive(Subcommand)]
+enum CacheAction {
+    /// Remove unused cached packages
+    Clean,
+    /// Pre-download all dependencies for offline work
+    Warm,
 }
 
 fn main() {
@@ -69,6 +128,25 @@ fn main() {
         Command::Fmt {
             ref files, check, ..
         } => fmt_files(files, check),
+        Command::Render {
+            ref file,
+            ref route,
+        } => render_route(file, route),
+        Command::Add {
+            ref source,
+            ref version,
+            ref grant,
+        } => pkg_add(source, version.as_deref(), grant.as_deref()),
+        Command::Remove { ref source } => pkg_remove(source),
+        Command::Update { ref source } => pkg_update(source.as_deref()),
+        Command::Why { ref source } => pkg_why(source),
+        Command::Audit { capabilities } => pkg_audit(capabilities),
+        Command::Cache { ref action } => match action {
+            CacheAction::Clean => pkg_cache_clean(),
+            CacheAction::Warm => pkg_cache_warm(),
+        },
+        Command::Search { ref query } => pkg_search(query),
+        Command::Init => pkg_init(),
     }
 }
 
@@ -373,13 +451,16 @@ fn new_project(name: &str) {
         std::process::exit(1);
     });
 
-    let toml_content = format!(
-        r#"[package]
-name = "{name}"
-version = "0.1.0"
+    let pkg_content = format!(
+        r#"{{
+  :name "{name}"
+  :version "0.1.0"
+
+  :deps {{}}
+}}
 "#
     );
-    std::fs::write(dir.join("loon.toml"), toml_content).unwrap();
+    std::fs::write(dir.join("pkg.loon"), pkg_content).unwrap();
 
     let main_content = r#"[fn main []
   [println "hello, world!"]]
@@ -388,7 +469,7 @@ version = "0.1.0"
 
     println!("  {} {name}/", "Created".green().bold());
     println!("  {} {name}/src/main.loon", "Created".green().bold());
-    println!("  {} {name}/loon.toml", "Created".green().bold());
+    println!("  {} {name}/pkg.loon", "Created".green().bold());
     println!("  {} cd {name} && loon run src/main.loon", "->".dimmed());
 }
 
@@ -876,6 +957,351 @@ fn explain_error(code: &str) {
     }
 
     println!("  {}", "Tutorial complete!".green().bold());
+}
+
+fn render_route(path: &PathBuf, route: &str) {
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{} reading {}: {e}", "error".red().bold(), path.display());
+            std::process::exit(1);
+        }
+    };
+
+    let filename = path.to_string_lossy().to_string();
+    let base_dir = path.parent().unwrap_or(std::path::Path::new("."));
+
+    let exprs = match loon_lang::parser::parse(&source) {
+        Ok(exprs) => exprs,
+        Err(e) => {
+            loon_lang::errors::report_error(&filename, &source, &e.message, e.span);
+            std::process::exit(1);
+        }
+    };
+
+    // Set up the HTML bridge with the target route
+    let bridge = loon_lang::interp::html_bridge::HtmlBridge::new(route.to_string());
+    bridge.install();
+
+    // Run the program — this will call main() which mounts the app
+    match loon_lang::interp::eval_program_with_base_dir(&exprs, Some(base_dir)) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("{}: {e}", "error".red().bold());
+            std::process::exit(1);
+        }
+    }
+
+    // Serialize the result as JSON
+    let html = bridge.to_html();
+    let title = bridge.title();
+
+    let html_json = serde_json::json!({
+        "html": html,
+        "title": title,
+    });
+    println!("{}", html_json);
+}
+
+// --- Package manager commands ---
+
+fn pkg_init() {
+    let cwd = std::env::current_dir().unwrap_or_else(|e| {
+        eprintln!("{}: {e}", "error".red().bold());
+        std::process::exit(1);
+    });
+    let pkg_path = cwd.join("pkg.loon");
+    if pkg_path.exists() {
+        eprintln!("{}: pkg.loon already exists", "error".red().bold());
+        std::process::exit(1);
+    }
+
+    let dir_name = cwd
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "my-project".to_string());
+
+    let content = format!(
+        r#"{{
+  :name "{dir_name}"
+  :version "0.1.0"
+
+  :deps {{}}
+}}
+"#
+    );
+    std::fs::write(&pkg_path, content).unwrap_or_else(|e| {
+        eprintln!("{} writing pkg.loon: {e}", "error".red().bold());
+        std::process::exit(1);
+    });
+    println!("  {} pkg.loon", "Created".green().bold());
+}
+
+fn pkg_add(source: &str, version: Option<&str>, grant: Option<&str>) {
+    let cwd = std::env::current_dir().unwrap_or_else(|e| {
+        eprintln!("{}: {e}", "error".red().bold());
+        std::process::exit(1);
+    });
+    let pkg_path = cwd.join("pkg.loon");
+    if !pkg_path.exists() {
+        eprintln!(
+            "{}: no pkg.loon found (run {} first)",
+            "error".red().bold(),
+            "loon init".bold()
+        );
+        std::process::exit(1);
+    }
+
+    let mut content = std::fs::read_to_string(&pkg_path).unwrap_or_else(|e| {
+        eprintln!("{}: {e}", "error".red().bold());
+        std::process::exit(1);
+    });
+
+    // Build the dep value
+    let dep_value = match (version, grant) {
+        (Some(v), None) => format!("\"{}\"", v),
+        (version, Some(g)) => {
+            let effects: Vec<&str> = g.split(',').map(|s| s.trim()).collect();
+            let grant_vec = effects
+                .iter()
+                .map(|e| format!("\"{}\"", e))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let ver = version.unwrap_or("*");
+            format!("{{:version \"{}\" :grant #[{}]}}", ver, grant_vec)
+        }
+        (None, None) => "\"*\"".to_string(),
+    };
+
+    // Insert before the closing `}` of :deps
+    // Simple approach: find `:deps {` and its matching `}`
+    if let Some(deps_start) = content.find(":deps {") {
+        let after_deps = &content[deps_start..];
+        if let Some(brace_offset) = find_matching_brace(after_deps) {
+            let insert_pos = deps_start + brace_offset;
+            let entry = format!("\n    \"{}\" {}\n  ", source, dep_value);
+            content.insert_str(insert_pos, &entry);
+        }
+    } else {
+        // No :deps section — add one before the final `}`
+        if let Some(last_brace) = content.rfind('}') {
+            let entry = format!(
+                "\n  :deps {{\n    \"{}\" {}\n  }}",
+                source, dep_value
+            );
+            content.insert_str(last_brace, &entry);
+        }
+    }
+
+    std::fs::write(&pkg_path, content).unwrap_or_else(|e| {
+        eprintln!("{}: {e}", "error".red().bold());
+        std::process::exit(1);
+    });
+    println!("  {} {source}", "Added".green().bold());
+}
+
+/// Find the position of the closing `}` matching the first `{` in s.
+fn find_matching_brace(s: &str) -> Option<usize> {
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    for (i, ch) in s.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        if ch == '{' {
+            depth += 1;
+        } else if ch == '}' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+    }
+    None
+}
+
+fn pkg_remove(source: &str) {
+    let cwd = std::env::current_dir().unwrap_or_else(|e| {
+        eprintln!("{}: {e}", "error".red().bold());
+        std::process::exit(1);
+    });
+    let pkg_path = cwd.join("pkg.loon");
+    if !pkg_path.exists() {
+        eprintln!("{}: no pkg.loon found", "error".red().bold());
+        std::process::exit(1);
+    }
+
+    let content = std::fs::read_to_string(&pkg_path).unwrap_or_else(|e| {
+        eprintln!("{}: {e}", "error".red().bold());
+        std::process::exit(1);
+    });
+
+    // Parse, remove the dep, rewrite
+    let base_dir = cwd.clone();
+    match loon_lang::pkg::Manifest::parse(&content, &base_dir) {
+        Ok(manifest) => {
+            if !manifest.deps.contains_key(source) {
+                eprintln!("{}: '{}' not found in deps", "error".red().bold(), source);
+                std::process::exit(1);
+            }
+        }
+        Err(e) => {
+            eprintln!("{}: {e}", "error".red().bold());
+            std::process::exit(1);
+        }
+    }
+
+    // Remove the line(s) containing the source from the deps section
+    // Simple approach: find the dep entry and remove it
+    let needle = format!("\"{}\"", source);
+    let lines: Vec<&str> = content.lines().collect();
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].contains(&needle) && lines[i].trim().starts_with('"') {
+            // Check if value is on the same line or spans multiple lines
+            if lines[i].contains('{') && !lines[i].contains('}') {
+                // Multi-line map value — skip until closing }
+                i += 1;
+                while i < lines.len() && !lines[i].contains('}') {
+                    i += 1;
+                }
+                i += 1; // skip the closing }
+            } else {
+                i += 1; // skip single line
+            }
+            continue;
+        }
+        result.push(lines[i]);
+        i += 1;
+    }
+
+    std::fs::write(&pkg_path, result.join("\n") + "\n").unwrap_or_else(|e| {
+        eprintln!("{}: {e}", "error".red().bold());
+        std::process::exit(1);
+    });
+    println!("  {} {source}", "Removed".green().bold());
+}
+
+fn pkg_update(source: Option<&str>) {
+    match source {
+        Some(s) => println!("  {} updating {s} (Phase 3)", "TODO".yellow().bold()),
+        None => println!("  {} updating all deps (Phase 3)", "TODO".yellow().bold()),
+    }
+}
+
+fn pkg_why(source: &str) {
+    let cwd = std::env::current_dir().unwrap_or_else(|e| {
+        eprintln!("{}: {e}", "error".red().bold());
+        std::process::exit(1);
+    });
+
+    match loon_lang::pkg::Manifest::load(&cwd) {
+        Ok(Some(manifest)) => {
+            if manifest.deps.contains_key(source) {
+                println!("  {} -> {source} (direct dependency)", manifest.name);
+            } else {
+                println!("  {source} is not a dependency");
+            }
+        }
+        Ok(None) => {
+            eprintln!("{}: no pkg.loon found", "error".red().bold());
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("{}: {e}", "error".red().bold());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn pkg_audit(capabilities: bool) {
+    let cwd = std::env::current_dir().unwrap_or_else(|e| {
+        eprintln!("{}: {e}", "error".red().bold());
+        std::process::exit(1);
+    });
+
+    match loon_lang::pkg::Manifest::load(&cwd) {
+        Ok(Some(manifest)) => {
+            if capabilities {
+                println!("  {}", "Dependency Capabilities".bold());
+                println!("  {}", "─".repeat(50));
+                if manifest.deps.is_empty() {
+                    println!("  No dependencies");
+                    return;
+                }
+                for (name, dep) in &manifest.deps {
+                    let grants = if dep.grant.is_empty() {
+                        "pure (no effects)".dimmed().to_string()
+                    } else {
+                        dep.grant.join(", ")
+                    };
+                    println!("  {} -> {}", name, grants);
+                }
+            } else {
+                println!(
+                    "  {} vulnerability auditing (Phase 3)",
+                    "TODO".yellow().bold()
+                );
+            }
+        }
+        Ok(None) => {
+            eprintln!("{}: no pkg.loon found", "error".red().bold());
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("{}: {e}", "error".red().bold());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn pkg_cache_clean() {
+    let cache_dir = loon_lang::pkg::fetch::cache_dir();
+    if cache_dir.exists() {
+        match std::fs::remove_dir_all(&cache_dir) {
+            Ok(_) => println!("  {} cache at {}", "Cleaned".green().bold(), cache_dir.display()),
+            Err(e) => eprintln!("{}: {e}", "error".red().bold()),
+        }
+    } else {
+        println!("  Cache directory does not exist");
+    }
+}
+
+fn pkg_cache_warm() {
+    println!(
+        "  {} cache warming (Phase 2)",
+        "TODO".yellow().bold()
+    );
+}
+
+fn pkg_search(query: &str) {
+    let index = loon_lang::pkg::index::builtin_index();
+    let results = index.search(query);
+    if results.is_empty() {
+        println!("  No packages found for '{query}'");
+        println!(
+            "  {} the built-in index is empty — packages will be added as the ecosystem grows",
+            "note:".dimmed()
+        );
+    } else {
+        for entry in results {
+            println!("  {} — {}", entry.source.bold(), entry.description);
+        }
+    }
 }
 
 #[cfg(test)]

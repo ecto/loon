@@ -1,6 +1,7 @@
 pub mod builtins;
 pub mod dom_builtins;
 mod env;
+pub mod html_bridge;
 pub mod net;
 mod value;
 
@@ -409,9 +410,12 @@ pub fn eval_program_with_base_dir(exprs: &[Expr], base_dir: Option<&Path>) -> IR
             let _ = eval(expr, &mut env);
         }
     }
-    let mut cache = ModuleCache::new();
     let default_base = std::path::PathBuf::from(".");
     let base = base_dir.unwrap_or(&default_base);
+    let mut cache = match crate::pkg::Manifest::load(base) {
+        Ok(Some(manifest)) => ModuleCache::with_manifest(manifest),
+        _ => ModuleCache::new(),
+    };
     // Initial sync so spawned threads/callbacks can access the global env
     sync_global_env(&env);
 
