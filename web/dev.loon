@@ -60,7 +60,19 @@
 
 [fn initial-copy! []
   [IO.mkdir dist-dir]
-  [copy-tree public-dir dist-dir]
+  ; Copy public/ to dist/, but skip index.html to preserve pre-rendered SSR pages
+  [let entries [IO.list-dir public-dir]]
+  [each [fn [name]
+    [let src [str public-dir "/" name]]
+    [let dst [str dist-dir "/" name]]
+    [if [= name "index.html"]
+      []
+      [do
+        [let children [IO.list-dir src]]
+        [if [empty? children]
+          [IO.copy-file src dst]
+          [copy-tree src dst]]]]]
+    entries]
   [copy-tree src-dir [str dist-dir "/src"]]]
 
 ; --- SSE injection ---
@@ -124,12 +136,16 @@
   [if [= path "/__dev/sse"]
     [Net.sse-open id]
     [do
-      ; SPA fallback: paths without a dot (no file extension) serve index.html
-      [let file-path [if [= path "/"]
-        [str dist-dir "/index.html"]
-        [if [contains? path "."]
-          [str dist-dir path]
-          [str dist-dir "/index.html"]]]]
+      ; SPA fallback: paths without a dot serve route-specific index.html if it exists,
+      ; otherwise fall back to root index.html
+      [let file-path [if [contains? path "."]
+        [str dist-dir path]
+        [do
+          [let route-dir [str dist-dir path]]
+          [let dir-entries [IO.list-dir route-dir]]
+          [if [contains? dir-entries "index.html"]
+            [str route-dir "/index.html"]
+            [str dist-dir "/index.html"]]]]]
       ; HTML files need SSE injection, so read as text
       [if [ends-with? file-path ".html"]
         [do

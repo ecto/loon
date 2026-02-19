@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::interp::{Env, Value};
+use crate::pkg::manifest::Manifest;
 
 /// Module loading state for cycle detection
 #[derive(Debug, Clone)]
@@ -19,13 +20,32 @@ pub struct ModuleExports {
 /// Cache for loaded modules
 pub struct ModuleCache {
     modules: HashMap<PathBuf, ModuleState>,
+    /// The root manifest (pkg.loon), if present.
+    manifest: Option<Manifest>,
 }
 
 impl ModuleCache {
     pub fn new() -> Self {
         Self {
             modules: HashMap::new(),
+            manifest: None,
         }
+    }
+
+    /// Create a module cache with a manifest for package-aware resolution.
+    pub fn with_manifest(manifest: Manifest) -> Self {
+        Self {
+            modules: HashMap::new(),
+            manifest: Some(manifest),
+        }
+    }
+
+    pub fn manifest(&self) -> Option<&Manifest> {
+        self.manifest.as_ref()
+    }
+
+    pub fn set_manifest(&mut self, manifest: Manifest) {
+        self.manifest = Some(manifest);
     }
 
     /// Resolve a dotted module path to a file path.
@@ -39,13 +59,42 @@ impl ModuleCache {
         path.with_extension("loon")
     }
 
+    /// Check if a module path corresponds to a package dependency.
+    /// Returns the resolved file path if it's a path dep.
+    fn resolve_dep_path(&self, module_path: &str) -> Option<PathBuf> {
+        let manifest = self.manifest.as_ref()?;
+        let dep = manifest.deps.get(module_path)?;
+        let dep_dir = dep.path.as_ref()?;
+
+        // Look for src/main.loon, src/lib.loon, or <name>.loon in the dep dir
+        let candidates = [
+            dep_dir.join("src").join("lib.loon"),
+            dep_dir.join("src").join("main.loon"),
+            dep_dir.join(format!("{module_path}.loon")),
+        ];
+
+        for c in &candidates {
+            if c.exists() {
+                return Some(c.clone());
+            }
+        }
+
+        None
+    }
+
     /// Load a module, returning its exports. Uses cache and detects cycles.
     pub fn load_module(
         &mut self,
         module_path: &str,
         base_dir: &Path,
     ) -> Result<ModuleExports, String> {
-        let file_path = Self::resolve_path(module_path, base_dir);
+        // Check if this is a package dependency first
+        let file_path = if let Some(dep_path) = self.resolve_dep_path(module_path) {
+            dep_path
+        } else {
+            Self::resolve_path(module_path, base_dir)
+        };
+
         let canonical = file_path
             .canonicalize()
             .unwrap_or_else(|_| file_path.clone());

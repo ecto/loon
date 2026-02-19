@@ -7,6 +7,7 @@ edition.workspace = true
 logos = "0.15"
 codespan-reporting = "0.11"
 wasm-encoder = "0.227"
+dirs-next = "2"
 
 [dev-dependencies]
 insta = "1"

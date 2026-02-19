@@ -9,6 +9,7 @@ pub mod interp;
 pub mod macros;
 pub mod module;
 pub mod parser;
+pub mod pkg;
 pub mod prelude;
 pub mod syntax;
 pub mod types;

@@ -124,7 +124,85 @@ const bundleHash = createHash('md5').update(bundle).digest('hex').slice(0, 8);
 writeFileSync(join(DIST, 'bundle.hash'), bundleHash);
 console.log(`  bundle.loon (${(bundle.length / 1024).toFixed(1)}KB, hash: ${bundleHash})`);
 
-// Step 5: Type-check Loon sources (skip without Rust toolchain)
+// Step 5: Pre-render all pages to static HTML (SSG)
+if (!noRust) {
+  console.log('Pre-rendering pages...');
+
+  const bundlePath = join(DIST, 'bundle.loon');
+  const templateHtml = readFileSync(join(PUBLIC, 'index.html'), 'utf-8');
+
+  const routes = [
+    '/',
+    '/tour',
+    '/play',
+    '/blog',
+    '/roadmap',
+    '/install',
+    '/examples',
+    '/guide/basics',
+    '/guide/functions',
+    '/guide/types',
+    '/guide/collections',
+    '/guide/pattern-matching',
+    '/guide/ownership',
+    '/guide/effects',
+    '/guide/modules',
+    '/guide/macros',
+    '/guide/testing',
+    '/guide/errors',
+    '/ref/syntax',
+    '/ref/builtins',
+    '/ref/cli',
+    '/ref/effects',
+    '/ref/lsp',
+    '/ref/formatter',
+    '/concepts/invisible-types',
+    '/concepts/effects',
+    '/concepts/ownership',
+    '/concepts/from-rust',
+    '/concepts/from-js',
+    '/concepts/from-clojure',
+  ];
+
+  let rendered = 0;
+  let failed = 0;
+
+  for (const route of routes) {
+    try {
+      const result = execSync(
+        `cargo run -p loon-cli --quiet -- render ${bundlePath} --route "${route}"`,
+        { cwd: ROOT, encoding: 'utf-8', timeout: 30000 }
+      );
+      const { html, title } = JSON.parse(result);
+
+      // Inject pre-rendered HTML into template
+      let page = templateHtml.replace(
+        /<div id="app">[\s\S]*?<\/div>/,
+        `<div id="app" data-ssr="1">${html}</div>`
+      );
+
+      // Update title if the bridge captured one
+      if (title) {
+        page = page.replace(/<title>.*?<\/title>/, `<title>${title}</title>`);
+      }
+
+      // Write to dist/{route}/index.html
+      const outDir = route === '/' ? DIST : join(DIST, route.slice(1));
+      mkdirSync(outDir, { recursive: true });
+      writeFileSync(join(outDir, 'index.html'), page);
+      rendered++;
+    } catch (e) {
+      console.warn(`  warning: failed to render ${route}:`, (e as Error).message?.split('\n')[0]);
+      failed++;
+    }
+  }
+
+  console.log(`  ${rendered} pages pre-rendered${failed ? `, ${failed} failed` : ''}`);
+} else {
+  console.log('Skipping pre-rendering (--no-rust)...');
+}
+
+// Step 6: Type-check Loon sources (skip without Rust toolchain)
 // (reuses bootOrder from top-level constant)
 if (!noRust) {
   console.log('Type-checking Loon sources...');
@@ -147,27 +225,18 @@ if (!noRust) {
       { stdio: 'inherit', cwd: ROOT }
     );
   } catch {
-    console.error('Type-check failed! Fix errors above before deploying.');
-    process.exit(1);
+    if (isDev) {
+      console.warn('Type-check failed (non-fatal in dev mode)');
+    } else {
+      console.error('Type-check failed! Fix errors above before deploying.');
+      process.exit(1);
+    }
   }
 
   // Clean up temp file
   try { unlinkSync(tmpFile); } catch {}
 } else {
   console.log('Skipping type-check (--no-rust)...');
-}
-
-// Step 6: Generate pre-rendered HTML (if not dev mode)
-if (!isDev) {
-  console.log('Pre-rendering pages...');
-  // Run native interpreter to generate static HTML for each page
-  // This gives us SEO-friendly content that hydrates when WASM loads
-  try {
-    // TODO: Implement pre-rendering with native interpreter
-    console.log('  (pre-rendering not yet implemented, shipping SPA-only)');
-  } catch (e) {
-    console.warn('Pre-rendering failed, continuing with SPA-only:', e);
-  }
 }
 
 console.log(`Build complete! Output in ${relative(process.cwd(), DIST)}`);
