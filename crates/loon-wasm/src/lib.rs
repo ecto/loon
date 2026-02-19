@@ -131,6 +131,82 @@ pub fn check_program(source: &str) -> Result<String, String> {
     }
 }
 
+/// Infer the type of the last named binding (fn/let) in the source.
+#[wasm_bindgen]
+pub fn infer_type(source: &str) -> Result<String, String> {
+    let exprs = loon_lang::parser::parse(source).map_err(|e| format!("{e}"))?;
+    let mut checker = loon_lang::check::Checker::new();
+    let errors = checker.check_program(&exprs);
+
+    // Find the last top-level fn/let name from the expanded program
+    let name = find_last_binding(&checker.expanded_program)
+        .ok_or_else(|| "no named binding found".to_string())?;
+
+    // Check for type errors first
+    if !errors.is_empty() {
+        let msgs: Vec<String> = errors.iter().map(|e| format!("{e}")).collect();
+        return Err(msgs.join("\n"));
+    }
+
+    let scheme = checker.env.get(&name)
+        .ok_or_else(|| format!("binding '{name}' not found in type environment"))?;
+
+    Ok(loon_lang::types::pretty_scheme(scheme, &checker.subst))
+}
+
+fn find_last_binding(exprs: &[loon_lang::ast::Expr]) -> Option<String> {
+    use loon_lang::ast::ExprKind;
+    let mut last = None;
+    for expr in exprs {
+        if let ExprKind::List(items) = &expr.kind {
+            if let Some(head) = items.first() {
+                if let ExprKind::Symbol(s) = &head.kind {
+                    match s.as_str() {
+                        "fn" if items.len() >= 3 => {
+                            if let ExprKind::Symbol(name) = &items[1].kind {
+                                last = Some(name.clone());
+                            }
+                        }
+                        "let" if items.len() >= 3 => {
+                            // Handle [let mut name val] and [let name val]
+                            let binding_idx = if matches!(&items[1].kind, ExprKind::Symbol(s) if s == "mut") { 2 } else { 1 };
+                            if binding_idx < items.len() {
+                                if let ExprKind::Symbol(name) = &items[binding_idx].kind {
+                                    if name != "_" {
+                                        last = Some(name.clone());
+                                    }
+                                }
+                            }
+                        }
+                        "pub" if items.len() >= 3 => {
+                            // [pub fn name ...] or [pub let name ...]
+                            if let ExprKind::Symbol(kind) = &items[1].kind {
+                                match kind.as_str() {
+                                    "fn" if items.len() >= 4 => {
+                                        if let ExprKind::Symbol(name) = &items[2].kind {
+                                            last = Some(name.clone());
+                                        }
+                                    }
+                                    "let" if items.len() >= 4 => {
+                                        if let ExprKind::Symbol(name) = &items[2].kind {
+                                            if name != "_" {
+                                                last = Some(name.clone());
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    last
+}
+
 /// Reset the Loon runtime state (callbacks, etc.) for hot reload.
 #[wasm_bindgen]
 pub fn reset_runtime() {

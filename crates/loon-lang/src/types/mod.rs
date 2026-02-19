@@ -623,6 +623,157 @@ fn free_vars_ty(ty: &Type, out: &mut BTreeSet<TypeVar>) {
     }
 }
 
+/// Collect free type variables in left-to-right appearance order (for pretty printing).
+fn free_vars_ordered(ty: &Type, out: &mut Vec<TypeVar>) {
+    match ty {
+        Type::Var(v) => {
+            if !out.contains(v) {
+                out.push(*v);
+            }
+        }
+        Type::Fn(params, ret) => {
+            for p in params {
+                free_vars_ordered(p, out);
+            }
+            free_vars_ordered(ret, out);
+        }
+        Type::Con(_, args) => {
+            for a in args {
+                free_vars_ordered(a, out);
+            }
+        }
+        Type::Tuple(items) => {
+            for t in items {
+                free_vars_ordered(t, out);
+            }
+        }
+        Type::Effect(inner, _) => free_vars_ordered(inner, out),
+        Type::Row(fields, rest) => {
+            for (_, t) in fields {
+                free_vars_ordered(t, out);
+            }
+            if let Some(r) = rest {
+                if !out.contains(r) {
+                    out.push(*r);
+                }
+            }
+        }
+        Type::Record(inner) => free_vars_ordered(inner, out),
+        _ => {}
+    }
+}
+
+/// Pretty-print a type using nice variable names, with parenthesization for nested fn types.
+fn pretty_type(ty: &Type, var_names: &HashMap<TypeVar, String>, nested: bool) -> String {
+    match ty {
+        Type::Int => "Num".to_string(),
+        Type::Float => "Float".to_string(),
+        Type::Bool => "Bool".to_string(),
+        Type::Str => "String".to_string(),
+        Type::Keyword => "Keyword".to_string(),
+        Type::Unit => "()".to_string(),
+        Type::Var(v) => var_names.get(v).cloned().unwrap_or_else(|| format!("t{}", v.0)),
+        Type::Fn(params, ret) => {
+            let mut parts = Vec::new();
+            for p in params {
+                // Parenthesize fn-typed params
+                parts.push(pretty_type(p, var_names, true));
+            }
+            parts.push(pretty_type(ret, var_names, false));
+            let s = parts.join(" \u{2192} ");
+            if nested {
+                format!("({s})")
+            } else {
+                s
+            }
+        }
+        Type::Con(name, args) if args.is_empty() => name.clone(),
+        Type::Con(name, args) => {
+            let arg_strs: Vec<String> = args.iter().map(|a| pretty_type(a, var_names, true)).collect();
+            format!("{} {}", name, arg_strs.join(" "))
+        }
+        Type::Tuple(items) => {
+            let inner: Vec<String> = items.iter().map(|t| pretty_type(t, var_names, false)).collect();
+            format!("({})", inner.join(", "))
+        }
+        Type::Record(row) => pretty_type(row, var_names, false),
+        Type::Row(fields, rest) => {
+            let mut parts: Vec<String> = fields
+                .iter()
+                .map(|(n, t)| format!("{}: {}", n, pretty_type(t, var_names, false)))
+                .collect();
+            if let Some(r) = rest {
+                parts.push(var_names.get(r).cloned().unwrap_or_else(|| format!("t{}", r.0)));
+            }
+            format!("{{{}}}", parts.join(", "))
+        }
+        Type::Effect(inner, effects) => {
+            format!("{} / {{{}}}", pretty_type(inner, var_names, false), effects.0.iter().cloned().collect::<Vec<_>>().join(" "))
+        }
+    }
+}
+
+/// Pretty-print a type scheme with nice variable names (a, b, c, ...).
+///
+/// - Resolves all type vars through substitution
+/// - Maps remaining free vars to letters
+/// - Adds `∀a b.` prefix for polymorphic types
+/// - Adds `Add a =>` prefix for constrained vars
+/// - Parenthesizes fn types when nested as arguments
+pub fn pretty_scheme(scheme: &Scheme, subst: &Subst) -> String {
+    let resolved = subst.resolve(&scheme.ty);
+
+    // Collect free vars in appearance order
+    let mut ordered_vars = Vec::new();
+    free_vars_ordered(&resolved, &mut ordered_vars);
+
+    // Only keep vars that are quantified in this scheme
+    let quantified: BTreeSet<TypeVar> = scheme.vars.iter().copied().collect();
+    ordered_vars.retain(|v| quantified.contains(v));
+
+    // Map to nice letter names
+    let mut var_names: HashMap<TypeVar, String> = HashMap::new();
+    let mut letter = b'a';
+    for v in &ordered_vars {
+        if !var_names.contains_key(v) {
+            var_names.insert(*v, String::from(letter as char));
+            if letter < b'z' {
+                letter += 1;
+            }
+        }
+    }
+
+    let mut result = String::new();
+
+    // Collect constraint strings
+    let mut constraint_parts = Vec::new();
+    for (tv, bounds) in &scheme.bounds {
+        if let Some(name) = var_names.get(tv) {
+            for b in bounds {
+                constraint_parts.push(format!("{} {}", b.trait_name, name));
+            }
+        }
+    }
+
+    // ∀ prefix for polymorphic vars (only if there are quantified free vars)
+    if !ordered_vars.is_empty() {
+        let var_list: Vec<&String> = ordered_vars.iter().filter_map(|v| var_names.get(v)).collect();
+        if !var_list.is_empty() {
+            result.push_str(&format!("\u{2200}{}", var_list.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ")));
+            result.push_str(". ");
+        }
+    }
+
+    // Constraint prefix
+    if !constraint_parts.is_empty() {
+        result.push_str(&constraint_parts.join(", "));
+        result.push_str(" => ");
+    }
+
+    result.push_str(&pretty_type(&resolved, &var_names, false));
+    result
+}
+
 /// Generalize a type into a scheme by quantifying over variables not free in the env.
 pub fn generalize(env: &TypeEnv, subst: &Subst, ty: &Type) -> Scheme {
     let resolved = subst.resolve(ty);
@@ -750,5 +901,45 @@ mod tests {
         let name_strs: Vec<&str> = names.iter().map(|(n, _)| n.as_str()).collect();
         assert!(name_strs.contains(&"a"));
         assert!(name_strs.contains(&"b"));
+    }
+
+    fn infer_and_pretty(source: &str, name: &str) -> String {
+        let exprs = crate::parser::parse(source).unwrap();
+        let mut checker = crate::check::Checker::new();
+        let errors = checker.check_program(&exprs);
+        assert!(errors.is_empty(), "type errors: {:?}", errors);
+        let scheme = checker.env.get(name).expect("binding not found");
+        pretty_scheme(scheme, &checker.subst)
+    }
+
+    #[test]
+    fn pretty_scheme_id() {
+        let result = infer_and_pretty("[fn id [x] x]", "id");
+        assert_eq!(result, "\u{2200}a. a \u{2192} a");
+    }
+
+    #[test]
+    fn pretty_scheme_apply() {
+        let result = infer_and_pretty("[fn apply [f x] [f x]]", "apply");
+        assert_eq!(result, "\u{2200}a b. (a \u{2192} b) \u{2192} a \u{2192} b");
+    }
+
+    #[test]
+    fn pretty_scheme_add() {
+        let result = infer_and_pretty("[fn add [a b] [+ a b]]", "add");
+        assert_eq!(result, "\u{2200}a. Add a => a \u{2192} a \u{2192} a");
+    }
+
+    #[test]
+    fn pretty_scheme_double() {
+        let result = infer_and_pretty("[fn double [x] [+ x x]]", "double");
+        assert_eq!(result, "\u{2200}a. Add a => a \u{2192} a");
+    }
+
+    #[test]
+    fn pretty_scheme_concrete() {
+        // Monomorphic: no ∀ prefix
+        let result = infer_and_pretty("[fn not2 [x] [not x]]", "not2");
+        assert_eq!(result, "Bool \u{2192} Bool");
     }
 }
