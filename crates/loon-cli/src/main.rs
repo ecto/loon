@@ -86,6 +86,10 @@ enum Command {
         #[arg(long)]
         capabilities: bool,
     },
+    /// Verify cache integrity against lockfile hashes
+    Verify,
+    /// Package for publishing (create tarball + hash)
+    Publish,
     /// Manage the package cache
     Cache {
         #[command(subcommand)]
@@ -141,6 +145,8 @@ fn main() {
         Command::Update { ref source } => pkg_update(source.as_deref()),
         Command::Why { ref source } => pkg_why(source),
         Command::Audit { capabilities } => pkg_audit(capabilities),
+        Command::Verify => pkg_verify(),
+        Command::Publish => pkg_publish(),
         Command::Cache { ref action } => match action {
             CacheAction::Clean => pkg_cache_clean(),
             CacheAction::Warm => pkg_cache_warm(),
@@ -1005,6 +1011,239 @@ fn render_route(path: &PathBuf, route: &str) {
 
 // --- Package manager commands ---
 
+fn pkg_verify() {
+    let cwd = std::env::current_dir().unwrap_or_else(|e| {
+        eprintln!("{}: {e}", "error".red().bold());
+        std::process::exit(1);
+    });
+
+    let lockfile = match loon_lang::pkg::lockfile::Lockfile::load(&cwd) {
+        Ok(Some(lf)) => lf,
+        Ok(None) => {
+            eprintln!(
+                "{}: no lock.loon found (run {} first)",
+                "error".red().bold(),
+                "loon cache warm".bold()
+            );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("{}: {e}", "error".red().bold());
+            std::process::exit(1);
+        }
+    };
+
+    if lockfile.packages.is_empty() {
+        println!("  No packages to verify");
+        return;
+    }
+
+    let mut ok_count = 0;
+    let mut fail_count = 0;
+    let mut missing_count = 0;
+
+    for pkg in &lockfile.packages {
+        if pkg.hash.is_empty() {
+            continue;
+        }
+        let short_hash = &pkg.hash[..12.min(pkg.hash.len())];
+
+        if let Some(cached) = loon_lang::pkg::fetch::cached_path(&pkg.hash) {
+            match loon_lang::pkg::fetch::normalize_and_hash(&cached) {
+                Ok(actual) => {
+                    if actual == pkg.hash {
+                        println!(
+                            "  {} {} ({})",
+                            "✓".green(),
+                            pkg.source,
+                            short_hash.dimmed()
+                        );
+                        ok_count += 1;
+                    } else {
+                        let actual_short = &actual[..12.min(actual.len())];
+                        println!(
+                            "  {} {} — hash mismatch! expected {}, got {}",
+                            "✗".red().bold(),
+                            pkg.source,
+                            short_hash,
+                            actual_short
+                        );
+                        fail_count += 1;
+                    }
+                }
+                Err(e) => {
+                    println!(
+                        "  {} {} — error hashing: {e}",
+                        "✗".red().bold(),
+                        pkg.source
+                    );
+                    fail_count += 1;
+                }
+            }
+        } else {
+            println!(
+                "  {} {} — not in cache (run {})",
+                "?".yellow(),
+                pkg.source,
+                "loon cache warm".bold()
+            );
+            missing_count += 1;
+        }
+    }
+
+    println!();
+    if fail_count == 0 && missing_count == 0 {
+        println!(
+            "  {} {ok_count} package(s) verified",
+            "✓".green().bold()
+        );
+    } else {
+        if fail_count > 0 {
+            println!(
+                "  {} {fail_count} hash mismatch(es) — run {}",
+                "✗".red().bold(),
+                "loon cache clean && loon cache warm".bold()
+            );
+        }
+        if missing_count > 0 {
+            println!(
+                "  {} {missing_count} not cached — run {}",
+                "?".yellow().bold(),
+                "loon cache warm".bold()
+            );
+        }
+        std::process::exit(1);
+    }
+}
+
+fn pkg_publish() {
+    let cwd = std::env::current_dir().unwrap_or_else(|e| {
+        eprintln!("{}: {e}", "error".red().bold());
+        std::process::exit(1);
+    });
+
+    let manifest = match loon_lang::pkg::Manifest::load(&cwd) {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            eprintln!("{}: no pkg.loon found", "error".red().bold());
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("{}: {e}", "error".red().bold());
+            std::process::exit(1);
+        }
+    };
+
+    // Validate required fields
+    if manifest.name.is_empty() {
+        eprintln!(
+            "{}: pkg.loon must have a :name field",
+            "error".red().bold()
+        );
+        std::process::exit(1);
+    }
+    if manifest.version.is_empty() {
+        eprintln!(
+            "{}: pkg.loon must have a :version field",
+            "error".red().bold()
+        );
+        std::process::exit(1);
+    }
+
+    // Check that src/lib.loon exists
+    let lib_path = cwd.join("src").join("lib.loon");
+    if !lib_path.exists() {
+        eprintln!(
+            "{}: src/lib.loon not found (required for publishing)",
+            "error".red().bold()
+        );
+        std::process::exit(1);
+    }
+
+    // Hash the source tree
+    let hash = match loon_lang::pkg::fetch::normalize_and_hash(&cwd) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("{}: hashing source tree: {e}", "error".red().bold());
+            std::process::exit(1);
+        }
+    };
+
+    // Create target directory and tarball
+    let target_dir = cwd.join("target");
+    let _ = std::fs::create_dir_all(&target_dir);
+    let archive_name = format!("{}-{}.tar.gz", manifest.name, manifest.version);
+    let archive_path = target_dir.join(&archive_name);
+
+    let size = match loon_lang::pkg::fetch::create_tarball(&cwd, &archive_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{}: creating tarball: {e}", "error".red().bold());
+            std::process::exit(1);
+        }
+    };
+
+    // Count files
+    let file_count = count_publishable_files(&cwd);
+
+    let size_str = if size < 1024 {
+        format!("{size} B")
+    } else if size < 1024 * 1024 {
+        format!("{:.1} KB", size as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
+    };
+
+    println!();
+    println!(
+        "  {}: {} v{}",
+        "Package".bold(),
+        manifest.name,
+        manifest.version
+    );
+    println!("  {}: src/lib.loon", "Entry".bold());
+    println!(
+        "  {}: {}",
+        "Hash".bold(),
+        &hash[..32.min(hash.len())]
+    );
+    println!(
+        "  {}: {} ({} files)",
+        "Size".bold(),
+        size_str,
+        file_count
+    );
+    println!(
+        "  {}: {}",
+        "Archive".bold(),
+        archive_path.display()
+    );
+    println!();
+    println!(
+        "  Ready to publish. {}",
+        "(Registry upload coming soon)".dimmed()
+    );
+}
+
+fn count_publishable_files(dir: &std::path::Path) -> usize {
+    let mut count = 0;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == ".git" || name == "target" || name == "lock.loon" {
+                continue;
+            }
+            if path.is_dir() {
+                count += count_publishable_files(&path);
+            } else {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
 fn pkg_init() {
     let cwd = std::env::current_dir().unwrap_or_else(|e| {
         eprintln!("{}: {e}", "error".red().bold());
@@ -1412,30 +1651,8 @@ fn pkg_audit(capabilities: bool) {
         std::process::exit(1);
     });
 
-    match loon_lang::pkg::Manifest::load(&cwd) {
-        Ok(Some(manifest)) => {
-            if capabilities {
-                println!("  {}", "Dependency Capabilities".bold());
-                println!("  {}", "─".repeat(50));
-                if manifest.deps.is_empty() {
-                    println!("  No dependencies");
-                    return;
-                }
-                for (name, dep) in &manifest.deps {
-                    let grants = if dep.grant.is_empty() {
-                        "pure (no effects)".dimmed().to_string()
-                    } else {
-                        dep.grant.join(", ")
-                    };
-                    println!("  {} -> {}", name, grants);
-                }
-            } else {
-                println!(
-                    "  {} vulnerability auditing (Phase 3)",
-                    "TODO".yellow().bold()
-                );
-            }
-        }
+    let manifest = match loon_lang::pkg::Manifest::load(&cwd) {
+        Ok(Some(m)) => m,
         Ok(None) => {
             eprintln!("{}: no pkg.loon found", "error".red().bold());
             std::process::exit(1);
@@ -1444,7 +1661,188 @@ fn pkg_audit(capabilities: bool) {
             eprintln!("{}: {e}", "error".red().bold());
             std::process::exit(1);
         }
+    };
+
+    if capabilities {
+        // Legacy --capabilities mode: just show grants per dep
+        println!("  {}", "Dependency Capabilities".bold());
+        println!("  {}", "─".repeat(50));
+        if manifest.deps.is_empty() {
+            println!("  No dependencies");
+            return;
+        }
+        for (name, dep) in &manifest.deps {
+            let grants = if dep.grant.is_empty() {
+                "pure (no effects)".dimmed().to_string()
+            } else {
+                dep.grant.join(", ")
+            };
+            println!("  {} -> {}", name, grants);
+        }
+        return;
     }
+
+    // Full audit mode
+    let mut has_issues = false;
+
+    println!("  {}", "Dependency Audit".bold());
+    println!("  {}", "─".repeat(50));
+
+    // 1. Capabilities
+    println!("\n  {}", "Capabilities".bold());
+    if manifest.deps.is_empty() {
+        println!("    No dependencies");
+    } else {
+        for (name, dep) in &manifest.deps {
+            let grants = if dep.grant.is_empty() {
+                "pure (no effects)".dimmed().to_string()
+            } else {
+                dep.grant.join(", ")
+            };
+            println!("    {} -> {}", name, grants);
+        }
+    }
+
+    // 2. Transitive grants
+    println!("\n  {}", "Transitive Grants".bold());
+    let lockfile = loon_lang::pkg::lockfile::Lockfile::load(&cwd)
+        .ok()
+        .flatten();
+
+    if let Some(ref lf) = lockfile {
+        let violations =
+            loon_lang::pkg::capability::check_transitive_grants(lf, &manifest);
+        if violations.is_empty() {
+            println!(
+                "    {} All transitive dependencies have required grants",
+                "✓".green()
+            );
+        } else {
+            has_issues = true;
+            for v in &violations {
+                println!(
+                    "    {} {} needs '{}' (via {})",
+                    "✗".red(),
+                    v.source,
+                    v.effect_needed,
+                    v.parent
+                );
+                println!("      {}", v.reason.dimmed());
+            }
+        }
+    } else {
+        println!(
+            "    {} No lockfile found — run {}",
+            "?".yellow(),
+            "loon cache warm".bold()
+        );
+    }
+
+    // 3. Cache integrity
+    println!("\n  {}", "Cache Integrity".bold());
+    if let Some(ref lf) = lockfile {
+        let (verified, mismatches) = verify_lockfile_hashes(lf);
+        if mismatches.is_empty() {
+            println!(
+                "    {} {}/{} packages verified",
+                "✓".green(),
+                verified,
+                verified
+            );
+        } else {
+            has_issues = true;
+            for (source, expected, actual) in &mismatches {
+                println!(
+                    "    {} {} — hash mismatch! expected {}, got {}",
+                    "✗".red(),
+                    source,
+                    &expected[..12.min(expected.len())],
+                    &actual[..12.min(actual.len())]
+                );
+            }
+            let ok = verified - mismatches.len();
+            println!(
+                "    {}/{} OK, {} mismatched",
+                ok,
+                verified,
+                mismatches.len().to_string().red().bold()
+            );
+        }
+    } else {
+        println!("    {} No lockfile found", "?".yellow());
+    }
+
+    // 4. Stale lockfile check
+    println!("\n  {}", "Lockfile".bold());
+    if let Some(ref lf) = lockfile {
+        let mut unlocked = Vec::new();
+        for (source, dep) in &manifest.deps {
+            if dep.is_path_dep() {
+                continue;
+            }
+            if lf.get(source).is_none() {
+                unlocked.push(source.as_str());
+            }
+        }
+        if unlocked.is_empty() {
+            println!("    {} All dependencies locked", "✓".green());
+        } else {
+            has_issues = true;
+            for s in &unlocked {
+                println!("    {} {} not in lockfile", "✗".red(), s);
+            }
+            println!(
+                "    Run {} to lock all dependencies",
+                "loon cache warm".bold()
+            );
+        }
+    } else if manifest.deps.values().any(|d| !d.is_path_dep()) {
+        has_issues = true;
+        println!(
+            "    {} No lockfile — run {}",
+            "✗".red(),
+            "loon cache warm".bold()
+        );
+    } else {
+        println!("    {} No remote dependencies to lock", "✓".green());
+    }
+
+    if has_issues {
+        std::process::exit(1);
+    }
+}
+
+/// Verify all locked packages in the lockfile. Returns (total_verified, mismatches).
+fn verify_lockfile_hashes(
+    lockfile: &loon_lang::pkg::lockfile::Lockfile,
+) -> (usize, Vec<(String, String, String)>) {
+    let mut verified = 0;
+    let mut mismatches = Vec::new();
+
+    for pkg in &lockfile.packages {
+        if pkg.hash.is_empty() {
+            continue;
+        }
+        if let Some(cached) = loon_lang::pkg::fetch::cached_path(&pkg.hash) {
+            verified += 1;
+            match loon_lang::pkg::fetch::normalize_and_hash(&cached) {
+                Ok(actual) => {
+                    if actual != pkg.hash {
+                        mismatches.push((pkg.source.clone(), pkg.hash.clone(), actual));
+                    }
+                }
+                Err(_) => {
+                    mismatches.push((
+                        pkg.source.clone(),
+                        pkg.hash.clone(),
+                        "<hash error>".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+
+    (verified, mismatches)
 }
 
 fn pkg_cache_clean() {

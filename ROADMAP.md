@@ -175,12 +175,16 @@ What's left to finish v0.2 properly.
 - [x] `loon search` searches across builtin + custom indices
 - [x] `loon why` traces transitive dependency chains
 
+### Phase 4 — Publish, verify, audit, capability propagation (done)
+- [x] `loon publish` — create tarball + hash for publishing
+- [x] `loon verify` — verify cache integrity against lockfile hashes
+- [x] `loon audit` — full audit: capabilities, transitive grants, cache integrity, lockfile status
+- [x] Hash verification on load (verify cache integrity in `resolve_remote_dep`)
+- [x] Capability propagation (transitive grant checking)
+
 ### Future
-- [ ] `loon publish` — publish to registry
-- [ ] Vulnerability auditing (`loon audit`)
-- [ ] Hash verification on load (verify cache integrity)
+- [ ] Registry upload (server-side `loon publish` target)
 - [ ] IPFS distribution
-- [ ] Capability propagation (transitive grant checking)
 
 ---
 

@@ -120,6 +120,21 @@ impl ModuleCache {
         if let Some(ref lockfile) = self.lockfile {
             if let Some(locked) = lockfile.get(module_path) {
                 if let Some(cached) = crate::pkg::fetch::cached_path(&locked.hash) {
+                    // Verify cache integrity: re-hash and compare against lockfile
+                    #[cfg(feature = "pkg-fetch")]
+                    {
+                        let actual_hash = crate::pkg::fetch::normalize_and_hash(&cached)
+                            .map_err(|e| format!("cache integrity check for '{}': {e}", module_path))?;
+                        if actual_hash != locked.hash {
+                            return Err(format!(
+                                "cache integrity check failed for '{}': expected hash {}, got {}. \
+                                 Run `loon cache clean && loon cache warm` to re-fetch.",
+                                module_path, &locked.hash[..12.min(locked.hash.len())],
+                                &actual_hash[..12.min(actual_hash.len())]
+                            ));
+                        }
+                    }
+
                     // Find entry point within the cached directory
                     let (_, subpath) = crate::pkg::fetch::parse_source_name(module_path);
                     let dep_dir = if let Some(sub) = subpath.or(locked.subpath.as_deref()) {

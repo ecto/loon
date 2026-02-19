@@ -250,6 +250,64 @@ mod inner {
         Ok(())
     }
 
+    /// Create a `.tar.gz` archive of a directory, excluding `.git/`, `target/`, and `lock.loon`.
+    pub fn create_tarball(dir: &Path, output_path: &Path) -> Result<u64, String> {
+        let file = std::fs::File::create(output_path)
+            .map_err(|e| format!("creating {}: {e}", output_path.display()))?;
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+
+        let mut paths = Vec::new();
+        collect_publishable_files(dir, dir, &mut paths)?;
+        paths.sort();
+
+        for rel in &paths {
+            let full = dir.join(rel);
+            archive
+                .append_path_with_name(&full, rel)
+                .map_err(|e| format!("adding {}: {e}", rel))?;
+        }
+
+        let encoder = archive
+            .into_inner()
+            .map_err(|e| format!("finalizing archive: {e}"))?;
+        encoder
+            .finish()
+            .map_err(|e| format!("compressing archive: {e}"))?;
+
+        let metadata = std::fs::metadata(output_path)
+            .map_err(|e| format!("reading archive size: {e}"))?;
+        Ok(metadata.len())
+    }
+
+    fn collect_publishable_files(
+        base: &Path,
+        current: &Path,
+        out: &mut Vec<String>,
+    ) -> Result<(), String> {
+        let entries = std::fs::read_dir(current)
+            .map_err(|e| format!("reading dir {}: {e}", current.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("dir entry: {e}"))?;
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == ".git" || name == "target" || name == "lock.loon" {
+                continue;
+            }
+            if path.is_dir() {
+                collect_publishable_files(base, &path, out)?;
+            } else {
+                let rel = path
+                    .strip_prefix(base)
+                    .map_err(|e| format!("strip prefix: {e}"))?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.push(rel);
+            }
+        }
+        Ok(())
+    }
+
     /// High-level orchestrator: check cache → fetch → hash → store → return (path, hash).
     pub fn fetch_and_cache(
         source: &str,
@@ -315,7 +373,9 @@ mod inner {
 }
 
 #[cfg(feature = "pkg-fetch")]
-pub use inner::{fetch_and_cache, fetch_git, fetch_url, normalize_and_hash, store_in_cache};
+pub use inner::{
+    create_tarball, fetch_and_cache, fetch_git, fetch_url, normalize_and_hash, store_in_cache,
+};
 
 #[cfg(not(feature = "pkg-fetch"))]
 pub fn fetch_git(_url: &str, _rev: Option<&str>) -> Result<PathBuf, String> {
