@@ -154,7 +154,11 @@ This means the hash is content-addressed — identical source trees always produ
 
 ### Cache Integrity
 
-If a cached package's files are tampered with, re-verification will detect the mismatch. The `:hash` field in `lock.loon` serves as the source of truth.
+Cached packages are verified against lockfile hashes at multiple points:
+
+- **On load**: When a dependency is loaded at runtime, the cache directory is re-hashed and compared against the lockfile hash. Mismatches produce an error with remediation instructions.
+- **`loon verify`**: Manually re-hash all cached packages and report any mismatches.
+- **`loon audit`**: Includes cache integrity as part of its full audit report.
 
 ## Entry Points
 
@@ -175,6 +179,8 @@ Dependencies are pure by default — they cannot perform side effects unless exp
 
 The `:grant` field lists which effects the dependency is allowed to perform. A dependency without `:grant` (or with an empty grant) can only use pure computation.
 
+Grants are scoped to the direct dependency only — transitive deps do not inherit grants from their parents. Each transitive dep must declare its own needs, and the parent must grant them. Use `loon audit` to detect violations.
+
 Use `loon audit --capabilities` to see what each dependency requires:
 
 ```bash
@@ -183,6 +189,27 @@ $ loon audit --capabilities
   ──────────────────────────────────────────────────
   github.com/cam/json -> pure (no effects)
   github.com/cam/http -> Net, IO
+```
+
+Use `loon audit` (without flags) for a full audit including transitive grant checking:
+
+```bash
+$ loon audit
+  Dependency Audit
+  ──────────────────────────────────────────────────
+
+  Capabilities
+    github.com/cam/json -> pure (no effects)
+    github.com/cam/http -> Net, IO
+
+  Transitive Grants
+    ✓ All transitive dependencies have required grants
+
+  Cache Integrity
+    ✓ 2/2 packages verified
+
+  Lockfile
+    ✓ All dependencies locked
 ```
 
 ## CLI Commands
@@ -213,11 +240,19 @@ loon cache warm           # Resolve and fetch all deps (including transitive)
 loon cache clean          # Remove all cached packages
 ```
 
+### Security & Verification
+
+```bash
+loon audit                # Full audit: capabilities, transitive grants, cache, lockfile
+loon audit --capabilities # Show effect grants for all deps
+loon verify               # Re-hash all cached packages against lockfile
+loon publish              # Validate manifest, hash source tree, create tarball
+```
+
 ### Discovery
 
 ```bash
 loon search <query>       # Search the package index (builtin + custom)
-loon audit --capabilities # Show effect grants for all deps
 ```
 
 ## Transitive Dependencies
@@ -309,6 +344,28 @@ my-package/
     main.loon           # Executable entry point (optional)
     utils.loon          # Internal module
 ```
+
+## Publishing
+
+Prepare a package for publishing with `loon publish`:
+
+```bash
+$ loon publish
+
+  Package: my-lib v1.0.0
+  Entry:   src/lib.loon
+  Hash:    7f3a2b1c4d5e6f...
+  Size:    2.3 KB (4 files)
+  Archive: target/my-lib-1.0.0.tar.gz
+
+  Ready to publish. (Registry upload coming soon)
+```
+
+Requirements:
+- `pkg.loon` must have `:name` and `:version` fields
+- `src/lib.loon` must exist (library entry point)
+
+The command creates a `.tar.gz` archive in `target/`, excluding `.git/`, `target/`, and `lock.loon`. The BLAKE3 hash of the source tree is printed for verification.
 
 ## Feature Gating
 
