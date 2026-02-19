@@ -413,7 +413,10 @@ pub fn eval_program_with_base_dir(exprs: &[Expr], base_dir: Option<&Path>) -> IR
     let default_base = std::path::PathBuf::from(".");
     let base = base_dir.unwrap_or(&default_base);
     let mut cache = match crate::pkg::Manifest::load(base) {
-        Ok(Some(manifest)) => ModuleCache::with_manifest(manifest),
+        Ok(Some(manifest)) => {
+            let lockfile = crate::pkg::lockfile::Lockfile::load(base).ok().flatten();
+            ModuleCache::with_manifest_and_lockfile(manifest, lockfile, base.to_path_buf())
+        }
         _ => ModuleCache::new(),
     };
     // Initial sync so spawned threads/callbacks can access the global env

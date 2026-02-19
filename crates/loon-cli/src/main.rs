@@ -1093,11 +1093,80 @@ fn pkg_add(source: &str, version: Option<&str>, grant: Option<&str>) {
         }
     }
 
-    std::fs::write(&pkg_path, content).unwrap_or_else(|e| {
+    std::fs::write(&pkg_path, &content).unwrap_or_else(|e| {
         eprintln!("{}: {e}", "error".red().bold());
         std::process::exit(1);
     });
     println!("  {} {source}", "Added".green().bold());
+
+    // If domain-qualified, fetch and write lockfile
+    if loon_lang::pkg::fetch::is_domain_qualified(source) {
+        // Re-parse manifest to get the dependency
+        match loon_lang::pkg::Manifest::parse(&content, &cwd) {
+            Ok(manifest) => {
+                if let Some(dep) = manifest.deps.get(source) {
+                    print!("  {} {source}...", "Fetching".cyan().bold());
+                    match loon_lang::pkg::fetch::fetch_and_cache(source, dep) {
+                        Ok((_path, hash)) => {
+                            println!(" {}", "done".green());
+                            // Load or create lockfile and upsert
+                            let mut lockfile = loon_lang::pkg::lockfile::Lockfile::load(&cwd)
+                                .ok()
+                                .flatten()
+                                .unwrap_or_default();
+
+                            let (_, subpath) = loon_lang::pkg::fetch::parse_source_name(source);
+                            let version = dep
+                                .version
+                                .as_ref()
+                                .map(|v| v.minimum())
+                                .unwrap_or_else(|| loon_lang::pkg::Version::new(0, 0, 0));
+
+                            let url = dep
+                                .git
+                                .clone()
+                                .or_else(|| dep.url.clone())
+                                .unwrap_or_else(|| loon_lang::pkg::fetch::git_url_from_source(source));
+
+                            lockfile.upsert(loon_lang::pkg::lockfile::LockedPackage {
+                                source: source.to_string(),
+                                version,
+                                url,
+                                subpath: subpath.map(|s| s.to_string()),
+                                hash: hash.clone(),
+                                deps: vec![],
+                            });
+
+                            if let Err(e) = lockfile.write(&cwd) {
+                                eprintln!("{}: writing lock.loon: {e}", "error".red().bold());
+                            } else {
+                                println!(
+                                    "  {} lock.loon (hash: {})",
+                                    "Updated".green().bold(),
+                                    &hash[..12.min(hash.len())]
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            println!();
+                            eprintln!(
+                                "  {} fetching {source}: {e}",
+                                "warning".yellow().bold()
+                            );
+                            eprintln!(
+                                "  {} dependency added but not fetched — run {} to retry",
+                                "note:".dimmed(),
+                                "loon cache warm".bold()
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("{}: re-parsing pkg.loon: {e}", "error".red().bold());
+            }
+        }
+    }
 }
 
 /// Find the position of the closing `}` matching the first `{` in s.
@@ -1282,10 +1351,103 @@ fn pkg_cache_clean() {
 }
 
 fn pkg_cache_warm() {
+    let cwd = std::env::current_dir().unwrap_or_else(|e| {
+        eprintln!("{}: {e}", "error".red().bold());
+        std::process::exit(1);
+    });
+
+    let manifest = match loon_lang::pkg::Manifest::load(&cwd) {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            eprintln!("{}: no pkg.loon found", "error".red().bold());
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("{}: {e}", "error".red().bold());
+            std::process::exit(1);
+        }
+    };
+
+    if manifest.deps.is_empty() {
+        println!("  No dependencies to fetch");
+        return;
+    }
+
+    let mut lockfile = loon_lang::pkg::lockfile::Lockfile::load(&cwd)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let mut fetched = 0;
+    let mut cached = 0;
+    let mut failed = 0;
+    let mut lockfile_changed = false;
+
+    for (source, dep) in &manifest.deps {
+        if dep.is_path_dep() {
+            continue;
+        }
+        if !loon_lang::pkg::fetch::is_domain_qualified(source) {
+            continue;
+        }
+
+        // Check if already cached via lockfile hash
+        if let Some(locked) = lockfile.get(source) {
+            if loon_lang::pkg::fetch::cached_path(&locked.hash).is_some() {
+                cached += 1;
+                println!("  {} {source} (cached)", "OK".green());
+                continue;
+            }
+        }
+
+        print!("  {} {source}...", "Fetching".cyan().bold());
+        match loon_lang::pkg::fetch::fetch_and_cache(source, dep) {
+            Ok((_, hash)) => {
+                println!(" {}", "done".green());
+                let (_, subpath) = loon_lang::pkg::fetch::parse_source_name(source);
+                let version = dep
+                    .version
+                    .as_ref()
+                    .map(|v| v.minimum())
+                    .unwrap_or_else(|| loon_lang::pkg::Version::new(0, 0, 0));
+                let url = dep
+                    .git
+                    .clone()
+                    .or_else(|| dep.url.clone())
+                    .unwrap_or_else(|| loon_lang::pkg::fetch::git_url_from_source(source));
+
+                lockfile.upsert(loon_lang::pkg::lockfile::LockedPackage {
+                    source: source.clone(),
+                    version,
+                    url,
+                    subpath: subpath.map(|s| s.to_string()),
+                    hash,
+                    deps: vec![],
+                });
+                lockfile_changed = true;
+                fetched += 1;
+            }
+            Err(e) => {
+                println!();
+                eprintln!("  {} {source}: {e}", "FAIL".red().bold());
+                failed += 1;
+            }
+        }
+    }
+
+    if lockfile_changed {
+        if let Err(e) = lockfile.write(&cwd) {
+            eprintln!("{}: writing lock.loon: {e}", "error".red().bold());
+        }
+    }
+
+    println!();
     println!(
-        "  {} cache warming (Phase 2)",
-        "TODO".yellow().bold()
+        "  {} fetched, {} cached, {} failed",
+        fetched, cached, failed
     );
+    if failed > 0 {
+        std::process::exit(1);
+    }
 }
 
 fn pkg_search(query: &str) {

@@ -3,11 +3,19 @@ name = "loon-lang"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+pkg-fetch = ["dep:blake3", "dep:ureq", "dep:flate2", "dep:tar"]
+
 [dependencies]
 logos = "0.15"
 codespan-reporting = "0.11"
 wasm-encoder = "0.227"
 dirs-next = "2"
+blake3 = { version = "1", optional = true }
+ureq = { version = "2", optional = true }
+flate2 = { version = "1", optional = true }
+tar = { version = "0.4", optional = true }
 
 [dev-dependencies]
 insta = "1"

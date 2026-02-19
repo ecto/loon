@@ -8,7 +8,7 @@ name = "loon"
 path = "src/main.rs"
 
 [dependencies]
-loon-lang = { path = "../loon-lang" }
+loon-lang = { path = "../loon-lang", features = ["pkg-fetch"] }
 clap = { version = "4", features = ["derive"] }
 rustyline = "15"
 serde = { version = "1", features = ["derive"] }

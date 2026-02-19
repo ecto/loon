@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::interp::{Env, Value};
+use crate::pkg::lockfile::Lockfile;
 use crate::pkg::manifest::Manifest;
 
 /// Module loading state for cycle detection
@@ -22,6 +23,11 @@ pub struct ModuleCache {
     modules: HashMap<PathBuf, ModuleState>,
     /// The root manifest (pkg.loon), if present.
     manifest: Option<Manifest>,
+    /// The lockfile (lock.loon), if present.
+    lockfile: Option<Lockfile>,
+    /// The project root directory (where pkg.loon lives).
+    #[allow(dead_code)]
+    project_root: Option<PathBuf>,
 }
 
 impl ModuleCache {
@@ -29,6 +35,8 @@ impl ModuleCache {
         Self {
             modules: HashMap::new(),
             manifest: None,
+            lockfile: None,
+            project_root: None,
         }
     }
 
@@ -37,6 +45,22 @@ impl ModuleCache {
         Self {
             modules: HashMap::new(),
             manifest: Some(manifest),
+            lockfile: None,
+            project_root: None,
+        }
+    }
+
+    /// Create a module cache with manifest, lockfile, and project root.
+    pub fn with_manifest_and_lockfile(
+        manifest: Manifest,
+        lockfile: Option<Lockfile>,
+        project_root: PathBuf,
+    ) -> Self {
+        Self {
+            modules: HashMap::new(),
+            manifest: Some(manifest),
+            lockfile,
+            project_root: Some(project_root),
         }
     }
 
@@ -46,6 +70,10 @@ impl ModuleCache {
 
     pub fn set_manifest(&mut self, manifest: Manifest) {
         self.manifest = Some(manifest);
+    }
+
+    pub fn lockfile(&self) -> Option<&Lockfile> {
+        self.lockfile.as_ref()
     }
 
     /// Resolve a dotted module path to a file path.
@@ -82,15 +110,87 @@ impl ModuleCache {
         None
     }
 
+    /// Resolve a domain-qualified dependency to a cached file path.
+    /// Checks lockfile → cache → fetch (if pkg-fetch feature enabled).
+    #[allow(unused_variables)]
+    fn resolve_remote_dep(&self, module_path: &str) -> Result<Option<PathBuf>, String> {
+        let manifest = self.manifest.as_ref();
+
+        // Check lockfile first — if we have a hash, look in cache
+        if let Some(ref lockfile) = self.lockfile {
+            if let Some(locked) = lockfile.get(module_path) {
+                if let Some(cached) = crate::pkg::fetch::cached_path(&locked.hash) {
+                    // Find entry point within the cached directory
+                    let (_, subpath) = crate::pkg::fetch::parse_source_name(module_path);
+                    let dep_dir = if let Some(sub) = subpath.or(locked.subpath.as_deref()) {
+                        cached.join(sub)
+                    } else {
+                        cached
+                    };
+                    return crate::pkg::fetch::find_entry_point(&dep_dir)
+                        .ok_or_else(|| {
+                            format!(
+                                "no entry point (src/lib.loon or src/main.loon) in cached package '{module_path}'"
+                            )
+                        })
+                        .map(Some);
+                }
+            }
+        }
+
+        // Check manifest deps — if it's a known dep, try to fetch
+        #[cfg(feature = "pkg-fetch")]
+        if let Some(manifest) = manifest {
+            if let Some(dep) = manifest.deps.get(module_path) {
+                if !dep.is_path_dep() {
+                    let (cached_path, _hash) =
+                        crate::pkg::fetch::fetch_and_cache(module_path, dep)?;
+                    let (_, subpath) = crate::pkg::fetch::parse_source_name(module_path);
+                    let dep_dir = if let Some(sub) = subpath {
+                        cached_path.join(sub)
+                    } else {
+                        cached_path
+                    };
+                    return crate::pkg::fetch::find_entry_point(&dep_dir)
+                        .ok_or_else(|| {
+                            format!(
+                                "no entry point (src/lib.loon or src/main.loon) in fetched package '{module_path}'"
+                            )
+                        })
+                        .map(Some);
+                }
+            }
+        }
+
+        #[cfg(not(feature = "pkg-fetch"))]
+        if let Some(manifest) = manifest {
+            if let Some(dep) = manifest.deps.get(module_path) {
+                if !dep.is_path_dep() {
+                    return Err(format!(
+                        "remote dependency '{module_path}' requires the 'pkg-fetch' feature (use loon-cli)"
+                    ));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Load a module, returning its exports. Uses cache and detects cycles.
     pub fn load_module(
         &mut self,
         module_path: &str,
         base_dir: &Path,
     ) -> Result<ModuleExports, String> {
-        // Check if this is a package dependency first
+        // Check if this is a package dependency first (path deps)
         let file_path = if let Some(dep_path) = self.resolve_dep_path(module_path) {
             dep_path
+        } else if crate::pkg::fetch::is_domain_qualified(module_path) {
+            // Try remote dep resolution
+            match self.resolve_remote_dep(module_path)? {
+                Some(path) => path,
+                None => Self::resolve_path(module_path, base_dir),
+            }
         } else {
             Self::resolve_path(module_path, base_dir)
         };
