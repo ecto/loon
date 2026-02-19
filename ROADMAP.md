@@ -132,35 +132,53 @@ What's left to finish v0.2 properly.
 ## v0.7 — Macros
 
 ### Hygienic macros
-- [ ] `[defmacro when [condition & body] ...]`
-- [ ] Quasiquoting: `` ` ``, `~`, `~@`
-- [ ] Hygiene by default (Scheme-style)
-
-### Type-aware macros
-- [ ] `[defmacro+ ...]` runs after type inference
-- [ ] Access to type environment: `[type-fields T]`
-- [ ] `[#[derive Debug Serialize Eq]]` implemented in Loon
+- [x] `[macro when [condition & body] ...]`
+- [x] Quasiquoting: `` ` ``, `~`, `~@`
+- [x] Hygiene by default (Scheme-style)
+- [x] `[macro+ ...]` type-aware macros (run after type inference)
 
 ---
 
-## v0.8 — Pond (package manager)
+## v0.8 — Package Manager
 
-### Core
-- [ ] `loon.toml` dependency resolution
-- [ ] Content-addressed packages (hash = identity)
-- [ ] `pond add`, `pond verify`, `pond audit`
-- [ ] `loon.lock` for reproducible builds
+### Phase 1 — Manifest, CLI, local deps (done)
+- [x] `pkg.loon` manifest format (Loon data format, not TOML)
+- [x] `loon new`, `loon init` — project scaffolding
+- [x] `loon add`, `loon remove` — dependency management
+- [x] Path dependencies: `{:path "../my-lib"}`
+- [x] Version constraints: `^`, `~`, `>=`, `=`, `*`
+- [x] Capability grants: `:grant #["Net" "IO"]`
+- [x] `loon audit --capabilities` — report effect grants
+- [x] `loon why <source>` — dependency trace
+- [x] `loon search <query>` — search package index
+- [x] `loon cache clean` — clear cache
 
-### Distribution
-- [ ] Local file path dependencies
-- [ ] Git dependencies (pin to commit hash)
-- [ ] HTTP hosting
-- [ ] IPFS (fully decentralized)
+### Phase 2 — Git, URLs, cache, lockfile (done)
+- [x] Domain detection: `github.com/user/repo` recognized as remote
+- [x] Git fetch: `git clone --depth 1` to temp dir
+- [x] URL fetch: HTTP GET + tar.gz extraction (ureq + flate2 + tar)
+- [x] Archive URL derivation for GitHub, GitLab, Codeberg
+- [x] BLAKE3 content-addressed hashing
+- [x] Cache at `~/.loon/cache/blake3/<hash>/`
+- [x] `lock.loon` — lockfile in Loon data format
+- [x] `loon add` auto-fetches and locks domain-qualified deps
+- [x] `loon cache warm` — fetch all unfetched deps
+- [x] Feature-gated: `pkg-fetch` (CLI only, not WASM)
+- [x] Subpath support: `github.com/cam/std#http`
 
-### Security
-- [ ] Capability declarations in `loon.toml`
-- [ ] `[use dep :grant [:net :fs.read [...]]]`
-- [ ] `pond audit --capabilities`
+### Phase 3 — Resolution, registry, transitive deps (in progress)
+- [ ] Transitive dependency resolution (parse fetched pkg.loon, resolve recursively)
+- [ ] MVS (Minimum Version Selection) across the dep graph
+- [ ] `loon update` — re-resolve and update lock.loon
+- [ ] Package registry/index — fetchable index, `loon search` against real data
+- [ ] Custom indices via `:indices` in pkg.loon
+
+### Future
+- [ ] `loon publish` — publish to registry
+- [ ] Vulnerability auditing (`loon audit`)
+- [ ] Hash verification on load (verify cache integrity)
+- [ ] IPFS distribution
+- [ ] Capability propagation (transitive grant checking)
 
 ---
 
