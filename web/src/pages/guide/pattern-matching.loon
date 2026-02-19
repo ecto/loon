@@ -4,40 +4,60 @@
   [doc-page "Pattern Matching" "Match on values, destructure data, handle every case."
 
     [doc-section "Basic Match"
-      [doc-text [doc-code "match"] " compares a value against a series of patterns. "
-        "Each arm uses " [doc-code "=>"] " to separate the pattern from its result."]
+      [doc-text "Pattern matching is one of Loon's most powerful features, and once you get used to it, "
+        "you'll wonder how you ever lived without it. A " [doc-code "match"] " expression takes a value "
+        "and compares it against a series of patterns. Each arm uses " [doc-code "=>"]
+        " to separate the pattern from its result."]
       [code-block {} [str
         "[match status\n"
         "  \"ok\"    => [println \"success\"]\n"
         "  \"error\" => [println \"failed\"]\n"
-        "  _       => [println \"unknown\"]]"]]]
+        "  _       => [println \"unknown\"]]"]]
+      [doc-text "The patterns are tried in order, top to bottom. The first one that matches wins, "
+        "and its right-hand side runs. Think of it as a more structured, more powerful "
+        "alternative to long if/else chains."]]
 
     [doc-section "Literal Patterns"
-      [doc-text "Match on numbers, strings, booleans, and keywords directly."]
+      [doc-text "The simplest patterns are literal values. Numbers, strings, booleans, keywords "
+        "all work exactly as you'd expect."]
       [code-block {} [str
         "[match n\n"
         "  0 => \"zero\"\n"
         "  1 => \"one\"\n"
-        "  _ => \"many\"]"]]]
+        "  _ => \"many\"]"]]
+      [doc-text "This is cleaner than a chain of " [doc-code "if"] "/" [doc-code "else"]
+        " comparisons, and the compiler can check that your patterns are reasonable. "
+        "You get clarity and safety at the same time."]]
 
     [doc-section "Wildcard"
-      [doc-text "The underscore " [doc-code "_"] " matches anything. Use it as a catch-all "
-        "or to ignore values you don't need."]
+      [doc-text "The underscore " [doc-code "_"] " matches anything. You'll use it in two situations: "
+        "as a catch-all at the bottom of a match (like the default case in a switch statement), "
+        "and inside structured patterns to ignore parts you don't care about."]
       [code-block {} [str
         "[match pair\n"
         "  #[0 _] => \"starts with zero\"\n"
         "  #[_ 0] => \"ends with zero\"\n"
-        "  _      => \"neither\"]"]]]
+        "  _      => \"neither\"]"]]
+      [doc-text "In the first two arms, " [doc-code "_"] " ignores one element of the vector. "
+        "In the last arm, it ignores the entire value. Same symbol, flexible meaning."]]
 
     [doc-section "Variable Binding"
-      [doc-text "Names in patterns bind the matched value to a variable in that arm."]
+      [doc-text "When you put a name in a pattern instead of a literal or wildcard, "
+        "Loon binds the matched value to that name. This lets you extract data and "
+        "give it a meaningful label in one step."]
       [code-block {} [str
         "[match [Some 42]\n"
         "  [Some x] => [str \"got \" [str x]]\n"
-        "  None     => \"nothing\"]"]]]
+        "  None     => \"nothing\"]"]]
+      [doc-text "Here " [doc-code "x"] " gets bound to " [doc-code "42"] " when the match succeeds. "
+        "You can then use " [doc-code "x"] " in the arm's body like any other variable. "
+        "This is pattern matching at its most useful: deciding what shape data has "
+        "and pulling out the pieces you need, all in a single expression."]]
 
     [doc-section "Constructor Patterns"
-      [doc-text "Match on ADT constructors to extract their data."]
+      [doc-text "Where pattern matching truly shines is with algebraic data types. "
+        "When you define a type with multiple constructors, you can match on "
+        "each constructor and extract the data it carries."]
       [code-block {} [str
         "[type Shape\n"
         "  [Circle Float]\n"
@@ -48,29 +68,45 @@
         "  [match s\n"
         "    [Circle r]  => [str \"circle r=\" [str r]]\n"
         "    [Rect w h]  => [str \"rect \" [str w] \"x\" [str h]]\n"
-        "    Point       => \"point\"]]"]]]
+        "    Point       => \"point\"]]"]]
+      [doc-text "Each pattern mirrors the constructor it matches. " [doc-code "[Circle r]"]
+        " matches a Circle and binds its radius to " [doc-code "r"] ". "
+        [doc-code "[Rect w h]"] " matches a Rect and binds both dimensions. "
+        [doc-code "Point"] " has no data, so there's nothing to bind. "
+        "The code reads almost like a specification of what each shape means."]]
 
     [doc-section "Destructuring in Let"
-      [doc-text "Use patterns on the left side of " [doc-code "let"] " to destructure values."]
+      [doc-text "Patterns aren't limited to " [doc-code "match"] " expressions. You can use them "
+        "on the left side of " [doc-code "let"] " bindings to pull apart vectors and maps directly."]
       [code-block {} [str
         "[let #[a b c] #[1 2 3]]\n"
         "[println b]  ; 2\n"
         "\n"
         "[let {name age} {:name \"Ada\" :age 30}]\n"
-        "[println name]  ; \"Ada\""]]]
+        "[println name]  ; \"Ada\""]]
+      [doc-text "Vector destructuring binds by position. Map destructuring binds by key name, "
+        "so " [doc-code "{name age}"] " pulls out the " [doc-code ":name"] " and "
+        [doc-code ":age"] " keys automatically. This keeps your code concise without sacrificing readability."]]
 
     [doc-section "Destructuring in Function Params"
-      [doc-text "Function parameters support the same destructuring patterns."]
+      [doc-text "Function parameters support the same destructuring patterns as " [doc-code "let"]
+        ". This is especially nice when a function expects structured data, "
+        "because the signature itself documents what shape the input should have."]
       [code-block {} [str
         "[fn area [[Circle r]]\n"
         "  [* 3.14 r r]]\n"
         "\n"
         "[fn full-name [{first last}]\n"
-        "  [str first \" \" last]]"]]]
+        "  [str first \" \" last]]"]]
+      [doc-text "The " [doc-code "area"] " function only accepts Circles. "
+        "The " [doc-code "full-name"] " function expects a map with " [doc-code ":first"]
+        " and " [doc-code ":last"] " keys. Both are self-documenting and concise."]]
 
     [doc-section "Exhaustiveness"
-      [doc-text "The compiler checks that match expressions cover every possible case. "
-        "If you miss a variant, you get a compile error, not a runtime crash."]
+      [doc-text "Here's where Loon's pattern matching really pays for itself. "
+        "The compiler checks that every " [doc-code "match"] " expression covers all possible cases. "
+        "If you forget a variant, you get a compile error, not a runtime crash six months later "
+        "in production."]
       [code-block {} [str
         "[type Color Red Green Blue]\n"
         "\n"
@@ -78,6 +114,9 @@
         "[match c\n"
         "  Red   => \"red\"\n"
         "  Green => \"green\"]"]]
+      [doc-text "This becomes incredibly valuable during refactoring. When you add a new variant "
+        "to a type, the compiler immediately finds every match expression that needs updating. "
+        "You don't have to grep through your codebase hoping you found them all."]
       [doc-note "tip" "Exhaustiveness checking makes refactoring safe. Add a variant to a type and the compiler finds every match that needs updating."]]
 
     [doc-prev-next "Collections" "/guide/collections" "Ownership" "/guide/ownership"]]]

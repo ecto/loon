@@ -4,49 +4,52 @@
   [doc-page "Effects" "Algebraic effects for IO, errors, and more."
 
     [doc-section "The Problem"
-      [doc-text "How do you test code that performs IO? In most languages, you mock interfaces or inject dependencies. Loon uses algebraic effects instead — declare what your code needs, and let the caller decide how to provide it."]
-      [doc-note "info" "Effects decouple what a function does from how side effects are handled."]]
+      [doc-text "Here is the oldest question in programming: how do you test code that talks to databases, reads files, or makes network calls? Most languages answer this with mocking frameworks, dependency injection containers, and layers of interfaces. It works, but it is a lot of ceremony for a simple idea."]
+      [doc-text "Loon takes a different path. With algebraic effects, your functions declare what they need (\"I want to read from a store\") without specifying how it happens. The caller decides the implementation. This might sound abstract right now, but it is surprisingly intuitive once you see it in action."]]
 
     [doc-section "Declaring Effects"
-      [doc-text "An effect declares a set of operations without implementations."]
+      [doc-text "An effect is a set of operations with no implementation. Think of it like an interface or trait, but lighter weight."]
       [code-block {:label "LOON"} [str "[effect Store\n" "  [fn get [key]]\n" "  [fn set [key value]]]"]]
-      [doc-text "This is similar to an interface, but the implementation is provided at the call site via a handler."]]
+      [doc-text "This says \"there exists a thing called Store with " [doc-code "get"] " and " [doc-code "set"] " operations.\" It says nothing about where data lives, whether it is in memory, on disk, or across the network. That decision belongs to whoever handles the effect."]]
 
     [doc-section "Performing Effects"
-      [doc-text "Call effect operations like normal functions using dot syntax."]
-      [code-block {:label "LOON"} [str "[fn save-user [name]\n" "  [Store.set \"user\" name]\n" "  [Store.get \"user\"]]"]]]
+      [doc-text "Once you have declared an effect, you call its operations with dot syntax, just like calling a method. It looks completely natural."]
+      [code-block {:label "LOON"} [str "[fn save-user [name]\n" "  [Store.set \"user\" name]\n" "  [Store.get \"user\"]]"]]
+      [doc-text "Notice that " [doc-code "save-user"] " has no idea how " [doc-code "Store"] " works. It just uses it. This is the key insight: the function describes its intent, not its mechanism."]]
 
     [doc-section "Handling Effects"
-      [doc-text "A " [doc-code "handle"] " block intercepts effect operations and defines their behavior."]
+      [doc-text "A " [doc-code "handle"] " block intercepts effect operations and gives them concrete behavior. This is where you wire an effect to a real implementation."]
       [code-block {:label "LOON"} [str "[handle [save-user \"Alice\"]\n" "  [Store.get key] => [get db key]\n" "  [Store.set key val] => [insert db key val]]"]]
-      [doc-text "Each clause matches an effect operation and provides a concrete implementation."]]
+      [doc-text "Each clause pattern-matches on an effect operation and provides the actual logic. When " [doc-code "save-user"] " calls " [doc-code "Store.set"] ", execution jumps to the matching handler clause, runs it, and then returns the result back to the function."]]
 
     [doc-section "Resume"
-      [doc-text "Handlers receive an implicit " [doc-code "resume"] " to continue execution after handling an effect."]
+      [doc-text "Handlers receive an implicit " [doc-code "resume"] " function that continues execution right where the effect was performed. This is what makes effects fundamentally different from exceptions."]
       [code-block {:label "LOON"} [str "[handle [do [Store.set \"x\" 1] [Store.get \"x\"]]\n" "  [Store.get key] => [resume [get state key]]\n" "  [Store.set key val] => [resume None]]"]]
-      [doc-note "tip" "Calling resume is what makes effects different from exceptions — execution continues where it left off."]]
+      [doc-text "When an exception fires, the stack unwinds and you lose your place. When an effect fires and you call " [doc-code "resume"] ", you pick up exactly where you left off. The effectful function does not even know it was interrupted."]
+      [doc-note "tip" "Calling resume is what makes effects different from exceptions. Execution continues where it left off, as if the effect operation simply returned a value."]]
 
     [doc-section "Built-in Effects"
+      [doc-text "Loon ships with a few built-in effects for common operations so you do not have to define them yourself."]
       [doc-subsection "IO"
-        [doc-text "The " [doc-code "IO"] " effect covers printing, file reads, and network access."]
+        [doc-text "The " [doc-code "IO"] " effect covers the basics: printing, reading files, and network access. Anything that touches the outside world goes through " [doc-code "IO"] "."]
         [code-block {:label "LOON"} [str "[IO.println \"hello\"]\n" "[let contents [IO.read-file \"data.txt\"]]"]]]
       [doc-subsection "Fail"
-        [doc-text "The " [doc-code "Fail"] " effect represents recoverable errors."]
+        [doc-text "The " [doc-code "Fail"] " effect represents recoverable errors. Instead of throwing exceptions that might go uncaught, you perform a " [doc-code "Fail"] " effect that a handler somewhere up the call stack will deal with."]
         [code-block {:label "LOON"} [str "[fn divide [a b]\n" "  [if [= b 0]\n" "    [Fail.raise \"division by zero\"]\n" "    [/ a b]]]"]]]]
 
     [doc-section "The ? Operator"
-      [doc-text "The " [doc-code "?"] " operator unwraps a Result, performing Fail on Err."]
+      [doc-text "Unwrapping Results manually gets tedious fast. The " [doc-code "?"] " operator is syntactic sugar that unwraps a " [doc-code "Result"] " on success, and automatically performs " [doc-code "Fail"] " on error. It is Loon's version of the \"try\" pattern you may know from Rust or Swift."]
       [code-block {:label "LOON"} [str "[fn load-config [path]\n" "  [let text [IO.read-file path]?]\n" "  [parse-json text]?]"]]
-      [doc-note "info" "The ? operator is sugar for matching on Result and raising Fail on Err."]]
+      [doc-text "Without " [doc-code "?"] ", you would need to match on each Result and handle the error case explicitly. With it, the happy path reads top to bottom, and errors propagate automatically."]]
 
     [doc-section "Effect Annotations"
-      [doc-text "Functions that perform effects are annotated with " [doc-code "!"] " by convention."]
+      [doc-text "By convention, functions that perform effects end with " [doc-code "!"] " in their name. The compiler does not enforce this, but your teammates will thank you for it."]
       [code-block {:label "LOON"} [str "[fn save-user! [name]\n" "  [Store.set \"user\" name]]"]]
-      [doc-text "This is a naming convention, not enforced by the compiler — but it makes effectful code easy to spot."]]
+      [doc-text "When you see a " [doc-code "!"] " at the end of a function name, you immediately know it does something beyond pure computation. It might write to a database, print to the console, or launch a rocket. The bang is a social contract: \"this function has side effects, handle with care.\""]]
 
     [doc-section "Testing with Effects"
-      [doc-text "Effects make testing trivial. Replace real handlers with test doubles."]
+      [doc-text "This is where algebraic effects really shine. Testing effectful code is trivial because you just swap in a different handler. No mocking libraries. No dependency injection frameworks. No test doubles that implement twelve interface methods when you only care about two."]
       [code-block {:label "LOON"} [str "[test \"save-user stores correctly\" []\n" "  [let mut log #[]]\n" "  [handle [save-user \"Bob\"]\n" "    [Store.set k v] => [do [push! log v] [resume None]]\n" "    [Store.get k] => [resume \"Bob\"]]\n" "  [assert-eq log #[\"Bob\"]]]"]]
-      [doc-note "tip" "No mocking libraries needed. Handle the effect differently in tests and production."]]
+      [doc-text "In production, your handler talks to a real database. In tests, it records calls into a vector. The function under test is identical in both cases. It has no idea who is handling its effects, and that is exactly the point."]]
 
     [doc-prev-next "Ownership" "/guide/ownership" "Modules" "/guide/modules"]]]

@@ -1,10 +1,10 @@
 ; effects.loon — Reference: Standard Effects
 
 [fn ref-effects-page []
-  [doc-page "Standard Effects" "Built-in effect operations."
+  [doc-page "Standard Effects" "The built-in effect operations that ship with Loon."
 
     [doc-section "IO"
-      [doc-text "Basic input and output operations."]
+      [doc-text "Basic input and output. These are the operations you reach for when you need to print something, read from the console, or work with files. They are all effect operations, which means they can be intercepted and handled if you need to, for example, test code that does IO without actually touching the filesystem."]
       [doc-def "println : Str -> ()" "Print a string followed by a newline to stdout."]
       [doc-def "print : Str -> ()" "Print a string to stdout without a trailing newline."]
       [doc-def "read-line : () -> Str" "Read a line of input from stdin."]
@@ -12,7 +12,7 @@
       [doc-def "write-file : Str -> Str -> ()" "Write a string to a file, creating or overwriting it."]]
 
     [doc-section "Fail"
-      [doc-text "Structured error handling via effects."]
+      [doc-text "Structured error handling via effects. When you call " [doc-code "fail"] ", execution aborts unless something higher up in the call stack handles it. The " [doc-code "try"] " function is the most common way to catch failures: wrap a computation in " [doc-code "try"] " and you get back a " [doc-code "Result"] " you can pattern match on."]
       [doc-def "fail : Str -> a" "Raise an error with a message. Aborts unless handled."]
       [doc-def "try : (() -> a) -> Result a Str" "Run a computation, catching any fail effect as Err."]
       [code-block {} [str
@@ -22,7 +22,7 @@
         "  [Err msg] => [println [str \"error: \" msg]]]"]]]
 
     [doc-section "Async"
-      [doc-text "Concurrent execution with lightweight tasks."]
+      [doc-text "Lightweight concurrency. " [doc-code "spawn"] " kicks off a background task and gives you a handle to it. When you need the result, call " [doc-code "await"] " on that handle. This is a simple model that avoids callback spaghetti while still letting you do real concurrent work."]
       [doc-def "spawn : (() -> a) -> Task a" "Spawn a concurrent task that runs in the background."]
       [doc-def "await : Task a -> a" "Block until a task completes and return its result."]
       [code-block {} [str
@@ -30,13 +30,13 @@
         "[println [await t]]  ; 3"]]]
 
     [doc-section "Process"
-      [doc-text "Interact with the operating system."]
+      [doc-text "Operations for interacting with the operating system. Run external commands, read environment variables, or grab the command-line arguments your program was invoked with."]
       [doc-def "exec : Str -> #[Str] -> Result Str Str" "Run an external command with arguments. Returns stdout on success."]
       [doc-def "env : Str -> Option Str" "Read an environment variable. Returns None if unset."]
       [doc-def "args : () -> #[Str]" "Return the command-line arguments as a vector of strings."]]
 
     [doc-section "Net"
-      [doc-text "Networking primitives for HTTP and TCP."]
+      [doc-text "Networking primitives for HTTP and TCP. " [doc-code "fetch"] " handles outgoing HTTP requests, while " [doc-code "serve"] " lets you spin up an HTTP server with a simple request handler function. If you need lower-level control, " [doc-code "listen"] " gives you raw TCP connections."]
       [doc-def "fetch : Str -> Map -> Result Str Str" "Make an HTTP request. The map contains method, headers, and body."]
       [doc-def "listen : Int -> (Conn -> ()) -> ()" "Listen for TCP connections on a port and handle each one."]
       [doc-def "serve : Int -> (Request -> Response) -> ()" "Start an HTTP server on a port with a request handler."]]

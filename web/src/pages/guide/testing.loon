@@ -4,36 +4,55 @@
   [doc-page "Testing" "Built-in test framework with effect-based mocking."
 
     [doc-section "The Test Form"
-      [doc-text "Tests are defined with " [doc-code "test"] " directly in any module. No special framework needed."]
+      [doc-text "Loon has a built-in test framework, and it is refreshingly simple. "
+        "You write tests directly in any module using the " [doc-code "test"] " form. "
+        "No test runner to install, no framework to configure, no special file naming conventions."]
       [code-block {:label "LOON"} [str "[test \"addition works\" []\n" "  [assert-eq [+ 1 2] 3]]"]]
-      [doc-text "Tests take a name, a parameter list (usually empty), and a body. No " [doc-code "fn"] " keyword."]]
+      [doc-text "A test takes three things: a name, a parameter list (usually empty), and a body. "
+        "Notice there is no " [doc-code "fn"] " keyword. The " [doc-code "test"]
+        " form is its own special form, so you jump straight from the name to the parameters."]]
 
     [doc-section "Assertions"
-      [doc-text "Loon provides a small set of built-in assertion functions."]
+      [doc-text "Loon ships with a small, focused set of assertion functions. "
+        "You will not find dozens of matchers here. "
+        "These four cover the vast majority of what you need."]
       [doc-list
-        [span [doc-code "assert-eq"] " — check two values are equal"]
-        [span [doc-code "assert-ne"] " — check two values are not equal"]
-        [span [doc-code "assert"] " — check a boolean is true"]
-        [span [doc-code "assert-match"] " — check a value matches a pattern"]]
+        [span [doc-code "assert-eq"] " checks that two values are equal"]
+        [span [doc-code "assert-ne"] " checks that two values are not equal"]
+        [span [doc-code "assert"] " checks that a boolean is true"]
+        [span [doc-code "assert-match"] " checks that a value matches a pattern"]]
       [code-block {:label "LOON"} [str "[test \"assertions\" []\n" "  [assert-eq 4 [* 2 2]]\n" "  [assert-ne 3 4]\n" "  [assert [> 10 5]]\n" "  [assert-match [Some _] [Some 42]]]"]]
       [doc-note "tip" "assert-eq prints both values on failure, making debugging straightforward."]]
 
     [doc-section "Running Tests"
-      [doc-text "Run all tests in a project with " [doc-code "loon test"] "."]
+      [doc-text "Run all tests in a project with " [doc-code "loon test"]
+        ". You will see a summary of every test, with clear pass/fail indicators."]
       [code-block {:label "SHELL"} [str "$ loon test\n" "running 12 tests\n" "  math.add .............. ok\n" "  math.subtract ......... ok\n" "  string.trim ........... FAIL\n" "\n" "11 passed, 1 failed"]]
-      [doc-text "Filter tests by name with a pattern argument."]
+      [doc-text "If you are working on a specific module and only want to run its tests, "
+        "pass a pattern argument to filter by name."]
       [code-block {:label "SHELL"} "$ loon test math"]
       [doc-note "info" "Tests run in parallel by default. Use --serial for tests that need ordering."]]
 
     [doc-section "Testing with Effects"
-      [doc-text "Effects eliminate the need for mocking libraries. Wrap the code under test in a " [doc-code "handle"] " block with test-specific implementations."]
+      [doc-text "This is where Loon's testing story gets genuinely interesting. "
+        "In most languages, testing code that does IO means reaching for a mocking library, "
+        "setting up dependency injection, or restructuring your code to accept interfaces. "
+        "In Loon, you just use effects."]
+      [doc-text "The idea is simple: if your code performs effects instead of doing IO directly, "
+        "you can swap in a test handler that provides canned responses. "
+        "The function under test never knows the difference."]
       [code-block {:label "LOON"} [str "[effect Http\n" "  [fn get [url]]]\n" "\n" "[fn fetch-title [url]\n" "  [let body [Http.get url]]\n" "  [parse-title body]]\n" "\n" "[test \"fetch-title parses html\" []\n" "  [let result\n" "    [handle [fetch-title \"http://example.com\"]\n" "      [Http.get url] => [resume \"<title>Hello</title>\"]]]\n" "  [assert-eq result \"Hello\"]]"]]
-      [doc-text "The production handler makes real HTTP requests. The test handler returns canned data. Same function, different behavior."]
-      [doc-note "tip" "This pattern works for databases, file systems, randomness — any effect."]]
+      [doc-text "Look at what happened here. The production handler for " [doc-code "Http.get"]
+        " would make a real HTTP request. But in the test, we install a handler that immediately "
+        "resumes with a hardcoded HTML string. The " [doc-code "fetch-title"]
+        " function runs the exact same code path either way."]
+      [doc-note "tip" "This pattern works for databases, file systems, randomness, or any effect. If you can define it as an effect, you can test it without mocks."]]
 
     [doc-section "CI Integration"
-      [doc-text "Use " [doc-code "loon test --format json"] " for machine-readable output in CI pipelines."]
+      [doc-text "For CI pipelines, use " [doc-code "loon test --format json"]
+        " to get machine-readable output."]
       [code-block {:label "SHELL"} "$ loon test --format json > results.json"]
-      [doc-text "The exit code is non-zero when any test fails, so standard CI tools work out of the box."]]
+      [doc-text "The exit code is non-zero when any test fails, so standard CI tools "
+        "work out of the box. No special adapters or reporters needed."]]
 
     [doc-prev-next "Macros" "/guide/macros" "Error Handling" "/guide/errors"]]]

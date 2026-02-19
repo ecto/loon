@@ -4,58 +4,68 @@
   [doc-page "Coming from JavaScript" "What's familiar, what's new, and why it's worth it."
 
     [doc-section "What's Familiar"
-      [doc-text "JavaScript and Loon share more than you might expect. If you write "
-        "modern, functional-style JavaScript, many ideas carry over directly:"]
+      [doc-text "JavaScript and Loon share more than you might expect. If you write modern, "
+        "functional-style JS (lots of map/filter/reduce, const everywhere, arrow functions "
+        "instead of classes), you are already thinking in patterns that transfer directly to Loon."]
       [doc-list
-        "First-class functions — functions are values, passed around freely."
-        "Closures — inner functions capture variables from the enclosing scope."
-        "Map, filter, reduce — the same higher-order patterns you already use."
-        "Expression-oriented thinking — ternaries, short-circuits, and arrow functions all point toward \"everything is an expression.\" Loon makes that fully consistent."
-        "Immutable-first style — if you use const by default and avoid mutation, you are already thinking in Loon."]
-      [doc-text "The functional subset of JavaScript — the part without classes, "
-        "this, prototypes, and mutation — maps almost directly to Loon."]]
+        "First-class functions: functions are values, passed around freely."
+        "Closures: inner functions capture variables from the enclosing scope."
+        "Map, filter, reduce: the same higher-order patterns you already use."
+        "Expression-oriented thinking: ternaries, short-circuits, and arrow functions all point toward \"everything is an expression.\" Loon makes that fully consistent."
+        "Immutable-first style: if you use const by default and avoid mutation, you are already thinking in Loon."]
+      [doc-text "The functional subset of JavaScript (the part without classes, "
+        [doc-code "this"] ", prototypes, and mutation) maps almost directly to Loon. "
+        "If you have been gravitating toward that style anyway, this will feel like a natural next step."]]
 
     [doc-section "What's Different"
       [doc-subsection "Bracket syntax"
-        [doc-text "This is the most visible change. Every function call is "
-          [doc-code "[function arg1 arg2]"] " instead of "
+        [doc-text "This is the most visible change and the one that takes the most adjustment. "
+          "Every function call is " [doc-code "[function arg1 arg2]"] " instead of "
           [doc-code "function(arg1, arg2)"] ". There are no commas, no semicolons, "
-          "and no operator precedence to remember."]
+          "and no operator precedence rules to remember."]
         [code-block {} [str
           "; JavaScript: Math.max(a + b, c * d)\n"
           "; Loon:\n"
           "[max [+ a b] [* c d]]"]]
-        [doc-text "The syntax is unfamiliar for about a day. Then it becomes natural, "
-          "and you start to appreciate the uniformity."]]
+        [doc-text "The syntax feels unfamiliar for about a day. Then it clicks, and you "
+          "start to appreciate the uniformity. Everything is a function call. There is no "
+          "special syntax for operators, no method calls versus function calls, just one "
+          "consistent pattern everywhere."]]
 
       [doc-subsection "Immutable by default"
         [doc-text "In JavaScript, " [doc-code "const"]
-          " prevents reassignment but not mutation — you can still push to a const array. "
-          "In Loon, values are truly immutable unless explicitly declared " [doc-code "mut"] ". "
-          "Data structures are immutable. There is no equivalent of " [doc-code "array.push()"]
-          " on an immutable vector."]]
+          " prevents reassignment but not mutation. You can still " [doc-code "push"]
+          " to a const array or set properties on a const object. In Loon, values are "
+          "truly immutable unless you explicitly declare them " [doc-code "mut"]
+          ". Data structures are immutable. There is no equivalent of "
+          [doc-code "array.push()"] " on an immutable vector; instead, you create a new "
+          "vector with the extra element."]]
 
       [doc-subsection "No null or undefined"
         [doc-text "JavaScript has two kinds of nothing: " [doc-code "null"]
           " and " [doc-code "undefined"] ". Loon has zero. "
-          "Optional values use the " [doc-code "Option"] " type — either "
-          [doc-code "[Some value]"] " or " [doc-code "None"]
-          ". You must handle both cases explicitly. No more "
-          [doc-code "Cannot read property of undefined"] " at runtime."]]
+          "When a value might be absent, you use the " [doc-code "Option"]
+          " type, which is either " [doc-code "[Some value]"]
+          " or " [doc-code "None"] ". The compiler forces you to handle both cases "
+          "explicitly, so you will never see "
+          [doc-code "Cannot read property of undefined"] " at runtime. "
+          "That entire category of bugs simply does not exist."]]
 
       [doc-subsection "Ownership"
-        [doc-text "JavaScript uses garbage collection — you create objects and the runtime "
-          "eventually frees them. Loon uses ownership: each value has one owner, and memory "
-          "is freed deterministically when the owner goes out of scope. The compiler handles "
-          "the details, but you will occasionally see \"value moved\" errors when you try to "
-          "use something that has already been consumed."]
-        [doc-note "info" "Ownership errors are always caught at compile time. You will never get a use-after-free bug at runtime."]]
+        [doc-text "This is probably the most unfamiliar concept if you are coming from "
+          "JavaScript. In JS, you create objects and the garbage collector eventually frees "
+          "them, sometime, whenever it feels like it. In Loon, each value has exactly one "
+          "owner, and memory is freed deterministically when that owner goes out of scope. "
+          "The compiler handles most of the details automatically, but you will occasionally "
+          "see \"value moved\" errors when you try to use something that has already been consumed."]
+        [doc-note "info" "Ownership errors are always caught at compile time. You will never get a use-after-free bug at runtime. The compiler is being strict so your production code does not have to be."]]
 
       [doc-subsection "Effects instead of async/await"
         [doc-text "JavaScript uses async/await for asynchronous operations, which creates "
-          "a \"function color\" problem — async functions can only be awaited from other async "
-          "functions. In Loon, IO, errors, and concurrency are all handled through algebraic "
-          "effects. No function coloring. No Promise chains."]]]
+          "a \"function color\" problem: async functions can only be awaited from other async "
+          "functions, so the async-ness spreads through your entire codebase. In Loon, IO, "
+          "errors, and concurrency are all handled through algebraic effects. No function "
+          "coloring. No Promise chains. No forgetting to await."]]]
 
     [doc-section "Syntax Mapping"
       [doc-table-header "JavaScript" "Loon"]
@@ -97,43 +107,54 @@
         "[handle [...] [Fail.fail e] => ...]"]]
 
     [doc-section "What You Can Stop Worrying About"
+      [doc-text "If you have spent time debugging production JavaScript, you have probably "
+        "hit every one of these. They are all gone in Loon."]
+
       [doc-subsection "Null and undefined checks"
         [doc-text "No " [doc-code "if (x !== null && x !== undefined)"]
-          " guards. The " [doc-code "Option"] " type and pattern matching make "
-          "absent values explicit and compiler-checked."]]
+          " guards scattered through your code. The " [doc-code "Option"]
+          " type and pattern matching make absent values explicit and compiler-checked. "
+          "If you forget to handle the None case, your code does not compile."]]
 
       [doc-subsection "Type coercion"
         [doc-text "No " [doc-code "\"\" == false"] " surprises. No "
           [doc-code "[1] + [2]"] " producing " [doc-code "\"12\""]
-          ". Loon is statically typed with no implicit conversions."]]
+          ". Loon is statically typed with no implicit conversions. "
+          "What you see is what you get."]]
 
       [doc-subsection "this binding"
         [doc-text "No " [doc-code "this"] ", no " [doc-code "bind"]
           ", no arrow-function-vs-regular-function gotchas. "
-          "Functions are just functions. They close over their environment."]]
+          "Functions are just functions. They close over their environment, and that is it."]]
 
       [doc-subsection "Async/await complexity"
         [doc-text "No colored functions. No unhandled promise rejections. "
-          "No forgetting to await. Effects handle concurrency uniformly."]]
+          "No forgetting to await. Effects handle concurrency uniformly, and the "
+          "compiler will not let you forget to handle an effect."]]
 
       [doc-subsection "Runtime type errors"
         [doc-text "No " [doc-code "TypeError: x is not a function"]
-          " in production. Every type error is caught at compile time, "
+          " in production at 3am. Every type error is caught at compile time, "
           "with no annotations required from you."]]]
 
     [doc-section "New Things to Learn"
+      [doc-text "Loon introduces a few concepts that do not have direct JavaScript equivalents. "
+        "They are all learnable, and they all pay for themselves quickly."]
+
       [doc-subsection "Pattern matching"
         [doc-text "Pattern matching replaces if/else chains, switch statements, "
-          "and optional chaining. You destructure values and the compiler "
-          "ensures you handle every case:"]
+          "and optional chaining with a single, powerful construct. You destructure values "
+          "and the compiler ensures you handle every possible case. No default fallthrough, "
+          "no forgotten branches."]
         [code-block {} [str
           "[match result\n"
           "  [Ok value]  => [println [str \"got: \" value]]\n"
           "  [Err msg]   => [println [str \"error: \" msg]]]"]]]
 
       [doc-subsection "Algebraic data types"
-        [doc-text "ADTs replace the combination of objects, classes, and union types. "
-          "They define a closed set of variants, each of which can carry data:"]
+        [doc-text "ADTs replace the combination of objects, classes, and TypeScript union types. "
+          "They define a closed set of variants, each of which can carry different data. "
+          "Think of them as enums on steroids, where each variant can hold its own fields."]
         [code-block {} [str
           "[type Shape\n"
           "  [Circle Float]\n"
@@ -142,14 +163,16 @@
 
       [doc-subsection "Effects"
         [doc-text "Effects replace callbacks, promises, async/await, and try/catch "
-          "with a single, composable mechanism. Think of them as \"structured side effects\" "
-          "that the type system tracks and handlers implement."]]
+          "with a single, composable mechanism. Think of them as structured side effects "
+          "that the type system tracks and handlers implement. The code that performs "
+          "effects does not need to know how they are handled, which makes it trivially testable."]]
 
       [doc-subsection "Ownership"
-        [doc-text "The only genuinely new concept if you come from garbage-collected "
+        [doc-text "This is the genuinely new concept if you come from garbage-collected "
           "languages. Values have one owner and are consumed when passed around. "
-          "The compiler infers borrows where safe. The learning curve is real but "
-          "shorter than Rust's because you never write lifetime annotations."]
-        [doc-note "tip" "Start by writing code normally. When the compiler says \"value moved,\" clone the value. Over time, you will develop an intuition for when moves happen."]]]
+          "The compiler infers borrows where safe, so most of the time you do not "
+          "think about it. The learning curve is real but much shorter than Rust's "
+          "because you never write lifetime annotations."]
+        [doc-note "tip" "Start by writing code normally. When the compiler says \"value moved,\" clone the value. Over time, you will develop an intuition for when moves happen and structure your code accordingly."]]]
 
     [doc-prev-next "Coming from Rust" "/concepts/from-rust" "Coming from Clojure" "/concepts/from-clojure"]]]

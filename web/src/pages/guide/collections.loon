@@ -4,40 +4,61 @@
   [doc-page "Collections" "Vectors, maps, sets, and string operations."
 
     [doc-section "Vectors"
-      [doc-text "Vectors are ordered, indexed collections. Create them with " [doc-code "#[...]"] "."]
+      [doc-text "Vectors are Loon's workhorse ordered collection. You create them with the "
+        [doc-code "#[...]"] " syntax, and they do exactly what you'd expect: hold things in order, "
+        "let you index into them, and grow when you need them to."]
       [code-block {} [str
         "[let nums #[1 2 3 4 5]]\n"
         "[get nums 0]       ; 1\n"
         "[len nums]         ; 5\n"
-        "[append nums 6]    ; #[1 2 3 4 5 6]"]]]
+        "[append nums 6]    ; #[1 2 3 4 5 6]"]]
+      [doc-text "Notice that " [doc-code "append"] " doesn't modify " [doc-code "nums"]
+        " in place. It returns a new vector with the extra element. "
+        "Collections in Loon are immutable by default, which means you can pass them around "
+        "without worrying about something else changing them behind your back."]]
 
     [doc-section "Maps"
-      [doc-text "Maps are key-value collections. Keys are usually keywords."]
+      [doc-text "Maps hold key-value pairs, and keywords make natural keys. "
+        "If you've used objects in JavaScript or dicts in Python, maps will feel familiar, "
+        "but with the added benefit of immutability."]
       [code-block {} [str
         "[let user {:name \"Ada\" :age 30}]\n"
         "[get user :name]           ; \"Ada\"\n"
         "[get user :email \"none\"]   ; \"none\"\n"
-        "[assoc user :age 31]       ; updated map"]]]
+        "[assoc user :age 31]       ; updated map"]]
+      [doc-text "The two-argument form of " [doc-code "get"] " provides a default value when a "
+        "key is missing. This is Loon's answer to null checks: instead of getting back "
+        "some null or undefined, you decide upfront what the fallback should be. "
+        "And " [doc-code "assoc"] " returns a new map with the updated key, "
+        "leaving the original untouched."]]
 
     [doc-section "Sets"
-      [doc-text "Sets are unordered collections of unique values."]
+      [doc-text "Sets are unordered collections where every value appears exactly once. "
+        "They're perfect for membership checks and deduplication."]
       [code-block {} [str
         "[let tags #{\"fast\" \"safe\" \"fun\"}]\n"
         "[contains? tags \"safe\"]  ; true\n"
-        "[insert tags \"new\"]     ; #{...}"]]]
+        "[insert tags \"new\"]     ; #{...}"]]
+      [doc-text "Like maps and vectors, sets are immutable. "
+        [doc-code "insert"] " gives you a new set with the added element."]]
 
     [doc-section "Strings"
-      [doc-text "Strings are sequences. Use " [doc-code "str"] " to concatenate, and "
-        "many collection functions work on them."]
+      [doc-text "Strings in Loon act like sequences, which means many of the same functions "
+        "you use on vectors and sets also work on strings. "
+        "Use " [doc-code "str"] " to concatenate, " [doc-code "len"] " to measure, and "
+        [doc-code "contains?"] " to search."]
       [code-block {} [str
         "[let s \"hello\"]\n"
         "[len s]              ; 5\n"
         "[contains? s \"ell\"]  ; true\n"
-        "[str s \" world\"]    ; \"hello world\""]]]
+        "[str s \" world\"]    ; \"hello world\""]]
+      [doc-text "This consistency is intentional. Once you learn the collection vocabulary, "
+        "you can apply it everywhere without memorizing separate string-specific APIs."]]
 
     [doc-section "Common Operations"
-      [doc-text [doc-code "map"] ", " [doc-code "filter"] ", and " [doc-code "fold"]
-        " work across all collection types."]
+      [doc-text "The trio of " [doc-code "map"] ", " [doc-code "filter"] ", and " [doc-code "fold"]
+        " work across all collection types. If you've used functional programming before, "
+        "these are your old friends. If not, they're about to become your new ones."]
       [code-block {} [str
         "[map [fn [x] [* x 2]] #[1 2 3]]\n"
         "; => #[2 4 6]\n"
@@ -46,25 +67,38 @@
         "; => #[3 4]\n"
         "\n"
         "[fold 0 + #[1 2 3 4]]\n"
-        "; => 10"]]]
+        "; => 10"]]
+      [doc-text [doc-code "map"] " transforms every element. " [doc-code "filter"]
+        " keeps only the elements that pass a test. " [doc-code "fold"]
+        " reduces the whole collection down to a single value by accumulating from a starting point. "
+        "Together, these three can express a surprising amount of logic without a single loop."]]
 
     [doc-section "Pipe Idioms"
-      [doc-text "Pipe is the natural way to chain collection operations."]
+      [doc-text "When you want to chain several operations together, " [doc-code "pipe"]
+        " is the idiomatic way to do it. It threads a value through a series of transformations "
+        "from top to bottom, making complex data pipelines easy to read."]
       [code-block {} [str
         "[pipe #[1 2 3 4 5 6 7 8 9 10]\n"
         "  [filter [fn [n] [= 0 [% n 2]]]]\n"
         "  [map [fn [n] [* n n]]]\n"
         "  [take 3]]  ; => #[4 16 36]"]]
-      [doc-note "tip" "Read pipe chains top to bottom: filter, transform, then limit."]]
+      [doc-text "Read this top to bottom: start with the numbers 1 through 10, keep only the even ones, "
+        "square each of them, then take the first three results. "
+        "Each line is a single, understandable step."]
+      [doc-note "tip" "Pipe chains read top to bottom. Each step receives the result of the previous one, so the data flows naturally downward."]]
 
     [doc-section "Mutable Variants"
-      [doc-text "For performance-critical code, Loon provides mutable collections with "
-        [doc-code "mut"] ". Mutation functions end with " [doc-code "!"] "."]
+      [doc-text "Immutable collections are the default because they're safer and easier to reason about. "
+        "But sometimes, especially in performance-critical loops, you need to build up a "
+        "collection incrementally. That's where " [doc-code "mut"] " comes in."]
       [code-block {} [str
         "[let items [mut #[]]]\n"
         "[push! items 1]\n"
         "[push! items 2]\n"
         "[println items]  ; #[1 2]"]]
-      [doc-note "warning" "Mutable collections follow ownership rules. Only one reference can mutate at a time."]]
+      [doc-text "Functions that mutate end with " [doc-code "!"] " so they stand out visually. "
+        "This is a deliberate convention: mutation is fine when you need it, but it should "
+        "never be invisible."]
+      [doc-note "warning" "Mutable collections follow ownership rules. Only one reference can mutate at a time, which prevents data races at compile time."]]
 
     [doc-prev-next "Types" "/guide/types" "Pattern Matching" "/guide/pattern-matching"]]]

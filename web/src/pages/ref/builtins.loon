@@ -1,9 +1,10 @@
 ; builtins.loon — Reference: Built-in Functions
 
 [fn ref-builtins-page []
-  [doc-page "Builtins Reference" "Every built-in function by category."
+  [doc-page "Builtins Reference" "Every built-in function, organized by category."
 
     [doc-section "Arithmetic"
+      [doc-text "The standard math operations. These work on both integers and floats, though mixing the two will coerce to float."]
       [doc-def "+" "Add two or more numbers."]
       [doc-def "-" "Subtract. With one argument, negates."]
       [doc-def "*" "Multiply two or more numbers."]
@@ -11,6 +12,7 @@
       [doc-def "%" "Modulo (remainder after division)."]]
 
     [doc-section "Comparison"
+      [doc-text "Equality checks work on any type using structural comparison. Ordering comparisons work on numbers and strings."]
       [doc-def "=" "Structural equality. Works on all types."]
       [doc-def "!=" "Structural inequality."]
       [doc-def "<" "Less than. Numbers and strings."]
@@ -19,11 +21,13 @@
       [doc-def ">=" "Greater than or equal."]]
 
     [doc-section "Logic"
-      [doc-def "not" "Logical negation. Returns true if argument is false."]
-      [doc-def "and" "Logical AND. Eager -- evaluates both arguments."]
-      [doc-def "or" "Logical OR. Eager -- evaluates both arguments."]]
+      [doc-text "One important caveat here: " [doc-code "and"] " and " [doc-code "or"] " are eager builtins, not short-circuiting special forms. Both arguments get evaluated before the logical operation happens. If you need short-circuit behavior, use nested " [doc-code "if"] " expressions instead."]
+      [doc-def "not" "Logical negation. Returns true if the argument is false."]
+      [doc-def "and" "Logical AND. Eager; evaluates both arguments."]
+      [doc-def "or" "Logical OR. Eager; evaluates both arguments."]]
 
     [doc-section "String"
+      [doc-text "Loon has a solid set of string operations. " [doc-code "str"] " pulls double duty as both a converter (turn anything into a string) and a concatenator (join multiple values into one string). " [doc-code "contains?"] " also works on both strings and collections, so you do not need separate functions."]
       [doc-def "str" "Convert to string, or concatenate multiple values into a string."]
       [doc-def "len" "Return the length of a string or collection."]
       [doc-def "split" "Split a string by a delimiter: [split \",\" \"a,b,c\"]"]
@@ -40,8 +44,9 @@
       [doc-def "contains?" "Return true if a string contains a substring, or a collection contains an element."]]
 
     [doc-section "Collections"
+      [doc-text "This is the big one. Loon's collection functions follow a consistent pattern: the collection is usually the last argument, which makes them work nicely with " [doc-code "pipe"] ". You will find the usual functional favorites here like " [doc-code "map"] ", " [doc-code "filter"] ", and " [doc-code "fold"] ", along with plenty of convenience functions for sorting, grouping, and slicing."]
       [doc-def "map" "Apply a function to each element: [map f coll]"]
-      [doc-def "filter" "Keep elements where predicate returns true: [filter f coll]"]
+      [doc-def "filter" "Keep elements where the predicate returns true: [filter f coll]"]
       [doc-def "fold" "Reduce a collection: [fold coll init f] or [fold init f coll]"]
       [doc-def "conj" "Add an element to a collection: [conj coll elem]"]
       [doc-def "nth" "Get element at index: [nth idx coll]"]
@@ -78,16 +83,19 @@
       [doc-def "max" "Return the largest value in a collection."]]
 
     [doc-section "Type Checks"
+      [doc-text "Quick type predicates. These return a boolean and are useful for writing generic code that needs to branch on the shape of its input."]
       [doc-def "map?" "Return true if the value is a map."]
       [doc-def "vec?" "Return true if the value is a vector."]]
 
     [doc-section "Conversion"
+      [doc-text "Convert values between types. " [doc-code "name"] " is particularly handy for turning keywords into plain strings, which comes up a lot when you are building output from map keys."]
       [doc-def "name" "Convert a keyword to its string name: [name :foo] => \"foo\""]
       [doc-def "int" "Convert a value to an integer."]
       [doc-def "float" "Convert a value to a float."]
       [doc-def "str" "Convert any value to its string representation."]]
 
     [doc-section "IO"
+      [doc-text "The basics for printing output. For more advanced IO like reading files or making network requests, see the Standard Effects reference."]
       [doc-def "println" "Print a value followed by a newline."]
       [doc-def "print" "Print a value without a trailing newline."]]
 

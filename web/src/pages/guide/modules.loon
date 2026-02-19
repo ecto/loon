@@ -4,39 +4,40 @@
   [doc-page "Modules" "File-based modules with pub visibility."
 
     [doc-section "File = Module"
-      [doc-text "Every " [doc-code ".loon"] " file is a module. The module name is the file name without the extension."]
+      [doc-text "Loon's module system is about as simple as it gets: every " [doc-code ".loon"] " file is a module, and the module name is just the file name without the extension. No module declarations, no package manifests, no boilerplate. If you have a file called " [doc-code "greet.loon"] ", you have a module called " [doc-code "greet"] "."]
       [code-block {:label "LOON"} [str "; greet.loon\n" "[fn hello [] \"hi\"]\n" "[pub fn world [] \"world\"]"]]
-      [doc-note "info" "By default, all definitions are private to the module. Only pub items are visible to other modules."]]
+      [doc-text "By default, everything in a module is private. The " [doc-code "hello"] " function above is invisible to the outside world; only " [doc-code "world"] " (marked with " [doc-code "pub"] ") can be used by other modules. This means you get encapsulation for free. Your internal helpers stay internal."]]
 
     [doc-section "Pub Exports"
-      [doc-text "Add " [doc-code "pub"] " before " [doc-code "fn"] ", " [doc-code "let"] ", or " [doc-code "type"] " to export it."]
+      [doc-text "To make something visible outside its module, put " [doc-code "pub"] " before the definition. This works for functions, bindings, and types."]
       [code-block {:label "LOON"} [str "[pub fn add [a b] [+ a b]]\n" "[pub let version \"0.1.0\"]\n" "[pub type Color\n" "  Red Green Blue]"]]
-      [doc-text "Private helpers stay internal — they support the public API without cluttering it."]]
+      [doc-text "Think of " [doc-code "pub"] " as the front door of your module. Everything behind that door is an implementation detail that you are free to change without worrying about breaking other code. Only the " [doc-code "pub"] " items form your module's contract with the outside world."]]
 
     [doc-section "Use / Import"
-      [doc-text "Use " [doc-code "use"] " to import a module. Access its exports with dot syntax."]
+      [doc-text "To bring a module into scope, use the " [doc-code "use"] " keyword. Once imported, you access its exports with dot syntax."]
       [code-block {:label "LOON"} [str "[use math]\n" "[println [math.add 1 2]]"]]
-      [doc-text "The module name matches the file name."]]
+      [doc-text "The module name matches the file name, so " [doc-code "[use math]"] " looks for " [doc-code "math.loon"] ". Simple and predictable. No searching through configuration files to figure out where a module comes from."]]
 
     [doc-section "Aliasing"
-      [doc-text "Rename a module on import with " [doc-code "as"] "."]
+      [doc-text "Sometimes module names are long or conflict with something else in scope. You can rename a module on import with " [doc-code "as"] "."]
       [code-block {:label "LOON"} [str "[use string-utils as str-u]\n" "[println [str-u.capitalize \"hello\"]]"]]
-      [doc-note "tip" "Aliases are useful for long module names or to avoid ambiguity."]]
+      [doc-text "The original module name is no longer in scope after aliasing. Only the alias works. This keeps things unambiguous and lets you pick whatever name makes the most sense in context."]]
 
     [doc-section "Selective Imports"
-      [doc-text "Import specific items directly into scope."]
+      [doc-text "If you only need a couple of things from a module, you can import them directly into scope. No dot prefix required."]
       [code-block {:label "LOON"} [str "[use math [add subtract]]\n" "[println [add 1 2]]"]]
-      [doc-text "Selective imports skip the dot prefix — the names are available directly."]]
+      [doc-text "This is great when you are using a function heavily and the " [doc-code "module.function"] " syntax starts to feel verbose. Just be careful not to import names that clash with your own definitions."]]
 
     [doc-section "Directory Structure"
-      [doc-text "Nested directories create module paths separated by " [doc-code "/"] "."]
+      [doc-text "For larger projects, you will want to organize modules into directories. Nested directories create module paths separated by " [doc-code "/"] "."]
       [code-block {:label "STRUCTURE"} [str "src/\n" "  main.loon\n" "  math.loon\n" "  utils/\n" "    string.loon\n" "    io.loon"]]
       [code-block {:label "LOON"} [str "[use utils/string]\n" "[println [string.trim \"  hi  \"]]"]]
-      [doc-note "info" "A directory with a mod.loon file exports that file as the directory module."]]
+      [doc-text "Notice that you import with the full path (" [doc-code "utils/string"] ") but then refer to the module by its last segment (" [doc-code "string"] "). This keeps usage concise while still being explicit about where things come from."]
+      [doc-note "info" "A directory with a mod.loon file exports that file as the directory module. So utils/mod.loon would let you write [use utils] directly."]]
 
     [doc-section "Cycle Detection"
-      [doc-text "Loon detects circular imports at compile time and reports a clear error."]
+      [doc-text "Circular dependencies are a common source of confusion and bugs. Loon catches them at compile time and tells you exactly where the cycle is."]
       [code-block {:label "ERROR"} [str "error: circular dependency detected\n" "  --> a.loon:1\n" "  a.loon -> b.loon -> a.loon"]]
-      [doc-text "Break cycles by extracting shared code into a third module that both can import."]]
+      [doc-text "If you hit this, the fix is usually straightforward: extract the shared code into a third module that both files can import. Cycles almost always mean two modules are more entangled than they should be, so breaking the cycle tends to improve your design too."]]
 
     [doc-prev-next "Effects" "/guide/effects" "Macros" "/guide/macros"]]]

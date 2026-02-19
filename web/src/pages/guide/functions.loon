@@ -4,69 +4,120 @@
   [doc-page "Functions" "Named, anonymous, higher-order, and recursive."
 
     [doc-section "Named Functions"
-      [doc-text "Define functions with " [doc-code "fn"] ". The body is a single expression "
-        "(an implicit " [doc-code "do"] " wraps the body, so multiple expressions are fine)."]
+      [doc-text "Functions are defined with " [doc-code "fn"] ". You give it a name, "
+        "a parameter list in brackets, and a body. The body has an implicit "
+        [doc-code "do"] ", so you can write multiple expressions and the function "
+        "returns the last one. No " [doc-code "return"] " keyword needed."]
       [code-block {} [str
         "[fn greet [name]\n"
-        "  [println [str \"Hello, \" name \"!\"]]]"]]]
+        "  [println [str \"Hello, \" name \"!\"]]]"]]
+      [doc-text "This defines a function called " [doc-code "greet"] " that takes one argument. "
+        "Because " [doc-code "fn"] " bodies get that implicit " [doc-code "do"]
+        ", you could add more expressions before the " [doc-code "println"]
+        " and they'd all execute in order."]]
 
     [doc-section "Anonymous Functions"
-      [doc-text "Omit the name to create a lambda. These are first-class values."]
+      [doc-text "Drop the name and you get a lambda. These are first-class values, which means "
+        "you can bind them to variables, pass them to other functions, or return them. "
+        "You'll use these constantly with " [doc-code "map"] ", " [doc-code "filter"]
+        ", and friends."]
       [code-block {} [str
         "[let double [fn [x] [* x 2]]]\n"
-        "[println [double 5]]  ; 10"]]]
+        "[println [double 5]]  ; 10"]]
+      [doc-text "The syntax is identical to a named function, just without the name in between "
+        [doc-code "fn"] " and the parameter list. Loon doesn't have a separate "
+        "\"lambda\" or \"arrow function\" syntax. It's all just " [doc-code "fn"] "."]]
 
     [doc-section "Multi-Arity"
-      [doc-text "A function can have multiple arities. Each arity is wrapped in parentheses."]
+      [doc-text "Sometimes you want a function that behaves differently depending on how many "
+        "arguments it receives. Loon handles this with multi-arity definitions, where each "
+        "arity is wrapped in parentheses inside the same " [doc-code "fn"] " form. "
+        "The runtime dispatches to the right one based on argument count."]
       [code-block {} [str
         "[fn greet\n"
         "  ([name] [str \"Hello, \" name \"!\"])\n"
         "  ([first last]\n"
-        "    [str \"Hello, \" first \" \" last \"!\"])]"]]]
+        "    [str \"Hello, \" first \" \" last \"!\"])]"]]
+      [doc-text "Call " [doc-code "[greet \"Ada\"]"] " and you get the single-argument version. "
+        "Call " [doc-code "[greet \"Ada\" \"Lovelace\"]"] " and you get the two-argument version. "
+        "This is cleaner than optional parameters or overloading because each arity has "
+        "its own explicit parameter list and body."]]
 
     [doc-section "Variadic Functions"
-      [doc-text "Use " [doc-code "&"] " to collect remaining arguments into a vector."]
+      [doc-text "Use " [doc-code "&"] " before the last parameter to collect any remaining "
+        "arguments into a vector. This is useful for functions that accept a flexible number "
+        "of inputs, like a logging function that takes a severity level followed by "
+        "any number of message fragments."]
       [code-block {} [str
         "[fn log [level & msgs]\n"
         "  [println [str level \": \"\n"
-        "    [join msgs \" \"]]]]"]]]
+        "    [join msgs \" \"]]]]"]]
+      [doc-text "Here, " [doc-code "level"] " captures the first argument and "
+        [doc-code "msgs"] " captures everything else as a vector. So "
+        [doc-code "[log \"WARN\" \"disk\" \"almost\" \"full\"]"]
+        " would print " [doc-code "WARN: disk almost full"] "."]]
 
     [doc-section "Higher-Order Functions"
-      [doc-text "Functions that take or return other functions. The standard library "
-        "provides " [doc-code "map"] ", " [doc-code "filter"] ", and " [doc-code "fold"] "."]
+      [doc-text "A higher-order function is one that takes or returns another function. "
+        "This is where functional programming really shines. Instead of writing loops, "
+        "you describe transformations. The standard library gives you the classics: "
+        [doc-code "map"] " to transform each element, " [doc-code "filter"]
+        " to keep the ones you want, and " [doc-code "fold"] " to reduce a collection "
+        "down to a single value."]
       [code-block {} [str
         "[map [fn [x] [* x x]] #[1 2 3 4]]\n"
         "; => #[1 4 9 16]\n"
         "\n"
         "[filter [fn [x] [> x 2]] #[1 2 3 4]]\n"
-        "; => #[3 4]"]]]
+        "; => #[3 4]"]]
+      [doc-text "If you find yourself writing a " [doc-code "for"] " loop that builds up a "
+        "new list by transforming each element, that's " [doc-code "map"]
+        ". If you're writing a loop that skips some elements, that's "
+        [doc-code "filter"] ". Learning to see these patterns will change how you think "
+        "about data processing."]]
 
     [doc-section "Closures"
-      [doc-text "Functions capture values from their enclosing scope."]
+      [doc-text "Functions capture variables from their enclosing scope. This means you can "
+        "create functions that \"remember\" values from when they were defined. "
+        "The classic example is a function factory:"]
       [code-block {} [str
         "[fn make-adder [n]\n"
         "  [fn [x] [+ x n]]]\n"
         "\n"
         "[let add5 [make-adder 5]]\n"
-        "[println [add5 10]]  ; 15"]]]
+        "[println [add5 10]]  ; 15"]]
+      [doc-text [doc-code "make-adder"] " returns a new function that closes over "
+        [doc-code "n"] ". Each call to " [doc-code "make-adder"]
+        " creates a fresh closure with its own captured value. "
+        [doc-code "add5"] " will always add 5, no matter where or when you call it."]]
 
     [doc-section "Pipe"
-      [doc-text "Use " [doc-code "pipe"] " to thread a value through a series of "
-        "transformations. The result of each step is passed as the last argument to the next."]
+      [doc-text "When you chain several transformations together, nested function calls "
+        "get hard to read. " [doc-code "pipe"]
+        " solves this by letting you write transformations top-to-bottom instead of "
+        "inside-out. The result of each step is passed as the last argument to the next."]
       [code-block {} [str
         "[pipe #[1 2 3 4 5]\n"
         "  [filter [fn [x] [> x 2]]]\n"
         "  [map [fn [x] [* x 10]]]\n"
         "  [each println]]"]]
+      [doc-text "Read this as: start with the vector, filter to keep values greater than 2, "
+        "multiply each by 10, then print each one. Compare that to the nested version: "
+        [doc-code "[each println [map [fn [x] [* x 10]] [filter [fn [x] [> x 2]] #[1 2 3 4 5]]]]"]
+        ". The pipe version reads like a recipe. The nested version reads like an onion."]
       [doc-note "tip" "pipe eliminates deeply nested calls and temporary variables."]]
 
     [doc-section "Recursion"
-      [doc-text "Loon supports recursion. Pattern matching is often combined with "
-        "recursion for clear base cases."]
+      [doc-text "Loon supports recursion, and pattern matching makes recursive functions "
+        "particularly clean. You define your base case and recursive case as match arms, "
+        "and the structure of the code mirrors the structure of the problem."]
       [code-block {} [str
         "[fn factorial [n]\n"
         "  [match n\n"
         "    0 => 1\n"
-        "    _ => [* n [factorial [- n 1]]]]]"]]]
+        "    _ => [* n [factorial [- n 1]]]]]"]]
+      [doc-text "The " [doc-code "_"] " pattern matches anything, so this reads naturally: "
+        "factorial of 0 is 1, and factorial of anything else is n times factorial of n minus 1. "
+        "We'll cover pattern matching in more depth in the Pattern Matching guide."]]
 
     [doc-prev-next "Basics" "/guide/basics" "Types" "/guide/types"]]]

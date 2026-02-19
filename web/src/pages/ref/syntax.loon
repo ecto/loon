@@ -1,26 +1,28 @@
 ; syntax.loon — Reference: Syntax
 
 [fn ref-syntax-page []
-  [doc-page "Syntax Reference" "Complete syntax at a glance."
+  [doc-page "Syntax Reference" "Everything you need to read and write Loon."
 
     [doc-section "Delimiters"
-      [doc-def "[...]" "Function call or special form. First element is the operator."]
+      [doc-text "Loon has a small set of delimiters, and each one means exactly one thing. Square brackets are the workhorse of the language: every function call, every special form, every operation lives inside them. The other bracket types are reserved for data literals."]
+      [doc-def "[...]" "Function call or special form. The first element is always the operator."]
       [doc-def "{...}" "Map literal. Alternating key-value pairs: {:name \"Ada\" :age 30}"]
       [doc-def "#[...]" "Vector literal: #[1 2 3]"]
       [doc-def "#{...}" "Set literal: #{\"a\" \"b\" \"c\"}"]
       [doc-def "(...)" "Reserved. Not used in Loon syntax."]]
 
     [doc-section "Literals"
+      [doc-text "Loon's literal types are straightforward. Strings are double-quoted, numbers are either ints or floats, and keywords start with a colon. One thing worth noting: there is no " [doc-code "nil"] " or " [doc-code "null"] " in Loon. If you need to represent the absence of a value, you use " [doc-code "None"] " from the Option type."]
       [doc-def "\"hello\"" "String. Double-quoted, supports escape sequences (\\n, \\t, \\\", \\\\)."]
       [doc-def "42" "Integer. 64-bit signed."]
       [doc-def "3.14" "Float. 64-bit double precision."]
       [doc-def "true / false" "Boolean values."]
-      [doc-def ":name" "Keyword. Lightweight identifier, often used as map keys."]
-      [doc-def "None" "Absence of a value. Part of the Option ADT. There is no nil or null."]
+      [doc-def ":name" "Keyword. A lightweight identifier, often used as map keys."]
+      [doc-def "None" "Absence of a value. Part of the Option ADT."]
       [doc-def "Empty" "Empty collection sentinel."]]
 
     [doc-section "Special Forms"
-      [doc-text "Special forms have evaluation rules different from normal function calls."]
+      [doc-text "Special forms look like function calls but have their own evaluation rules. For example, " [doc-code "if"] " does not evaluate both branches, and " [doc-code "let"] " introduces a new binding rather than calling anything. These are the building blocks you will use constantly."]
       [doc-def "fn" "Define a named or anonymous function: [fn name [params] body] or [fn [params] body]"]
       [doc-def "let" "Bind a value to a name: [let x 42]"]
       [doc-def "if" "Conditional: [if cond then else]. Branches do NOT have implicit do."]
@@ -42,25 +44,25 @@
       [doc-def "derive" "Derive trait implementations for a type."]]
 
     [doc-section "Comments"
-      [doc-text "Line comments begin with " [doc-code ";"] " and extend to the end of the line."]
+      [doc-text "Line comments begin with " [doc-code ";"] " and extend to the end of the line. You can put them on their own line or tack them onto the end of an expression."]
       [code-block {} [str
         "; this is a comment\n"
         "[let x 42]  ; inline comment"]]]
 
     [doc-section "String Interpolation"
-      [doc-text "Use " [doc-code "fmt"] " to interpolate values into strings with " [doc-code "{}"] " placeholders."]
+      [doc-text "The " [doc-code "fmt"] " function lets you build strings with " [doc-code "{}"] " placeholders. Each placeholder is filled by the corresponding argument, in order. It is the easiest way to assemble human-readable output."]
       [code-block {} [str
         "[let name \"world\"]\n"
         "[fmt \"hello, {}!\" name]  ; \"hello, world!\""]]]
 
     [doc-section "Quasiquoting"
-      [doc-text "Used primarily in macros to construct syntax templates."]
+      [doc-text "Quasiquoting is mainly used inside macros. A quasiquoted expression is like a template: most of it is taken literally, but you can selectively \"unquote\" parts to splice in computed values."]
       [doc-def "`expr" "Quasiquote. Like quote but allows unquoting inside."]
       [doc-def "~expr" "Unquote. Evaluate expr inside a quasiquote."]
       [doc-def "~@expr" "Splice-unquote. Evaluate and splice a list into the surrounding form."]]
 
     [doc-section "Operators"
-      [doc-text "Operators are regular functions called with bracket syntax."]
+      [doc-text "In Loon, operators are just regular functions. There is no special operator precedence to memorize because everything is called with bracket syntax. " [doc-code "[+ 1 2]"] " is a function call to " [doc-code "+"] " with two arguments, exactly like " [doc-code "[map f xs]"] " is a function call to " [doc-code "map"] "."]
       [doc-def "+ - * / %" "Arithmetic. Work on integers and floats."]
       [doc-def "= !=" "Equality and inequality. Work on all types."]
       [doc-def "< > <= >=" "Ordering comparisons. Work on numbers and strings."]

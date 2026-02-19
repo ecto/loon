@@ -1,10 +1,10 @@
 ; lsp.loon — Reference: Language Server
 
 [fn ref-lsp-page []
-  [doc-page "Language Server" "LSP features and editor setup."
+  [doc-page "Language Server" "LSP features and how to set it up in your editor."
 
     [doc-section "Features"
-      [doc-text "The Loon language server implements the Language Server Protocol and provides the following capabilities."]
+      [doc-text "The Loon language server speaks the standard Language Server Protocol, so it works with any editor that has LSP support. Here is what you get out of the box."]
       [doc-def "Diagnostics" "Real-time type errors and warnings as you type."]
       [doc-def "Hover Types" "Hover over any expression to see its inferred type."]
       [doc-def "Go to Definition" "Jump to the definition of any binding or function."]
@@ -12,12 +12,11 @@
       [doc-def "Inlay Hints" "Inline type annotations displayed next to let bindings and function parameters."]]
 
     [doc-section "VS Code Setup"
-      [doc-text "Install the Loon extension from the VS Code marketplace."]
-      [code-block {:label "SHELL"} "code --install-extension loon-lang.loon-vscode"]
-      [doc-text "The extension automatically starts the language server. No additional configuration is needed."]]
+      [doc-text "The easiest path. Install the Loon extension from the VS Code marketplace and you are done. The extension handles starting the language server automatically, so there is nothing else to configure."]
+      [code-block {:label "SHELL"} "code --install-extension loon-lang.loon-vscode"]]
 
     [doc-section "Neovim Setup"
-      [doc-text "Add a custom server configuration to your Neovim LSP setup."]
+      [doc-text "Neovim has excellent LSP support built in. Add this to your config and Loon files will get full language server features as soon as you open them."]
       [code-block {:label "LUA"} [str
         "vim.api.nvim_create_autocmd('FileType', {\n"
         "  pattern = 'loon',\n"
@@ -34,7 +33,7 @@
       [doc-note "tip" "Set filetype detection with: vim.filetype.add({ extension = { loon = 'loon' } })"]]
 
     [doc-section "Generic LSP Setup"
-      [doc-text "For any editor that supports the Language Server Protocol, point the LSP client at the Loon binary."]
+      [doc-text "If you use a different editor, you can still get full LSP support as long as it has an LSP client. Point it at the Loon binary with these settings."]
       [doc-def "Command" "loon lsp"]
       [doc-def "Transport" "stdio (stdin/stdout)"]
       [doc-def "File types" ".loon"]

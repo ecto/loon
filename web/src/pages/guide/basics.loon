@@ -4,25 +4,39 @@
   [doc-page "Basics" "Expressions, bindings, and fundamental syntax."
 
     [doc-section "Everything is an Expression"
-      [doc-text "Every construct in Loon returns a value. There are no statements. "
-        "An " [doc-code "if"] " returns a value, a " [doc-code "let"] " returns a value, "
-        "and a block of expressions returns its last value."]
+      [doc-text "This is probably the single most important thing to internalize about Loon: "
+        "there are no statements. Every construct produces a value. "
+        [doc-code "if"] " returns a value. " [doc-code "let"] " returns a value. "
+        "A block of expressions returns the last one. Once this clicks, you start writing "
+        "code differently. You stop thinking in terms of \"do this, then do that\" and start "
+        "thinking in terms of \"this evaluates to that.\""]
       [code-block {} [str
         "[let x [if true 1 2]]  ; x = 1\n"
         "[let y [do\n"
         "  [println \"side effect\"]\n"
-        "  42]]                  ; y = 42"]]]
+        "  42]]                  ; y = 42"]]
+      [doc-text "In the second example, " [doc-code "do"] " runs both expressions in sequence "
+        "but the whole block evaluates to " [doc-code "42"] ", because that's the last expression. "
+        "Side effects happen along the way, but the value flows through."]]
 
     [doc-section "Bracket Syntax"
-      [doc-text "Loon uses square brackets for all calls. The first element is the "
-        "function, the rest are arguments."]
+      [doc-text "Loon uses square brackets for all function calls. The first element is the "
+        "function, and everything after it is an argument. That's it. There's no special syntax "
+        "for operators, method calls, or macros. Everything follows the same shape: "
+        [doc-code "[function arg1 arg2]"] ". This consistency is a deliberate tradeoff. "
+        "It takes a few minutes to get used to, but it means you never have to wonder about "
+        "precedence rules or where the parentheses go."]
       [code-block {} [str
         "[println \"hello\"]      ; call println\n"
         "[+ 1 2]                ; call +\n"
-        "[map inc #[1 2 3]]     ; call map"]]]
+        "[map inc #[1 2 3]]     ; call map"]]
+      [doc-text "Even " [doc-code "+"] " is just a function. There's nothing magical about it."]]
 
     [doc-section "Primitives"
-      [doc-text "Loon has strings, integers, floats, and booleans."]
+      [doc-text "Loon keeps its primitive types simple. You get strings, integers, floats, and booleans. "
+        "No implicit conversions between them, so " [doc-code "1 + 1.0"]
+        " won't silently coerce. You'll use " [doc-code "str"] " to convert things to strings "
+        "when you need to, and explicit conversion functions for numbers."]
       [code-block {} [str
         "[let name \"Loon\"]      ; Str\n"
         "[let age 1]            ; Int\n"
@@ -30,8 +44,11 @@
         "[let ok true]          ; Bool"]]]
 
     [doc-section "Let Bindings"
-      [doc-text "Use " [doc-code "let"] " to bind a value to a name. "
-        "Bindings are immutable by default."]
+      [doc-text "Use " [doc-code "let"] " to bind a value to a name. Bindings are immutable "
+        "by default, which means once you've bound " [doc-code "x"] " to " [doc-code "10"]
+        ", that's what it is. This sounds restrictive if you're coming from a mutable-by-default "
+        "language, but in practice it eliminates a whole class of bugs where you're wondering "
+        "\"who changed this variable?\""]
       [code-block {} [str
         "[let x 10]\n"
         "[let y [+ x 5]]\n"
@@ -39,22 +56,30 @@
       [doc-note "info" "There is no def keyword in Loon. Use let for all bindings."]]
 
     [doc-section "Comments"
-      [doc-text "Line comments start with a semicolon."]
+      [doc-text "Line comments start with a semicolon. You can place them on their own line "
+        "or at the end of an expression. Nothing fancy here."]
       [code-block {} [str
         "; This is a comment\n"
         "[let x 42]  ; inline comment"]]]
 
     [doc-section "Vectors, Maps, and Sets"
-      [doc-text "Vectors use " [doc-code "#[...]"] ", maps use "
-        [doc-code "{:key value}"] ", and sets use " [doc-code "#{...}"] "."]
+      [doc-text "Loon gives you three collection literals. Vectors use " [doc-code "#[...]"]
+        " and are your go-to ordered sequence. Maps use " [doc-code "{:key value}"]
+        " for key-value associations, with keywords (the " [doc-code ":name"] " syntax) "
+        "as the typical key type. Sets use " [doc-code "#{...}"] " for unordered unique collections."]
       [code-block {} [str
         "[let nums #[1 2 3]]\n"
         "[let user {:name \"Ada\" :age 30}]\n"
-        "[let tags #{\"fast\" \"safe\"}]"]]]
+        "[let tags #{\"fast\" \"safe\"}]"]]
+      [doc-text "All three are immutable. Operations like " [doc-code "append"] " or "
+        [doc-code "assoc"] " return new collections rather than mutating the original. "
+        "The Collections guide covers these in detail."]]
 
     [doc-section "If and Do"
-      [doc-text [doc-code "if"] " takes a condition, a then-branch, and an optional else-branch. "
-        "Each branch is a single expression. For multiple expressions, wrap in " [doc-code "[do ...]"] "."]
+      [doc-text "Since " [doc-code "if"] " is an expression, it always produces a value. "
+        "It takes a condition, a then-branch, and an optional else-branch. Each branch is a "
+        "single expression. If you need to do multiple things in a branch, wrap them in "
+        [doc-code "[do ...]"] "."]
       [code-block {} [str
         "[if [> x 0]\n"
         "  \"positive\"\n"
@@ -64,11 +89,16 @@
         "  [do\n"
         "    [println \"starting\"]\n"
         "    [run]]]"]]
+      [doc-text "Why doesn't " [doc-code "if"] " have an implicit " [doc-code "do"]
+        " in its branches? Because most of the time you only need one expression, and the "
+        "explicit " [doc-code "do"] " makes it obvious when you're introducing side effects. "
+        "It's a small bit of ceremony that keeps your code honest about what it's doing."]
       [doc-note "warning" "if branches do NOT have implicit do. Use [do ...] to run multiple expressions in a branch."]]
 
     [doc-section "Printing"
       [doc-text "Use " [doc-code "println"] " to print a value with a newline, "
-        "or " [doc-code "print"] " without one. Use " [doc-code "str"] " to build strings."]
+        "or " [doc-code "print"] " without one. When you need to build up a string from "
+        "multiple pieces, " [doc-code "str"] " concatenates its arguments into a single string."]
       [code-block {} [str
         "[println \"hello world\"]\n"
         "[println [str \"x = \" x]]"]]]

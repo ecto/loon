@@ -4,17 +4,15 @@
   [doc-page "Formatter" "Automatic code formatting with loon fmt."
 
     [doc-section "Usage"
-      [doc-text "Format one or more files in place."]
-      [code-block {:label "SHELL"} "loon fmt [files...]"]
-      [doc-text "With no arguments, formats all " [doc-code ".loon"] " files in the current directory recursively."]]
+      [doc-text "Run " [doc-code "loon fmt"] " to format your source files in place. If you pass specific file paths it will format just those files. With no arguments it recursively formats every " [doc-code ".loon"] " file in the current directory."]
+      [code-block {:label "SHELL"} "loon fmt [files...]"]]
 
     [doc-section "Check Mode"
-      [doc-text "Verify that files are already formatted without modifying them."]
-      [code-block {:label "SHELL"} "loon fmt --check [files...]"]
-      [doc-text "Exits with code 0 if all files are formatted, 1 if any file would change. "
-        "Useful for CI pipelines."]]
+      [doc-text "In CI you do not want to rewrite files; you just want to know if anything is out of format. The " [doc-code "--check"] " flag does exactly that. It exits with code 0 if all files are already formatted, and code 1 if any file would change."]
+      [code-block {:label "SHELL"} "loon fmt --check [files...]"]]
 
     [doc-section "Formatting Rules"
+      [doc-text "The formatter is opinionated so you do not have to be. Here is what it enforces."]
       [doc-def "Indentation" "2 spaces. No tabs."]
       [doc-def "Bracket spacing" "No space after [ or before ]: [fn x [+ x 1]]"]
       [doc-def "Map formatting" "One key-value pair per line when the map exceeds the line width."]
@@ -24,15 +22,15 @@
       [doc-def "Comment alignment" "Inline comments are not realigned. Leading comments preserved as-is."]]
 
     [doc-section "CI Integration"
-      [doc-text "Add a formatting check to your CI pipeline to enforce consistent style."]
+      [doc-text "Adding a format check to your CI pipeline is the best way to keep the whole team consistent. Here is a minimal GitHub Actions step."]
       [code-block {:label "YAML"} [str
         "- name: Check formatting\n"
         "  run: loon fmt --check\n"]]
       [doc-text "The " [doc-code "--check"] " flag exits with a non-zero code if any file is unformatted, "
-        "failing the CI step."]]
+        "which will fail the CI step and let you know exactly what needs fixing."]]
 
     [doc-section "Editor Integration"
-      [doc-text "Configure your editor to format on save by running " [doc-code "loon fmt"] " on the current file."]
+      [doc-text "The nicest workflow is format-on-save. Configure your editor to run " [doc-code "loon fmt"] " every time you save a file and you will never have to think about formatting again."]
       [doc-subsection "VS Code"
         [doc-text "The Loon VS Code extension supports format-on-save out of the box. "
           "Enable it in settings:"]

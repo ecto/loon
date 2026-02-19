@@ -4,17 +4,25 @@
   [doc-page "Types" "Invisible types, ADTs, and what the compiler infers."
 
     [doc-section "Invisible Types"
-      [doc-text "Loon uses Hindley-Milner type inference. You never need to write type "
-        "annotations. The compiler infers every type from how values are used."]
+      [doc-text "Loon is statically typed, but you'd be forgiven for not noticing. The "
+        "compiler uses Hindley-Milner type inference to figure out every type from context. "
+        "You never write type annotations. You never fight with the type checker. "
+        "You just write code, and the compiler verifies that it all makes sense."]
       [code-block {} [str
         "[let x 42]              ; Int\n"
         "[let name \"Loon\"]       ; Str\n"
         "[let nums #[1 2 3]]     ; Vec Int\n"
-        "[fn add [a b] [+ a b]]  ; Int -> Int -> Int"]]]
+        "[fn add [a b] [+ a b]]  ; Int -> Int -> Int"]]
+      [doc-text "The compiler sees " [doc-code "[+ a b]"] " and knows that "
+        [doc-code "+"] " works on " [doc-code "Int"] " values, so " [doc-code "a"]
+        " and " [doc-code "b"] " must be " [doc-code "Int"]
+        ", and the return type must be " [doc-code "Int"]
+        " too. All of that happens without you lifting a finger."]]
 
     [doc-section "What Gets Inferred"
-      [doc-text "Inference works through function calls, generics, closures, and "
-        "even higher-order functions."]
+      [doc-text "The inference engine doesn't just handle simple cases. It works through "
+        "function calls, generics, closures, and higher-order functions. Here's a "
+        "function that composes two functions together:"]
       [code-block {} [str
         "[fn compose [f g]\n"
         "  [fn [x] [f [g x]]]]\n"
@@ -22,27 +30,45 @@
         "\n"
         "[let inc-dbl [compose\n"
         "  [fn [n] [+ n 1]]\n"
-        "  [fn [n] [* n 2]]]]"]]]
+        "  [fn [n] [* n 2]]]]"]]
+      [doc-text "The inferred type of " [doc-code "compose"] " is fully generic: it takes "
+        "any function from " [doc-code "b"] " to " [doc-code "c"]
+        ", any function from " [doc-code "a"] " to " [doc-code "b"]
+        ", and returns a function from " [doc-code "a"] " to " [doc-code "c"]
+        ". When you actually call " [doc-code "compose"] " with concrete functions, "
+        "the type variables get pinned to specific types. No annotations required."]]
 
     [doc-section "Viewing Types"
-      [doc-text "The language server shows inferred types on hover and as inlay hints. "
-        "You can see every type without writing any."]
+      [doc-text "Since you never write types, you might wonder how to see them. "
+        "The language server shows inferred types on hover and as inlay hints in your editor. "
+        "You get all the benefits of explicit types (documentation, error catching) "
+        "without any of the annotation burden."]
       [doc-note "tip" "Install the Loon LSP extension to see inferred types inline in your editor."]]
 
     [doc-section "Algebraic Data Types"
-      [doc-text "Define sum types with " [doc-code "type"] ". Each variant is a constructor "
-        "that can hold data."]
+      [doc-text "When you need to model data that can be one of several shapes, "
+        "you define an algebraic data type (ADT) with " [doc-code "type"]
+        ". Each variant is a constructor. Variants can hold data or stand alone."]
       [code-block {} [str
         "[type Shape\n"
         "  [Circle Float]\n"
         "  [Rect Float Float]\n"
         "  Point]\n"
         "\n"
-        "[let s [Circle 5.0]]"]]]
+        "[let s [Circle 5.0]]"]]
+      [doc-text [doc-code "Circle"] " holds a " [doc-code "Float"] " (the radius). "
+        [doc-code "Rect"] " holds two " [doc-code "Float"] " values (width and height). "
+        [doc-code "Point"] " holds nothing. You construct values by calling the variant "
+        "like a function. Later, you'll use " [doc-code "match"]
+        " to take them apart. This is the core of how Loon models domain data: you "
+        "define the shapes, and the compiler makes sure you handle all of them."]]
 
     [doc-section "Option and Result"
-      [doc-text "Loon has no " [doc-code "nil"] " or " [doc-code "null"] ". Use the built-in "
-        [doc-code "Option"] " and " [doc-code "Result"] " types instead."]
+      [doc-text "Loon has no " [doc-code "nil"] " and no " [doc-code "null"]
+        ". If something might not exist, you use " [doc-code "Option"]
+        ". If something might fail, you use " [doc-code "Result"]
+        ". These are just regular ADTs that happen to be built in, and they force "
+        "you to handle the absent or error case explicitly."]
       [code-block {} [str
         "; Option is [Some value] or None\n"
         "[let found [Some 42]]\n"
@@ -51,35 +77,58 @@
         "; Result is [Ok value] or [Err msg]\n"
         "[let ok [Ok 100]]\n"
         "[let bad [Err \"not found\"]]"]]
+      [doc-text "This might seem annoying at first if you're used to just returning "
+        [doc-code "null"] ", but it eliminates null pointer exceptions entirely. "
+        "Every place where a value might be absent is visible in the type, and the "
+        "compiler won't let you forget to check."]
       [doc-note "info" "There is no nil/null in Loon. Use None or the empty string as defaults."]]
 
     [doc-section "Generics"
-      [doc-text "Generic functions are inferred automatically. The compiler gives each "
-        "unconstrained parameter a type variable."]
+      [doc-text "Generic functions happen automatically. If the compiler can't pin a "
+        "parameter down to a specific type, it gives it a type variable, which means "
+        "the function works for any type."]
       [code-block {} [str
         "[fn identity [x] x]\n"
         "; a -> a\n"
         "\n"
         "[fn first [pair]\n"
         "  [get pair 0]]\n"
-        "; Vec a -> a"]]]
+        "; Vec a -> a"]]
+      [doc-text [doc-code "identity"] " takes any value and returns it unchanged. "
+        "Its type is " [doc-code "a -> a"] ", where " [doc-code "a"]
+        " can be anything. " [doc-code "first"] " takes a vector of any type and "
+        "returns an element of that type. You didn't ask for generics; "
+        "the compiler figured it out from the code."]]
 
     [doc-section "Type Signatures"
-      [doc-text "You can optionally annotate with " [doc-code "sig"] " for documentation "
-        "or to constrain inference. This is never required."]
+      [doc-text "You can optionally add a type signature with " [doc-code "sig"]
+        " if you want to document a function's type or constrain what the compiler infers. "
+        "This is never required. Think of it as a form of documentation that the "
+        "compiler checks for you."]
       [code-block {} [str
         "[sig add : Int -> Int -> Int]\n"
-        "[fn add [a b] [+ a b]]"]]]
+        "[fn add [a b] [+ a b]]"]]
+      [doc-text "If the signature doesn't match what the compiler infers from the body, "
+        "you'll get a type error. This makes " [doc-code "sig"]
+        " useful as an assertion: \"I intend this function to have this type, "
+        "tell me if I'm wrong.\""]]
 
     [doc-section "Row Polymorphism"
-      [doc-text "Functions can accept any map that has the required keys, regardless of "
-        "what other keys it contains. This is inferred automatically."]
+      [doc-text "This one is subtle but powerful. When a function accesses a key on a map, "
+        "the compiler infers that the function needs a map with at least that key. "
+        "It doesn't care what other keys are present. This is called row polymorphism, "
+        "and it means your functions are automatically as flexible as they can be."]
       [code-block {} [str
         "[fn get-name [user]\n"
         "  [get user :name]]\n"
         "\n"
         "; Works with any map containing :name\n"
         "[get-name {:name \"Ada\" :age 30}]\n"
-        "[get-name {:name \"Alan\" :role \"CS\"}]"]]]
+        "[get-name {:name \"Alan\" :role \"CS\"}]"]]
+      [doc-text "Both calls work because both maps have a " [doc-code ":name"]
+        " key. The first also has " [doc-code ":age"] " and the second has "
+        [doc-code ":role"] ", but " [doc-code "get-name"]
+        " doesn't care about those. You get structural typing for maps without any "
+        "special syntax or interface declarations."]]
 
     [doc-prev-next "Functions" "/guide/functions" "Collections" "/guide/collections"]]]
