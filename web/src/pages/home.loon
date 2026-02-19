@@ -1,298 +1,199 @@
-; home.loon — Landing page
+; home.loon — Landing page: splash hero + short tour
 
-; --- Helpers ---
+; --- Loon bird SVG (swimming profile, woodblock style) ---
+[fn loon-svg []
+  [El "svg" {:viewBox "0 0 400 280"
+             :class "hero-loon"
+             :fill "none"
+             :xmlns "http://www.w3.org/2000/svg"}
+    #[; Body — sleek hull shape sitting in water
+      [El "path" {:d "M60 170 C60 145 80 115 120 105 C140 100 200 98 260 105 C310 112 350 130 360 155 C365 168 355 180 330 188 C290 198 200 200 140 198 C95 195 60 188 60 170Z"
+                  :fill "currentColor"} #[]]
+      ; Neck — long elegant curve rising from body
+      [El "path" {:d "M130 108 C128 95 124 75 118 55 C114 42 108 30 100 22 C96 18 92 18 89 22 C84 28 82 38 82 48 C82 58 85 70 90 82 C95 92 105 102 120 108Z"
+                  :fill "currentColor"} #[]]
+      ; Head — rounded with flat crown
+      [El "path" {:d "M89 22 C86 16 82 10 76 8 C70 6 62 10 58 16 C54 22 56 30 62 34 C68 38 78 36 84 30 C87 27 89 24 89 22Z"
+                  :fill "currentColor"} #[]]
+      ; Beak — long, straight, dagger-like (loon's signature)
+      [El "path" {:d "M58 16 C52 14 38 11 24 12 C20 12 18 14 18 16 C18 18 20 20 24 20 C38 21 52 22 62 24"
+                  :fill "currentColor"} #[]]
+      ; Eye — bright against dark head
+      [El "circle" {:cx "72" :cy "19" :r "3.5"
+                     :fill "var(--bg)"} #[]]
+      [El "circle" {:cx "72" :cy "19" :r "1.5"
+                     :fill "currentColor"} #[]]
+      ; Neck band — white collar mark (loon's necklace)
+      [El "path" {:d "M96 42 C100 40 106 42 108 46"
+                  :stroke "var(--bg)" :stroke-width "2.5" :fill "none"} #[]]
+      [El "path" {:d "M86 52 C90 48 98 47 104 50"
+                  :stroke "var(--bg)" :stroke-width "2" :fill "none"} #[]]
+      ; Wing pattern — carved lines showing checkered plumage
+      [El "path" {:d "M140 110 C170 106 210 105 250 110"
+                  :stroke "var(--bg)" :stroke-width "2" :fill "none" :opacity "0.5"} #[]]
+      [El "path" {:d "M135 120 C175 114 220 113 270 120"
+                  :stroke "var(--bg)" :stroke-width "2" :fill "none" :opacity "0.45"} #[]]
+      [El "path" {:d "M130 132 C175 124 225 123 280 132"
+                  :stroke "var(--bg)" :stroke-width "1.8" :fill "none" :opacity "0.4"} #[]]
+      ; Speckle dots — white spots on dark back
+      [El "circle" {:cx "165" :cy "112" :r "2" :fill "var(--bg)" :opacity "0.35"} #[]]
+      [El "circle" {:cx "190" :cy "108" :r "1.8" :fill "var(--bg)" :opacity "0.3"} #[]]
+      [El "circle" {:cx "215" :cy "110" :r "2" :fill "var(--bg)" :opacity "0.35"} #[]]
+      [El "circle" {:cx "240" :cy "113" :r "1.8" :fill "var(--bg)" :opacity "0.3"} #[]]
+      [El "circle" {:cx "178" :cy "125" :r "1.5" :fill "var(--bg)" :opacity "0.3"} #[]]
+      [El "circle" {:cx "205" :cy "122" :r "1.8" :fill "var(--bg)" :opacity "0.3"} #[]]
+      [El "circle" {:cx "232" :cy "125" :r "1.5" :fill "var(--bg)" :opacity "0.25"} #[]]
+      [El "circle" {:cx "255" :cy "120" :r "1.5" :fill "var(--bg)" :opacity "0.25"} #[]]
+      ; Tail — slight uptick at rear
+      [El "path" {:d "M340 155 C350 148 358 140 362 132 C364 128 362 126 358 128 C352 132 348 140 345 150"
+                  :fill "currentColor"} #[]]
+      ; Water line — ripples around the body
+      [El "path" {:d "M10 195 C40 190 70 195 100 192 C140 188 180 192 220 190 C260 188 300 192 340 190 C360 189 380 192 395 190"
+                  :stroke "currentColor" :stroke-width "1.5" :fill "none" :opacity "0.25"} #[]]
+      [El "path" {:d "M5 210 C35 206 70 210 110 207 C150 204 190 208 230 206 C270 204 310 208 350 206 C375 205 390 207 400 206"
+                  :stroke "currentColor" :stroke-width "1" :fill "none" :opacity "0.15"} #[]]
+      ; Reflection hint
+      [El "path" {:d "M100 200 C140 198 200 196 260 198 C300 200 330 205 340 210"
+                  :stroke "currentColor" :stroke-width "0.8" :fill "none" :opacity "0.08"} #[]]]]]
 
-[fn mono-label [text]
-  [p {:style {:font-family [font :mono]
-              :font-weight "600"
-              :font-size "0.78rem"
-              :text-transform "uppercase"
-              :letter-spacing "0.1em"
-              :color [color :muted]
-              :margin-bottom "1.5rem"}}
-    text]]
+; --- Background code snippet with label ---
+[fn bg-snippet [label code idx]
+  [div {:class [str "hero-bg-snippet hero-bg-snippet--" [str idx]]}
+    [span {:class "hero-bg-label"} label]
+    code]]
 
-[fn example-card [label title desc source]
-  [div {:style {:background [color :white]
-                :border [str "1px solid " [color :border]]
-                :border-radius "4px"
-                :overflow "hidden"}}
-    [code-block {} source]
-    [div {:style {:padding "1rem 1.25rem"}}
-      [p {:style {:font-family [font :mono]
-                  :font-size "0.72rem"
-                  :color [color :muted]
-                  :margin-bottom "0.25rem"}}
-        label]
-      [p {:style {:font-family [font :serif]
-                  :font-weight "600"
-                  :font-size "0.95rem"
-                  :color [color :text]
-                  :margin-bottom "0.35rem"}}
-        title]
-      [p {:style {:font-family [font :serif]
-                  :font-size "0.85rem"
-                  :color [color :muted]
-                  :line-height "1.6"}}
-        desc]]]]
+; --- Background code snippets ---
+[fn bg-snippets []
+  [div {:class "hero-bg"}
+    [bg-snippet "composition" "[fn compose [f g]\n  [fn [x] [f [g x]]]]" 1]
+    [bg-snippet "pipes" "[pipe data\n  [filter valid?]\n  [map transform]\n  [sort-by :score]]" 2]
+    [bg-snippet "effects" "[effect Logger\n  [log [msg : Str] : Unit]]" 3]
+    [bg-snippet "types" "[type Option\n  [Some a]\n  None]" 4]
+    [bg-snippet "pattern matching" "[match shape\n  [Circle r] => [* 3.14 r r]\n  [Rect w h] => [* w h]]" 5]
+    [bg-snippet "handlers" "[handle [greet]\n  [Ask.prompt q] => \"World\"]" 6]
+    [bg-snippet "ownership" "[let items #[1 2 3]]\n[let sorted [sort items]]\n; items moved to sorted" 7]
+    [bg-snippet "macros" "[macro when [test & body]\n  `[if ~test [do ~@body] []]]" 8]]]
 
-[fn feature-card [title desc]
-  [div {:style {:padding "1.25rem 0"}}
-    [h3 {:style {:font-family [font :serif]
-                 :font-weight "600"
-                 :font-size "1rem"
-                 :color [color :text]
-                 :margin-bottom "0.3rem"}}
-      title]
-    [p {:style {:color [color :muted]
-                :font-family [font :serif]
-                :font-size "0.9rem"
-                :line-height "1.65"}}
-      desc]]]
+; --- Tour section helper ---
+[fn tour-section [title desc link-text link-href source]
+  [div {:class "tour-section"}
+    [div {:class "tour-section-head"}
+      [p {:class "tour-section-title"} title]
+      [p {:class "tour-section-desc"} desc]
+      [a-el {:class "tour-section-link" :href link-href} [str link-text " →"]]]
+    [div {:class "tour-section-code"}
+      [code-block {} source]]]]
 
 ; --- Page ---
-
 [fn home-page []
-  [div {:class "page"
-        :style {:padding "0"}}
+  [div {:class "page" :style {:padding "0"}}
 
-    ; --- Wordmark ---
-    [div {:style {:padding "5rem 0 0"}}
-      [a-el {:href "/"
-             :style {:display "inline-block"
-                     :text-decoration "none"
-                     :color [color :text]}}
-        [span {:style {:font-family [font :mono]
-                       :font-size "4.5rem"
-                       :font-weight "600"
-                       :letter-spacing "-0.03em"}}
-          "loon"]]]
+    ; === Hero ===
+    [section-el {:class "hero"}
+      [bg-snippets]
+      [div {:class "hero-content"}
+        [div {:class "hero-text"}
+          [div {:class "hero-wordmark"} "loon"]
+          [p {:class "hero-tagline"}
+            "A functional language with invisible types, safe ownership, and algebraic effects."]
+          [p {:class "hero-sub"}
+            "Hindley-Milner inference eliminates type annotations. Ownership checking runs without lifetime syntax. Effects replace exceptions, async, and state."]
+          [div {:class "hero-actions"}
+            [btn {:href "/install"} "Install"]
+            [btn-secondary {:href "/tour"} "Take the tour"]]
+          [div {:class "hero-install"}
+            [code-block {:class "copyable"} "curl -fsSL https://loonlang.com/install.sh | sh"]]]
+        [loon-svg]]]
 
-    ; --- Hero ---
-    [section-el {:style {:max-width "600px"
-                         :padding "2rem 0 1.5rem"}}
-      [h1 {:style {:font-family [font :serif]
-                   :font-size "1.5rem"
-                   :font-weight "400"
-                   :color [color :text]
-                   :line-height "1.5"
-                   :margin-bottom "1rem"}}
-        "A functional language with invisible types, safe ownership, and algebraic effects."]
-      [p {:style {:color [color :muted]
-                  :font-family [font :serif]
-                  :font-size "1rem"
-                  :line-height "1.7"
-                  :max-width "540px"}}
-        "Hindley-Milner inference eliminates type annotations. A Rust-inspired ownership checker runs without lifetime syntax. Effects replace exceptions, async, and mutable state."]]
+    ; === Tour ===
+    [div {:class "tour"}
+      [tour-section
+        "Everything is an expression"
+        "No statements, no void returns. Every construct — if, match, let — produces a value. Square brackets replace parentheses for a clean, uniform syntax."
+        "Guide: Basics"
+        "/guide/basics"
+        [str
+          "[let greeting\n"
+          "  [if [> hour 17]\n"
+          "    \"Good evening\"\n"
+          "    \"Hello\"]]\n"
+          "\n"
+          "[println greeting]  ; \"Good evening\""]]
 
-    ; --- Install ---
-    [section-el {:style {:max-width "400px"
-                         :padding "1.5rem 0 2rem"}}
-      [code-block {:class "copyable"} "curl -fsSL https://loonlang.com/install.sh | sh"]]
+      [tour-section
+        "Functions and pipes"
+        "First-class functions with implicit do blocks. Pipe chains thread data through transformations without nesting or temp variables."
+        "Guide: Functions"
+        "/guide/functions"
+        [str
+          "[fn process [items]\n"
+          "  [pipe items\n"
+          "    [filter [fn [x] [> [get x :score 0] 0.5]]]\n"
+          "    [map [fn [x] [update x :score [fn [s] [* s 2]]]]]\n"
+          "    [sort-by [fn [x] [get x :score 0]]]]]"]]
 
-    ; --- Nav ---
-    [div {:style {:padding "0 0 5rem"
-                  :display "flex"
-                  :gap "2rem"}}
-      [a-el {:href "/tour" :style {:font-family [font :mono] :font-size "0.85rem"}} "Tour"]
-      [a-el {:href "/play" :style {:font-family [font :mono] :font-size "0.85rem"}} "Playground"]
-      [a-el {:href "/roadmap" :style {:font-family [font :mono] :font-size "0.85rem"}} "Roadmap"]
-      [a-el {:href "https://github.com/ecto/loon" :target "_blank" :style {:font-family [font :mono] :font-size "0.85rem"}} "GitHub"]]
+      [tour-section
+        "Types without typing"
+        "Complete Hindley-Milner inference with let-polymorphism and row types for records. The compiler infers every type — you never write one."
+        "Concepts: Invisible types"
+        "/concepts/invisible-types"
+        [str
+          "; The compiler infers:\n"
+          ";   compose : (b -> c) -> (a -> b) -> (a -> c)\n"
+          "[fn compose [f g]\n"
+          "  [fn [x] [f [g x]]]]\n"
+          "\n"
+          "[let inc-dbl [compose [fn [n] [+ n 1]]\n"
+          "                      [fn [n] [* n 2]]]]\n"
+          "[inc-dbl 5]  ; 11"]]
 
-    ; --- Pitch ---
-    [section-el {:style {:max-width "600px"
-                         :padding "0 0 5rem"}}
-      [mono-label "Why Loon"]
-      [p {:style {:font-family [font :serif]
-                  :font-size "1.1rem"
-                  :line-height "1.75"
-                  :color [color :text]}}
-        "Most languages force a choice: safety or expressiveness. Loon's compiler infers types through Hindley-Milner unification, checks ownership through dataflow analysis, and tracks effects through the type system — all without annotations. You write functions; the compiler proves they're safe."]]
+      [tour-section
+        "Ownership without lifetimes"
+        "Values move by default. The compiler tracks ownership through dataflow analysis and catches use-after-move, double-free, and aliasing errors — no annotations needed."
+        "Concepts: Ownership"
+        "/concepts/ownership"
+        [str
+          "[let items #[1 2 3]]\n"
+          "[let sorted [sort items]]\n"
+          "\n"
+          "; items has moved — using it here\n"
+          "; is a compile error:\n"
+          "; [println items]  ; error: moved\n"
+          "\n"
+          "[println sorted]  ; #[1 2 3]"]]
 
-    ; --- Code Example ---
-    [section-el {:style {:max-width "680px"
-                         :padding "0 0 5rem"}}
-      [mono-label "Code"]
-      [code-block {} [str
-        "; Effects replace try/catch, async, and state\n"
-        "[effect Logger\n"
-        "  [log [msg : Str] : Unit]]\n"
-        "\n"
-        "[fn process-items [items]\n"
-        "  [pipe items\n"
-        "    [filter [fn [x] [> [get x :score 0] 0.5]]]\n"
-        "    [map [fn [x]\n"
-        "      [Logger.log [str \"processing: \" [get x :name \"?\"]]]\n"
-        "      [update x :score [fn [s] [* s 2]]]]]\n"
-        "    [sort-by [fn [x] [get x :score 0]]]]]\n"
-        "\n"
-        "; The caller decides how effects are handled\n"
-        "[handle [process-items data]\n"
-        "  [Logger.log msg] => [IO.println msg]]"]]]
+      [tour-section
+        "Algebraic effects"
+        "Declare effects as interfaces, perform them in functions, handle them at call sites. Effects replace exceptions, async/await, and mutable state with a single composable mechanism."
+        "Concepts: Effects"
+        "/concepts/effects"
+        [str
+          "[effect Ask\n"
+          "  [prompt [q : Str] : Str]]\n"
+          "\n"
+          "[fn greet []\n"
+          "  [let name [Ask.prompt \"Name?\"]]\n"
+          "  [str \"Hello, \" name \"!\"]]\n"
+          "\n"
+          "; The caller decides how to handle it\n"
+          "[handle [greet]\n"
+          "  [Ask.prompt q] => \"World\"]  ; \"Hello, World!\""]]
 
-    ; --- Examples Grid ---
-    [section-el {:style {:padding "0 0 5rem"}}
-      [mono-label "Examples"]
-      [div {:style {:display "grid"
-                    :grid-template-columns "repeat(3, 1fr)"
-                    :gap "1.5rem"}}
-
-        [example-card "types" "Inference" "The compiler infers every type — even through higher-order functions and generics."
-          [str
-            "[fn compose [f g]\n"
-            "  [fn [x] [f [g x]]]]\n"
-            "\n"
-            "[let inc [fn [n] [+ n 1]]]\n"
-            "[let dbl [fn [n] [* n 2]]]\n"
-            "[let inc-dbl [compose inc dbl]]\n"
-            "\n"
-            "[println [inc-dbl 5]]  ; 11"]]
-
-        [example-card "ownership" "Move Semantics" "Values move by default. The compiler catches use-after-move without annotations."
-          [str
-            "[let items #[1 2 3]]\n"
-            "[let sorted [sort items]]\n"
-            "\n"
-            "; items has moved — this\n"
-            "; would be a compile error:\n"
-            "; [println items]\n"
-            "\n"
-            "[println sorted]  ; #[1 2 3]"]]
-
-        [example-card "effects" "Algebraic Effects" "Effects are declared, performed, and handled — replacing exceptions and async."
-          [str
-            "[effect Ask\n"
-            "  [prompt [q : Str] : Str]]\n"
-            "\n"
-            "[fn greet []\n"
-            "  [let name [Ask.prompt \"Name?\"]]\n"
-            "  [str \"Hello, \" name \"!\"]]\n"
-            "\n"
-            "[handle [greet]\n"
-            "  [Ask.prompt q] => \"World\"]"]]
-
-        [example-card "macros" "Compile-Time Macros" "Procedural macros run the full interpreter at compile time with IO access."
-          [str
-            "[macro html [tag & children]\n"
-            "  `[El ~tag {}\n"
-            "     ~@children]]\n"
-            "\n"
-            "[html \"div\"\n"
-            "  [html \"h1\" \"Hello\"]\n"
-            "  [html \"p\" \"World\"]]"]]
-
-        [example-card "matching" "Pattern Matching" "Match on values, ADTs, and wildcards with =>, destructuring as you go."
-          [str
-            "[type Shape\n"
-            "  [Circle Float]\n"
-            "  [Rect Float Float]]\n"
-            "\n"
-            "[fn area [s]\n"
-            "  [match s\n"
-            "    [Circle r]  => [* 3.14 r r]\n"
-            "    [Rect w h]  => [* w h]]]\n"
-            "\n"
-            "[println [area [Circle 5.0]]]"]]
-
-        [example-card "pipes" "Pipe Chains" "Pipe threads data through transformations — no nesting, no temp variables."
-          [str
-            "[let words #[\"hello\" \"world\"\n"
-            "             \"foo\" \"bar\"]]\n"
-            "\n"
-            "[pipe words\n"
-            "  [filter [fn [w]\n"
-            "    [> [len w] 3]]]\n"
-            "  [map uppercase]\n"
-            "  [sort]\n"
-            "  [each println]]"]]
-
-        [example-card "modules" "Module System" "File-based modules with pub visibility and dotted imports."
-          [str
-            "; math/vec2.loon\n"
-            "[pub fn add [a b]\n"
-            "  {x: [+ [get a :x 0]\n"
-            "        [get b :x 0]]\n"
-            "   y: [+ [get a :y 0]\n"
-            "        [get b :y 0]]}]\n"
-            "\n"
-            "; main.loon\n"
-            "[use math.vec2]\n"
-            "[vec2.add {x: 1} {x: 2}]"]]
-
-        [example-card "repl" "Time-Travel REPL" "Rewind mistakes, fork experiments, nest branches."
-          [str
-            "> [let x 42]\n"
-            "42\n"
-            "> [let y [+ x 1]]\n"
-            "43\n"
-            "> [rewind 1]\n"
-            "  ; y is gone, x remains\n"
-            "> [fork]\n"
-            "  ; branch the session\n"
-            "> [let y [* x 2]]\n"
-            "84"]]
-
-        [example-card "wasm" "WASM Compilation" "Compile to WebAssembly with closures, ADTs, and tree-shaking."
-          [str
-            "$ loon build app.loon\n"
-            "  Compiling app.loon\n"
-            "  Capturing closures (3)\n"
-            "  Compiling ADTs (2)\n"
-            "  Tree-shaking unused\n"
-            "  Wrote app.wasm (12kb)\n"
-            "\n"
-            "$ loon run --wasm app.loon\n"
-            "Hello from WASM!"]]]]
-
-    ; --- Features Grid ---
-    [section-el {:style {:padding "0 0 5rem"}}
-      [mono-label "Features"]
-      [div {:style {:display "grid"
-                    :grid-template-columns "repeat(3, 1fr)"
-                    :gap "0 3rem"}}
-
-        [feature-card "Hindley-Milner Inference"
-          "Complete type inference with let-polymorphism, row polymorphism for records, and trait bounds. No type annotations required."]
-        [feature-card "Ownership Checking"
-          "Move semantics, mutable borrow checking, and copy types — all inferred from dataflow. No lifetime annotations."]
-        [feature-card "Algebraic Effects"
-          "Declare, perform, and handle effects. Built-in IO, Fail, Process, and Async effects with composition."]
-
-        [feature-card "Macro System"
-          "Template macros with quasiquoting. Procedural macros with compile-time IO. Type-aware macros that run after inference."]
-        [feature-card "Pattern Matching"
-          "Match on literals, ADT constructors, and wildcards. Destructuring in let, fn params, and match arms."]
-        [feature-card "Pipe Expressions"
-          "Thread data through chains of transformations. No nesting, no intermediate variables."]
-
-        [feature-card "Language Server"
-          "Diagnostics, hover types, go-to-definition, completions with types, and inlay hints for any editor."]
-        [feature-card "Formatter"
-          "Wadler-Lindig pretty printer with form-specific rules. loon fmt to fix, loon fmt --check for CI."]
-        [feature-card "Error Tutorials"
-          "loon explain walks through every error code with examples, fixes, and interactive exercises."]
-
-        [feature-card "WASM Codegen"
-          "Compiles closures, ADTs, pattern matching, strings, and collections to WebAssembly. Tree-shaking built in."]
-        [feature-card "Time-Travel REPL"
-          "Rewind evaluations, fork sessions, nest branches. Persistent history across sessions."]
-        [feature-card "Module System"
-          "File-based with pub visibility, dotted paths, cycle detection, and per-module environments."]]]
-
-    ; --- Try it ---
-    [section-el {:style {:max-width "680px"
-                         :padding "0 0 5rem"}}
-      [mono-label "Try it"]
-      [editor-component [str
-        "; Fibonacci with pattern matching\n"
-        "[fn fib [n]\n"
-        "  [match n\n"
-        "    0 => 0\n"
-        "    1 => 1\n"
-        "    _ => [+ [fib [- n 1]] [fib [- n 2]]]]]\n"
-        "\n"
-        "[pipe [range 0 10]\n"
-        "  [map fib]\n"
-        "  [each println]]"]]]
+      [tour-section
+        "Pattern matching"
+        "Match on literals, ADT constructors, and wildcards. Destructure values directly in let bindings, function parameters, and match arms."
+        "Guide: Pattern matching"
+        "/guide/pattern-matching"
+        [str
+          "[type Shape\n"
+          "  [Circle Float]\n"
+          "  [Rect Float Float]]\n"
+          "\n"
+          "[fn area [s]\n"
+          "  [match s\n"
+          "    [Circle r]  => [* 3.14 r r]\n"
+          "    [Rect w h]  => [* w h]]]\n"
+          "\n"
+          "[area [Circle 5.0]]  ; 78.5"]]]
 
     ]]

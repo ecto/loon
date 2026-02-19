@@ -2,7 +2,7 @@
 ; Run with: cargo run -p loon-cli -- run web/dev.loon
 
 ; --- Config ---
-[let port 3000]
+[let port 3333]
 [let poll-interval 400]
 [let web-dir "web"]
 [let public-dir [str web-dir "/public"]]
