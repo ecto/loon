@@ -201,21 +201,83 @@ loon add <source>                          # Add dep (any version)
 loon add <source> --version "^1.0"         # Add with version constraint
 loon add <source> --grant "Net,IO"         # Add with effect grants
 loon remove <source>                       # Remove a dependency
+loon update                                # Re-fetch and update all deps
+loon update <source>                       # Re-fetch a specific dep
 loon why <source>                          # Show why a dep is included
 ```
 
 ### Cache Management
 
 ```bash
-loon cache warm           # Fetch all unfetched dependencies
+loon cache warm           # Resolve and fetch all deps (including transitive)
 loon cache clean          # Remove all cached packages
 ```
 
 ### Discovery
 
 ```bash
-loon search <query>       # Search the package index
+loon search <query>       # Search the package index (builtin + custom)
 loon audit --capabilities # Show effect grants for all deps
+```
+
+## Transitive Dependencies
+
+When a dependency has its own `pkg.loon`, its dependencies are resolved recursively. The resolver uses **Minimum Version Selection (MVS)**: when multiple packages depend on the same dep at different version constraints, it picks the minimum version that satisfies all constraints.
+
+```
+my-app
+  ├── github.com/cam/json ^1.0       → resolved: 1.2.0
+  └── github.com/cam/http ^2.0
+        └── github.com/cam/json ^1.2  → already satisfied by 1.2.0
+```
+
+Version conflicts (e.g. `^1.0` and `^2.0` for the same dep) produce clear error messages.
+
+All transitive deps are recorded in `lock.loon` with their hashes and dependency lists, enabling `loon why` to trace the full dependency chain.
+
+## Package Index
+
+### Built-in Index
+
+Loon ships with a built-in index of official packages (`github.com/loon-lang/*`). Search it with:
+
+```bash
+loon search json
+# github.com/loon-lang/json v0.1.0 (MIT) — JSON parser and serializer for Loon
+```
+
+### Custom Indices
+
+Add custom package indices in `pkg.loon`:
+
+```loon
+{
+  :name "my-app"
+  :version "0.1.0"
+  :indices {
+    "company" "https://git.internal.co/loon-packages/index.loon"
+  }
+  :deps {}
+}
+```
+
+Custom indices are fetched and merged with the built-in index. They use Loon data format:
+
+```loon
+{
+  :name "company-index"
+  :packages #[
+    {
+      :source "git.internal.co/team/utils"
+      :description "Internal utilities"
+      :license "Proprietary"
+      :keywords #["internal" "utils"]
+      :versions #[
+        {:version "1.0.0" :hash "abc123..."}
+      ]
+    }
+  ]
+}
 ```
 
 ## Using Dependencies

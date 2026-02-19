@@ -1266,9 +1266,92 @@ fn pkg_remove(source: &str) {
 }
 
 fn pkg_update(source: Option<&str>) {
-    match source {
-        Some(s) => println!("  {} updating {s} (Phase 3)", "TODO".yellow().bold()),
-        None => println!("  {} updating all deps (Phase 3)", "TODO".yellow().bold()),
+    let cwd = std::env::current_dir().unwrap_or_else(|e| {
+        eprintln!("{}: {e}", "error".red().bold());
+        std::process::exit(1);
+    });
+
+    let manifest = match loon_lang::pkg::Manifest::load(&cwd) {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            eprintln!("{}: no pkg.loon found", "error".red().bold());
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("{}: {e}", "error".red().bold());
+            std::process::exit(1);
+        }
+    };
+
+    // If a specific source is given, only update that one
+    let deps_to_update: Vec<(&String, &loon_lang::pkg::manifest::Dependency)> = match source {
+        Some(s) => {
+            if let Some(dep) = manifest.deps.get(s) {
+                vec![(manifest.deps.get_key_value(s).unwrap().0, dep)]
+            } else {
+                eprintln!("{}: '{s}' not found in deps", "error".red().bold());
+                std::process::exit(1);
+            }
+        }
+        None => manifest.deps.iter().collect(),
+    };
+
+    // Clear cached versions for the deps we're updating
+    let mut lockfile = loon_lang::pkg::lockfile::Lockfile::load(&cwd)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+
+    let mut updated = 0;
+    for (src, dep) in &deps_to_update {
+        if dep.is_path_dep() || !loon_lang::pkg::fetch::is_domain_qualified(src) {
+            continue;
+        }
+
+        // Remove from lockfile to force re-fetch
+        lockfile.packages.retain(|p| &p.source != *src);
+
+        print!("  {} {src}...", "Updating".cyan().bold());
+        match loon_lang::pkg::fetch::fetch_and_cache(src, dep) {
+            Ok((_path, hash)) => {
+                println!(" {}", "done".green());
+                let (_, subpath) = loon_lang::pkg::fetch::parse_source_name(src);
+                let version = dep
+                    .version
+                    .as_ref()
+                    .map(|v| v.minimum())
+                    .unwrap_or_else(|| loon_lang::pkg::Version::new(0, 0, 0));
+                let url = dep
+                    .git
+                    .clone()
+                    .or_else(|| dep.url.clone())
+                    .unwrap_or_else(|| loon_lang::pkg::fetch::git_url_from_source(src));
+
+                lockfile.upsert(loon_lang::pkg::lockfile::LockedPackage {
+                    source: src.to_string(),
+                    version,
+                    url,
+                    subpath: subpath.map(|s| s.to_string()),
+                    hash: hash.clone(),
+                    deps: vec![],
+                });
+                updated += 1;
+            }
+            Err(e) => {
+                println!();
+                eprintln!("  {} {src}: {e}", "FAIL".red().bold());
+            }
+        }
+    }
+
+    if updated > 0 {
+        if let Err(e) = lockfile.write(&cwd) {
+            eprintln!("{}: writing lock.loon: {e}", "error".red().bold());
+        } else {
+            println!("\n  {} lock.loon ({updated} package(s))", "Updated".green().bold());
+        }
+    } else {
+        println!("  Nothing to update");
     }
 }
 
@@ -1283,7 +1366,33 @@ fn pkg_why(source: &str) {
             if manifest.deps.contains_key(source) {
                 println!("  {} -> {source} (direct dependency)", manifest.name);
             } else {
-                println!("  {source} is not a dependency");
+                // Check if it's a transitive dep via the lockfile
+                match loon_lang::pkg::lockfile::Lockfile::load(&cwd) {
+                    Ok(Some(lockfile)) => {
+                        if lockfile.get(source).is_some() {
+                            // Find who depends on it
+                            let dependents: Vec<&str> = lockfile
+                                .packages
+                                .iter()
+                                .filter(|p| p.deps.iter().any(|d| d == source))
+                                .map(|p| p.source.as_str())
+                                .collect();
+                            if dependents.is_empty() {
+                                println!("  {source} is in lock.loon (transitive dependency)");
+                            } else {
+                                println!("  {source} is a transitive dependency, required by:");
+                                for dep in dependents {
+                                    println!("    -> {dep}");
+                                }
+                            }
+                        } else {
+                            println!("  {source} is not a dependency");
+                        }
+                    }
+                    _ => {
+                        println!("  {source} is not a dependency");
+                    }
+                }
             }
         }
         Ok(None) => {
@@ -1373,96 +1482,96 @@ fn pkg_cache_warm() {
         return;
     }
 
-    let mut lockfile = loon_lang::pkg::lockfile::Lockfile::load(&cwd)
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let mut fetched = 0;
-    let mut cached = 0;
-    let mut failed = 0;
-    let mut lockfile_changed = false;
+    println!("  {} dependencies (including transitive)...", "Resolving".cyan().bold());
 
-    for (source, dep) in &manifest.deps {
-        if dep.is_path_dep() {
-            continue;
-        }
-        if !loon_lang::pkg::fetch::is_domain_qualified(source) {
-            continue;
-        }
+    // Use the resolver to discover and fetch all transitive deps
+    match loon_lang::pkg::resolve::resolve(&manifest, &cwd) {
+        Ok(graph) => {
+            // Build lockfile from resolved graph
+            let mut lockfile = loon_lang::pkg::lockfile::Lockfile::load(&cwd)
+                .ok()
+                .flatten()
+                .unwrap_or_default();
 
-        // Check if already cached via lockfile hash
-        if let Some(locked) = lockfile.get(source) {
-            if loon_lang::pkg::fetch::cached_path(&locked.hash).is_some() {
-                cached += 1;
-                println!("  {} {source} (cached)", "OK".green());
-                continue;
+            let mut count = 0;
+            for (source, pkg) in &graph.packages {
+                if let Some(ref hash) = pkg.hash {
+                    let (_, subpath) = loon_lang::pkg::fetch::parse_source_name(source);
+                    let url = manifest
+                        .deps
+                        .get(source)
+                        .and_then(|d| d.git.clone().or_else(|| d.url.clone()))
+                        .unwrap_or_else(|| loon_lang::pkg::fetch::git_url_from_source(source));
+
+                    lockfile.upsert(loon_lang::pkg::lockfile::LockedPackage {
+                        source: source.clone(),
+                        version: pkg.version.clone(),
+                        url,
+                        subpath: subpath.map(|s| s.to_string()),
+                        hash: hash.clone(),
+                        deps: pkg.deps.clone(),
+                    });
+                    count += 1;
+                    println!("  {} {source} ({})", "OK".green(), &hash[..12.min(hash.len())]);
+                } else if pkg.cached_path.is_some() {
+                    println!("  {} {source} (path dep)", "OK".green());
+                }
+            }
+
+            if count > 0 {
+                if let Err(e) = lockfile.write(&cwd) {
+                    eprintln!("{}: writing lock.loon: {e}", "error".red().bold());
+                } else {
+                    println!("\n  {} lock.loon ({count} package(s))", "Updated".green().bold());
+                }
+            } else {
+                println!("\n  All dependencies cached");
             }
         }
-
-        print!("  {} {source}...", "Fetching".cyan().bold());
-        match loon_lang::pkg::fetch::fetch_and_cache(source, dep) {
-            Ok((_, hash)) => {
-                println!(" {}", "done".green());
-                let (_, subpath) = loon_lang::pkg::fetch::parse_source_name(source);
-                let version = dep
-                    .version
-                    .as_ref()
-                    .map(|v| v.minimum())
-                    .unwrap_or_else(|| loon_lang::pkg::Version::new(0, 0, 0));
-                let url = dep
-                    .git
-                    .clone()
-                    .or_else(|| dep.url.clone())
-                    .unwrap_or_else(|| loon_lang::pkg::fetch::git_url_from_source(source));
-
-                lockfile.upsert(loon_lang::pkg::lockfile::LockedPackage {
-                    source: source.clone(),
-                    version,
-                    url,
-                    subpath: subpath.map(|s| s.to_string()),
-                    hash,
-                    deps: vec![],
-                });
-                lockfile_changed = true;
-                fetched += 1;
-            }
-            Err(e) => {
-                println!();
-                eprintln!("  {} {source}: {e}", "FAIL".red().bold());
-                failed += 1;
-            }
+        Err(e) => {
+            eprintln!("{}: {e}", "error".red().bold());
+            std::process::exit(1);
         }
-    }
-
-    if lockfile_changed {
-        if let Err(e) = lockfile.write(&cwd) {
-            eprintln!("{}: writing lock.loon: {e}", "error".red().bold());
-        }
-    }
-
-    println!();
-    println!(
-        "  {} fetched, {} cached, {} failed",
-        fetched, cached, failed
-    );
-    if failed > 0 {
-        std::process::exit(1);
     }
 }
 
 fn pkg_search(query: &str) {
-    let index = loon_lang::pkg::index::builtin_index();
+    let cwd = std::env::current_dir().unwrap_or_default();
+
+    // Load manifest for custom indices (if present)
+    let custom_indices = match loon_lang::pkg::Manifest::load(&cwd) {
+        Ok(Some(manifest)) => manifest.indices,
+        _ => std::collections::HashMap::new(),
+    };
+
+    let index = loon_lang::pkg::index::combined_index(&custom_indices);
     let results = index.search(query);
     if results.is_empty() {
         println!("  No packages found for '{query}'");
-        println!(
-            "  {} the built-in index is empty — packages will be added as the ecosystem grows",
-            "note:".dimmed()
-        );
     } else {
-        for entry in results {
-            println!("  {} — {}", entry.source.bold(), entry.description);
+        for entry in &results {
+            let ver = entry
+                .versions
+                .last()
+                .map(|v| v.version.as_str())
+                .unwrap_or("?");
+            let license = entry
+                .license
+                .as_deref()
+                .unwrap_or("");
+            println!(
+                "  {} {} {} — {}",
+                entry.source.bold(),
+                format!("v{ver}").dimmed(),
+                if license.is_empty() { String::new() } else { format!("({})", license).dimmed().to_string() },
+                entry.description
+            );
         }
+        println!(
+            "\n  {} result(s). Use {} to add a dependency.",
+            results.len(),
+            "loon add <source>".bold()
+        );
     }
 }
 

@@ -166,12 +166,14 @@ What's left to finish v0.2 properly.
 - [x] Feature-gated: `pkg-fetch` (CLI only, not WASM)
 - [x] Subpath support: `github.com/cam/std#http`
 
-### Phase 3 — Resolution, registry, transitive deps (in progress)
-- [ ] Transitive dependency resolution (parse fetched pkg.loon, resolve recursively)
-- [ ] MVS (Minimum Version Selection) across the dep graph
-- [ ] `loon update` — re-resolve and update lock.loon
-- [ ] Package registry/index — fetchable index, `loon search` against real data
-- [ ] Custom indices via `:indices` in pkg.loon
+### Phase 3 — Resolution, registry, transitive deps (done)
+- [x] Transitive dependency resolution (parse fetched pkg.loon, resolve recursively)
+- [x] MVS (Minimum Version Selection) across the dep graph
+- [x] `loon update` — re-resolve and update lock.loon
+- [x] Package registry/index — built-in seed + fetchable remote indices
+- [x] Custom indices via `:indices` in pkg.loon
+- [x] `loon search` searches across builtin + custom indices
+- [x] `loon why` traces transitive dependency chains
 
 ### Future
 - [ ] `loon publish` — publish to registry
