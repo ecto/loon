@@ -73,8 +73,19 @@
 
 ; --- Bottom prev/next navigation ---
 [fn doc-prev-next [prev-title prev-href next-title next-href]
+  [let path [dom/location]]
+  [let src-path [if [= path "/"] "pages/home.loon"
+                [if [= path "/tour"] "pages/tour.loon"
+                [if [= path "/play"] "pages/play.loon"
+                [if [= path "/blog"] "pages/blog.loon"
+                [if [= path "/roadmap"] "pages/roadmap.loon"
+                [if [= path "/install"] "pages/install.loon"
+                [if [= path "/examples"] "pages/examples.loon"
+                  [str "pages" path ".loon"]]]]]]]]]
+  [let edit-url [str "https://github.com/ecto/loon/edit/main/web/src/" src-path]]
   [div {:style {:display "flex"
                 :justify-content "space-between"
+                :align-items "center"
                 :padding-top "2rem"
                 :margin-top "3rem"
                 :border-top [str "1px solid " [color :border]]}}
@@ -86,6 +97,14 @@
                      :text-decoration "none"}}
         [str "← " prev-title]]
       [span ""]]
+    [a-el {:href edit-url
+           :target "_blank"
+           :style {:font-family [font :mono]
+                   :font-size "0.75rem"
+                   :color [color :muted]
+                   :text-decoration "none"
+                   :opacity "0.6"}}
+      "Edit"]
     [if [not [= next-title ""]]
       [a-el {:href next-href
              :style {:font-family [font :mono]
