@@ -84,7 +84,7 @@
                      :font-size "0.85rem"
                      :color [color :muted]
                      :text-decoration "none"}}
-        [str "\u2190 " prev-title]]
+        [str "← " prev-title]]
       [span ""]]
     [if [not [= next-title ""]]
       [a-el {:href next-href
@@ -92,7 +92,7 @@
                      :font-size "0.85rem"
                      :color [color :muted]
                      :text-decoration "none"}}
-        [str next-title " \u2192"]]
+        [str next-title " →"]]
       [span ""]]]]
 
 ; --- Definition list for reference pages ---

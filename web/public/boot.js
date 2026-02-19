@@ -211,7 +211,11 @@ function resetDomState() {
 function domBridge(op, args) {
   switch (op) {
     case 'createElement': {
-      const el = document.createElement(args[0]);
+      const tag = args[0];
+      const svgTags = ['svg','path','circle','rect','line','polyline','polygon','ellipse','g','defs','use','text','tspan','clipPath','mask','pattern','image','foreignObject','linearGradient','radialGradient','stop'];
+      const el = svgTags.includes(tag)
+        ? document.createElementNS('http://www.w3.org/2000/svg', tag)
+        : document.createElement(tag);
       return allocHandle(el);
     }
     case 'createText': {
