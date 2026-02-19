@@ -1221,7 +1221,7 @@ fn pkg_publish() {
     println!();
     println!(
         "  Ready to publish. {}",
-        "(Registry upload coming soon)".dimmed()
+        "(Use `loon add` with git repos to share packages)".dimmed()
     );
 }
 

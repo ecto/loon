@@ -358,7 +358,7 @@ $ loon publish
   Size:    2.3 KB (4 files)
   Archive: target/my-lib-1.0.0.tar.gz
 
-  Ready to publish. (Registry upload coming soon)
+  Ready to publish. (Use `loon add` with git repos to share packages)
 ```
 
 Requirements:

@@ -183,7 +183,6 @@ What's left to finish v0.2 properly.
 - [x] Capability propagation (transitive grant checking)
 
 ### Future
-- [ ] Registry upload (server-side `loon publish` target)
 - [ ] IPFS distribution
 
 ---
