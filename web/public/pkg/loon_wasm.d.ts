@@ -44,6 +44,11 @@ export function eval_with_output(source: string): string;
 export function get_effect_log(): string;
 
 /**
+ * Infer the type of the last named binding (fn/let) in the source.
+ */
+export function infer_type(source: string): string;
+
+/**
  * Initialize the DOM bridge from JS. The bridge is a JS function that receives
  * (operation: string, args: any[]) and returns a result.
  * Must be called before eval_ui.
@@ -71,6 +76,7 @@ export interface InitOutput {
     readonly eval_ui_checked: (a: number, b: number) => [number, number];
     readonly eval_with_output: (a: number, b: number) => [number, number, number, number];
     readonly get_effect_log: () => [number, number];
+    readonly infer_type: (a: number, b: number) => [number, number, number, number];
     readonly init_dom_bridge: (a: any) => void;
     readonly invoke_callback: (a: number) => void;
     readonly clear_effect_log: () => void;

@@ -745,12 +745,16 @@ pub fn pretty_scheme(scheme: &Scheme, subst: &Subst) -> String {
 
     let mut result = String::new();
 
-    // Collect constraint strings
+    // Collect constraint strings (deduplicated)
     let mut constraint_parts = Vec::new();
+    let mut seen_constraints = BTreeSet::new();
     for (tv, bounds) in &scheme.bounds {
         if let Some(name) = var_names.get(tv) {
             for b in bounds {
-                constraint_parts.push(format!("{} {}", b.trait_name, name));
+                let key = format!("{} {}", b.trait_name, name);
+                if seen_constraints.insert(key.clone()) {
+                    constraint_parts.push(key);
+                }
             }
         }
     }

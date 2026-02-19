@@ -8,6 +8,7 @@ export const eval_ui: (a: number, b: number) => [number, number];
 export const eval_ui_checked: (a: number, b: number) => [number, number];
 export const eval_with_output: (a: number, b: number) => [number, number, number, number];
 export const get_effect_log: () => [number, number];
+export const infer_type: (a: number, b: number) => [number, number, number, number];
 export const init_dom_bridge: (a: any) => void;
 export const invoke_callback: (a: number) => void;
 export const clear_effect_log: () => void;
