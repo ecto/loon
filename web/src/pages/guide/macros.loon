@@ -30,7 +30,7 @@
 
     [doc-section "Type-Aware Macros"
       [doc-text "Regular macros run before type checking, so they only see raw syntax. Sometimes that is not enough. " [doc-code "macro+"] " macros run after the type checker, which means they can inspect types and generate type-specific code."]
-      [code-block {:label "LOON"} [str "[macro+ derive-debug [t]\n" "  `[fn debug [val] [str (type-name ~t) \": \" (inspect val)]]]"]]
+      [code-block {:label "LOON"} [str "[macro+ derive-debug [t]\n" "  `[fn debug [val] [str [type-name ~t] \": \" [inspect val]]]]]"]]
       [doc-text "This is how you build things like automatic serializers, debug formatters, or derive macros that need to know the structure of a type. Most macros do not need this, but when you do, it is there."]
       [doc-note "info" "macro+ macros run after type checking, so they can inspect types and generate type-specific code. Use regular macro when you do not need type information."]]
 

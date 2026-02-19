@@ -178,7 +178,7 @@
           "but it pays off when the compiler catches a case you forgot to handle."]]
 
       [doc-subsection "Effects"
-        [doc-text "Where Clojure lets you call " [doc-code "[slurp \"file.txt\"]"]
+        [doc-text "Where Clojure lets you call " [doc-code "(slurp \"file.txt\")"]
           " anywhere without ceremony, Loon tracks IO through the effect system. "
           "The code looks similar, but a handler must be installed to provide the IO "
           "implementation. This makes testing trivial: swap the handler and your IO-heavy "

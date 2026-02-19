@@ -1,4 +1,4 @@
-; ownership.loon — Ownership and move semantics guide
+; ownership.loon - Ownership and move semantics guide
 
 [fn guide-ownership-page []
   [doc-page "Ownership" "Move semantics and borrow inference without annotations."
@@ -33,7 +33,7 @@
         "That's where auto borrow inference comes in. When the compiler can prove that a function "
         "only reads a value (and the reference won't outlive the owner), "
         "it automatically passes a borrow instead of moving."]
-      [code-block {:label "LOON"} [str "[fn total [xs]\n" "  [fold xs 0 +]]\n" "\n" "[let nums #[1 2 3]]\n" "[println [total nums]]\n" "[println [total nums]]  ; works — compiler inferred a borrow"]]
+      [code-block {:label "LOON"} [str "[fn total [xs]\n" "  [fold xs 0 +]]\n" "\n" "[let nums #[1 2 3]]\n" "[println [total nums]]\n" "[println [total nums]]  ; works, compiler inferred a borrow"]]
       [doc-text "You didn't have to annotate anything. The compiler saw that " [doc-code "total"]
         " only reads " [doc-code "xs"] ", so it borrowed instead of moved. "
         "That's why you can call " [doc-code "total"] " twice on the same value. "
@@ -45,11 +45,11 @@
         "them instead. When you assign an integer to a new binding, both bindings are valid "
         "because each has its own independent copy."]
       [doc-list
-        [span [doc-code "Int"] " and " [doc-code "Float"] " — numeric types"]
-        [span [doc-code "Bool"] " — true and false"]
-        [span [doc-code "Char"] " — single characters"]
-        [span [doc-code "String"] " — strings are immutable and reference-counted"]]
-      [code-block {:label "LOON"} [str "[let x 42]\n" "[let y x]\n" "[println x]  ; still valid — Int is Copy"]]
+        [span [doc-code "Int"] " and " [doc-code "Float"] ", numeric types"]
+        [span [doc-code "Bool"] ", true and false"]
+        [span [doc-code "Char"] ", single characters"]
+        [span [doc-code "String"] ", strings are immutable and reference-counted"]]
+      [code-block {:label "LOON"} [str "[let x 42]\n" "[let y x]\n" "[println x]  ; still valid, Int is Copy"]]
       [doc-text "Strings are interesting here. They're reference-counted, so \"copying\" a string "
         "is really just bumping a counter. It's cheap and safe, and it means you can "
         "freely pass strings around without worrying about ownership."]]
