@@ -446,19 +446,20 @@ div > .code-block:first-child {
 }
 
 .hero-loon {
-  position: relative;
+  position: absolute;
   width: 90%;
   max-width: 800px;
-  opacity: 0.07;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0.09;
   pointer-events: none;
   z-index: 0;
-  margin-top: -2rem;
-  margin-bottom: -4rem;
 }
 @media (prefers-color-scheme: dark) {
   .hero-loon {
     filter: invert(1);
-    opacity: 0.12;
+    opacity: 0.15;
   }
 }
 
