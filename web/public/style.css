@@ -70,9 +70,16 @@ a:hover {
   font: 0.85rem var(--font-mono);
   cursor: pointer;
   text-decoration: none;
-  transition: opacity 0.15s;
+  transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
 }
-.btn:hover { opacity: 0.8; color: var(--bg); text-decoration: none; }
+.btn:hover {
+  opacity: 0.9;
+  color: var(--bg);
+  text-decoration: none;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+.btn:active { transform: translateY(0); box-shadow: none; }
 
 .btn-secondary {
   display: inline-block;
@@ -84,9 +91,15 @@ a:hover {
   font: 0.85rem var(--font-mono);
   cursor: pointer;
   text-decoration: none;
-  transition: border-color 0.15s;
+  transition: transform 0.15s, border-color 0.15s, background 0.15s;
 }
-.btn-secondary:hover { border-color: var(--fg); text-decoration: none; }
+.btn-secondary:hover {
+  border-color: var(--fg);
+  background: rgba(128, 128, 128, 0.06);
+  text-decoration: none;
+  transform: translateY(-1px);
+}
+.btn-secondary:active { transform: translateY(0); }
 
 /* Code blocks */
 .code-block {
@@ -374,9 +387,10 @@ div > .code-block:first-child {
 .hero-content {
   position: relative;
   z-index: 1;
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 3rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
   align-items: center;
   width: 100%;
 }
@@ -416,6 +430,7 @@ div > .code-block:first-child {
   display: flex;
   gap: 0.75rem;
   align-items: center;
+  justify-content: center;
   margin-bottom: 1.5rem;
 }
 
@@ -426,18 +441,30 @@ div > .code-block:first-child {
 .hero-install .code-block {
   font-size: 0.8rem;
   padding: 0.75rem 1rem;
+  border: none;
+  background: transparent;
 }
 
 .hero-loon {
-  width: 320px;
-  flex-shrink: 0;
-  color: var(--fg);
-  opacity: 0.15;
+  position: relative;
+  width: 90%;
+  max-width: 800px;
+  opacity: 0.07;
+  pointer-events: none;
+  z-index: 0;
+  margin-top: -2rem;
+  margin-bottom: -4rem;
+}
+@media (prefers-color-scheme: dark) {
+  .hero-loon {
+    filter: invert(1);
+    opacity: 0.12;
+  }
 }
 
 @media (max-width: 800px) {
   .hero { min-height: auto; padding: 3rem 0; }
-  .hero-content { grid-template-columns: 1fr; }
+  .hero-content { text-align: center; }
   .hero-loon { display: none; }
   .hero-wordmark { font-size: 3.5rem; }
   .hero-bg-snippet { display: none; }

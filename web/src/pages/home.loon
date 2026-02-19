@@ -1,60 +1,8 @@
 ; home.loon — Landing page: splash hero + short tour
 
-; --- Loon bird SVG (swimming profile, woodblock style) ---
-[fn loon-svg []
-  [El "svg" {:viewBox "0 0 400 280"
-             :class "hero-loon"
-             :fill "none"
-             :xmlns "http://www.w3.org/2000/svg"}
-    #[; Body — sleek hull shape sitting in water
-      [El "path" {:d "M60 170 C60 145 80 115 120 105 C140 100 200 98 260 105 C310 112 350 130 360 155 C365 168 355 180 330 188 C290 198 200 200 140 198 C95 195 60 188 60 170Z"
-                  :fill "currentColor"} #[]]
-      ; Neck — long elegant curve rising from body
-      [El "path" {:d "M130 108 C128 95 124 75 118 55 C114 42 108 30 100 22 C96 18 92 18 89 22 C84 28 82 38 82 48 C82 58 85 70 90 82 C95 92 105 102 120 108Z"
-                  :fill "currentColor"} #[]]
-      ; Head — rounded with flat crown
-      [El "path" {:d "M89 22 C86 16 82 10 76 8 C70 6 62 10 58 16 C54 22 56 30 62 34 C68 38 78 36 84 30 C87 27 89 24 89 22Z"
-                  :fill "currentColor"} #[]]
-      ; Beak — long, straight, dagger-like (loon's signature)
-      [El "path" {:d "M58 16 C52 14 38 11 24 12 C20 12 18 14 18 16 C18 18 20 20 24 20 C38 21 52 22 62 24"
-                  :fill "currentColor"} #[]]
-      ; Eye — bright against dark head
-      [El "circle" {:cx "72" :cy "19" :r "3.5"
-                     :fill "var(--bg)"} #[]]
-      [El "circle" {:cx "72" :cy "19" :r "1.5"
-                     :fill "currentColor"} #[]]
-      ; Neck band — white collar mark (loon's necklace)
-      [El "path" {:d "M96 42 C100 40 106 42 108 46"
-                  :stroke "var(--bg)" :stroke-width "2.5" :fill "none"} #[]]
-      [El "path" {:d "M86 52 C90 48 98 47 104 50"
-                  :stroke "var(--bg)" :stroke-width "2" :fill "none"} #[]]
-      ; Wing pattern — carved lines showing checkered plumage
-      [El "path" {:d "M140 110 C170 106 210 105 250 110"
-                  :stroke "var(--bg)" :stroke-width "2" :fill "none" :opacity "0.5"} #[]]
-      [El "path" {:d "M135 120 C175 114 220 113 270 120"
-                  :stroke "var(--bg)" :stroke-width "2" :fill "none" :opacity "0.45"} #[]]
-      [El "path" {:d "M130 132 C175 124 225 123 280 132"
-                  :stroke "var(--bg)" :stroke-width "1.8" :fill "none" :opacity "0.4"} #[]]
-      ; Speckle dots — white spots on dark back
-      [El "circle" {:cx "165" :cy "112" :r "2" :fill "var(--bg)" :opacity "0.35"} #[]]
-      [El "circle" {:cx "190" :cy "108" :r "1.8" :fill "var(--bg)" :opacity "0.3"} #[]]
-      [El "circle" {:cx "215" :cy "110" :r "2" :fill "var(--bg)" :opacity "0.35"} #[]]
-      [El "circle" {:cx "240" :cy "113" :r "1.8" :fill "var(--bg)" :opacity "0.3"} #[]]
-      [El "circle" {:cx "178" :cy "125" :r "1.5" :fill "var(--bg)" :opacity "0.3"} #[]]
-      [El "circle" {:cx "205" :cy "122" :r "1.8" :fill "var(--bg)" :opacity "0.3"} #[]]
-      [El "circle" {:cx "232" :cy "125" :r "1.5" :fill "var(--bg)" :opacity "0.25"} #[]]
-      [El "circle" {:cx "255" :cy "120" :r "1.5" :fill "var(--bg)" :opacity "0.25"} #[]]
-      ; Tail — slight uptick at rear
-      [El "path" {:d "M340 155 C350 148 358 140 362 132 C364 128 362 126 358 128 C352 132 348 140 345 150"
-                  :fill "currentColor"} #[]]
-      ; Water line — ripples around the body
-      [El "path" {:d "M10 195 C40 190 70 195 100 192 C140 188 180 192 220 190 C260 188 300 192 340 190 C360 189 380 192 395 190"
-                  :stroke "currentColor" :stroke-width "1.5" :fill "none" :opacity "0.25"} #[]]
-      [El "path" {:d "M5 210 C35 206 70 210 110 207 C150 204 190 208 230 206 C270 204 310 208 350 206 C375 205 390 207 400 206"
-                  :stroke "currentColor" :stroke-width "1" :fill "none" :opacity "0.15"} #[]]
-      ; Reflection hint
-      [El "path" {:d "M100 200 C140 198 200 196 260 198 C300 200 330 205 340 210"
-                  :stroke "currentColor" :stroke-width "0.8" :fill "none" :opacity "0.08"} #[]]]]]
+; --- Loon bird image ---
+[fn loon-img []
+  [img-el {:src "/loon.png" :alt "Loon bird" :class "hero-loon"}]]
 
 ; --- Background code snippet with label ---
 [fn bg-snippet [label code idx]
@@ -91,6 +39,7 @@
     ; === Hero ===
     [section-el {:class "hero"}
       [bg-snippets]
+      [loon-img]
       [div {:class "hero-content"}
         [div {:class "hero-text"}
           [div {:class "hero-wordmark"} "loon"]
@@ -102,8 +51,7 @@
             [btn {:href "/install"} "Install"]
             [btn-secondary {:href "/tour"} "Take the tour"]]
           [div {:class "hero-install"}
-            [code-block {:class "copyable"} "curl -fsSL https://loonlang.com/install.sh | sh"]]]
-        [loon-svg]]]
+            [code-block {:class "copyable"} "curl -fsSL https://loonlang.com/install.sh | sh"]]]]]
 
     ; === Tour ===
     [div {:class "tour"}
