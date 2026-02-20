@@ -1,5 +1,9 @@
 # loon
 
+<p align="center">
+  <img src="web/public/loon.png" alt="loon" width="200">
+</p>
+
 A functional language with invisible types, safe ownership, and algebraic effects.
 
 **[Try it in your browser →](https://loonlang.com/play)**
