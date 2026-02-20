@@ -1,7 +1,11 @@
 # loon
 
 <p align="center">
-  <img src="web/public/loon.png" alt="loon" width="200">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="web/public/loon-light.png">
+    <source media="(prefers-color-scheme: light)" srcset="web/public/loon.png">
+    <img src="web/public/loon.png" alt="loon" width="200">
+  </picture>
 </p>
 
 A functional language with invisible types, safe ownership, and algebraic effects.
