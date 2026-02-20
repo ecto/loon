@@ -1,0 +1,61 @@
+; main.loon — Performance profile analyzer entry point
+; Usage: PROFILE=path/to/recording.json loon run samples/perf/main.loon
+
+[use safari]
+[use query]
+[use profile]
+
+[fn main []
+  [let path [match [Process.env "PROFILE"]
+    [Some p] => p
+    None => [do [IO.println "error: set PROFILE env var to the recording path"]
+                [Process.exit 1]]]]
+
+  [IO.println [str "Loading " path "..."]]
+  [let raw [IO.parse-json [IO.read-file path]]]
+  [let prof [safari.parse raw]]
+
+  [IO.println ""]
+  [IO.println "=== Profile Summary ==="]
+  [IO.println [str "  Name: " [get prof :name ""]]]
+  [IO.println [str "  Source: " [get prof :source ""]]]
+  [IO.println [str "  Duration: " [profile.duration prof] "s"]]
+  [IO.println [str "  Total records: " [profile.record-count prof]]]
+  [IO.println ""]
+
+  [IO.println "=== Top 10 Network Requests (by size) ==="]
+  [each [fn [r]
+    [IO.println [str "  " [get r :size 0] " bytes  " [get r :time-ms 0.0] "ms  " [get r :url ""]]]]
+    [take 10 [query.network-by-size prof]]]
+
+  [IO.println ""]
+  [IO.println "=== Top 10 Network Requests (by time) ==="]
+  [each [fn [r]
+    [IO.println [str "  " [get r :time-ms 0.0] "ms  " [get r :size 0] " bytes  " [get r :url ""]]]]
+    [take 10 [query.network-by-time prof]]]
+
+  [IO.println ""]
+  [IO.println "=== Network by MIME Type ==="]
+  [each [fn [r]
+    [IO.println [str "  " [get r :mime "?"] ": " [get r :count 0] " reqs, " [get r :bytes 0] " bytes"]]]
+    [query.network-by-mime prof]]
+
+  [IO.println ""]
+  [IO.println "=== Stack Hotspots (top 20) ==="]
+  [each [fn [h]
+    [IO.println [str "  " [get h :count 0] "x  " [get h :name "?"] "  " [get h :url ""]]]]
+    [take 20 [query.stack-hotspots prof]]]
+
+  [IO.println ""]
+  [IO.println "=== Frame Stats ==="]
+  [let fs [query.frame-stats prof]]
+  [IO.println [str "  Frames: " [get fs :count 0]]]
+  [IO.println [str "  Avg: " [get fs :avg-ms 0.0] "ms"]]
+  [IO.println [str "  Min: " [get fs :min-ms 0.0] "ms, Max: " [get fs :max-ms 0.0] "ms"]]
+  [IO.println [str "  Jank (>16.67ms): " [get fs :jank 0]]]
+
+  [IO.println ""]
+  [IO.println "=== Script Events by Type ==="]
+  [each [fn [r]
+    [IO.println [str "  " [get r :type "?"] ": " [get r :count 0]]]]
+    [query.scripts-by-type prof]]]

@@ -1,0 +1,78 @@
+; safari.loon — Parse Safari Web Inspector timeline JSON into a normalized profile
+
+[pub fn extract-scripts [records]
+  [pipe records
+    [filter [fn [r] [= [get r "type" ""] "timeline-record-type-script"]]]
+    [map [fn [r]
+      { :event-type [get r "eventType" ""]
+        :start      [get r "startTime" 0.0]
+        :end        [get r "endTime" 0.0]
+        :url        [get r "url" ""]
+        :line       [get r "lineNumber" 0]
+        :column     [get r "columnNumber" 0] }]]]]
+
+[pub fn extract-network [records]
+  [pipe records
+    [filter [fn [r] [= [get r "type" ""] "timeline-record-type-network"]]]
+    [map [fn [r]
+      [let entry [get r "entry" {}]]
+      [let req   [get entry "request" {}]]
+      [let resp  [get entry "response" {}]]
+      [let content [get resp "content" {}]]
+      { :url       [get req "url" ""]
+        :method    [get req "method" ""]
+        :status    [get resp "status" 0]
+        :mime-type [get content "mimeType" ""]
+        :size      [get content "size" 0]
+        :time-ms   [get entry "time" 0.0] }]]]]
+
+[pub fn extract-layout [records]
+  [pipe records
+    [filter [fn [r] [= [get r "type" ""] "timeline-record-type-layout"]]]
+    [map [fn [r]
+      { :start [get r "startTime" 0.0]
+        :end   [get r "endTime" 0.0]
+        :x     [get r "x" 0]
+        :y     [get r "y" 0]
+        :width [get r "width" 0]
+        :height [get r "height" 0] }]]]]
+
+[pub fn extract-frames [records]
+  [pipe records
+    [filter [fn [r] [= [get r "type" ""] "timeline-record-type-rendering-frame"]]]
+    [map [fn [r]
+      { :start [get r "startTime" 0.0]
+        :end   [get r "endTime" 0.0] }]]]]
+
+[pub fn extract-cpu [records]
+  [pipe records
+    [filter [fn [r] [= [get r "type" ""] "timeline-record-type-cpu"]]]
+    [map [fn [r]
+      { :start [get r "startTime" 0.0]
+        :end   [get r "endTime" 0.0]
+        :usage [get r "usage" 0.0] }]]]]
+
+[pub fn extract-samples [samples]
+  [map [fn [s]
+    { :timestamp [get s "timestamp" 0.0]
+      :frames    [map [fn [f]
+                    { :name [get f "name" "?"]
+                      :url  [get f "url" ""]
+                      :line [get f "line" 0] }]
+                  [get s "stackFrames" #[]]] }]
+    samples]]
+
+[pub fn parse [raw]
+  [let rec [get raw "recording" {}]]
+  [let records [get rec "records" #[]]]
+  { :name       [get rec "displayName" "unnamed"]
+    :start-time [get rec "startTime" 0.0]
+    :end-time   [get rec "endTime" 0.0]
+    :source     "safari"
+    :scripts    [safari.extract-scripts records]
+    :network    [safari.extract-network records]
+    :layout     [safari.extract-layout records]
+    :frames     [safari.extract-frames records]
+    :cpu        [safari.extract-cpu records]
+    :markers    [get rec "markers" #[]]
+    :samples    [safari.extract-samples [get rec "samples" #[]]] }]

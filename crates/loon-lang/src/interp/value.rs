@@ -4,6 +4,9 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use super::InterpError;
 
+/// Shared reference to a serde_json::Value for lazy JSON access.
+pub type JsonRef = Arc<serde_json::Value>;
+
 /// Opaque handle to a DOM node (index into JS-side node table).
 pub type DomHandle = u32;
 
@@ -78,6 +81,8 @@ pub enum Value {
     Future(Box<Value>),
     /// Async slot — result of a spawned thread, awaitable via Condvar.
     AsyncSlot(Arc<(Mutex<Option<Value>>, Condvar)>),
+    /// Lazy JSON value — wraps serde_json::Value, converts on access.
+    Json(JsonRef),
     Unit,
 }
 
@@ -94,7 +99,47 @@ impl Value {
     pub fn display_str(&self) -> String {
         match self {
             Value::Str(s) => s.clone(),
+            Value::Json(j) => match j.as_ref() {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            },
             other => format!("{other}"),
+        }
+    }
+
+    /// Convert a JSON primitive to a native Value. Objects/arrays stay as Json.
+    pub fn from_json(j: &serde_json::Value) -> Value {
+        match j {
+            serde_json::Value::Null => Value::Unit,
+            serde_json::Value::Bool(b) => Value::Bool(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::Int(i)
+                } else {
+                    Value::Float(n.as_f64().unwrap_or(0.0))
+                }
+            }
+            serde_json::Value::String(s) => Value::Str(s.clone()),
+            serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+                Value::Json(Arc::new(j.clone()))
+            }
+        }
+    }
+
+    /// Convert a JSON value to a native Value, wrapping compounds as Json.
+    pub fn from_json_arc(j: JsonRef) -> Value {
+        match j.as_ref() {
+            serde_json::Value::Null => Value::Unit,
+            serde_json::Value::Bool(b) => Value::Bool(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::Int(i)
+                } else {
+                    Value::Float(n.as_f64().unwrap_or(0.0))
+                }
+            }
+            serde_json::Value::String(s) => Value::Str(s.clone()),
+            _ => Value::Json(j),
         }
     }
 }
@@ -167,6 +212,11 @@ impl fmt::Display for Value {
             Value::ChannelRx(id) => write!(f, "<channel-rx {id}>"),
             Value::Future(inner) => write!(f, "<future {inner}>"),
             Value::AsyncSlot(_) => write!(f, "<async-slot>"),
+            Value::Json(j) => match j.as_ref() {
+                serde_json::Value::String(s) => write!(f, "\"{s}\""),
+                serde_json::Value::Null => write!(f, "()"),
+                other => write!(f, "<json {}>", &other.to_string()[..64.min(other.to_string().len())]),
+            },
             Value::Unit => write!(f, "()"),
         }
     }
@@ -196,6 +246,16 @@ impl PartialEq for Value {
             (Value::ChannelRx(a), Value::ChannelRx(b)) => a == b,
             (Value::Future(a), Value::Future(b)) => a == b,
             (Value::AsyncSlot(_), Value::AsyncSlot(_)) => false,
+            // Json comparisons — convert to native for comparison
+            (Value::Json(j), other) | (other, Value::Json(j)) => {
+                let native = Value::from_json(j);
+                if matches!(native, Value::Json(_)) {
+                    // Both compound Json
+                    if let Value::Json(j2) = other { j == j2 } else { false }
+                } else {
+                    native == *other
+                }
+            }
             (Value::Unit, Value::Unit) => true,
             _ => false,
         }

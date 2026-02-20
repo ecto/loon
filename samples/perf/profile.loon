@@ -1,0 +1,20 @@
+; profile.loon — Format-agnostic profile accessors
+
+[pub fn duration [profile]
+  [- [get profile :end-time 0.0] [get profile :start-time 0.0]]]
+
+[pub fn record-count [profile]
+  [+ [len [get profile :scripts #[]]]
+     [len [get profile :network #[]]]
+     [len [get profile :layout #[]]]
+     [len [get profile :frames #[]]]
+     [len [get profile :cpu #[]]]]]
+
+[pub fn summary [profile]
+  { :name     [get profile :name "?"]
+    :source   [get profile :source "?"]
+    :duration [profile.duration profile]
+    :records  [profile.record-count profile]
+    :network  [len [get profile :network #[]]]
+    :scripts  [len [get profile :scripts #[]]]
+    :frames   [len [get profile :frames #[]]] }]

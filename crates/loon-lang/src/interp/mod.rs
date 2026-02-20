@@ -116,6 +116,20 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
                 Some(Err(err("IO.write-file requires a path and contents")))
             }
         }
+        ("IO", "parse-json") => {
+            if let Some(Value::Str(text)) = performed.args.first() {
+                match serde_json::from_str::<serde_json::Value>(text) {
+                    Ok(val) => Some(Ok(Value::Json(std::sync::Arc::new(val)))),
+                    Err(e) => Some(Err(perform_effect(
+                        "Fail",
+                        "fail",
+                        vec![Value::Str(e.to_string())],
+                    ))),
+                }
+            } else {
+                Some(Err(err("IO.parse-json requires a string argument")))
+            }
+        }
         ("Process", "args") => {
             let args: Vec<Value> = std::env::args().map(Value::Str).collect();
             Some(Ok(Value::Vec(args)))

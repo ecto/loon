@@ -1445,6 +1445,7 @@ dependencies = [
  "flate2",
  "insta",
  "logos",
+ "serde_json",
  "tar",
  "ureq",
  "wasm-encoder 0.227.1",

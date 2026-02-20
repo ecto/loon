@@ -45,6 +45,10 @@ impl EffectRegistry {
                     name: "write-file".to_string(),
                     params: vec!["path".to_string(), "content".to_string()],
                 },
+                EffectOp {
+                    name: "parse-json".to_string(),
+                    params: vec!["text".to_string()],
+                },
             ],
         });
         reg.register(EffectDecl {

@@ -346,6 +346,12 @@ pub fn register_builtins(env: &mut Env) {
             Value::Str(s) => Ok(Value::Int(if s.is_ascii() { s.len() } else { s.chars().count() } as i64)),
             Value::Map(m) => Ok(Value::Int(m.len() as i64)),
             Value::Set(s) => Ok(Value::Int(s.len() as i64)),
+            Value::Json(j) => match j.as_ref() {
+                serde_json::Value::Array(a) => Ok(Value::Int(a.len() as i64)),
+                serde_json::Value::Object(o) => Ok(Value::Int(o.len() as i64)),
+                serde_json::Value::String(s) => Ok(Value::Int(s.len() as i64)),
+                _ => Ok(Value::Int(0)),
+            },
             _ => Err(err("len requires a collection")),
         }
     });
@@ -377,37 +383,46 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "map", |_, args: &[Value]| {
-        match (&args[0], args.get(1)) {
-            (Value::Vec(v), Some(func)) => {
-                let mut result = Vec::new();
-                for item in v {
-                    let val = apply_value(func, std::slice::from_ref(item))?;
-                    result.push(val);
-                }
-                Ok(Value::Vec(result))
+        fn map_vec(func: &Value, v: &[Value]) -> IResult {
+            let mut result = Vec::new();
+            for item in v {
+                result.push(apply_value(func, std::slice::from_ref(item))?);
             }
-            (func, Some(Value::Vec(v))) if func.is_callable() => {
-                let mut result = Vec::new();
-                for item in v {
-                    let val = apply_value(func, std::slice::from_ref(item))?;
-                    result.push(val);
+            Ok(Value::Vec(result))
+        }
+        fn map_json(func: &Value, arr: &[serde_json::Value]) -> IResult {
+            let mut result = Vec::new();
+            for item in arr {
+                let v = Value::from_json(item);
+                result.push(apply_value(func, std::slice::from_ref(&v))?);
+            }
+            Ok(Value::Vec(result))
+        }
+        match (&args[0], args.get(1)) {
+            (Value::Vec(v), Some(func)) => map_vec(func, v),
+            (func, Some(Value::Vec(v))) if func.is_callable() => map_vec(func, v),
+            (func, Some(Value::Json(j))) if func.is_callable() => {
+                if let serde_json::Value::Array(arr) = j.as_ref() {
+                    map_json(func, arr)
+                } else {
+                    Err(err("map requires a vector or json array"))
                 }
-                Ok(Value::Vec(result))
             }
             (func, None) if func.is_callable() => {
                 let func_clone = func.clone();
                 Ok(Value::Builtin(
                     "map-partial".to_string(),
                     Arc::new(move |_, inner_args: &[Value]| {
-                        if let Value::Vec(v) = &inner_args[0] {
-                            let mut result = Vec::new();
-                            for item in v {
-                                let val = apply_value(&func_clone, std::slice::from_ref(item))?;
-                                result.push(val);
+                        match &inner_args[0] {
+                            Value::Vec(v) => map_vec(&func_clone, v),
+                            Value::Json(j) => {
+                                if let serde_json::Value::Array(arr) = j.as_ref() {
+                                    map_json(&func_clone, arr)
+                                } else {
+                                    Err(err("map requires a vector"))
+                                }
                             }
-                            Ok(Value::Vec(result))
-                        } else {
-                            Err(err("map requires a vector"))
+                            _ => Err(err("map requires a vector")),
                         }
                     }),
                 ))
@@ -417,43 +432,50 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "filter", |_, args: &[Value]| {
-        match (&args[0], args.get(1)) {
-            (Value::Vec(v), Some(func)) => {
-                let mut result = Vec::new();
-                for item in v {
-                    let val = apply_value(func, std::slice::from_ref(item))?;
-                    if val.is_truthy() {
-                        result.push(item.clone());
-                    }
+        fn filter_vec(func: &Value, v: &[Value]) -> IResult {
+            let mut result = Vec::new();
+            for item in v {
+                if apply_value(func, std::slice::from_ref(item))?.is_truthy() {
+                    result.push(item.clone());
                 }
-                Ok(Value::Vec(result))
             }
-            (func, Some(Value::Vec(v))) if func.is_callable() => {
-                let mut result = Vec::new();
-                for item in v {
-                    let val = apply_value(func, std::slice::from_ref(item))?;
-                    if val.is_truthy() {
-                        result.push(item.clone());
-                    }
+            Ok(Value::Vec(result))
+        }
+        fn filter_json(func: &Value, arr: &[serde_json::Value]) -> IResult {
+            let mut result = Vec::new();
+            for item in arr {
+                let v = Value::from_json(item);
+                if apply_value(func, std::slice::from_ref(&v))?.is_truthy() {
+                    result.push(v);
                 }
-                Ok(Value::Vec(result))
+            }
+            Ok(Value::Vec(result))
+        }
+        match (&args[0], args.get(1)) {
+            (Value::Vec(v), Some(func)) => filter_vec(func, v),
+            (func, Some(Value::Vec(v))) if func.is_callable() => filter_vec(func, v),
+            (func, Some(Value::Json(j))) if func.is_callable() => {
+                if let serde_json::Value::Array(arr) = j.as_ref() {
+                    filter_json(func, arr)
+                } else {
+                    Err(err("filter requires a vector or json array"))
+                }
             }
             (func, None) if func.is_callable() => {
                 let func_clone = func.clone();
                 Ok(Value::Builtin(
                     "filter-partial".to_string(),
                     Arc::new(move |_, inner_args: &[Value]| {
-                        if let Value::Vec(v) = &inner_args[0] {
-                            let mut result = Vec::new();
-                            for item in v {
-                                let val = apply_value(&func_clone, std::slice::from_ref(item))?;
-                                if val.is_truthy() {
-                                    result.push(item.clone());
+                        match &inner_args[0] {
+                            Value::Vec(v) => filter_vec(&func_clone, v),
+                            Value::Json(j) => {
+                                if let serde_json::Value::Array(arr) = j.as_ref() {
+                                    filter_json(&func_clone, arr)
+                                } else {
+                                    Err(err("filter requires a vector"))
                                 }
                             }
-                            Ok(Value::Vec(result))
-                        } else {
-                            Err(err("filter requires a vector"))
+                            _ => Err(err("filter requires a vector"))
                         }
                     }),
                 ))
@@ -515,6 +537,9 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "get", |_, args: &[Value]| {
+        let default = || {
+            if args.len() > 2 { args[2].clone() } else { Value::Unit }
+        };
         match (&args[0], &args[1]) {
             (Value::Map(pairs), key) => {
                 for (k, v) in pairs {
@@ -522,17 +547,28 @@ pub fn register_builtins(env: &mut Env) {
                         return Ok(v.clone());
                     }
                 }
-                if args.len() > 2 {
-                    Ok(args[2].clone())
-                } else {
-                    Ok(Value::Unit)
-                }
+                Ok(default())
             }
             (Value::Vec(v), Value::Int(i)) => {
                 let idx = *i as usize;
-                Ok(v.get(idx).cloned().unwrap_or(Value::Unit))
+                Ok(v.get(idx).cloned().unwrap_or_else(default))
             }
-            _ => Err(err("get requires a map/vector and key")),
+            (Value::Json(j), key) => {
+                let result = match (j.as_ref(), key) {
+                    (serde_json::Value::Object(obj), Value::Str(k)) => {
+                        obj.get(k.as_str()).map(Value::from_json)
+                    }
+                    (serde_json::Value::Object(obj), Value::Keyword(k)) => {
+                        obj.get(k.as_str()).map(Value::from_json)
+                    }
+                    (serde_json::Value::Array(arr), Value::Int(i)) => {
+                        arr.get(*i as usize).map(Value::from_json)
+                    }
+                    _ => None,
+                };
+                Ok(result.unwrap_or_else(default))
+            }
+            _ => Err(err("get requires a map/vector/json and key")),
         }
     });
 
@@ -605,6 +641,12 @@ pub fn register_builtins(env: &mut Env) {
             Value::Str(s) => Ok(Value::Bool(s.is_empty())),
             Value::Map(m) => Ok(Value::Bool(m.is_empty())),
             Value::Set(s) => Ok(Value::Bool(s.is_empty())),
+            Value::Json(j) => match j.as_ref() {
+                serde_json::Value::Array(a) => Ok(Value::Bool(a.is_empty())),
+                serde_json::Value::Object(o) => Ok(Value::Bool(o.is_empty())),
+                serde_json::Value::Null => Ok(Value::Bool(true)),
+                _ => Ok(Value::Bool(false)),
+            },
             _ => Err(err("empty? requires a collection")),
         }
     });
@@ -689,31 +731,44 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "each", |_, args: &[Value]| {
-        match (&args[0], args.get(1)) {
-            (Value::Vec(v), Some(func)) => {
-                for item in v {
-                    apply_value(func, std::slice::from_ref(item))?;
-                }
-                Ok(Value::Unit)
+        fn each_vec(func: &Value, v: &[Value]) -> IResult {
+            for item in v {
+                apply_value(func, std::slice::from_ref(item))?;
             }
-            (func, Some(Value::Vec(v))) if func.is_callable() => {
-                for item in v {
-                    apply_value(func, std::slice::from_ref(item))?;
+            Ok(Value::Unit)
+        }
+        fn each_json(func: &Value, arr: &[serde_json::Value]) -> IResult {
+            for item in arr {
+                let v = Value::from_json(item);
+                apply_value(func, std::slice::from_ref(&v))?;
+            }
+            Ok(Value::Unit)
+        }
+        match (&args[0], args.get(1)) {
+            (Value::Vec(v), Some(func)) => each_vec(func, v),
+            (func, Some(Value::Vec(v))) if func.is_callable() => each_vec(func, v),
+            (func, Some(Value::Json(j))) if func.is_callable() => {
+                if let serde_json::Value::Array(arr) = j.as_ref() {
+                    each_json(func, arr)
+                } else {
+                    Err(err("each requires a vector or json array"))
                 }
-                Ok(Value::Unit)
             }
             (func, None) if func.is_callable() => {
                 let func_clone = func.clone();
                 Ok(Value::Builtin(
                     "each-partial".to_string(),
                     Arc::new(move |_, inner_args: &[Value]| {
-                        if let Value::Vec(v) = &inner_args[0] {
-                            for item in v {
-                                apply_value(&func_clone, std::slice::from_ref(item))?;
+                        match &inner_args[0] {
+                            Value::Vec(v) => each_vec(&func_clone, v),
+                            Value::Json(j) => {
+                                if let serde_json::Value::Array(arr) = j.as_ref() {
+                                    each_json(&func_clone, arr)
+                                } else {
+                                    Err(err("each requires a vector"))
+                                }
                             }
-                            Ok(Value::Unit)
-                        } else {
-                            Err(err("each requires a vector"))
+                            _ => Err(err("each requires a vector")),
                         }
                     }),
                 ))
