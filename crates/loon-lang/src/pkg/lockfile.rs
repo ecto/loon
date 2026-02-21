@@ -16,7 +16,7 @@ pub struct LockedPackage {
     pub deps: Vec<String>,
 }
 
-/// The lock.loon file — deterministic, content-addressed dependency snapshot.
+/// The lock.oo file — deterministic, content-addressed dependency snapshot.
 #[derive(Debug, Clone)]
 pub struct Lockfile {
     pub version: u32,
@@ -31,9 +31,10 @@ impl Lockfile {
         }
     }
 
-    /// Load lock.loon from a directory, returning None if not found.
+    /// Load lock.oo (or lock.loon) from a directory, returning None if not found.
     pub fn load(dir: &Path) -> Result<Option<Self>, String> {
-        let lock_path = dir.join("lock.loon");
+        let lock_path = dir.join("lock.oo");
+        let lock_path = if lock_path.exists() { lock_path } else { dir.join("lock.loon") };
         if !lock_path.exists() {
             return Ok(None);
         }
@@ -45,15 +46,15 @@ impl Lockfile {
     /// Parse a lock.loon source string.
     fn parse(source: &str) -> Result<Self, String> {
         let exprs = parser::parse(source)
-            .map_err(|e| format!("lock.loon parse error: {}", e.message))?;
+            .map_err(|e| format!("lock.oo parse error: {}", e.message))?;
 
         if exprs.len() != 1 {
-            return Err("lock.loon must contain exactly one map expression".into());
+            return Err("lock.oo must contain exactly one map expression".into());
         }
 
         let pairs = match &exprs[0].kind {
             ExprKind::Map(pairs) => pairs,
-            _ => return Err("lock.loon must be a map {...}".into()),
+            _ => return Err("lock.oo must be a map {...}".into()),
         };
 
         let mut version = 1u32;
@@ -87,9 +88,9 @@ impl Lockfile {
         Ok(Lockfile { version, packages })
     }
 
-    /// Write lock.loon to a directory.
+    /// Write lock.oo to a directory.
     pub fn write(&self, dir: &Path) -> Result<(), String> {
-        let lock_path = dir.join("lock.loon");
+        let lock_path = dir.join("lock.oo");
         let content = self.serialize();
         std::fs::write(&lock_path, content)
             .map_err(|e| format!("writing {}: {e}", lock_path.display()))

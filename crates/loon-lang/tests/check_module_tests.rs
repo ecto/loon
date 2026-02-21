@@ -15,7 +15,7 @@ fn check_file(path: &str) -> Vec<String> {
 
 #[test]
 fn use_selective_import_type_checks() {
-    let errors = check_file("tests/modules/main.loon");
+    let errors = check_file("tests/modules/main.oo");
     assert!(
         errors.is_empty(),
         "expected no type errors for valid use, got: {errors:?}"
@@ -24,10 +24,10 @@ fn use_selective_import_type_checks() {
 
 #[test]
 fn use_unexported_name_errors() {
-    // internal-helper is not pub in math.loon
+    // internal-helper is not pub in math.oo
     let source = r#"[use math [internal-helper]]
 [internal-helper 5]"#;
-    let full = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/modules/main.loon");
+    let full = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/modules/main.oo");
     let base_dir = full.parent().unwrap();
     let exprs = parse(source).expect("parse");
     let mut checker = Checker::with_base_dir(base_dir);
@@ -43,7 +43,7 @@ fn use_unexported_name_errors() {
 fn use_qualified_import() {
     let source = r#"[use math]
 [math.double 5]"#;
-    let full = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/modules/main.loon");
+    let full = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/modules/main.oo");
     let base_dir = full.parent().unwrap();
     let exprs = parse(source).expect("parse");
     let mut checker = Checker::with_base_dir(base_dir);
@@ -59,7 +59,7 @@ fn use_qualified_import() {
 fn use_aliased_import() {
     let source = r#"[use math :as m]
 [m.double 5]"#;
-    let full = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/modules/main.loon");
+    let full = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/modules/main.oo");
     let base_dir = full.parent().unwrap();
     let exprs = parse(source).expect("parse");
     let mut checker = Checker::with_base_dir(base_dir);

@@ -760,7 +760,7 @@ fn module_use() {
     let dir = std::env::temp_dir().join("loon_test_modules");
     let _ = std::fs::create_dir_all(&dir);
     std::fs::write(
-        dir.join("mymath.loon"),
+        dir.join("mymath.oo"),
         "[pub fn double [x] [* x 2]]\n[pub fn triple [x] [* x 3]]\n",
     )
     .unwrap();

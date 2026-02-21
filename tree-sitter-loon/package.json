@@ -37,6 +37,7 @@
       "scope": "source.loon",
       "injection-regex": "^loon$",
       "file-types": [
+        "oo",
         "loon"
       ],
       "highlights": "queries/highlights.scm"

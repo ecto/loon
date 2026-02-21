@@ -323,6 +323,6 @@ mod tests {
         let diag = LoonDiagnostic::new(ErrorCode::E0200, "test error")
             .with_label(Span::new(0, 3), "here", true);
         // Just verify it doesn't panic
-        report_diagnostic("test.loon", "[+ 1 2]", &diag);
+        report_diagnostic("test.oo", "[+ 1 2]", &diag);
     }
 }

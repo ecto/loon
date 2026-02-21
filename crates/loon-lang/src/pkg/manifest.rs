@@ -6,7 +6,7 @@ use crate::parser;
 
 use super::version::VersionConstraint;
 
-/// A parsed pkg.loon manifest.
+/// A parsed pkg.oo manifest.
 #[derive(Debug, Clone)]
 pub struct Manifest {
     pub name: String,
@@ -15,7 +15,7 @@ pub struct Manifest {
     pub indices: HashMap<String, String>,
 }
 
-/// A dependency entry from pkg.loon.
+/// A dependency entry from pkg.oo.
 #[derive(Debug, Clone)]
 pub struct Dependency {
     /// The source identifier (e.g. "github.com/cam/json")
@@ -43,9 +43,10 @@ impl Dependency {
 }
 
 impl Manifest {
-    /// Load a pkg.loon from a directory, returning None if not found.
+    /// Load a pkg.oo (or pkg.loon) from a directory, returning None if not found.
     pub fn load(dir: &Path) -> Result<Option<Self>, String> {
-        let manifest_path = dir.join("pkg.loon");
+        let manifest_path = dir.join("pkg.oo");
+        let manifest_path = if manifest_path.exists() { manifest_path } else { dir.join("pkg.loon") };
         if !manifest_path.exists() {
             return Ok(None);
         }
@@ -56,15 +57,15 @@ impl Manifest {
 
     /// Parse manifest source text.
     pub fn parse(source: &str, base_dir: &Path) -> Result<Self, String> {
-        let exprs = parser::parse(source).map_err(|e| format!("pkg.loon parse error: {}", e.message))?;
+        let exprs = parser::parse(source).map_err(|e| format!("pkg.oo parse error: {}", e.message))?;
 
         if exprs.len() != 1 {
-            return Err("pkg.loon must contain exactly one map expression".into());
+            return Err("pkg.oo must contain exactly one map expression".into());
         }
 
         let pairs = match &exprs[0].kind {
             ExprKind::Map(pairs) => pairs,
-            _ => return Err("pkg.loon must be a map {...}".into()),
+            _ => return Err("pkg.oo must be a map {...}".into()),
         };
 
         let mut name = String::new();
@@ -117,7 +118,7 @@ impl Manifest {
         }
 
         if name.is_empty() {
-            return Err("pkg.loon must have a :name field".into());
+            return Err("pkg.oo must have a :name field".into());
         }
 
         Ok(Manifest {

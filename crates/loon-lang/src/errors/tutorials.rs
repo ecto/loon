@@ -630,17 +630,17 @@ fn tutorial_unresolved_module() -> Tutorial {
                  \n\
                  \x20   [import utils]       ;; error: cannot find module 'utils'\n\
                  \n\
-                 The file `utils.loon` doesn't exist in the expected location."
+                 The file `utils.oo` doesn't exist in the expected location."
                     .to_string(),
             ),
             TutorialStep::Text(
                 "  Fix: Create the file or correct the path.\n\
                  \n\
-                 \x20   ;; Create utils.loon in the same directory:\n\
-                 \x20   ;; utils.loon\n\
+                 \x20   ;; Create utils.oo in the same directory:\n\
+                 \x20   ;; utils.oo\n\
                  \x20   [fn helper [] 42]\n\
                  \n\
-                 \x20   ;; main.loon\n\
+                 \x20   ;; main.oo\n\
                  \x20   [import utils]\n\
                  \x20   [utils.helper]"
                     .to_string(),
@@ -663,10 +663,10 @@ fn tutorial_private_symbol() -> Tutorial {
             TutorialStep::Text(
                 "  Example:\n\
                  \n\
-                 \x20   ;; helpers.loon\n\
+                 \x20   ;; helpers.oo\n\
                  \x20   [let secret 42]\n\
                  \n\
-                 \x20   ;; main.loon\n\
+                 \x20   ;; main.oo\n\
                  \x20   [import helpers]\n\
                  \x20   [println helpers.secret]  ;; error: 'secret' is private"
                     .to_string(),
@@ -674,10 +674,10 @@ fn tutorial_private_symbol() -> Tutorial {
             TutorialStep::Text(
                 "  Fix: Use `fn` to export, or access through a public function.\n\
                  \n\
-                 \x20   ;; helpers.loon\n\
+                 \x20   ;; helpers.oo\n\
                  \x20   [fn get-secret [] 42]\n\
                  \n\
-                 \x20   ;; main.loon\n\
+                 \x20   ;; main.oo\n\
                  \x20   [import helpers]\n\
                  \x20   [println [helpers.get-secret]]"
                     .to_string(),
@@ -700,23 +700,23 @@ fn tutorial_circular_dependency() -> Tutorial {
             TutorialStep::Text(
                 "  Example:\n\
                  \n\
-                 \x20   ;; a.loon\n\
+                 \x20   ;; a.oo\n\
                  \x20   [import b]\n\
                  \n\
-                 \x20   ;; b.loon\n\
+                 \x20   ;; b.oo\n\
                  \x20   [import a]   ;; error: circular dependency: a -> b -> a"
                     .to_string(),
             ),
             TutorialStep::Text(
                 "  Fix: Break the cycle by extracting shared code into a third module.\n\
                  \n\
-                 \x20   ;; shared.loon\n\
+                 \x20   ;; shared.oo\n\
                  \x20   [fn helper [] 42]\n\
                  \n\
-                 \x20   ;; a.loon\n\
+                 \x20   ;; a.oo\n\
                  \x20   [import shared]\n\
                  \n\
-                 \x20   ;; b.loon\n\
+                 \x20   ;; b.oo\n\
                  \x20   [import shared]"
                     .to_string(),
             ),

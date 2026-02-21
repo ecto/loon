@@ -21,11 +21,11 @@ pub struct ModuleExports {
 /// Cache for loaded modules
 pub struct ModuleCache {
     modules: HashMap<PathBuf, ModuleState>,
-    /// The root manifest (pkg.loon), if present.
+    /// The root manifest (pkg.oo), if present.
     manifest: Option<Manifest>,
-    /// The lockfile (lock.loon), if present.
+    /// The lockfile (lock.oo), if present.
     lockfile: Option<Lockfile>,
-    /// The project root directory (where pkg.loon lives).
+    /// The project root directory (where pkg.oo lives).
     #[allow(dead_code)]
     project_root: Option<PathBuf>,
 }
@@ -77,14 +77,15 @@ impl ModuleCache {
     }
 
     /// Resolve a dotted module path to a file path.
-    /// `"http.server"` with base `/src` → `/src/http/server.loon`
+    /// `"http.server"` with base `/src` → `/src/http/server.oo`
     pub fn resolve_path(module_path: &str, base_dir: &Path) -> PathBuf {
         let parts: Vec<&str> = module_path.split('.').collect();
         let mut path = base_dir.to_path_buf();
         for part in &parts {
             path = path.join(part);
         }
-        path.with_extension("loon")
+        let oo = path.with_extension("oo");
+        if oo.exists() { oo } else { path.with_extension("loon") }
     }
 
     /// Check if a module path corresponds to a package dependency.
@@ -94,8 +95,11 @@ impl ModuleCache {
         let dep = manifest.deps.get(module_path)?;
         let dep_dir = dep.path.as_ref()?;
 
-        // Look for src/main.loon, src/lib.loon, or <name>.loon in the dep dir
+        // Look for src/lib.oo, src/main.oo, <name>.oo (then .loon fallbacks) in the dep dir
         let candidates = [
+            dep_dir.join("src").join("lib.oo"),
+            dep_dir.join("src").join("main.oo"),
+            dep_dir.join(format!("{module_path}.oo")),
             dep_dir.join("src").join("lib.loon"),
             dep_dir.join("src").join("main.loon"),
             dep_dir.join(format!("{module_path}.loon")),
@@ -145,7 +149,7 @@ impl ModuleCache {
                     return crate::pkg::fetch::find_entry_point(&dep_dir)
                         .ok_or_else(|| {
                             format!(
-                                "no entry point (src/lib.loon or src/main.loon) in cached package '{module_path}'"
+                                "no entry point (src/lib.oo or src/main.oo) in cached package '{module_path}'"
                             )
                         })
                         .map(Some);
@@ -169,7 +173,7 @@ impl ModuleCache {
                     return crate::pkg::fetch::find_entry_point(&dep_dir)
                         .ok_or_else(|| {
                             format!(
-                                "no entry point (src/lib.loon or src/main.loon) in fetched package '{module_path}'"
+                                "no entry point (src/lib.oo or src/main.oo) in fetched package '{module_path}'"
                             )
                         })
                         .map(Some);

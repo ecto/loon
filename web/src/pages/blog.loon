@@ -62,6 +62,22 @@
                    :margin-bottom "3.5rem"}}
         "Changelog"]
 
+      ; ── v0.4.20 — .oo file extension ─────────────────────────────────
+
+      [blog-article ".oo" "Feb 21, 2026"
+
+        [p "Loon source files now use the .oo extension. Shorter, distinctive, from the middle of l-oo-n. All tooling, samples, and new project scaffolding default to .oo. Existing .loon files continue to work everywhere as a fallback."]
+
+        [blog-code [str
+          "; create a new project\n"
+          "loon new my-app\n"
+          "\n"
+          "; creates:\n"
+          ";   my-app/pkg.oo\n"
+          ";   my-app/src/main.oo"]]
+
+        [p "Module resolution, manifest loading (pkg.oo), and lockfiles (lock.oo) all try .oo first, then fall back to .loon. The tree-sitter grammar recognizes both extensions. No migration required \x97 rename your files when you feel like it."]]
+
       ; ── Transparent Wildcards ────────────────────────────────────────
 
       [blog-article "Transparent Wildcards" "Feb 21, 2026"
@@ -104,7 +120,7 @@
           "[match shape\n"
           "  [Circle r] [* 3.14 r r]\n"
           "  [Rect w h] [* w h]]"]]
-        [p "Same for handle blocks. Every .loon file in the codebase got cleaner."]
+        [p "Same for handle blocks. Every source file in the codebase got cleaner."]
 
         [blog-h3 "Killing /"]
         [p "Effect annotations used a / separator between params and effect set. Now the set literal sits directly after the params — no separator needed."]

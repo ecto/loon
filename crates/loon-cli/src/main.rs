@@ -5,7 +5,7 @@ use owo_colors::OwoColorize;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "loon", about = "The Loon programming language", version)]
+#[command(name = "loon", about = "The Loon programming language", version = env!("GIT_VERSION"))]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -41,7 +41,7 @@ enum Command {
     Lsp,
     /// Format Loon source files
     Fmt {
-        /// Files to format (recursively finds .loon files in directories)
+        /// Files to format (recursively finds .oo files in directories)
         files: Vec<PathBuf>,
         /// Check formatting without modifying files (exit 1 if unformatted)
         #[arg(long)]
@@ -54,7 +54,7 @@ enum Command {
         #[arg(long)]
         route: String,
     },
-    /// Add a dependency to pkg.loon
+    /// Add a dependency to pkg.oo
     Add {
         /// Package source (e.g. github.com/cam/json)
         source: String,
@@ -65,7 +65,7 @@ enum Command {
         #[arg(short, long)]
         grant: Option<String>,
     },
-    /// Remove a dependency from pkg.loon
+    /// Remove a dependency from pkg.oo
     Remove {
         /// Package source to remove
         source: String,
@@ -100,7 +100,7 @@ enum Command {
         /// Search query
         query: String,
     },
-    /// Initialize pkg.loon in the current directory
+    /// Initialize pkg.oo in the current directory
     Init,
 }
 
@@ -466,17 +466,17 @@ fn new_project(name: &str) {
 }}
 "#
     );
-    std::fs::write(dir.join("pkg.loon"), pkg_content).unwrap();
+    std::fs::write(dir.join("pkg.oo"), pkg_content).unwrap();
 
     let main_content = r#"[fn main []
   [println "hello, world!"]]
 "#;
-    std::fs::write(src_dir.join("main.loon"), main_content).unwrap();
+    std::fs::write(src_dir.join("main.oo"), main_content).unwrap();
 
     println!("  {} {name}/", "Created".green().bold());
-    println!("  {} {name}/src/main.loon", "Created".green().bold());
-    println!("  {} {name}/pkg.loon", "Created".green().bold());
-    println!("  {} cd {name} && loon run src/main.loon", "->".dimmed());
+    println!("  {} {name}/src/main.oo", "Created".green().bold());
+    println!("  {} {name}/pkg.oo", "Created".green().bold());
+    println!("  {} cd {name} && loon run src/main.oo", "->".dimmed());
 }
 
 fn test_file(path: &PathBuf) {
@@ -628,7 +628,7 @@ fn fmt_files(files: &[PathBuf], check: bool) {
     };
 
     if paths.is_empty() {
-        println!("No .loon files found");
+        println!("No .oo files found");
         return;
     }
 
@@ -711,7 +711,7 @@ fn collect_loon_files(dir: &PathBuf) -> Vec<PathBuf> {
             if !name.starts_with('.') && name != "target" {
                 result.extend(collect_loon_files(&path));
             }
-        } else if path.extension().is_some_and(|e| e == "loon") {
+        } else if path.extension().is_some_and(|e| e == "oo" || e == "loon") {
             result.push(path);
         }
     }
@@ -1021,7 +1021,7 @@ fn pkg_verify() {
         Ok(Some(lf)) => lf,
         Ok(None) => {
             eprintln!(
-                "{}: no lock.loon found (run {} first)",
+                "{}: no lock.oo found (run {} first)",
                 "error".red().bold(),
                 "loon cache warm".bold()
             );
@@ -1125,7 +1125,7 @@ fn pkg_publish() {
     let manifest = match loon_lang::pkg::Manifest::load(&cwd) {
         Ok(Some(m)) => m,
         Ok(None) => {
-            eprintln!("{}: no pkg.loon found", "error".red().bold());
+            eprintln!("{}: no pkg.oo found", "error".red().bold());
             std::process::exit(1);
         }
         Err(e) => {
@@ -1137,24 +1137,25 @@ fn pkg_publish() {
     // Validate required fields
     if manifest.name.is_empty() {
         eprintln!(
-            "{}: pkg.loon must have a :name field",
+            "{}: pkg.oo must have a :name field",
             "error".red().bold()
         );
         std::process::exit(1);
     }
     if manifest.version.is_empty() {
         eprintln!(
-            "{}: pkg.loon must have a :version field",
+            "{}: pkg.oo must have a :version field",
             "error".red().bold()
         );
         std::process::exit(1);
     }
 
-    // Check that src/lib.loon exists
-    let lib_path = cwd.join("src").join("lib.loon");
+    // Check that src/lib.oo (or src/lib.loon) exists
+    let lib_oo = cwd.join("src").join("lib.oo");
+    let lib_path = if lib_oo.exists() { lib_oo } else { cwd.join("src").join("lib.loon") };
     if !lib_path.exists() {
         eprintln!(
-            "{}: src/lib.loon not found (required for publishing)",
+            "{}: src/lib.oo not found (required for publishing)",
             "error".red().bold()
         );
         std::process::exit(1);
@@ -1201,7 +1202,7 @@ fn pkg_publish() {
         manifest.name,
         manifest.version
     );
-    println!("  {}: src/lib.loon", "Entry".bold());
+    println!("  {}: {}", "Entry".bold(), lib_path.strip_prefix(&cwd).unwrap_or(&lib_path).display());
     println!(
         "  {}: {}",
         "Hash".bold(),
@@ -1231,7 +1232,7 @@ fn count_publishable_files(dir: &std::path::Path) -> usize {
         for entry in entries.flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
-            if name == ".git" || name == "target" || name == "lock.loon" {
+            if name == ".git" || name == "target" || name == "lock.oo" || name == "lock.loon" {
                 continue;
             }
             if path.is_dir() {
@@ -1249,9 +1250,9 @@ fn pkg_init() {
         eprintln!("{}: {e}", "error".red().bold());
         std::process::exit(1);
     });
-    let pkg_path = cwd.join("pkg.loon");
-    if pkg_path.exists() {
-        eprintln!("{}: pkg.loon already exists", "error".red().bold());
+    let pkg_path = cwd.join("pkg.oo");
+    if pkg_path.exists() || cwd.join("pkg.loon").exists() {
+        eprintln!("{}: pkg.oo already exists", "error".red().bold());
         std::process::exit(1);
     }
 
@@ -1270,10 +1271,10 @@ fn pkg_init() {
 "#
     );
     std::fs::write(&pkg_path, content).unwrap_or_else(|e| {
-        eprintln!("{} writing pkg.loon: {e}", "error".red().bold());
+        eprintln!("{} writing pkg.oo: {e}", "error".red().bold());
         std::process::exit(1);
     });
-    println!("  {} pkg.loon", "Created".green().bold());
+    println!("  {} pkg.oo", "Created".green().bold());
 }
 
 fn pkg_add(source: &str, version: Option<&str>, grant: Option<&str>) {
@@ -1281,10 +1282,11 @@ fn pkg_add(source: &str, version: Option<&str>, grant: Option<&str>) {
         eprintln!("{}: {e}", "error".red().bold());
         std::process::exit(1);
     });
-    let pkg_path = cwd.join("pkg.loon");
+    let pkg_oo = cwd.join("pkg.oo");
+    let pkg_path = if pkg_oo.exists() { pkg_oo } else { cwd.join("pkg.loon") };
     if !pkg_path.exists() {
         eprintln!(
-            "{}: no pkg.loon found (run {} first)",
+            "{}: no pkg.oo found (run {} first)",
             "error".red().bold(),
             "loon init".bold()
         );
@@ -1377,10 +1379,10 @@ fn pkg_add(source: &str, version: Option<&str>, grant: Option<&str>) {
                             });
 
                             if let Err(e) = lockfile.write(&cwd) {
-                                eprintln!("{}: writing lock.loon: {e}", "error".red().bold());
+                                eprintln!("{}: writing lock.oo: {e}", "error".red().bold());
                             } else {
                                 println!(
-                                    "  {} lock.loon (hash: {})",
+                                    "  {} lock.oo (hash: {})",
                                     "Updated".green().bold(),
                                     &hash[..12.min(hash.len())]
                                 );
@@ -1402,7 +1404,7 @@ fn pkg_add(source: &str, version: Option<&str>, grant: Option<&str>) {
                 }
             }
             Err(e) => {
-                eprintln!("{}: re-parsing pkg.loon: {e}", "error".red().bold());
+                eprintln!("{}: re-parsing pkg.oo: {e}", "error".red().bold());
             }
         }
     }
@@ -1446,9 +1448,10 @@ fn pkg_remove(source: &str) {
         eprintln!("{}: {e}", "error".red().bold());
         std::process::exit(1);
     });
-    let pkg_path = cwd.join("pkg.loon");
+    let pkg_oo = cwd.join("pkg.oo");
+    let pkg_path = if pkg_oo.exists() { pkg_oo } else { cwd.join("pkg.loon") };
     if !pkg_path.exists() {
-        eprintln!("{}: no pkg.loon found", "error".red().bold());
+        eprintln!("{}: no pkg.oo found", "error".red().bold());
         std::process::exit(1);
     }
 
@@ -1513,7 +1516,7 @@ fn pkg_update(source: Option<&str>) {
     let manifest = match loon_lang::pkg::Manifest::load(&cwd) {
         Ok(Some(m)) => m,
         Ok(None) => {
-            eprintln!("{}: no pkg.loon found", "error".red().bold());
+            eprintln!("{}: no pkg.oo found", "error".red().bold());
             std::process::exit(1);
         }
         Err(e) => {
@@ -1585,9 +1588,9 @@ fn pkg_update(source: Option<&str>) {
 
     if updated > 0 {
         if let Err(e) = lockfile.write(&cwd) {
-            eprintln!("{}: writing lock.loon: {e}", "error".red().bold());
+            eprintln!("{}: writing lock.oo: {e}", "error".red().bold());
         } else {
-            println!("\n  {} lock.loon ({updated} package(s))", "Updated".green().bold());
+            println!("\n  {} lock.oo ({updated} package(s))", "Updated".green().bold());
         }
     } else {
         println!("  Nothing to update");
@@ -1617,7 +1620,7 @@ fn pkg_why(source: &str) {
                                 .map(|p| p.source.as_str())
                                 .collect();
                             if dependents.is_empty() {
-                                println!("  {source} is in lock.loon (transitive dependency)");
+                                println!("  {source} is in lock.oo (transitive dependency)");
                             } else {
                                 println!("  {source} is a transitive dependency, required by:");
                                 for dep in dependents {
@@ -1635,7 +1638,7 @@ fn pkg_why(source: &str) {
             }
         }
         Ok(None) => {
-            eprintln!("{}: no pkg.loon found", "error".red().bold());
+            eprintln!("{}: no pkg.oo found", "error".red().bold());
             std::process::exit(1);
         }
         Err(e) => {
@@ -1654,7 +1657,7 @@ fn pkg_audit(capabilities: bool) {
     let manifest = match loon_lang::pkg::Manifest::load(&cwd) {
         Ok(Some(m)) => m,
         Ok(None) => {
-            eprintln!("{}: no pkg.loon found", "error".red().bold());
+            eprintln!("{}: no pkg.oo found", "error".red().bold());
             std::process::exit(1);
         }
         Err(e) => {
@@ -1866,7 +1869,7 @@ fn pkg_cache_warm() {
     let manifest = match loon_lang::pkg::Manifest::load(&cwd) {
         Ok(Some(m)) => m,
         Ok(None) => {
-            eprintln!("{}: no pkg.loon found", "error".red().bold());
+            eprintln!("{}: no pkg.oo found", "error".red().bold());
             std::process::exit(1);
         }
         Err(e) => {
@@ -1918,9 +1921,9 @@ fn pkg_cache_warm() {
 
             if count > 0 {
                 if let Err(e) = lockfile.write(&cwd) {
-                    eprintln!("{}: writing lock.loon: {e}", "error".red().bold());
+                    eprintln!("{}: writing lock.oo: {e}", "error".red().bold());
                 } else {
-                    println!("\n  {} lock.loon ({count} package(s))", "Updated".green().bold());
+                    println!("\n  {} lock.oo ({count} package(s))", "Updated".green().bold());
                 }
             } else {
                 println!("\n  All dependencies cached");

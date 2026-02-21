@@ -68,9 +68,11 @@ pub fn archive_url_from_source(source: &str, version: &str) -> Option<String> {
 }
 
 /// Find the entry point file in a dependency directory.
-/// Looks for `src/lib.loon`, then `src/main.loon`.
+/// Looks for `src/lib.oo`, `src/main.oo`, then `.loon` fallbacks.
 pub fn find_entry_point(dep_dir: &Path) -> Option<PathBuf> {
     let candidates = [
+        dep_dir.join("src").join("lib.oo"),
+        dep_dir.join("src").join("main.oo"),
         dep_dir.join("src").join("lib.loon"),
         dep_dir.join("src").join("main.loon"),
     ];
@@ -250,7 +252,7 @@ mod inner {
         Ok(())
     }
 
-    /// Create a `.tar.gz` archive of a directory, excluding `.git/`, `target/`, and `lock.loon`.
+    /// Create a `.tar.gz` archive of a directory, excluding `.git/`, `target/`, `lock.oo`, and `lock.loon`.
     pub fn create_tarball(dir: &Path, output_path: &Path) -> Result<u64, String> {
         let file = std::fs::File::create(output_path)
             .map_err(|e| format!("creating {}: {e}", output_path.display()))?;
@@ -291,7 +293,7 @@ mod inner {
             let entry = entry.map_err(|e| format!("dir entry: {e}"))?;
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
-            if name == ".git" || name == "target" || name == "lock.loon" {
+            if name == ".git" || name == "target" || name == "lock.oo" || name == "lock.loon" {
                 continue;
             }
             if path.is_dir() {
