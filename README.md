@@ -14,7 +14,7 @@ A functional language with invisible types, safe ownership, and algebraic effect
 
 ```
 [fn greet [name]
-  [str "Hello, " name "!"]]
+  [println "Hello, {name}!"]]
 
 [pipe [range 1 10]
   [filter [fn [n] [> n 4]]]
@@ -27,7 +27,8 @@ A functional language with invisible types, safe ownership, and algebraic effect
 - **Type Inference** — Full Hindley-Milner with let-polymorphism and row types. No annotations required.
 - **Ownership** — Rust-style move semantics and borrow checking, inferred from dataflow. No lifetimes.
 - **Algebraic Effects** — Declare, perform, and handle effects. Replaces exceptions, async, and mutable state.
-- **Pattern Matching** — Match on literals, ADT constructors, and wildcards with destructuring.
+- **Pattern Matching** — Positional pairs with destructuring and expression guards.
+- **Type Methods** — Define methods inside `type` declarations with automatic dispatch.
 - **Macros** — Template macros with quasiquoting. Procedural macros with compile-time IO.
 - **Pipes** — Thread data through transformation chains. No nesting, no temp variables.
 - **Language Server** — Diagnostics, hover types, go-to-definition, completions, inlay hints.

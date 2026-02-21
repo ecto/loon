@@ -67,9 +67,9 @@
         "Multi-arity functions"
         "Module system (use, pub, cycle detection)"
         "Pipe expressions"
-        "Pattern matching with match/=>"
+        "Pattern matching"
         "? sugar for Result/Option"
-        "String interpolation (fmt)"]
+        "String interpolation"]
 
       [rm-phase "v0.3 — Tooling" "Done"
         "Formatter (Wadler-Lindig pretty printer, loon fmt)"
@@ -84,6 +84,16 @@
         "Type-aware macros (macro+)"
         "Compile-time effects (IO, Net, Env)"
         "macroexpand for debugging"]
+
+      [rm-phase "v0.4.1 — Syntax Refresh" "Done"
+        "Kill => in match/handle — positional pairs"
+        "Kill / for effects — #{IO Fail} set literals"
+        "Universal string interpolation — \"{name}\" desugars automatically"
+        "Fix dom/ to dom. namespace convention"
+        "Map destructuring with defaults in fn params"
+        "Match guards — expression patterns via match true"
+        "Type methods with automatic dispatch"
+        "Record types with named fields and dot access"]
 
       [rm-phase "v0.5 — Type System" "In Progress"
         "Row polymorphism for records"

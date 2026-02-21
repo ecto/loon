@@ -10,7 +10,7 @@
         "returns the last one. No " [doc-code "return"] " keyword needed."]
       [code-block {} [str
         "[fn greet [name]\n"
-        "  [println [str \"Hello, \" name \"!\"]]]"]]
+        "  [println \"Hello, \{name\}!\"]]"]]
       [doc-text "This defines a function called " [doc-code "greet"] " that takes one argument. "
         "Because " [doc-code "fn"] " bodies get that implicit " [doc-code "do"]
         ", you could add more expressions before the " [doc-code "println"]
@@ -35,9 +35,8 @@
         "The runtime dispatches to the right one based on argument count."]
       [code-block {} [str
         "[fn greet\n"
-        "  ([name] [str \"Hello, \" name \"!\"])\n"
-        "  ([first last]\n"
-        "    [str \"Hello, \" first \" \" last \"!\"])]"]]
+        "  ([name] \"Hello, \{name\}!\")\n"
+        "  ([first last] \"Hello, \{first\} \{last\}!\")]"]]
       [doc-text "Call " [doc-code "[greet \"Ada\"]"] " and you get the single-argument version. "
         "Call " [doc-code "[greet \"Ada\" \"Lovelace\"]"] " and you get the two-argument version. "
         "This is cleaner than optional parameters or overloading because each arity has "

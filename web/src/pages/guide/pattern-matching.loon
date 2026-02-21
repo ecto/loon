@@ -6,8 +6,8 @@
     [doc-section "Basic Match"
       [doc-text "Pattern matching is one of Loon's most powerful features, and once you get used to it, "
         "you'll wonder how you ever lived without it. A " [doc-code "match"] " expression takes a value "
-        "and compares it against a series of patterns. Each arm uses " [doc-code "=>"]
-        " to separate the pattern from its result."]
+        "and compares it against a series of pattern-body pairs. Patterns and bodies alternate: "
+        "odd positions are patterns, even positions are bodies."]
       [code-block {} [str
         "[match status\n"
         "  \"ok\"    [println \"success\"]\n"

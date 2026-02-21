@@ -27,12 +27,12 @@
       [doc-def "let" "Bind a value to a name: [let x 42]"]
       [doc-def "if" "Conditional: [if cond then else]. Branches do NOT have implicit do."]
       [doc-def "do" "Evaluate multiple expressions, return the last: [do expr1 expr2]"]
-      [doc-def "match" "Pattern matching with arrows: [match val pat1 expr1 pat2 expr2]"]
+      [doc-def "match" "Pattern matching with positional pairs: [match val pat1 body1 pat2 body2]. Expression guards supported."]
       [doc-def "type" "Define an algebraic data type."]
       [doc-def "effect" "Declare an effect with operations."]
       [doc-def "handle" "Handle effects with an effect handler."]
       [doc-def "macro" "Define a macro that operates on syntax."]
-      [doc-def "macro+" "Define a variadic macro."]
+      [doc-def "macro+" "Define a type-aware macro (expanded after type checking)."]
       [doc-def "test" "Define a test: [test \"name\" [params] body]"]
       [doc-def "use" "Import a module or members from a module."]
       [doc-def "pub" "Export a binding from a module."]
@@ -50,10 +50,12 @@
         "[let x 42]  ; inline comment"]]]
 
     [doc-section "String Interpolation"
-      [doc-text "The " [doc-code "fmt"] " function lets you build strings with " [doc-code "\{\}"] " placeholders. Each placeholder is filled by the corresponding argument, in order. It is the easiest way to assemble human-readable output."]
+      [doc-text "All strings support inline interpolation with " [doc-code "\{expr\}"] ". Any expression inside braces is evaluated and coerced to a string. Use " [doc-code "\\{"] " to write a literal brace."]
       [code-block {} [str
         "[let name \"world\"]\n"
-        "[fmt \"hello, \{\}!\" name]  ; \"hello, world!\""]]]
+        "\"hello, \{name\}!\"          ; \"hello, world!\"\n"
+        "\"2 + 2 = \{[+ 2 2]\}\"      ; \"2 + 2 = 4\"\n"
+        "\"literal \\{braces\\}\"    ; \"literal \{braces\}\""]]]
 
     [doc-section "Quasiquoting"
       [doc-text "Quasiquoting is mainly used inside macros. A quasiquoted expression is like a template: most of it is taken literally, but you can selectively \"unquote\" parts to splice in computed values."]

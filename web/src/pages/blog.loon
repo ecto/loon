@@ -12,6 +12,33 @@
     [li-el "REPL with time travel and forking"]
     [li-el "Basic WASM codegen"]]]
 
+[fn blog-article [title date & body]
+  [article-el {:style {:background [color :white]
+                       :border [str "1px solid " [color :border]]
+                       :border-radius [radius :md]
+                       :padding "2rem"
+                       :margin-bottom "2rem"}}
+    [h2 {:style {:font-family [font :serif]
+                 :color [color :primary]
+                 :font-size "1.8rem"
+                 :margin-bottom "0.5rem"}}
+      title]
+    [p {:style {:color [color :accent] :font-size "0.9rem" :font-weight "600" :margin-bottom "1rem"}}
+      date]
+    [div {:style {:font-family [font :serif] :line-height "1.7" :color [color :text]}}
+      body]]]
+
+[fn blog-h3 [text]
+  [h3 {:style {:font-family [font :serif]
+               :color [color :primary]
+               :font-size "1.3rem"
+               :margin-top "1.5rem"
+               :margin-bottom "0.75rem"}}
+    text]]
+
+[fn blog-code [src]
+  [code-block {} src]]
+
 [fn blog-page []
   [div {:class "page"}
     [page-header]
@@ -28,34 +55,115 @@
                   :font-size "1.1rem"
                   :margin-bottom "2.5rem"}}
         "Dispatches from the lake."]
-      [article-el {:style {:background [color :white]
-                           :border [str "1px solid " [color :border]]
-                           :border-radius [radius :md]
-                           :padding "2rem"}}
-        [h2 {:style {:font-family [font :serif]
-                     :color [color :primary]
-                     :font-size "1.8rem"
-                     :margin-bottom "0.5rem"}}
-          "Hello, World — Introducing Loon"]
-        [p {:style {:color [color :accent] :font-size "0.9rem" :font-weight "600" :margin-bottom "1rem"}}
-          "February 2026"]
-        [div {:style {:font-family [font :serif] :line-height "1.7" :color [color :text]}}
-          [p "Today we're sharing Loon with the world. It started as a question: what if a LISP had invisible types, Rust-style ownership without annotations, and algebraic effects instead of exceptions?"]
-          [p "Loon is the answer. It's a v0.1 — the interpreter works, type inference works, the effect system works. There's a long road to v1.0, but the foundations are solid."]
-          [p "And this website? It's written entirely in Loon. The Rust interpreter compiles to WebAssembly, evaluates Loon source code in your browser, and manipulates the DOM through a thin bridge. It's Loon all the way down."]]
-        [h3 {:style {:font-family [font :serif]
-                     :color [color :primary]
-                     :font-size "1.3rem"
-                     :margin-top "1.5rem"
-                     :margin-bottom "0.75rem"}}
-          "What works today"]
+
+      ; ── v0.4.1 — Syntax Refresh ────────────────────────────────────
+
+      [blog-article "The Syntax Refresh" "February 2026"
+
+        [p "Loon v0.4.1 ships nine changes that make the language smaller and more expressive. Three remove syntax, six add features. Every change was motivated by real patterns in the Loon web app and sample programs."]
+
+        [blog-h3 "Killing =>"]
+        [p "The fat arrow was the only infix operator in a prefix language. Match arms are now positional pairs — pattern, then body. No separator."]
+        [blog-code [str
+          "; before\n"
+          "[match shape\n"
+          "  [Circle r] => [* 3.14 r r]\n"
+          "  [Rect w h] => [* w h]]\n"
+          "\n"
+          "; after\n"
+          "[match shape\n"
+          "  [Circle r] [* 3.14 r r]\n"
+          "  [Rect w h] [* w h]]"]]
+        [p "Same for handle blocks. Every .loon file in the codebase got cleaner."]
+
+        [blog-h3 "Killing /"]
+        [p "Effect annotations used a / separator between params and effect set. Now the set literal sits directly after the params — no separator needed."]
+        [blog-code [str
+          "; before\n"
+          "[fn load [path] / #\{IO Fail\}\n"
+          "  [IO.read-file path]]\n"
+          "\n"
+          "; after\n"
+          "[fn load [path] #\{IO Fail\}\n"
+          "  [IO.read-file path]]"]]
+
+        [blog-h3 "Universal string interpolation"]
+        [p "Every string now supports \{expr\} interpolation. No wrapper function needed. Escape literal braces with \\{."]
+        [blog-code [str
+          "; before\n"
+          "[str \"Hello, \" name \"!\"]\n"
+          "\n"
+          "; after\n"
+          "\"Hello, \{name\}!\""]]
+        [p "This eliminated roughly 40% of str calls across the codebase."]
+
+        [blog-h3 "Type methods"]
+        [p "The centerpiece feature. Define methods directly inside type variants. Loon generates dispatch functions automatically."]
+        [blog-code [str
+          "[type Shape\n"
+          "  [Circle f64\n"
+          "    [fn area [r] [* 3.14159 r r]]\n"
+          "    [fn describe [r] \"circle r=\{r\}\"]]\n"
+          "  [Rect f64 f64\n"
+          "    [fn area [w h] [* w h]]\n"
+          "    [fn describe [w h] \"\{w\}x\{h\}\"]]\n"
+          "  Point\n"
+          "    [fn area [] 0.0]\n"
+          "    [fn describe [] \"point\"]]\n"
+          "\n"
+          "[area [Circle 5.0]]        ; 78.539...\n"
+          "[describe [Rect 3.0 4.0]]  ; \"3x4\""]]
+        [p "Types are open by default — a second [type Shape ...] adds new variants and extends the dispatch functions. This solves the expression problem with zero new keywords."]
+
+        [blog-h3 "Record types and dot access"]
+        [p "ADT variants can have named fields. Dot syntax reads them."]
+        [blog-code [str
+          "[type Route\n"
+          "  [Route :path String :handler Fn]]\n"
+          "\n"
+          "[let r [Route \{path: \"/tour\", handler: tour-page\}]]\n"
+          "[r.path]     ; \"/tour\"\n"
+          "[r.handler]  ; tour-page"]]
+
+        [blog-h3 "Match guards"]
+        [p "A lowercase function call in pattern position evaluates as a boolean guard. This turns nested if-chains into flat match tables."]
+        [blog-code [str
+          "[match true\n"
+          "  [= w \"\"]                   \"\"\n"
+          "  [contains? special w]       \"keyword\"\n"
+          "  [contains? builtins w]      \"builtin\"\n"
+          "  _                           \"\"]"]]
+
+        [blog-h3 "Map destructuring with defaults"]
+        [p "Function params can destructure maps with default values. This eliminates five lines of boilerplate per component."]
+        [blog-code [str
+          "; before\n"
+          "[fn card [first & rest]\n"
+          "  [let props [if [map? first] first \{\}]]\n"
+          "  [let children [if [map? first] rest [cons first rest]]]\n"
+          "  [let accent [get props :accent false]]\n"
+          "  ...]\n"
+          "\n"
+          "; after\n"
+          "[fn card [\{accent false, class \"\"\} & children]\n"
+          "  [div \{:class [cx \"card\" class]\} children]]"]]
+
+        [blog-h3 "And the rest"]
+        [p "The dom/ namespace is now dom. for consistency. Implicit do was already working — we just verified it. Every sample program, the entire web app, and all 306 tests pass with the new syntax."]
+
+        [row {:gap :sm :style {:margin-top "1.5rem"}}
+          [btn {:href "/tour"} "Take the tour"]
+          [btn-secondary {:href "/play"} "Try the playground"]]]
+
+      ; ── Hello World ─────────────────────────────────────────────────
+
+      [blog-article "Hello, World — Introducing Loon" "February 2026"
+        [p "Today we're sharing Loon with the world. It started as a question: what if a LISP had invisible types, Rust-style ownership without annotations, and algebraic effects instead of exceptions?"]
+        [p "Loon is the answer. It's a v0.1 — the interpreter works, type inference works, the effect system works. There's a long road to v1.0, but the foundations are solid."]
+        [p "And this website? It's written entirely in Loon. The Rust interpreter compiles to WebAssembly, evaluates Loon source code in your browser, and manipulates the DOM through a thin bridge. It's Loon all the way down."]
+        [blog-h3 "What works today"]
         [blog-features]
-        [h3 {:style {:font-family [font :serif]
-                     :color [color :primary]
-                     :font-size "1.3rem"
-                     :margin-top "1.5rem"
-                     :margin-bottom "0.75rem"}}
-          "What's next"]
+        [blog-h3 "What's next"]
         [p {:style {:color [color :muted] :line-height "1.7"}}
           "Traits, a more complete effect system, and better error messages are the immediate priorities."]
         [row {:gap :sm :style {:margin-top "1.5rem"}}
