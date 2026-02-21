@@ -53,6 +53,7 @@
       [sidebar-link "Playground" "/play" current-path]]
 
     [sidebar-section "Project"
+      [sidebar-link "Blog" "/blog" current-path]
       [sidebar-link "Roadmap" "/roadmap" current-path]
       [a-el {:href "https://github.com/ecto/loon"
              :target "_blank"

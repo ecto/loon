@@ -1,7 +1,7 @@
 ; nav.loon — Minimal navigation: Tour, Playground, GitHub
 
 [fn nav-links []
-  #[#["/tour" "Tour"] #["/play" "Playground"] #["/roadmap" "Roadmap"]]]
+  #[#["/tour" "Tour"] #["/play" "Playground"] #["/blog" "Blog"] #["/roadmap" "Roadmap"]]]
 
 [fn make-nav-link [current-path link-item]
   [let href [nth link-item 0]]

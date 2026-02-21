@@ -41,7 +41,6 @@
 
 [fn blog-page []
   [div {:class "page"}
-    [page-header]
     [main-el {:style {:max-width "720px"
                       :margin "0 auto"
                       :padding "3rem 2rem"}}
@@ -88,7 +87,7 @@
           "  [IO.read-file path]]"]]
 
         [blog-h3 "Universal string interpolation"]
-        [p "Every string now supports \{expr\} interpolation. No wrapper function needed. Escape literal braces with \\{."]
+        [p "Every string now supports \{expr\} interpolation. No wrapper function needed. Use backslash-brace to write a literal brace."]
         [blog-code [str
           "; before\n"
           "[str \"Hello, \" name \"!\"]\n"
@@ -168,5 +167,4 @@
           "Traits, a more complete effect system, and better error messages are the immediate priorities."]
         [row {:gap :sm :style {:margin-top "1.5rem"}}
           [btn {:href "/tour"} "Take the tour"]
-          [btn-secondary {:href "/play"} "Try the playground"]]]]
-    [footer-component]]]
+          [btn-secondary {:href "/play"} "Try the playground"]]]]]]
