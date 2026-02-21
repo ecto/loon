@@ -123,8 +123,8 @@
         "  [get user :name]]\n"
         "\n"
         "; Works with any map containing :name\n"
-        "[get-name {:name \"Ada\" :age 30}]\n"
-        "[get-name {:name \"Alan\" :role \"CS\"}]"]]
+        "[get-name \{:name \"Ada\" :age 30\}]\n"
+        "[get-name \{:name \"Alan\" :role \"CS\"\}]"]]
       [doc-text "Both calls work because both maps have a " [doc-code ":name"]
         " key. The first also has " [doc-code ":age"] " and the second has "
         [doc-code ":role"] ", but " [doc-code "get-name"]

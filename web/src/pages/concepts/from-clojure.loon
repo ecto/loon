@@ -54,7 +54,7 @@
 
       [doc-subsection "ADTs instead of maps-as-types"
         [doc-text "Clojure idiomatically uses maps for domain modeling. A user is "
-          [doc-code "{:name \"Ada\" :age 30}"] " and that is that. Loon supports maps "
+          [doc-code "\{:name \"Ada\" :age 30\}"] " and that is that. Loon supports maps "
           "too, but it encourages algebraic data types for domain models:"]
         [code-block {} [str
           "[type User [User Str Int]]\n"
@@ -92,17 +92,17 @@
         "[1 2 3]"
         "#[1 2 3]"]
       [doc-row
-        "{:name \"Ada\" :age 30}"
-        "{:name \"Ada\" :age 30}"]
+        "\{:name \"Ada\" :age 30\}"
+        "\{:name \"Ada\" :age 30\}"]
       [doc-row
-        "#{1 2 3}"
-        "#{1 2 3}"]
+        "#\{1 2 3\}"
+        "#\{1 2 3\}"]
       [doc-row
         "(if test then else)"
         "[if test then else]"]
       [doc-row
         "(cond p1 e1 p2 e2 :else e3)"
-        "[match val p1 => e1 p2 => e2 _ => e3]"]
+        "[match val p1 e1 p2 e2 _ e3]"]
       [doc-row
         "(let [x 1 y 2] (+ x y))"
         "[do [let x 1] [let y 2] [+ x y]]"]
@@ -193,8 +193,8 @@
           "that is hard to go back from once you have used it."]
         [code-block {} [str
           "[match shape\n"
-          "  [Circle r]   => [* 3.14159 [* r r]]\n"
-          "  [Rect w h]   => [* w h]\n"
-          "  [Point]      => 0.0]"]]]]
+          "  [Circle r]   [* 3.14159 [* r r]]\n"
+          "  [Rect w h]   [* w h]\n"
+          "  [Point]      0.0]"]]]]
 
     [doc-prev-next "Coming from JS/TS" "/concepts/from-js" "" ""]]]

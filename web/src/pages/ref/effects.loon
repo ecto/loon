@@ -18,8 +18,8 @@
       [code-block {} [str
         "[let result [try [fn [] [fail \"oops\"]]]]\n"
         "[match result\n"
-        "  [Ok val]  => [println val]\n"
-        "  [Err msg] => [println [str \"error: \" msg]]]"]]]
+        "  [Ok val]  [println val]\n"
+        "  [Err msg] [println [str \"error: \" msg]]]"]]]
 
     [doc-section "Async"
       [doc-text "Lightweight concurrency. " [doc-code "spawn"] " kicks off a background task and gives you a handle to it. When you need the result, call " [doc-code "await"] " on that handle. This is a simple model that avoids callback spaghetti while still letting you do real concurrent work."]

@@ -22,7 +22,7 @@
       [doc-subsection "Other Editors"
         [doc-text "Loon ships with a built-in language server. Point your editor's LSP client at the " [doc-code "loon lsp"] " command."]
         [code-block {:label "SHELL"} "loon lsp"]
-        [doc-note "tip" "For Neovim, add a lspconfig entry with cmd = { \"loon\", \"lsp\" } and filetypes = { \"loon\" }."]]]
+        [doc-note "tip" "For Neovim, add a lspconfig entry with cmd = \{ \"loon\", \"lsp\" \} and filetypes = \{ \"loon\" \}."]]]
 
     [doc-section "Your First Program"
       [doc-text "Create a file called " [doc-code "hello.loon"] " with the following contents."]

@@ -5,9 +5,9 @@
 
 [fn area [shape]
   [match shape
-    [Circle r] => [* 3.14159 [* r r]]
-    [Rect w h] => [* w h]
-    Point      => 0.0]]
+    [Circle r] [* 3.14159 [* r r]]
+    [Rect w h] [* w h]
+    Point      0.0]]
 
 [fn main []
   [let c [Circle 5.0]]

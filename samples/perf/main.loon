@@ -7,8 +7,8 @@
 
 [fn main []
   [let path [match [Process.env "PROFILE"]
-    [Some p] => p
-    None => [do [IO.println "error: set PROFILE env var to the recording path"]
+    [Some p] p
+    None [do [IO.println "error: set PROFILE env var to the recording path"]
                 [Process.exit 1]]]]
 
   [IO.println [str "Loading " path "..."]]

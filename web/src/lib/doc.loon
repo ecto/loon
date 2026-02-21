@@ -47,9 +47,9 @@
 ; --- Callout box (info, warning, tip) ---
 [fn doc-note [typ text]
   [let styles [match typ
-    "tip"     => {:border-color "var(--accent)" :bg "rgba(74, 95, 215, 0.05)"}
-    "warning" => {:border-color "#c0392b" :bg "rgba(192, 57, 43, 0.05)"}
-    _         => {:border-color "var(--border)" :bg "var(--white)"}]]
+    "tip"     {:border-color "var(--accent)" :bg "rgba(74, 95, 215, 0.05)"}
+    "warning" {:border-color "#c0392b" :bg "rgba(192, 57, 43, 0.05)"}
+    _         {:border-color "var(--border)" :bg "var(--white)"}]]
   [div {:style {:border-left [str "3px solid " [get styles :border-color]]
                 :background [get styles :bg]
                 :padding "1rem 1.25rem"
@@ -73,7 +73,7 @@
 
 ; --- Bottom prev/next navigation ---
 [fn doc-prev-next [prev-title prev-href next-title next-href]
-  [let path [dom/location]]
+  [let path [dom.location]]
   [let src-path [if [= path "/"] "pages/home.loon"
                 [if [= path "/tour"] "pages/tour.loon"
                 [if [= path "/play"] "pages/play.loon"

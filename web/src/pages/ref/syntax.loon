@@ -6,9 +6,9 @@
     [doc-section "Delimiters"
       [doc-text "Loon has a small set of delimiters, and each one means exactly one thing. Square brackets are the workhorse of the language: every function call, every special form, every operation lives inside them. The other bracket types are reserved for data literals."]
       [doc-def "[...]" "Function call or special form. The first element is always the operator."]
-      [doc-def "{...}" "Map literal. Alternating key-value pairs: {:name \"Ada\" :age 30}"]
+      [doc-def "\{...\}" "Map literal. Alternating key-value pairs: \{:name \"Ada\" :age 30\}"]
       [doc-def "#[...]" "Vector literal: #[1 2 3]"]
-      [doc-def "#{...}" "Set literal: #{\"a\" \"b\" \"c\"}"]
+      [doc-def "#\{...\}" "Set literal: #\{\"a\" \"b\" \"c\"\}"]
       [doc-def "(...)" "Reserved. Not used in Loon syntax."]]
 
     [doc-section "Literals"
@@ -27,7 +27,7 @@
       [doc-def "let" "Bind a value to a name: [let x 42]"]
       [doc-def "if" "Conditional: [if cond then else]. Branches do NOT have implicit do."]
       [doc-def "do" "Evaluate multiple expressions, return the last: [do expr1 expr2]"]
-      [doc-def "match" "Pattern matching with => arrows: [match val pat1 => expr1 pat2 => expr2]"]
+      [doc-def "match" "Pattern matching with arrows: [match val pat1 expr1 pat2 expr2]"]
       [doc-def "type" "Define an algebraic data type."]
       [doc-def "effect" "Declare an effect with operations."]
       [doc-def "handle" "Handle effects with an effect handler."]
@@ -50,10 +50,10 @@
         "[let x 42]  ; inline comment"]]]
 
     [doc-section "String Interpolation"
-      [doc-text "The " [doc-code "fmt"] " function lets you build strings with " [doc-code "{}"] " placeholders. Each placeholder is filled by the corresponding argument, in order. It is the easiest way to assemble human-readable output."]
+      [doc-text "The " [doc-code "fmt"] " function lets you build strings with " [doc-code "\{\}"] " placeholders. Each placeholder is filled by the corresponding argument, in order. It is the easiest way to assemble human-readable output."]
       [code-block {} [str
         "[let name \"world\"]\n"
-        "[fmt \"hello, {}!\" name]  ; \"hello, world!\""]]]
+        "[fmt \"hello, \{\}!\" name]  ; \"hello, world!\""]]]
 
     [doc-section "Quasiquoting"
       [doc-text "Quasiquoting is mainly used inside macros. A quasiquoted expression is like a template: most of it is taken literally, but you can selectively \"unquote\" parts to splice in computed values."]

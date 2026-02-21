@@ -38,7 +38,7 @@
 ; --- App Component ---
 
 [fn app []
-  [let path [dom/location]]
+  [let path [dom.location]]
   [let routes [route-table]]
   [let page-fn [match-route path routes]]
   [let content [page-fn]]

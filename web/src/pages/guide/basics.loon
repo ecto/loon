@@ -64,13 +64,13 @@
 
     [doc-section "Vectors, Maps, and Sets"
       [doc-text "Loon gives you three collection literals. Vectors use " [doc-code "#[...]"]
-        " and are your go-to ordered sequence. Maps use " [doc-code "{:key value}"]
+        " and are your go-to ordered sequence. Maps use " [doc-code "\{:key value\}"]
         " for key-value associations, with keywords (the " [doc-code ":name"] " syntax) "
-        "as the typical key type. Sets use " [doc-code "#{...}"] " for unordered unique collections."]
+        "as the typical key type. Sets use " [doc-code "#\{...\}"] " for unordered unique collections."]
       [code-block {} [str
         "[let nums #[1 2 3]]\n"
-        "[let user {:name \"Ada\" :age 30}]\n"
-        "[let tags #{\"fast\" \"safe\"}]"]]
+        "[let user \{:name \"Ada\" :age 30\}]\n"
+        "[let tags #\{\"fast\" \"safe\"\}]"]]
       [doc-text "All three are immutable. Operations like " [doc-code "append"] " or "
         [doc-code "assoc"] " return new collections rather than mutating the original. "
         "The Collections guide covers these in detail."]]

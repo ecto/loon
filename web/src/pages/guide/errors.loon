@@ -8,7 +8,7 @@
         ". If a value might not exist, the type system makes that explicit through "
         [doc-code "Option"] ". This means you will never hit a null pointer exception "
         "at runtime, because the compiler forces you to handle the absent case."]
-      [code-block {:label "LOON"} [str "[let found [get {:a 1} :b]]\n" "; found is None\n" "\n" "[let found [get {:a 1} :a]]\n" "; found is [Some 1]"]]
+      [code-block {:label "LOON"} [str "[let found [get \{:a 1\} :b]]\n" "; found is None\n" "\n" "[let found [get \{:a 1\} :a]]\n" "; found is [Some 1]"]]
       [doc-text "Use " [doc-code "Some"] " to wrap a value that exists, and "
         [doc-code "None"] " when there is nothing. Looking up a missing key in a map "
         "gives you " [doc-code "None"] ", not some silent null that blows up later."]]
@@ -17,7 +17,7 @@
       [doc-text "When an operation can fail, Loon uses " [doc-code "Result"]
         " to represent the outcome. This is similar to Rust's approach, and for good reason: "
         "it makes error handling explicit without the downsides of exceptions."]
-      [code-block {:label "LOON"} [str "[fn parse-int [s]\n" "  [match [try-parse s]\n" "    [Some n] => [Ok n]\n" "    None => [Err \"not a number\"]]]"]]
+      [code-block {:label "LOON"} [str "[fn parse-int [s]\n" "  [match [try-parse s]\n" "    [Some n] [Ok n]\n" "    None [Err \"not a number\"]]]"]]
       [doc-text [doc-code "Ok"] " wraps a success value. " [doc-code "Err"]
         " wraps an error. The caller always knows that this function can fail, "
         "because the return type says so."]]
@@ -26,7 +26,7 @@
       [doc-text "The most direct way to handle a " [doc-code "Result"]
         " is with " [doc-code "match"] ". You spell out what happens in both cases, "
         "and the compiler ensures you do not forget one."]
-      [code-block {:label "LOON"} [str "[match [parse-int \"42\"]\n" "  [Ok n] => [println [str \"got: \" n]]\n" "  [Err e] => [println [str \"error: \" e]]]"]]
+      [code-block {:label "LOON"} [str "[match [parse-int \"42\"]\n" "  [Ok n] [println [str \"got: \" n]]\n" "  [Err e] [println [str \"error: \" e]]]"]]
       [doc-text "This is verbose, but intentionally so. When you match on a Result, "
         "you are making a deliberate decision about how to handle failure. "
         "The compiler will not let you ignore it."]]
@@ -58,7 +58,7 @@
       [doc-text "For errors that need to cross handler boundaries, "
         "Loon provides the " [doc-code "Fail"] " effect. This bridges "
         "effect-based code with error handling."]
-      [code-block {:label "LOON"} [str "[handle [divide 10 0]\n" "  [Fail.raise msg] => [println [str \"caught: \" msg]]]"]]
+      [code-block {:label "LOON"} [str "[handle [divide 10 0]\n" "  [Fail.raise msg] [println [str \"caught: \" msg]]]"]]
       [doc-text "The handler intercepts the failure and can decide what to do: "
         "log it, return a default value, retry, or propagate further."]
       [doc-note "tip" "Prefer Result and ? for local error handling. Use Fail for errors that need to cross handler boundaries."]]

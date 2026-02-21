@@ -59,7 +59,6 @@ module.exports = grammar({
     // Symbol: identifiers and operators
     symbol: $ => choice(
       token(/[a-zA-Z_+\-*!<>=&%][a-zA-Z0-9_\-?!.*%\/]*/),
-      "=>",
       "?",
       "/",
       "->",

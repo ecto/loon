@@ -122,11 +122,15 @@ impl<'a> Parser<'a> {
             }
             Token::True => Ok(Expr::new(ExprKind::Bool(true), span)),
             Token::False => Ok(Expr::new(ExprKind::Bool(false), span)),
-            Token::Str(s) => Ok(Expr::new(ExprKind::Str(s), span)),
+            Token::Str(s) => {
+                if s.contains('{') {
+                    return desugar_fmt(&s, span, self.source);
+                }
+                Ok(Expr::new(ExprKind::Str(s), span))
+            }
             Token::Keyword(k) => Ok(Expr::new(ExprKind::Keyword(k), span)),
             Token::Symbol(s) => Ok(Expr::new(ExprKind::Symbol(s), span)),
             Token::Slash => Ok(Expr::new(ExprKind::Symbol("/".to_string()), span)),
-            Token::FatArrow => Ok(Expr::new(ExprKind::Symbol("=>".to_string()), span)),
             Token::Arrow => Ok(Expr::new(ExprKind::Symbol("->".to_string()), span)),
 
             // S-expression: [head args...]
@@ -144,11 +148,25 @@ impl<'a> Parser<'a> {
                 let end = self.expect(&Token::RBracket)?;
                 let full_span = span.merge(end);
                 // Desugar [fmt "...{expr}..."] → [str parts...]
+                // With universal string interpolation, the string arg is
+                // already desugared at the Token::Str level, so [fmt] just
+                // passes through whatever universal interpolation produced.
                 if items.len() == 2 {
                     if let ExprKind::Symbol(ref s) = items[0].kind {
                         if s == "fmt" {
-                            if let ExprKind::Str(ref template) = items[1].kind {
-                                return desugar_fmt(template, full_span, self.source);
+                            // Already desugared to [str ...] by universal interpolation
+                            if let ExprKind::List(ref inner) = items[1].kind {
+                                if !inner.is_empty() {
+                                    if let ExprKind::Symbol(ref head) = inner[0].kind {
+                                        if head == "str" {
+                                            return Ok(items[1].clone());
+                                        }
+                                    }
+                                }
+                            }
+                            // Plain string (no interpolation or all braces escaped)
+                            if let ExprKind::Str(_) = items[1].kind {
+                                return Ok(items[1].clone());
                             }
                         }
                     }
@@ -348,7 +366,7 @@ fn desugar_fmt(template: &str, span: Span, _source: &str) -> Result<Expr, ParseE
     Ok(Expr::new(ExprKind::List(items), span))
 }
 
-/// Desugar `expr?` into `[match expr [Ok __v] => __v [Err __e] => [Fail.fail __e]]`
+/// Desugar `expr?` into `[match expr [Ok __v] __v [Err __e] [Fail.fail __e]]`
 fn desugar_question(expr: Expr, span: Span) -> Expr {
     let ok_var = Expr::new(ExprKind::Symbol("__v".to_string()), span);
     let err_var = Expr::new(ExprKind::Symbol("__e".to_string()), span);
@@ -366,7 +384,6 @@ fn desugar_question(expr: Expr, span: Span) -> Expr {
         ]),
         span,
     );
-    let arrow = Expr::new(ExprKind::Symbol("=>".to_string()), span);
     let fail_call = Expr::new(
         ExprKind::List(vec![
             Expr::new(ExprKind::Symbol("Fail.fail".to_string()), span),
@@ -379,10 +396,8 @@ fn desugar_question(expr: Expr, span: Span) -> Expr {
             Expr::new(ExprKind::Symbol("match".to_string()), span),
             expr,
             ok_pattern,
-            arrow.clone(),
             ok_var,
             err_pattern,
-            arrow,
             fail_call,
         ]),
         span,
@@ -412,9 +427,9 @@ mod tests {
         let src = r#"
 [fn fib [n]
   [match n
-    0 => 0
-    1 => 1
-    n => [+ [fib [- n 1]] [fib [- n 2]]]]]
+    0 0
+    1 1
+    n [+ [fib [- n 1]] [fib [- n 2]]]]]
 "#;
         let exprs = parse(src).unwrap();
         assert_eq!(exprs.len(), 1);
@@ -463,9 +478,9 @@ mod tests {
     fn parse_match_with_guards() {
         let src = r#"
 [match n
-  0 => "zero"
-  n [when [> n 0]] => "positive"
-  _ => "negative"]
+  0 "zero"
+  n [when [> n 0]] "positive"
+  _ "negative"]
 "#;
         let exprs = parse(src).unwrap();
         assert_eq!(exprs.len(), 1);
@@ -473,7 +488,7 @@ mod tests {
 
     #[test]
     fn parse_effect_annotation() {
-        let src = r#"[fn load-config [path] / {IO Fail} [IO.read-file path]]"#;
+        let src = r#"[fn load-config [path] #{IO Fail} [IO.read-file path]]"#;
         let exprs = parse(src).unwrap();
         assert_eq!(exprs.len(), 1);
     }
@@ -523,6 +538,36 @@ mod tests {
         let exprs = parse(src).unwrap();
         assert_eq!(exprs.len(), 1);
         assert_eq!(exprs[0].to_string(), r#""escaped {braces}""#);
+    }
+
+    #[test]
+    fn parse_universal_interpolation() {
+        let src = r#"[let x "hello {name}"]"#;
+        let exprs = parse(src).unwrap();
+        assert_eq!(exprs.len(), 1);
+        // The string "hello {name}" should desugar to [str "hello " name]
+        if let ExprKind::List(items) = &exprs[0].kind {
+            // [let x [str "hello " name]]
+            if let ExprKind::List(str_call) = &items[2].kind {
+                assert!(matches!(&str_call[0].kind, ExprKind::Symbol(s) if s == "str"));
+            } else {
+                panic!("expected interpolated string to desugar");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_escaped_braces() {
+        let src = r#""literal \{braces\}""#;
+        let exprs = parse(src).unwrap();
+        assert_eq!(exprs.len(), 1);
+        // \{ becomes {{ in unescape, then desugar_fmt sees {{ → literal {
+        // The result is a plain string since no interpolation happens
+        if let ExprKind::Str(s) = &exprs[0].kind {
+            assert_eq!(s, "literal {braces}");
+        } else {
+            panic!("expected plain string, got: {}", exprs[0]);
+        }
     }
 
     #[test]

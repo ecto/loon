@@ -43,9 +43,9 @@ fn fibonacci() {
         run(r#"
             [fn fib [n]
               [match n
-                0 => 0
-                1 => 1
-                n => [+ [fib [- n 1]] [fib [- n 2]]]]]
+                0 0
+                1 1
+                n [+ [fib [- n 1]] [fib [- n 2]]]]]
             [fib 10]
         "#),
         Value::Int(55)
@@ -157,9 +157,9 @@ fn adt_pattern_matching() {
               Point]
             [fn area [shape]
               [match shape
-                [Circle r] => [* 3.14 [* r r]]
-                [Rect w h] => [* w h]
-                Point       => 0.0]]
+                [Circle r] [* 3.14 [* r r]]
+                [Rect w h] [* w h]
+                Point       0.0]]
             [area [Rect 3.0 4.0]]
         "#),
         Value::Float(12.0)
@@ -172,9 +172,9 @@ fn match_with_guard() {
         run(r#"
             [fn classify [n]
               [match n
-                0 => "zero"
-                n [when [> n 0]] => "positive"
-                _ => "negative"]]
+                0 "zero"
+                n [when [> n 0]] "positive"
+                _ "negative"]]
             [classify 5]
         "#),
         Value::Str("positive".to_string())
@@ -183,9 +183,9 @@ fn match_with_guard() {
         run(r#"
             [fn classify [n]
               [match n
-                0 => "zero"
-                n [when [> n 0]] => "positive"
-                _ => "negative"]]
+                0 "zero"
+                n [when [> n 0]] "positive"
+                _ "negative"]]
             [classify -3]
         "#),
         Value::Str("negative".to_string())
@@ -230,7 +230,7 @@ fn effect_handle_resume() {
             [fn load [path]
               [IO.read-file path]]
             [handle [load "test.txt"]
-              [IO.read-file path] => [resume "mock data"]]
+              [IO.read-file path] [resume "mock data"]]
         "#),
         Value::Str("mock data".to_string())
     );
@@ -243,7 +243,7 @@ fn effect_handle_no_resume() {
             [fn risky []
               [Fail.fail "boom"]]
             [handle [risky]
-              [Fail.fail msg] => [str "caught: " msg]]
+              [Fail.fail msg] [str "caught: " msg]]
         "#),
         Value::Str("caught: boom".to_string())
     );
@@ -375,16 +375,16 @@ fn find_returns_option() {
     assert_eq!(
         run(r#"
             [match [find [fn [x] [> x 3]] #[1 2 3 4 5]]
-              [Some x] => x
-              None => 0]
+              [Some x] x
+              None 0]
         "#),
         Value::Int(4)
     );
     assert_eq!(
         run(r#"
             [match [find [fn [x] [> x 10]] #[1 2 3]]
-              [Some x] => x
-              None => 0]
+              [Some x] x
+              None 0]
         "#),
         Value::Int(0)
     );
@@ -425,7 +425,7 @@ fn question_err_caught() {
     assert_eq!(
         run(r#"
             [handle [Err "oops"]?
-              [Fail.fail msg] => [str "caught: " msg]]
+              [Fail.fail msg] [str "caught: " msg]]
         "#),
         Value::Str("caught: oops".to_string())
     );
@@ -458,7 +458,7 @@ fn io_read_file_mock_handler_still_works() {
     assert_eq!(
         run(r#"
             [handle [IO.read-file "test.txt"]
-              [IO.read-file path] => [resume "mock data"]]
+              [IO.read-file path] [resume "mock data"]]
         "#),
         Value::Str("mock data".to_string())
     );
@@ -471,7 +471,7 @@ fn question_in_defn_propagates_fail() {
             [fn wrap [x] x]
             [fn try-it [x] [wrap x]?]
             [handle [try-it [Err "bad"]]
-              [Fail.fail msg] => [str "got: " msg]]
+              [Fail.fail msg] [str "got: " msg]]
         "#),
         Value::Str("got: bad".to_string())
     );
@@ -519,7 +519,7 @@ fn process_args_mock() {
     assert_eq!(
         run(r#"
             [handle [Process.args]
-              [Process.args] => [resume #["loon" "test"]]]
+              [Process.args] [resume #["loon" "test"]]]
         "#),
         Value::Vec(vec![Value::Str("loon".to_string()), Value::Str("test".to_string())])
     );
@@ -531,7 +531,7 @@ fn process_env_mock() {
     assert_eq!(
         run(r#"
             [handle [Process.env "HOME"]
-              [Process.env k] => [resume [Some "/home"]]]
+              [Process.env k] [resume [Some "/home"]]]
         "#),
         Value::Adt("Some".to_string(), vec![Value::Str("/home".to_string())])
     );
@@ -543,7 +543,7 @@ fn resumable_sequential_effects() {
     assert_eq!(
         run(r#"
             [handle [do [IO.println "a"] [IO.println "b"] 42]
-              [IO.println msg] => [resume ()]]
+              [IO.println msg] [resume ()]]
         "#),
         Value::Int(42)
     );
@@ -555,7 +555,7 @@ fn resumable_with_value() {
     assert_eq!(
         run(r#"
             [handle [+ 1 [int [IO.read-line]]]
-              [IO.read-line] => [resume "5"]]
+              [IO.read-line] [resume "5"]]
         "#),
         Value::Int(6)
     );
@@ -735,7 +735,7 @@ fn async_handle_override() {
     assert_eq!(
         run(r#"
             [handle [Async.spawn [fn [] 99]]
-              [Async.spawn thunk] => [resume 77]]
+              [Async.spawn thunk] [resume 77]]
         "#),
         Value::Int(77)
     );

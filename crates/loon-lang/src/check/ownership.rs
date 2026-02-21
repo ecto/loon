@@ -567,10 +567,8 @@ impl<'a> OwnershipChecker<'a> {
         // Check function body in a new scope
         let mut body_start = 2;
         if body_start < args.len() {
-            if let ExprKind::Symbol(s) = &args[body_start].kind {
-                if s == "/" {
-                    body_start += 2;
-                }
+            if matches!(&args[body_start].kind, ExprKind::Set(_) | ExprKind::Map(_)) {
+                body_start += 1;
             }
         }
 

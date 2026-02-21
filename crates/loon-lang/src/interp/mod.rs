@@ -504,7 +504,31 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
         ExprKind::Bool(b) => Ok(Value::Bool(*b)),
         ExprKind::Str(s) => Ok(Value::Str(s.clone())),
         ExprKind::Keyword(k) => Ok(Value::Keyword(k.clone())),
-        ExprKind::Symbol(s) => env.get(s).ok_or_else(|| err_at(format!("unbound symbol '{s}'"), expr.span)),
+        ExprKind::Symbol(s) => {
+            if let Some(v) = env.get(s) {
+                return Ok(v);
+            }
+            // Try field access: var.field
+            if let Some((var, field)) = s.split_once('.') {
+                if let Some(val) = env.get(var) {
+                    if let Value::Adt(tag, fields) = &val {
+                        let found = ADT_FIELDS.with(|f| {
+                            let map = f.borrow();
+                            if let Some(names) = map.get(tag.as_str()) {
+                                if let Some(idx) = names.iter().position(|n| n == field) {
+                                    return fields.get(idx).cloned();
+                                }
+                            }
+                            None
+                        });
+                        if let Some(field_val) = found {
+                            return Ok(field_val);
+                        }
+                    }
+                }
+            }
+            Err(err_at(format!("unbound symbol '{s}'"), expr.span))
+        }
 
         ExprKind::Vec(items) => {
             let vals: Result<Vec<_>, _> = items.iter().map(|e| eval(e, env)).collect();
@@ -719,13 +743,11 @@ fn eval_fn(args: &[Expr], env: &mut Env) -> IResult {
 
         // Single-arity: [fn name [params] body...]
         let params = extract_params(&args[1])?;
-        // Skip effect annotation: / {effects}
+        // Skip effect annotation: #{effects}
         let mut body_start = 2;
         if body_start < args.len() {
-            if let ExprKind::Symbol(s) = &args[body_start].kind {
-                if s == "/" {
-                    body_start += 2; // skip / and the effect set
-                }
+            if matches!(&args[body_start].kind, ExprKind::Set(_)) {
+                body_start += 1; // skip effect set
             }
         }
         let body: std::rc::Rc<[Expr]> = args[body_start..].to_vec().into();
@@ -850,62 +872,49 @@ fn eval_match(args: &[Expr], env: &mut Env) -> IResult {
     let mut i = 0;
     while i < arms.len() {
         let pattern = &arms[i];
-        // Check for => separator
-        if i + 1 < arms.len() {
-            if let ExprKind::Symbol(s) = &arms[i + 1].kind {
-                if s == "=>" {
-                    if i + 2 >= arms.len() {
-                        return Err(err("match arm missing body after =>"));
-                    }
-                    // Check for guard: pattern [when guard] => body
-                    // Simple pattern => body
-                    let mut bindings = HashMap::new();
-                    if pattern_matches(pattern, &scrutinee, &mut bindings, env)? {
-                        env.push_scope();
-                        for (k, v) in bindings {
-                            env.set(k, v);
-                        }
-                        let result = eval(&arms[i + 2], env);
-                        env.pop_scope();
-                        return result;
-                    }
-                    i += 3;
-                    continue;
-                }
-            }
-        }
 
-        // Check for guard pattern: pattern [when guard] => body
+        // Guard: pattern [when guard] body → i += 3
         if i + 2 < arms.len() {
             if let ExprKind::List(guard_form) = &arms[i + 1].kind {
                 if !guard_form.is_empty() {
                     if let ExprKind::Symbol(s) = &guard_form[0].kind {
-                        if s == "when" && i + 3 < arms.len() {
-                            if let ExprKind::Symbol(arrow) = &arms[i + 2].kind {
-                                if arrow == "=>" && i + 3 < arms.len() {
-                                    let mut bindings = HashMap::new();
-                                    if pattern_matches(pattern, &scrutinee, &mut bindings, env)? {
-                                        env.push_scope();
-                                        for (k, v) in &bindings {
-                                            env.set(k.clone(), v.clone());
-                                        }
-                                        // Evaluate guard
-                                        let guard_val = eval(&guard_form[1], env)?;
-                                        if guard_val.is_truthy() {
-                                            let result = eval(&arms[i + 3], env);
-                                            env.pop_scope();
-                                            return result;
-                                        }
-                                        env.pop_scope();
-                                    }
-                                    i += 4;
-                                    continue;
+                        if s == "when" {
+                            let mut bindings = HashMap::new();
+                            if pattern_matches(pattern, &scrutinee, &mut bindings, env)? {
+                                env.push_scope();
+                                for (k, v) in &bindings {
+                                    env.set(k.clone(), v.clone());
                                 }
+                                let guard_val = eval(&guard_form[1], env)?;
+                                if guard_val.is_truthy() {
+                                    let result = eval(&arms[i + 2], env);
+                                    env.pop_scope();
+                                    return result;
+                                }
+                                env.pop_scope();
                             }
+                            i += 3;
+                            continue;
                         }
                     }
                 }
             }
+        }
+
+        // Simple: pattern body → i += 2
+        if i + 1 < arms.len() {
+            let mut bindings = HashMap::new();
+            if pattern_matches(pattern, &scrutinee, &mut bindings, env)? {
+                env.push_scope();
+                for (k, v) in bindings {
+                    env.set(k, v);
+                }
+                let result = eval(&arms[i + 1], env);
+                env.pop_scope();
+                return result;
+            }
+            i += 2;
+            continue;
         }
 
         i += 1;
@@ -964,18 +973,26 @@ fn pattern_matches(
             Ok(true)
         }
         // Constructor pattern: [Some x] or [Circle r]
+        // Expression guard: [> x 0] (lowercase head → evaluate as expression)
         ExprKind::List(items) if !items.is_empty() => {
-            if let ExprKind::Symbol(ctor) = &items[0].kind {
-                if let Value::Adt(tag, fields) = value {
-                    if tag == ctor && fields.len() == items.len() - 1 {
-                        for (pat, val) in items[1..].iter().zip(fields.iter()) {
-                            if !pattern_matches(pat, val, bindings, env)? {
-                                return Ok(false);
+            if let ExprKind::Symbol(head) = &items[0].kind {
+                if head.starts_with(char::is_uppercase) {
+                    // Constructor pattern
+                    if let Value::Adt(tag, fields) = value {
+                        if tag == head && fields.len() == items.len() - 1 {
+                            for (pat, val) in items[1..].iter().zip(fields.iter()) {
+                                if !pattern_matches(pat, val, bindings, env)? {
+                                    return Ok(false);
+                                }
                             }
+                            return Ok(true);
                         }
-                        return Ok(true);
+                        return Ok(false);
                     }
-                    return Ok(false);
+                } else {
+                    // Expression guard: evaluate and check truthiness
+                    let result = eval(&Expr::new(ExprKind::List(items.clone()), pattern.span), env)?;
+                    return Ok(result.is_truthy());
                 }
             }
             Ok(false)
@@ -997,39 +1014,120 @@ fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
     if args.is_empty() {
         return Err(err("type requires a name"));
     }
-    let _type_name = match &args[0].kind {
+    let type_name = match &args[0].kind {
         ExprKind::Symbol(s) => s.clone(),
         _ => return Err(err("type name must be a symbol")),
     };
 
+    // Collect methods: method_name → Vec<MethodImpl>
+    let mut methods: HashMap<String, Vec<MethodImpl>> = HashMap::new();
+
     // Skip type params, register constructors
     for arg in &args[1..] {
         match &arg.kind {
-            // [CtorName field1 field2 ...] — constructor with fields
+            // [CtorName field1 field2 ... [fn method [params] body] ...]
             ExprKind::List(items) if !items.is_empty() => {
                 if let ExprKind::Symbol(ctor_name) = &items[0].kind {
-                    let arity = items.len() - 1;
+                    // Separate fields from method definitions
+                    let mut field_count = 0;
+                    let mut field_names: Vec<String> = Vec::new();
+                    let mut variant_methods: Vec<(&str, Vec<String>, Vec<Expr>)> = Vec::new();
+                    let mut has_named_fields = false;
+
+                    let mut idx = 1;
+                    while idx < items.len() {
+                        // Check for [fn method [params] body...]
+                        if let ExprKind::List(inner) = &items[idx].kind {
+                            if inner.len() >= 3 {
+                                if let ExprKind::Symbol(kw) = &inner[0].kind {
+                                    if kw == "fn" {
+                                        if let ExprKind::Symbol(mname) = &inner[1].kind {
+                                            let params = if let ExprKind::List(ps) = &inner[2].kind {
+                                                ps.iter().filter_map(|p| {
+                                                    if let ExprKind::Symbol(s) = &p.kind { Some(s.clone()) } else { None }
+                                                }).collect()
+                                            } else {
+                                                vec![]
+                                            };
+                                            variant_methods.push((
+                                                mname.as_str(),
+                                                params,
+                                                inner[3..].to_vec(),
+                                            ));
+                                        }
+                                        idx += 1;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                        // Check for named field: :keyword Type
+                        if let ExprKind::Keyword(fname) = &items[idx].kind {
+                            has_named_fields = true;
+                            field_names.push(fname.clone());
+                            field_count += 1;
+                            idx += 2; // skip keyword + type
+                            continue;
+                        }
+                        // Otherwise it's a positional field type
+                        field_count += 1;
+                        idx += 1;
+                    }
+
+                    // Register named fields if present
+                    if has_named_fields {
+                        ADT_FIELDS.with(|f| {
+                            f.borrow_mut().insert(ctor_name.clone(), field_names.clone());
+                        });
+                    }
+
+                    // Register constructor
                     let ctor_name_clone = ctor_name.clone();
-                    let lf = value::LoonFn {
-                        name: Some(ctor_name.clone()),
-                        clauses: vec![(
-                            (0..arity).map(|i| value::Param::Simple(format!("__f{i}"))).collect(),
-                            std::rc::Rc::from(Vec::<Expr>::new()),
-                        )],
-                        captured_env: None,
-                    };
-                    // Register as a constructor function
+                    let field_count_copy = field_count;
+                    let has_named = has_named_fields;
+                    let field_names_for_ctor = field_names.clone();
                     env.set(
                         ctor_name.clone(),
                         Value::Builtin(
                             ctor_name.clone(),
                             Arc::new(move |_name, args| {
+                                // If single arg is a Map and we have named fields, reorder
+                                if has_named && args.len() == 1 {
+                                    if let Value::Map(pairs) = &args[0] {
+                                        let mut ordered = Vec::with_capacity(field_names_for_ctor.len());
+                                        for fname in &field_names_for_ctor {
+                                            let key = Value::Keyword(fname.clone());
+                                            let val = pairs.iter()
+                                                .find(|(k, _)| *k == key)
+                                                .map(|(_, v)| v.clone())
+                                                .unwrap_or(Value::Unit);
+                                            ordered.push(val);
+                                        }
+                                        return Ok(Value::Adt(ctor_name_clone.clone(), ordered));
+                                    }
+                                }
+                                if args.len() != field_count_copy {
+                                    return Err(InterpError {
+                                        message: format!(
+                                            "{} expects {} args, got {}",
+                                            ctor_name_clone, field_count_copy, args.len()
+                                        ),
+                                        span: None, stack: vec![], performed_effect: None,
+                                    });
+                                }
                                 Ok(Value::Adt(ctor_name_clone.clone(), args.to_vec()))
                             }),
                         ),
                     );
-                    // Also keep the fn form for pattern matching metadata
-                    let _ = lf;
+
+                    // Collect methods for dispatch
+                    for (mname, params, body) in variant_methods {
+                        methods.entry(mname.to_string()).or_default().push(MethodImpl {
+                            ctor_name: ctor_name.clone(),
+                            params,
+                            body,
+                        });
+                    }
                 }
             }
             // CtorName — nullary constructor
@@ -1044,6 +1142,72 @@ fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
                 // else it's a type parameter, skip
             }
             _ => {}
+        }
+    }
+
+    // Store methods in thread-local and register dispatch functions
+    if !methods.is_empty() {
+        TYPE_METHODS.with(|tm| {
+            let mut map = tm.borrow_mut();
+            let type_entry = map.entry(type_name.clone()).or_default();
+            for (method_name, impls) in &methods {
+                type_entry.entry(method_name.clone()).or_default().extend(impls.clone());
+            }
+        });
+
+        // Register dispatch builtins for each method
+        for (method_name, _) in &methods {
+            let mname = method_name.clone();
+            env.set(
+                method_name.clone(),
+                Value::Builtin(
+                    method_name.clone(),
+                    Arc::new(move |_name, args| {
+                        if args.is_empty() {
+                            return Err(InterpError {
+                                message: format!("{} requires at least one argument", _name),
+                                span: None, stack: vec![], performed_effect: None,
+                            });
+                        }
+                        let val = &args[0];
+                        if let Value::Adt(tag, fields) = val {
+                            // Look up method impl for this constructor
+                            let method_impl = TYPE_METHODS.with(|tm| {
+                                let map = tm.borrow();
+                                for (_type_name, methods) in map.iter() {
+                                    if let Some(impls) = methods.get(&mname) {
+                                        for imp in impls {
+                                            if imp.ctor_name == *tag {
+                                                return Some(imp.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                                None
+                            });
+
+                            if let Some(imp) = method_impl {
+                                let mut env = get_global_env().unwrap_or_default();
+                                env.push_scope();
+                                // Bind params to fields
+                                for (param, field_val) in imp.params.iter().zip(fields.iter()) {
+                                    env.set(param.clone(), field_val.clone());
+                                }
+                                let mut result = Value::Unit;
+                                for expr in &imp.body {
+                                    result = eval(expr, &mut env)?;
+                                }
+                                env.pop_scope();
+                                return Ok(result);
+                            }
+                        }
+                        Err(InterpError {
+                            message: format!("no method {} for value {}", _name, val),
+                            span: None, stack: vec![], performed_effect: None,
+                        })
+                    }),
+                ),
+            );
         }
     }
 
@@ -1191,6 +1355,17 @@ thread_local! {
     static EFFECT_COUNTERS: RefCell<HashMap<(String, String), usize>> = RefCell::new(HashMap::new());
     static EFFECT_OVERRIDES: RefCell<Vec<(String, String, usize, Value)>> = const { RefCell::new(Vec::new()) };
     static INSIDE_HANDLE: RefCell<bool> = const { RefCell::new(false) };
+    /// Type methods: type_name → method_name → Vec<(ctor_name, param_names, body_exprs)>
+    static TYPE_METHODS: RefCell<HashMap<String, HashMap<String, Vec<MethodImpl>>>> = RefCell::new(HashMap::new());
+    /// ADT field names: ctor_name → Vec<field_name> (for named fields / record types)
+    static ADT_FIELDS: RefCell<HashMap<String, Vec<String>>> = RefCell::new(HashMap::new());
+}
+
+#[derive(Clone)]
+struct MethodImpl {
+    ctor_name: String,
+    params: Vec<String>,
+    body: Vec<Expr>,
 }
 
 fn eval_with_overrides_inner(
@@ -1253,19 +1428,15 @@ fn collect_handlers<'a>(handler_args: &'a [Expr]) -> Vec<Handler<'a>> {
                             })
                             .collect();
 
-                        if i + 2 < handler_args.len() {
-                            if let ExprKind::Symbol(arrow) = &handler_args[i + 1].kind {
-                                if arrow == "=>" {
-                                    handlers.push(Handler {
-                                        effect: effect.to_string(),
-                                        op: op.to_string(),
-                                        params,
-                                        body: &handler_args[i + 2],
-                                    });
-                                    i += 3;
-                                    continue;
-                                }
-                            }
+                        if i + 1 < handler_args.len() {
+                            handlers.push(Handler {
+                                effect: effect.to_string(),
+                                op: op.to_string(),
+                                params,
+                                body: &handler_args[i + 1],
+                            });
+                            i += 2;
+                            continue;
                         }
                     }
                 }
@@ -1397,13 +1568,19 @@ fn extract_param(expr: &Expr) -> Result<value::Param, InterpError> {
             Ok(value::Param::VecDestructure(inner))
         }
         ExprKind::Map(pairs) => {
-            let mut names = Vec::new();
-            for (k, _) in pairs {
+            let mut entries = Vec::new();
+            for (k, v) in pairs {
                 if let ExprKind::Symbol(s) = &k.kind {
-                    names.push(s.clone());
+                    // If value is a symbol with the same name as the key, treat as no default
+                    let default_expr = if matches!(&v.kind, ExprKind::Symbol(vs) if vs == s) {
+                        None
+                    } else {
+                        Some(v.clone())
+                    };
+                    entries.push((s.clone(), default_expr));
                 }
             }
-            Ok(value::Param::MapDestructure(names))
+            Ok(value::Param::MapDestructure(entries))
         }
         _ => Err(err("parameter must be a symbol or destructuring pattern")),
     }
@@ -1429,19 +1606,25 @@ fn bind_param(param: &value::Param, val: &Value, env: &mut Env) -> Result<(), In
             }
             Ok(())
         }
-        value::Param::MapDestructure(names) => {
+        value::Param::MapDestructure(entries) => {
             let pairs = match val {
                 Value::Map(m) => m,
                 _ => return Err(err("map destructuring requires a map")),
             };
-            for name in names {
+            for (name, default_expr) in entries {
                 let key = Value::Keyword(name.clone());
-                let v = pairs
+                let found = pairs
                     .iter()
                     .find(|(k, _)| *k == key)
-                    .map(|(_, v)| v.clone())
-                    .unwrap_or(Value::Unit);
-                env.set(name.clone(), v);
+                    .map(|(_, v)| v.clone());
+                let bound = match found {
+                    Some(val) => val,
+                    None => match default_expr {
+                        Some(expr) => eval(expr, env)?,
+                        None => Value::Unit,
+                    },
+                };
+                env.set(name.clone(), bound);
             }
             Ok(())
         }

@@ -1,16 +1,16 @@
 ; utils.loon — Style utility functions
 
-; Merge class strings: [cx "foo" "bar"] => "foo bar"
+; Merge class strings: [cx "foo" "bar"] "foo bar"
 [fn cx [& classes]
   [pipe classes
     [filter [fn [c] [not [= c ""]]]]
     [filter [fn [c] [not [= c ""]]]]
     [join " "]]]
 
-; Merge style maps: [sx {:color "red"} {:padding "1rem"}] => {:color "red" :padding "1rem"}
+; Merge style maps: [sx {:color "red"} {:padding "1rem"}] {:color "red" :padding "1rem"}
 [fn sx [& maps]
   [fold {} [fn [acc m] [merge acc m]] maps]]
 
-; Conditional class: [when-class true "active"] => "active", [when-class false "active"] => ""
+; Conditional class: [when-class true "active"] "active", [when-class false "active"] ""
 [fn when-class [condition class-name]
   [if condition class-name ""]]

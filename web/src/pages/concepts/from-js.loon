@@ -76,35 +76,35 @@
         "let arr = [1, 2, 3]"
         "[let arr #[1 2 3]]"]
       [doc-row
-        "const obj = { name: \"Ada\" }"
-        "[let obj {:name \"Ada\"}]"]
+        "const obj = \{ name: \"Ada\" \}"
+        "[let obj \{:name \"Ada\"\}]"]
       [doc-row
-        "function add(a, b) { return a + b }"
+        "function add(a, b) \{ return a + b \}"
         "[fn add [a b] [+ a b]]"]
       [doc-row
-        "(x) => x * 2"
+        "(x) x * 2"
         "[fn [x] [* x 2]]"]
       [doc-row
-        "arr.map(x => x * 2)"
+        "arr.map(x x * 2)"
         "[map [fn [x] [* x 2]] arr]"]
       [doc-row
-        "arr.filter(x => x > 2)"
+        "arr.filter(x x > 2)"
         "[filter [fn [x] [> x 2]] arr]"]
       [doc-row
         "x > 0 ? \"pos\" : \"neg\""
         "[if [> x 0] \"pos\" \"neg\"]"]
       [doc-row
-        "`hello ${name}`"
+        "`hello $\{name\}`"
         "[str \"hello \" name]"]
       [doc-row
         "console.log(x)"
         "[println x]"]
       [doc-row
         "x?.foo ?? defaultVal"
-        "[match x [Some f] => [get f :foo] None => default-val]"]
+        "[match x [Some f] [get f :foo] None default-val]"]
       [doc-row
-        "try { ... } catch (e) { ... }"
-        "[handle [...] [Fail.fail e] => ...]"]]
+        "try \{ ... \} catch (e) \{ ... \}"
+        "[handle [...] [Fail.fail e] ...]"]]
 
     [doc-section "What You Can Stop Worrying About"
       [doc-text "If you have spent time debugging production JavaScript, you have probably "
@@ -148,8 +148,8 @@
           "no forgotten branches."]
         [code-block {} [str
           "[match result\n"
-          "  [Ok value]  => [println [str \"got: \" value]]\n"
-          "  [Err msg]   => [println [str \"error: \" msg]]]"]]]
+          "  [Ok value]  [println [str \"got: \" value]]\n"
+          "  [Err msg]   [println [str \"error: \" msg]]]"]]]
 
       [doc-subsection "Algebraic data types"
         [doc-text "ADTs replace the combination of objects, classes, and TypeScript union types. "

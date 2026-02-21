@@ -63,8 +63,8 @@
         [code-block {} [str
           "[fn describe [opt]\n"
           "  [match opt\n"
-          "    [Some x] => [str \"got: \" x]\n"
-          "    None     => \"nothing\"]]\n"
+          "    [Some x] [str \"got: \" x]\n"
+          "    None     \"nothing\"]]\n"
           "; Inferred: Option Str -> Str"]]]
 
       [doc-subsection "Effects"

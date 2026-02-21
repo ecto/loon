@@ -89,7 +89,7 @@
 
     [doc-section "Conversion"
       [doc-text "Convert values between types. " [doc-code "name"] " is particularly handy for turning keywords into plain strings, which comes up a lot when you are building output from map keys."]
-      [doc-def "name" "Convert a keyword to its string name: [name :foo] => \"foo\""]
+      [doc-def "name" "Convert a keyword to its string name: [name :foo] \"foo\""]
       [doc-def "int" "Convert a value to an integer."]
       [doc-def "float" "Convert a value to a float."]
       [doc-def "str" "Convert any value to its string representation."]]

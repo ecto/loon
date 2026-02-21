@@ -14,7 +14,7 @@
         [code-block "[println \"Hello, world!\"]"]]
       [card
         [h4 {:style {:font-family [font :serif] :color [color :primary] :margin-bottom "0.5rem"}} "Fibonacci"]
-        [code-block "[fn fib [n]\n  [match n\n    0 => 0  1 => 1\n    _ => [+ [fib [- n 1]]\n            [fib [- n 2]]]]]\n[fib 10]"]]
+        [code-block "[fn fib [n]\n  [match n\n    0 0  1 1\n    _ [+ [fib [- n 1]]\n            [fib [- n 2]]]]]\n[fib 10]"]]
       [card
         [h4 {:style {:font-family [font :serif] :color [color :primary] :margin-bottom "0.5rem"}} "Effects"]
         [code-block "[effect Ask\n  [fn question [q]]]\n\n[handle\n  [Ask.question \"name?\"]\n  [Ask.question q] =>\n    [resume \"Loon\"]]"]]
@@ -37,9 +37,9 @@
         "[type Shape [Circle f64] [Rect f64 f64] Point]\n\n"
         "[fn area [shape]\n"
         "  [match shape\n"
-        "    [Circle r] => [* 3.14159 [* r r]]\n"
-        "    [Rect w h] => [* w h]\n"
-        "    Point => 0.0]]\n\n"
-        "[each [fn [s] [println [str s \" => \" [area s]]]]\n"
+        "    [Circle r] [* 3.14159 [* r r]]\n"
+        "    [Rect w h] [* w h]\n"
+        "    Point 0.0]]\n\n"
+        "[each [fn [s] [println [str s \" \" [area s]]]]\n"
         "  #[[Circle 5.0] [Rect 3.0 4.0] Point]]"]]
       [play-examples]]]]

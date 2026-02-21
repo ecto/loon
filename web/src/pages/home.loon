@@ -17,8 +17,8 @@
     [bg-snippet "pipes" "[pipe data\n  [filter valid?]\n  [map transform]\n  [sort-by :score]]" 2]
     [bg-snippet "effects" "[effect Logger\n  [log [msg : Str] : Unit]]" 3]
     [bg-snippet "types" "[type Option\n  [Some a]\n  None]" 4]
-    [bg-snippet "pattern matching" "[match shape\n  [Circle r] => [* 3.14 r r]\n  [Rect w h] => [* w h]]" 5]
-    [bg-snippet "handlers" "[handle [greet]\n  [Ask.prompt q] => \"World\"]" 6]
+    [bg-snippet "pattern matching" "[match shape\n  [Circle r] [* 3.14 r r]\n  [Rect w h] [* w h]]" 5]
+    [bg-snippet "handlers" "[handle [greet]\n  [Ask.prompt q] \"World\"]" 6]
     [bg-snippet "ownership" "[let items #[1 2 3]]\n[let sorted [sort items]]\n; items moved to sorted" 7]
     [bg-snippet "macros" "[macro when [test & body]\n  `[if ~test [do ~@body] []]]" 8]]]
 
@@ -125,7 +125,7 @@
           "\n"
           "; The caller decides how to handle it\n"
           "[handle [greet]\n"
-          "  [Ask.prompt q] => \"World\"]  ; \"Hello, World!\""]]
+          "  [Ask.prompt q] \"World\"]  ; \"Hello, World!\""]]
 
       [tour-section
         "Pattern matching"
@@ -139,8 +139,8 @@
           "\n"
           "[fn area [s]\n"
           "  [match s\n"
-          "    [Circle r]  => [* 3.14 r r]\n"
-          "    [Rect w h]  => [* w h]]]\n"
+          "    [Circle r]  [* 3.14 r r]\n"
+          "    [Rect w h]  [* w h]]]\n"
           "\n"
           "[area [Circle 5.0]]  ; 78.5"]]]
 

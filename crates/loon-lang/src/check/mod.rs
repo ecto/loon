@@ -1177,61 +1177,61 @@ impl Checker {
     pub fn register_dom_builtins(&mut self) {
         // dom/create-element: Str → Int
         self.env.set_global(
-            "dom/create-element".to_string(),
+            "dom.create-element".to_string(),
             Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Int))),
         );
 
         // dom/create-text: Str → Int
         self.env.set_global(
-            "dom/create-text".to_string(),
+            "dom.create-text".to_string(),
             Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Int))),
         );
 
         // dom/set-attribute: Int → Str → Str → ()
         self.env.set_global(
-            "dom/set-attribute".to_string(),
+            "dom.set-attribute".to_string(),
             Scheme::mono(Type::Fn(vec![Type::Int, Type::Str, Type::Str], Box::new(Type::Unit))),
         );
 
         // dom/set-style: Int → Str → Str → ()
         self.env.set_global(
-            "dom/set-style".to_string(),
+            "dom.set-style".to_string(),
             Scheme::mono(Type::Fn(vec![Type::Int, Type::Str, Type::Str], Box::new(Type::Unit))),
         );
 
         // dom/append-child: Int → Int → ()
         self.env.set_global(
-            "dom/append-child".to_string(),
+            "dom.append-child".to_string(),
             Scheme::mono(Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Unit))),
         );
 
         // dom/remove-child: Int → Int → ()
         self.env.set_global(
-            "dom/remove-child".to_string(),
+            "dom.remove-child".to_string(),
             Scheme::mono(Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Unit))),
         );
 
         // dom/replace-child: Int → Int → Int → ()
         self.env.set_global(
-            "dom/replace-child".to_string(),
+            "dom.replace-child".to_string(),
             Scheme::mono(Type::Fn(vec![Type::Int, Type::Int, Type::Int], Box::new(Type::Unit))),
         );
 
         // dom/set-text: Int → Str → ()
         self.env.set_global(
-            "dom/set-text".to_string(),
+            "dom.set-text".to_string(),
             Scheme::mono(Type::Fn(vec![Type::Int, Type::Str], Box::new(Type::Unit))),
         );
 
         // dom/query-selector: Str → Int
         self.env.set_global(
-            "dom/query-selector".to_string(),
+            "dom.query-selector".to_string(),
             Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Int))),
         );
 
         // dom/set-inner-html: Int → Str → ()
         self.env.set_global(
-            "dom/set-inner-html".to_string(),
+            "dom.set-inner-html".to_string(),
             Scheme::mono(Type::Fn(vec![Type::Int, Type::Str], Box::new(Type::Unit))),
         );
 
@@ -1240,7 +1240,7 @@ impl Checker {
             let a = self.subst.fresh();
             let tva = if let Type::Var(v) = a { v } else { unreachable!() };
             self.env.set_global(
-                "dom/add-listener".to_string(),
+                "dom.add-listener".to_string(),
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
@@ -1258,43 +1258,43 @@ impl Checker {
 
         // dom/remove-listener: Int → ()
         self.env.set_global(
-            "dom/remove-listener".to_string(),
+            "dom.remove-listener".to_string(),
             Scheme::mono(Type::Fn(vec![Type::Int], Box::new(Type::Unit))),
         );
 
         // dom/get-value: Int → Str
         self.env.set_global(
-            "dom/get-value".to_string(),
+            "dom.get-value".to_string(),
             Scheme::mono(Type::Fn(vec![Type::Int], Box::new(Type::Str))),
         );
 
         // dom/set-value: Int → Str → ()
         self.env.set_global(
-            "dom/set-value".to_string(),
+            "dom.set-value".to_string(),
             Scheme::mono(Type::Fn(vec![Type::Int, Type::Str], Box::new(Type::Unit))),
         );
 
         // dom/eval-loon: Str → Str
         self.env.set_global(
-            "dom/eval-loon".to_string(),
+            "dom.eval-loon".to_string(),
             Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Str))),
         );
 
         // dom/set-title: Str → ()
         self.env.set_global(
-            "dom/set-title".to_string(),
+            "dom.set-title".to_string(),
             Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Unit))),
         );
 
         // dom/push-state: Str → ()
         self.env.set_global(
-            "dom/push-state".to_string(),
+            "dom.push-state".to_string(),
             Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Unit))),
         );
 
         // dom/location: () → Str
         self.env.set_global(
-            "dom/location".to_string(),
+            "dom.location".to_string(),
             Scheme::mono(Type::Fn(vec![], Box::new(Type::Str))),
         );
 
@@ -1303,7 +1303,7 @@ impl Checker {
             let a = self.subst.fresh();
             let tva = if let Type::Var(v) = a { v } else { unreachable!() };
             self.env.set_global(
-                "dom/request-animation-frame".to_string(),
+                "dom.request-animation-frame".to_string(),
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
@@ -1320,7 +1320,7 @@ impl Checker {
             let a = self.subst.fresh();
             let tva = if let Type::Var(v) = a { v } else { unreachable!() };
             self.env.set_global(
-                "dom/set-timeout".to_string(),
+                "dom.set-timeout".to_string(),
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
@@ -1767,18 +1767,13 @@ impl Checker {
 
         // Single-arity
         if let ExprKind::List(params) = &args[0].kind {
-            // Parse effect annotation: / #{IO Fail}
+            // Parse effect annotation: #{IO Fail}
             let mut body_start = 1;
             let mut declared_effects: Option<EffectSet> = None;
             if body_start < args.len() {
-                if let ExprKind::Symbol(s) = &args[body_start].kind {
-                    if s == "/" {
-                        // Next arg should be a set literal #{IO Fail}
-                        if body_start + 1 < args.len() {
-                            declared_effects = Some(self.parse_effect_set(&args[body_start + 1]));
-                        }
-                        body_start += 2;
-                    }
+                if matches!(&args[body_start].kind, ExprKind::Set(_) | ExprKind::Map(_)) {
+                    declared_effects = Some(self.parse_effect_set(&args[body_start]));
+                    body_start += 1;
                 }
             }
 
@@ -1883,33 +1878,35 @@ impl Checker {
                     }
                 }
             }
-            // Skip => and body
-            if i + 2 < handler_args.len() {
-                if let ExprKind::Symbol(arrow) = &handler_args[i + 1].kind {
-                    if arrow == "=>" {
-                        // Bind handler params and resume in scope for handler body
-                        self.push_scope();
-                        if let ExprKind::List(pattern) = &handler_args[i].kind {
-                            for p in &pattern[1..] {
-                                if let ExprKind::Symbol(name) = &p.kind {
-                                    let t = self.subst.fresh();
-                                    self.env.set(name.clone(), Scheme::mono(t));
+            // Handler: pattern body → i += 2
+            if i + 1 < handler_args.len() {
+                if let ExprKind::List(pattern) = &handler_args[i].kind {
+                    if !pattern.is_empty() {
+                        if let ExprKind::Symbol(qualified) = &pattern[0].kind {
+                            if qualified.contains('.') {
+                                // Bind handler params and resume in scope for handler body
+                                self.push_scope();
+                                for p in &pattern[1..] {
+                                    if let ExprKind::Symbol(name) = &p.kind {
+                                        let t = self.subst.fresh();
+                                        self.env.set(name.clone(), Scheme::mono(t));
+                                    }
                                 }
+                                // resume: a -> a (one-shot continuation)
+                                let resume_arg = self.subst.fresh();
+                                self.env.set(
+                                    "resume".to_string(),
+                                    Scheme::mono(Type::Fn(
+                                        vec![resume_arg.clone()],
+                                        Box::new(resume_arg),
+                                    )),
+                                );
+                                self.infer(&handler_args[i + 1]);
+                                self.pop_scope();
+                                i += 2;
+                                continue;
                             }
                         }
-                        // resume: a -> a (one-shot continuation)
-                        let resume_arg = self.subst.fresh();
-                        self.env.set(
-                            "resume".to_string(),
-                            Scheme::mono(Type::Fn(
-                                vec![resume_arg.clone()],
-                                Box::new(resume_arg),
-                            )),
-                        );
-                        self.infer(&handler_args[i + 2]);
-                        self.pop_scope();
-                        i += 3;
-                        continue;
                     }
                 }
             }
@@ -2032,17 +2029,17 @@ impl Checker {
         let mut i = 0;
         let mut covered_ctors: Vec<String> = Vec::new();
         let mut has_wildcard = false;
-        let mut last_pattern: Option<&Expr> = None;
         while i < arms.len() {
-            match &arms[i].kind {
-                ExprKind::Symbol(s) if s == "_" => { has_wildcard = true; last_pattern = Some(&arms[i]); }
-                ExprKind::Symbol(s) if !s.starts_with(char::is_uppercase) && s != "=>" => {
+            let pattern = &arms[i];
+
+            // Track covered constructors and wildcards
+            match &pattern.kind {
+                ExprKind::Symbol(s) if s == "_" => { has_wildcard = true; }
+                ExprKind::Symbol(s) if !s.starts_with(char::is_uppercase) => {
                     has_wildcard = true;
-                    last_pattern = Some(&arms[i]);
                 }
                 ExprKind::Symbol(s) if s.starts_with(char::is_uppercase) => {
                     covered_ctors.push(s.clone());
-                    last_pattern = Some(&arms[i]);
                 }
                 ExprKind::List(items) if !items.is_empty() => {
                     if let ExprKind::Symbol(s) = &items[0].kind {
@@ -2050,33 +2047,45 @@ impl Checker {
                             covered_ctors.push(s.clone());
                         }
                     }
-                    last_pattern = Some(&arms[i]);
                 }
-                _ => {
-                    // Could be a literal or other pattern
-                    if !matches!(&arms[i].kind, ExprKind::Symbol(s) if s == "=>") {
-                        last_pattern = Some(&arms[i]);
+                _ => {}
+            }
+
+            // Guard: pattern [when guard] body → i += 3
+            if i + 2 < arms.len() {
+                if let ExprKind::List(guard_form) = &arms[i + 1].kind {
+                    if !guard_form.is_empty() {
+                        if let ExprKind::Symbol(s) = &guard_form[0].kind {
+                            if s == "when" {
+                                self.push_scope();
+                                self.bind_pattern_vars(pattern, &scrutinee_ty);
+                                let _guard_ty = self.infer(&guard_form[1]);
+                                let body_ty = self.infer(&arms[i + 2]);
+                                self.pop_scope();
+                                if let Err(e) = unify(&mut self.subst, &result_ty, &body_ty) {
+                                    self.push_unify_error(e, arms[i + 2].span);
+                                }
+                                i += 3;
+                                continue;
+                            }
+                        }
                     }
                 }
             }
 
-            if let ExprKind::Symbol(s) = &arms[i].kind {
-                if s == "=>"
-                    && i + 1 < arms.len() {
-                        // Bind pattern variables in a new scope for the body
-                        self.push_scope();
-                        if let Some(pat) = last_pattern.take() {
-                            self.bind_pattern_vars(pat, &scrutinee_ty);
-                        }
-                        let body_ty = self.infer(&arms[i + 1]);
-                        self.pop_scope();
-                        if let Err(e) = unify(&mut self.subst, &result_ty, &body_ty) {
-                            self.push_unify_error(e, arms[i + 1].span);
-                        }
-                        i += 2;
-                        continue;
+            // Simple: pattern body → i += 2
+            if i + 1 < arms.len() {
+                self.push_scope();
+                self.bind_pattern_vars(pattern, &scrutinee_ty);
+                let body_ty = self.infer(&arms[i + 1]);
+                self.pop_scope();
+                if let Err(e) = unify(&mut self.subst, &result_ty, &body_ty) {
+                    self.push_unify_error(e, arms[i + 1].span);
                 }
+                i += 2;
+                continue;
             }
+
             i += 1;
         }
 
@@ -2601,7 +2610,7 @@ impl Checker {
     /// Bind variables from a match pattern into the current scope.
     fn bind_pattern_vars(&mut self, pattern: &Expr, _scrutinee_ty: &Type) {
         match &pattern.kind {
-            ExprKind::Symbol(s) if s != "_" && s != "=>" && !s.starts_with(char::is_uppercase) => {
+            ExprKind::Symbol(s) if s != "_" && !s.starts_with(char::is_uppercase) => {
                 let t = self.subst.fresh();
                 self.env.set(s.clone(), Scheme::mono(t));
             }
@@ -3044,9 +3053,9 @@ mod tests {
             r#"
             [fn fib [n]
               [match n
-                0 => 0
-                1 => 1
-                n => [+ [fib [- n 1]] [fib [- n 2]]]]]
+                0 0
+                1 1
+                n [+ [fib [- n 1]] [fib [- n 2]]]]]
             [fib 10]
         "#,
         );
@@ -3168,7 +3177,7 @@ mod tests {
         let (effects, errors) = infer_effects(r#"
             [fn safe []
               [handle [IO.read-file "x"]
-                [IO.read-file p] => [resume "y"]]]
+                [IO.read-file p] [resume "y"]]]
         "#);
         assert!(errors.is_empty(), "errors: {:?}", errors);
         let safe_effects = effects.get("safe").unwrap();
@@ -3178,7 +3187,7 @@ mod tests {
     #[test]
     fn effect_annotation_passes() {
         let errors = check_errors(r#"
-            [fn load [path] / #{IO} [IO.read-file path]]
+            [fn load [path] #{IO} [IO.read-file path]]
         "#);
         assert!(errors.is_empty(), "errors: {:?}", errors);
     }
@@ -3186,7 +3195,7 @@ mod tests {
     #[test]
     fn effect_annotation_extra_ok() {
         let errors = check_errors(r#"
-            [fn load [path] / #{IO Fail} [IO.read-file path]]
+            [fn load [path] #{IO Fail} [IO.read-file path]]
         "#);
         assert!(errors.is_empty(), "errors: {:?}", errors);
     }
@@ -3194,7 +3203,7 @@ mod tests {
     #[test]
     fn effect_annotation_missing_errors() {
         let errors = check_errors(r#"
-            [fn load [path] / #{Fail} [IO.read-file path]]
+            [fn load [path] #{Fail} [IO.read-file path]]
         "#);
         assert!(!errors.is_empty(), "should error for undeclared IO effect");
         assert!(errors[0].message().contains("undeclared effect"), "error: {}", errors[0].message());
@@ -3213,7 +3222,7 @@ mod tests {
     #[test]
     fn effect_annotation_pure_passes() {
         let errors = check_errors(r#"
-            [fn pure [x] / #{} [+ x 1]]
+            [fn pure [x] #{} [+ x 1]]
         "#);
         assert!(errors.is_empty(), "errors: {:?}", errors);
     }

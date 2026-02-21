@@ -41,7 +41,7 @@
       [doc-text "The idea is simple: if your code performs effects instead of doing IO directly, "
         "you can swap in a test handler that provides canned responses. "
         "The function under test never knows the difference."]
-      [code-block {:label "LOON"} [str "[effect Http\n" "  [fn get [url]]]\n" "\n" "[fn fetch-title [url]\n" "  [let body [Http.get url]]\n" "  [parse-title body]]\n" "\n" "[test \"fetch-title parses html\" []\n" "  [let result\n" "    [handle [fetch-title \"http://example.com\"]\n" "      [Http.get url] => [resume \"<title>Hello</title>\"]]]\n" "  [assert-eq result \"Hello\"]]"]]
+      [code-block {:label "LOON"} [str "[effect Http\n" "  [fn get [url]]]\n" "\n" "[fn fetch-title [url]\n" "  [let body [Http.get url]]\n" "  [parse-title body]]\n" "\n" "[test \"fetch-title parses html\" []\n" "  [let result\n" "    [handle [fetch-title \"http://example.com\"]\n" "      [Http.get url] [resume \"<title>Hello</title>\"]]]\n" "  [assert-eq result \"Hello\"]]"]]
       [doc-text "Look at what happened here. The production handler for " [doc-code "Http.get"]
         " would make a real HTTP request. But in the test, we install a handler that immediately "
         "resumes with a hardcoded HTML string. The " [doc-code "fetch-title"]

@@ -22,7 +22,7 @@
         "If you've used objects in JavaScript or dicts in Python, maps will feel familiar, "
         "but with the added benefit of immutability."]
       [code-block {} [str
-        "[let user {:name \"Ada\" :age 30}]\n"
+        "[let user \{:name \"Ada\" :age 30\}]\n"
         "[get user :name]           ; \"Ada\"\n"
         "[get user :email \"none\"]   ; \"none\"\n"
         "[assoc user :age 31]       ; updated map"]]
@@ -36,9 +36,9 @@
       [doc-text "Sets are unordered collections where every value appears exactly once. "
         "They're perfect for membership checks and deduplication."]
       [code-block {} [str
-        "[let tags #{\"fast\" \"safe\" \"fun\"}]\n"
+        "[let tags #\{\"fast\" \"safe\" \"fun\"\}]\n"
         "[contains? tags \"safe\"]  ; true\n"
-        "[insert tags \"new\"]     ; #{...}"]]
+        "[insert tags \"new\"]     ; #\{...\}"]]
       [doc-text "Like maps and vectors, sets are immutable. "
         [doc-code "insert"] " gives you a new set with the added element."]]
 
@@ -61,13 +61,13 @@
         "these are your old friends. If not, they're about to become your new ones."]
       [code-block {} [str
         "[map [fn [x] [* x 2]] #[1 2 3]]\n"
-        "; => #[2 4 6]\n"
+        "; #[2 4 6]\n"
         "\n"
         "[filter [fn [x] [> x 2]] #[1 2 3 4]]\n"
-        "; => #[3 4]\n"
+        "; #[3 4]\n"
         "\n"
         "[fold 0 + #[1 2 3 4]]\n"
-        "; => 10"]]
+        "; 10"]]
       [doc-text [doc-code "map"] " transforms every element. " [doc-code "filter"]
         " keeps only the elements that pass a test. " [doc-code "fold"]
         " reduces the whole collection down to a single value by accumulating from a starting point. "
@@ -81,7 +81,7 @@
         "[pipe #[1 2 3 4 5 6 7 8 9 10]\n"
         "  [filter [fn [n] [= 0 [% n 2]]]]\n"
         "  [map [fn [n] [* n n]]]\n"
-        "  [take 3]]  ; => #[4 16 36]"]]
+        "  [take 3]]  ; #[4 16 36]"]]
       [doc-text "Read this top to bottom: start with the numbers 1 through 10, keep only the even ones, "
         "square each of them, then take the first three results. "
         "Each line is a single, understandable step."]

@@ -296,7 +296,7 @@ fn macro_plus_expanded_in_phase_2() {
 #[test]
 fn parse_compile_effects_annotation() {
     let src = r#"
-        [macro include-str [path] / #{IO}
+        [macro include-str [path] #{IO}
           `[IO.read-file ~path]]
         [include-str "test.txt"]
     "#;
@@ -317,9 +317,9 @@ fn existing_programs_still_work() {
         r#"
         [fn fib [n]
           [match n
-            0 => 0
-            1 => 1
-            n => [+ [fib [- n 1]] [fib [- n 2]]]]]
+            0 0
+            1 1
+            n [+ [fib [- n 1]] [fib [- n 2]]]]]
         [fib 10]
     "#,
     );
@@ -338,9 +338,9 @@ fn adt_still_works() {
         r#"
         [type Color Red Green Blue]
         [match Red
-          Red => 1
-          Green => 2
-          Blue => 3]
+          Red 1
+          Green 2
+          Blue 3]
     "#,
     );
     assert_eq!(result, interp::Value::Int(1));

@@ -249,7 +249,7 @@ impl MacroExpander {
         span: Span,
     ) -> Result<(), String> {
         // [macro name [params] body]
-        // [macro name [params] / {Effects} body]
+        // [macro name [params] #{Effects} body]
         if args.len() < 2 {
             return Err("macro requires a name and body".to_string());
         }
@@ -259,18 +259,13 @@ impl MacroExpander {
         };
         let params = self.parse_macro_params(&args[1])?;
 
-        // Check for effect annotation: / {Effects}
+        // Check for effect annotation: #{Effects}
         let mut compile_effects = HashSet::new();
         let mut body_start = 2;
         if body_start < args.len() {
-            if let ExprKind::Symbol(s) = &args[body_start].kind {
-                if s == "/" {
-                    body_start += 1;
-                    if body_start < args.len() {
-                        self.parse_compile_effects(&args[body_start], &mut compile_effects)?;
-                        body_start += 1;
-                    }
-                }
+            if matches!(&args[body_start].kind, ExprKind::Set(_) | ExprKind::Map(_)) {
+                self.parse_compile_effects(&args[body_start], &mut compile_effects)?;
+                body_start += 1;
             }
         }
 

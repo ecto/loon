@@ -67,14 +67,14 @@
         "let mut v = vec![1,2,3];"
         "[let mut v #[1 2 3]]"]
       [doc-row
-        "fn add(a: i32, b: i32) -> i32 { a + b }"
+        "fn add(a: i32, b: i32) -> i32 \{ a + b \}"
         "[fn add [a b] [+ a b]]"]
       [doc-row
-        "if x > 0 { \"pos\" } else { \"neg\" }"
+        "if x > 0 \{ \"pos\" \} else \{ \"neg\" \}"
         "[if [> x 0] \"pos\" \"neg\"]"]
       [doc-row
-        "match opt { Some(x) => x, None => 0 }"
-        "[match opt [Some x] => x None => 0]"]
+        "match opt \{ Some(x) x, None 0 \}"
+        "[match opt [Some x] x None 0]"]
       [doc-row
         "v.iter().map(|x| x * 2).collect()"
         "[map [fn [x] [* x 2]] v]"]
@@ -82,7 +82,7 @@
         "x.foo().bar().baz()"
         "[pipe x [foo] [bar] [baz]]"]
       [doc-row
-        "println!(\"hello {}\", name);"
+        "println!(\"hello \{\}\", name);"
         "[println [str \"hello \" name]]"]
       [doc-row
         "struct / enum"

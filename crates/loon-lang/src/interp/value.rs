@@ -20,7 +20,7 @@ pub type BuiltinFn = Arc<dyn Fn(&str, &[Value]) -> Result<Value, InterpError> + 
 pub enum Param {
     Simple(String),
     VecDestructure(Vec<Param>),
-    MapDestructure(Vec<String>),
+    MapDestructure(Vec<(String, Option<crate::ast::Expr>)>),
     /// Rest parameter: `& name` — collects remaining args into a Vec
     Rest(String),
 }

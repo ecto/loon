@@ -85,15 +85,15 @@
 ; --- Badge: small inline label ---
 [fn badge [text variant]
   [let bg [match variant
-    "success" => "rgba(45, 80, 22, 0.1)"
-    "warning" => "rgba(212, 168, 67, 0.1)"
-    "info"    => "rgba(30, 58, 95, 0.1)"
-    _         => "rgba(30, 58, 95, 0.1)"]]
+    "success" "rgba(45, 80, 22, 0.1)"
+    "warning" "rgba(212, 168, 67, 0.1)"
+    "info"    "rgba(30, 58, 95, 0.1)"
+    _         "rgba(30, 58, 95, 0.1)"]]
   [let fg [match variant
-    "success" => [color :green]
-    "warning" => [color :accent]
-    "info"    => [color :primary]
-    _         => [color :primary]]]
+    "success" [color :green]
+    "warning" [color :accent]
+    "info"    [color :primary]
+    _         [color :primary]]]
   [span {:style {:display "inline-block"
                  :padding "0.25em 0.6em"
                  :border-radius [radius :sm]

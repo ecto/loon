@@ -18,19 +18,19 @@
     [doc-section "Neovim Setup"
       [doc-text "Neovim has excellent LSP support built in. Add this to your config and Loon files will get full language server features as soon as you open them."]
       [code-block {:label "LUA"} [str
-        "vim.api.nvim_create_autocmd('FileType', {\n"
+        "vim.api.nvim_create_autocmd('FileType', \{\n"
         "  pattern = 'loon',\n"
         "  callback = function()\n"
-        "    vim.lsp.start({\n"
+        "    vim.lsp.start(\{\n"
         "      name = 'loon',\n"
-        "      cmd = { 'loon', 'lsp' },\n"
+        "      cmd = \{ 'loon', 'lsp' \},\n"
         "      root_dir = vim.fs.dirname(\n"
-        "        vim.fs.find({ 'main.loon' }, { upward = true })[1]\n"
+        "        vim.fs.find(\{ 'main.loon' \}, \{ upward = true \})[1]\n"
         "      ),\n"
-        "    })\n"
+        "    \})\n"
         "  end,\n"
-        "})"]]
-      [doc-note "tip" "Set filetype detection with: vim.filetype.add({ extension = { loon = 'loon' } })"]]
+        "\})"]]
+      [doc-note "tip" "Set filetype detection with: vim.filetype.add(\{ extension = \{ loon = 'loon' \} \})"]]
 
     [doc-section "Generic LSP Setup"
       [doc-text "If you use a different editor, you can still get full LSP support as long as it has an LSP client. Point it at the Loon binary with these settings."]

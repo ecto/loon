@@ -19,12 +19,12 @@
 
     [doc-section "Handling Effects"
       [doc-text "A " [doc-code "handle"] " block intercepts effect operations and gives them concrete behavior. This is where you wire an effect to a real implementation."]
-      [code-block {:label "LOON"} [str "[handle [save-user \"Alice\"]\n" "  [Store.get key] => [get db key]\n" "  [Store.set key val] => [insert db key val]]"]]
+      [code-block {:label "LOON"} [str "[handle [save-user \"Alice\"]\n" "  [Store.get key] [get db key]\n" "  [Store.set key val] [insert db key val]]"]]
       [doc-text "Each clause pattern-matches on an effect operation and provides the actual logic. When " [doc-code "save-user"] " calls " [doc-code "Store.set"] ", execution jumps to the matching handler clause, runs it, and then returns the result back to the function."]]
 
     [doc-section "Resume"
       [doc-text "Handlers receive an implicit " [doc-code "resume"] " function that continues execution right where the effect was performed. This is what makes effects fundamentally different from exceptions."]
-      [code-block {:label "LOON"} [str "[handle [do [Store.set \"x\" 1] [Store.get \"x\"]]\n" "  [Store.get key] => [resume [get state key]]\n" "  [Store.set key val] => [resume None]]"]]
+      [code-block {:label "LOON"} [str "[handle [do [Store.set \"x\" 1] [Store.get \"x\"]]\n" "  [Store.get key] [resume [get state key]]\n" "  [Store.set key val] [resume None]]"]]
       [doc-text "When an exception fires, the stack unwinds and you lose your place. When an effect fires and you call " [doc-code "resume"] ", you pick up exactly where you left off. The effectful function does not even know it was interrupted."]
       [doc-note "tip" "Calling resume is what makes effects different from exceptions. Execution continues where it left off, as if the effect operation simply returned a value."]]
 
@@ -49,7 +49,7 @@
 
     [doc-section "Testing with Effects"
       [doc-text "This is where algebraic effects really shine. Testing effectful code is trivial because you just swap in a different handler. No mocking libraries. No dependency injection frameworks. No test doubles that implement twelve interface methods when you only care about two."]
-      [code-block {:label "LOON"} [str "[test \"save-user stores correctly\" []\n" "  [let mut log #[]]\n" "  [handle [save-user \"Bob\"]\n" "    [Store.set k v] => [do [push! log v] [resume None]]\n" "    [Store.get k] => [resume \"Bob\"]]\n" "  [assert-eq log #[\"Bob\"]]]"]]
+      [code-block {:label "LOON"} [str "[test \"save-user stores correctly\" []\n" "  [let mut log #[]]\n" "  [handle [save-user \"Bob\"]\n" "    [Store.set k v] [do [push! log v] [resume None]]\n" "    [Store.get k] [resume \"Bob\"]]\n" "  [assert-eq log #[\"Bob\"]]]"]]
       [doc-text "In production, your handler talks to a real database. In tests, it records calls into a vector. The function under test is identical in both cases. It has no idea who is handling its effects, and that is exactly the point."]]
 
     [doc-prev-next "Ownership" "/guide/ownership" "Modules" "/guide/modules"]]]

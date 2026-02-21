@@ -411,7 +411,7 @@ impl<'a> FnCtx<'a> {
     }
     fn parse_arms<'b>(&self, arms: &'b [Expr]) -> Vec<(&'b Expr, &'b Expr)> {
         let mut r = Vec::new(); let mut i = 0;
-        while i + 2 < arms.len() { if let ExprKind::Symbol(s) = &arms[i+1].kind { if s == "=>" { r.push((&arms[i], &arms[i+2])); i += 3; continue; } } i += 1; }
+        while i + 1 < arms.len() { r.push((&arms[i], &arms[i+1])); i += 2; }
         r
     }
     fn try_compile_br_table(&mut self, scrutinee: u32, parsed: &[(&Expr, &Expr)]) -> Result<bool, String> {
@@ -442,23 +442,24 @@ impl<'a> FnCtx<'a> {
     }
     fn compile_match_arms_ifelse(&mut self, scrutinee: u32, arms: &[Expr]) -> Result<(), String> {
         let mut i = 0; let mut first = true;
-        while i < arms.len() {
+        while i + 1 < arms.len() {
             let pattern = &arms[i];
-            if i + 1 < arms.len() { if let ExprKind::Symbol(s) = &arms[i+1].kind { if s == "=>" && i + 2 < arms.len() { match &pattern.kind {
-                ExprKind::Symbol(s) if s == "_" => { if !first { self.instructions.push(WasmInstruction::Else); } self.compile_expr(&arms[i+2])?; if !first { self.instructions.push(WasmInstruction::End); } return Ok(()); }
-                ExprKind::Int(n) => { self.instructions.push(WasmInstruction::LocalGet(scrutinee)); self.instructions.push(WasmInstruction::I64Const(*n)); self.instructions.push(WasmInstruction::I64Eq); self.instructions.push(WasmInstruction::If(BlockType::Result(ValType::I64))); self.compile_expr(&arms[i+2])?; first = false; i += 3; continue; }
-                ExprKind::Symbol(name) if name != "=>" => {
-                    if let Some((tag, 0)) = self.compiler.adt_constructors.get(name.as_str()).cloned() { self.instructions.push(WasmInstruction::LocalGet(scrutinee)); self.instructions.push(WasmInstruction::I32WrapI64); self.instructions.push(WasmInstruction::I64Load(3, 0)); self.instructions.push(WasmInstruction::I64Const(tag as i64)); self.instructions.push(WasmInstruction::I64Eq); self.instructions.push(WasmInstruction::If(BlockType::Result(ValType::I64))); self.compile_expr(&arms[i+2])?; first = false; i += 3; continue; }
-                    if !first { self.instructions.push(WasmInstruction::Else); } let local = self.alloc_local(); self.locals.insert(name.clone(), local); self.instructions.push(WasmInstruction::LocalGet(scrutinee)); self.instructions.push(WasmInstruction::LocalSet(local)); self.compile_expr(&arms[i+2])?; if !first { self.instructions.push(WasmInstruction::End); } return Ok(());
+            let body = &arms[i + 1];
+            match &pattern.kind {
+                ExprKind::Symbol(s) if s == "_" => { if !first { self.instructions.push(WasmInstruction::Else); } self.compile_expr(body)?; if !first { self.instructions.push(WasmInstruction::End); } return Ok(()); }
+                ExprKind::Int(n) => { self.instructions.push(WasmInstruction::LocalGet(scrutinee)); self.instructions.push(WasmInstruction::I64Const(*n)); self.instructions.push(WasmInstruction::I64Eq); self.instructions.push(WasmInstruction::If(BlockType::Result(ValType::I64))); self.compile_expr(body)?; first = false; i += 2; continue; }
+                ExprKind::Symbol(name) => {
+                    if let Some((tag, 0)) = self.compiler.adt_constructors.get(name.as_str()).cloned() { self.instructions.push(WasmInstruction::LocalGet(scrutinee)); self.instructions.push(WasmInstruction::I32WrapI64); self.instructions.push(WasmInstruction::I64Load(3, 0)); self.instructions.push(WasmInstruction::I64Const(tag as i64)); self.instructions.push(WasmInstruction::I64Eq); self.instructions.push(WasmInstruction::If(BlockType::Result(ValType::I64))); self.compile_expr(body)?; first = false; i += 2; continue; }
+                    if !first { self.instructions.push(WasmInstruction::Else); } let local = self.alloc_local(); self.locals.insert(name.clone(), local); self.instructions.push(WasmInstruction::LocalGet(scrutinee)); self.instructions.push(WasmInstruction::LocalSet(local)); self.compile_expr(body)?; if !first { self.instructions.push(WasmInstruction::End); } return Ok(());
                 }
                 ExprKind::List(pat_items) if !pat_items.is_empty() => { if let ExprKind::Symbol(cn) = &pat_items[0].kind { if let Some((tag, _)) = self.compiler.adt_constructors.get(cn.as_str()).cloned() {
                     self.instructions.push(WasmInstruction::LocalGet(scrutinee)); self.instructions.push(WasmInstruction::I32WrapI64); self.instructions.push(WasmInstruction::I64Load(3, 0)); self.instructions.push(WasmInstruction::I64Const(tag as i64)); self.instructions.push(WasmInstruction::I64Eq); self.instructions.push(WasmInstruction::If(BlockType::Result(ValType::I64)));
                     for (fi, fp) in pat_items[1..].iter().enumerate() { if let ExprKind::Symbol(fn_) = &fp.kind { if fn_ != "_" { let local = self.alloc_local(); self.locals.insert(fn_.clone(), local); self.instructions.push(WasmInstruction::LocalGet(scrutinee)); self.instructions.push(WasmInstruction::I32WrapI64); self.instructions.push(WasmInstruction::I64Load(3, (8 + fi * 8) as u32)); self.instructions.push(WasmInstruction::LocalSet(local)); } } }
-                    self.compile_expr(&arms[i+2])?; first = false; i += 3; continue;
+                    self.compile_expr(body)?; first = false; i += 2; continue;
                 } } }
                 _ => {}
-            } i += 3; continue; } } }
-            i += 1;
+            }
+            i += 2;
         }
         if !first { self.instructions.push(WasmInstruction::Else); self.instructions.push(WasmInstruction::I64Const(0)); self.instructions.push(WasmInstruction::End); } else { self.instructions.push(WasmInstruction::I64Const(0)); }
         Ok(())
@@ -537,20 +538,20 @@ mod tests {
     fn ok(src: &str) { assert_eq!(&compile(&parse(src).unwrap()).unwrap()[0..4], b"\0asm"); }
     #[test] fn compile_hello_world() { ok(r#"[fn main [] [println "hello, world!"]]"#); }
     #[test] fn compile_arithmetic() { ok(r#"[fn main [] [+ 1 2]]"#); }
-    #[test] fn compile_fib() { ok(r#"[fn fib [n] [match n 0 => 0  1 => 1  n => [+ [fib [- n 1]] [fib [- n 2]]]]] [fn main [] [fib 10]]"#); }
+    #[test] fn compile_fib() { ok(r#"[fn fib [n] [match n 0 0  1 1  n [+ [fib [- n 1]] [fib [- n 2]]]]] [fn main [] [fib 10]]"#); }
     #[test] fn compile_lambda_lift() { ok(r#"[fn apply-offset [offset] [map [fn [x] [+ x offset]] offset]] [fn main [] [apply-offset 10]]"#); }
     #[test] fn compile_closure_no_capture() { ok(r#"[fn main [] [let f [fn [x] [+ x 1]]] [f 41]]"#); }
     #[test] fn compile_closure_with_capture() { ok(r#"[fn main [] [let y 10] [let f [fn [x] [+ x y]]] [f 32]]"#); }
     #[test] fn compile_higher_order() { ok(r#"[fn apply [f x] [f x]] [fn main [] [apply [fn [x] [* x 2]] 21]]"#); }
-    #[test] fn compile_adt_constructor_and_match() { ok(r#"[type Maybe T [Just T] Nothing] [fn main [] [let val [Just 42]] [match val [Just x] => x Nothing => 0]]"#); }
-    #[test] fn compile_adt_nullary_match() { ok(r#"[type Maybe T [Just T] Nothing] [fn main [] [match Nothing [Just x] => x Nothing => 0]]"#); }
+    #[test] fn compile_adt_constructor_and_match() { ok(r#"[type Maybe T [Just T] Nothing] [fn main [] [let val [Just 42]] [match val [Just x] x Nothing 0]]"#); }
+    #[test] fn compile_adt_nullary_match() { ok(r#"[type Maybe T [Just T] Nothing] [fn main [] [match Nothing [Just x] x Nothing 0]]"#); }
     #[test] fn compile_string_concat() { ok(r#"[fn main [] [let a "hello"] [let b " world"] [str-concat a b]]"#); }
     #[test] fn compile_string_len() { ok(r#"[fn main [] [str-len "test"]]"#); }
     #[test] fn compile_string_eq() { ok(r#"[fn main [] [str-eq "abc" "abc"]]"#); }
     #[test] fn compile_string_str_alias() { ok(r#"[fn main [] [str "foo" "bar"]]"#); }
-    #[test] fn compile_match_br_table() { ok(r#"[fn dispatch [x] [match x 0 => 100  1 => 200  2 => 300  _ => 0]] [fn main [] [dispatch 1]]"#); }
-    #[test] fn compile_match_br_table_no_default() { ok(r#"[fn dispatch [x] [match x 0 => 10  1 => 20  2 => 30]] [fn main [] [dispatch 2]]"#); }
-    #[test] fn compile_match_noncontiguous_falls_back() { ok(r#"[fn dispatch [x] [match x 0 => 10  5 => 50  _ => 0]] [fn main [] [dispatch 5]]"#); }
+    #[test] fn compile_match_br_table() { ok(r#"[fn dispatch [x] [match x 0 100  1 200  2 300  _ 0]] [fn main [] [dispatch 1]]"#); }
+    #[test] fn compile_match_br_table_no_default() { ok(r#"[fn dispatch [x] [match x 0 10  1 20  2 30]] [fn main [] [dispatch 2]]"#); }
+    #[test] fn compile_match_noncontiguous_falls_back() { ok(r#"[fn dispatch [x] [match x 0 10  5 50  _ 0]] [fn main [] [dispatch 5]]"#); }
     #[test] fn compile_vec_operations() { ok(r#"[fn main [] [let v [vec-new]] [let v2 [vec-push v 42]] [vec-get v2 0]]"#); }
     #[test] fn compile_multi_file_error_on_missing() {
         let exprs = parse(r#"[use nonexistent.module] [fn main [] 42]"#).unwrap();

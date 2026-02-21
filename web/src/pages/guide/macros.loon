@@ -36,7 +36,7 @@
 
     [doc-section "Debugging with macroexpand"
       [doc-text "Macros can be tricky to get right because you are writing code that writes code. When things go wrong, " [doc-code "macroexpand"] " is your best friend. It shows you exactly what a macro produces without actually running the result."]
-      [code-block {:label "LOON"} [str "[macroexpand [unless false [println \"hi\"]]]\n" "; => [if [not false] [println \"hi\"]]"]]
+      [code-block {:label "LOON"} [str "[macroexpand [unless false [println \"hi\"]]]\n" "; [if [not false] [println \"hi\"]]"]]
       [doc-text "If the expanded code looks wrong, you know the bug is in your macro. If it looks right, the bug is somewhere else. This simple tool saves enormous amounts of debugging time, especially with complex nested macros."]]
 
     [doc-section "Common Patterns"

@@ -81,48 +81,48 @@ macro_rules! builtin {
 
 pub fn register_dom_builtins(env: &mut Env) {
     // DOM creation
-    builtin!(env, "dom/create-element", |_, args: &[Value]| {
+    builtin!(env, "dom.create-element", |_, args: &[Value]| {
         call_bridge("createElement", args)
     });
 
-    builtin!(env, "dom/create-text", |_, args: &[Value]| {
+    builtin!(env, "dom.create-text", |_, args: &[Value]| {
         call_bridge("createText", args)
     });
 
-    builtin!(env, "dom/set-attribute", |_, args: &[Value]| {
+    builtin!(env, "dom.set-attribute", |_, args: &[Value]| {
         call_bridge("setAttribute", args)
     });
 
-    builtin!(env, "dom/set-style", |_, args: &[Value]| {
+    builtin!(env, "dom.set-style", |_, args: &[Value]| {
         call_bridge("setStyle", args)
     });
 
-    builtin!(env, "dom/append-child", |_, args: &[Value]| {
+    builtin!(env, "dom.append-child", |_, args: &[Value]| {
         call_bridge("appendChild", args)
     });
 
-    builtin!(env, "dom/remove-child", |_, args: &[Value]| {
+    builtin!(env, "dom.remove-child", |_, args: &[Value]| {
         call_bridge("removeChild", args)
     });
 
-    builtin!(env, "dom/replace-child", |_, args: &[Value]| {
+    builtin!(env, "dom.replace-child", |_, args: &[Value]| {
         call_bridge("replaceChild", args)
     });
 
-    builtin!(env, "dom/set-text", |_, args: &[Value]| {
+    builtin!(env, "dom.set-text", |_, args: &[Value]| {
         call_bridge("setText", args)
     });
 
-    builtin!(env, "dom/query-selector", |_, args: &[Value]| {
+    builtin!(env, "dom.query-selector", |_, args: &[Value]| {
         call_bridge("querySelector", args)
     });
 
-    builtin!(env, "dom/set-inner-html", |_, args: &[Value]| {
+    builtin!(env, "dom.set-inner-html", |_, args: &[Value]| {
         call_bridge("setInnerHTML", args)
     });
 
     // Events — intercept callable args to store in callback registry
-    builtin!(env, "dom/add-listener", |_, args: &[Value]| {
+    builtin!(env, "dom.add-listener", |_, args: &[Value]| {
         if args.len() >= 3 && args[2].is_callable() {
             let cb_id = store_callback(args[2].clone());
             let mut new_args = args.to_vec();
@@ -133,37 +133,37 @@ pub fn register_dom_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "dom/remove-listener", |_, args: &[Value]| {
+    builtin!(env, "dom.remove-listener", |_, args: &[Value]| {
         call_bridge("removeListener", args)
     });
 
     // Form elements
-    builtin!(env, "dom/get-value", |_, args: &[Value]| {
+    builtin!(env, "dom.get-value", |_, args: &[Value]| {
         call_bridge("getValue", args)
     });
 
-    builtin!(env, "dom/set-value", |_, args: &[Value]| {
+    builtin!(env, "dom.set-value", |_, args: &[Value]| {
         call_bridge("setValue", args)
     });
 
-    builtin!(env, "dom/eval-loon", |_, args: &[Value]| {
+    builtin!(env, "dom.eval-loon", |_, args: &[Value]| {
         call_bridge("evalLoon", args)
     });
 
     // Browser
-    builtin!(env, "dom/set-title", |_, args: &[Value]| {
+    builtin!(env, "dom.set-title", |_, args: &[Value]| {
         call_bridge("setTitle", args)
     });
 
-    builtin!(env, "dom/push-state", |_, args: &[Value]| {
+    builtin!(env, "dom.push-state", |_, args: &[Value]| {
         call_bridge("pushState", args)
     });
 
-    builtin!(env, "dom/location", |_, args: &[Value]| {
+    builtin!(env, "dom.location", |_, args: &[Value]| {
         call_bridge("location", args)
     });
 
-    builtin!(env, "dom/request-animation-frame", |_, args: &[Value]| {
+    builtin!(env, "dom.request-animation-frame", |_, args: &[Value]| {
         if !args.is_empty() && args[0].is_callable() {
             let cb_id = store_callback(args[0].clone());
             call_bridge("requestAnimationFrame", &[Value::Int(cb_id as i64)])
@@ -172,7 +172,7 @@ pub fn register_dom_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "dom/set-timeout", |_, args: &[Value]| {
+    builtin!(env, "dom.set-timeout", |_, args: &[Value]| {
         if args.len() >= 2 && args[0].is_callable() {
             let cb_id = store_callback(args[0].clone());
             let mut new_args = args.to_vec();

@@ -10,6 +10,8 @@ fn unescape(s: &str) -> String {
                 Some('t') => out.push('\t'),
                 Some('\\') => out.push('\\'),
                 Some('"') => out.push('"'),
+                Some('{') => out.push_str("{{"),  // \{ → escaped brace (won't interpolate)
+                Some('}') => out.push_str("}}"),  // \} → escaped brace
                 Some(other) => {
                     out.push('\\');
                     out.push(other);
@@ -48,9 +50,7 @@ pub enum Token {
     HashBrace,
 
     // Operators
-    #[token("=>")]
-    FatArrow,
-#[token("?")]
+    #[token("?")]
     Question,
     #[token("/")]
     Slash,

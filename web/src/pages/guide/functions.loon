@@ -66,10 +66,10 @@
         "down to a single value."]
       [code-block {} [str
         "[map [fn [x] [* x x]] #[1 2 3 4]]\n"
-        "; => #[1 4 9 16]\n"
+        "; #[1 4 9 16]\n"
         "\n"
         "[filter [fn [x] [> x 2]] #[1 2 3 4]]\n"
-        "; => #[3 4]"]]
+        "; #[3 4]"]]
       [doc-text "If you find yourself writing a " [doc-code "for"] " loop that builds up a "
         "new list by transforming each element, that's " [doc-code "map"]
         ". If you're writing a loop that skips some elements, that's "
@@ -114,8 +114,8 @@
       [code-block {} [str
         "[fn factorial [n]\n"
         "  [match n\n"
-        "    0 => 1\n"
-        "    _ => [* n [factorial [- n 1]]]]]"]]
+        "    0 1\n"
+        "    _ [* n [factorial [- n 1]]]]]"]]
       [doc-text "The " [doc-code "_"] " pattern matches anything, so this reads naturally: "
         "factorial of 0 is 1, and factorial of anything else is n times factorial of n minus 1. "
         "We'll cover pattern matching in more depth in the Pattern Matching guide."]]

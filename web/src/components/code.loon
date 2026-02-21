@@ -21,11 +21,11 @@
 }]
 
 [let ws-set #{ " " "\t" "\r" "\n" }]
-[let brk-set #{ "[" "]" "{" "}" "(" ")" }]
+[let brk-set #{ "[" "]" "\{" "\}" "(" ")" }]
 [let dig-set #{ "0" "1" "2" "3" "4" "5" "6" "7" "8" "9" }]
 [let up-set #{ "A" "B" "C" "D" "E" "F" "G" "H" "I" "J" "K" "L" "M"
                "N" "O" "P" "Q" "R" "S" "T" "U" "V" "W" "X" "Y" "Z" }]
-[let stop-set #{ " " "\t" "\r" "\n" "[" "]" "{" "}" "(" ")" "\"" ";" "#" }]
+[let stop-set #{ " " "\t" "\r" "\n" "[" "]" "\{" "\}" "(" ")" "\"" ";" "#" }]
 
 ; --- Scanners ---
 
@@ -78,7 +78,7 @@
 
 [fn emit-hash [s i acc]
   [if [< [+ i 1] [len s]]
-    [if [or [= [char-at s [+ i 1]] "["] [= [char-at s [+ i 1]] "{"]]
+    [if [or [= [char-at s [+ i 1]] "["] [= [char-at s [+ i 1]] "\{"]]
       #[[+ i 2] [conj acc #["syntax-paren" [substring s i [+ i 2]]]]]
       #[[+ i 1] [conj acc #["syntax-paren" "#"]]]]
     #[[+ i 1] [conj acc #["syntax-paren" "#"]]]]]
@@ -137,12 +137,12 @@
     [let cls [nth tok 0]]
     [let text [nth tok 1]]
     [if [= cls ""]
-      [dom/append-child parent [dom/create-text text]]
+      [dom.append-child parent [dom.create-text text]]
       [do
-        [let sp [dom/create-element "span"]]
-        [dom/set-attribute sp "class" cls]
-        [dom/append-child sp [dom/create-text text]]
-        [dom/append-child parent sp]]]]
+        [let sp [dom.create-element "span"]]
+        [dom.set-attribute sp "class" cls]
+        [dom.append-child sp [dom.create-text text]]
+        [dom.append-child parent sp]]]]
     tokens]]
 
 ; --- Two-phase code block: plain text first, highlight async ---
@@ -154,10 +154,10 @@
   [let cls [get props :class ""]]
   [let block-id [str "lc-" [len source] "-" [index-of source "\n"]]]
   ; Schedule async highlight after paint
-  [dom/set-timeout
+  [dom.set-timeout
     [fn []
-      [let el [dom/query-selector [str "#" block-id]]]
-      [dom/set-inner-html el ""]
+      [let el [dom.query-selector [str "#" block-id]]]
+      [dom.set-inner-html el ""]
       [render-tokens-to-dom el [tokenize source]]]
     0]
   ; Return plain text immediately

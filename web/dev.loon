@@ -76,7 +76,7 @@
   [copy-tree src-dir [str dist-dir "/src"]]]
 
 ; --- SSE injection ---
-[let sse-script "<script>(function(){var es=new EventSource('/__dev/sse');es.addEventListener('loon',function(e){window.__loon_sse&&window.__loon_sse('loon',e.data)});es.addEventListener('css',function(e){window.__loon_sse&&window.__loon_sse('css',e.data)});es.addEventListener('full',function(){window.location.reload()});es.onopen=function(){console.log('[loon] dev server connected')};es.onerror=function(){console.log('[loon] reconnecting...')}})();</script>"]
+[let sse-script "<script>(function()\{var es=new EventSource('/__dev/sse');es.addEventListener('loon',function(e)\{window.__loon_sse&&window.__loon_sse('loon',e.data)\});es.addEventListener('css',function(e)\{window.__loon_sse&&window.__loon_sse('css',e.data)\});es.addEventListener('full',function()\{window.location.reload()\});es.onopen=function()\{console.log('[loon] dev server connected')\};es.onerror=function()\{console.log('[loon] reconnecting...')\}\})();</script>"]
 
 [fn inject-sse [html]
   [replace html "</body>" [str sse-script "</body>"]]]

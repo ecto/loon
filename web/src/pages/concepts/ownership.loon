@@ -74,7 +74,7 @@
       [doc-subsection "Creation"
         [doc-text "A value is created and bound to a name. That name becomes the owner. "
           "Ownership starts here and follows the value wherever it goes."]
-        [code-block {} "[let user {:name \"Ada\" :age 30}]"]]
+        [code-block {} "[let user \{:name \"Ada\" :age 30\}]"]]
 
       [doc-subsection "Use"
         [doc-text "The value is read, passed to functions, or used in expressions. Each "

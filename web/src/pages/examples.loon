@@ -9,23 +9,23 @@
 
     [doc-section "Fibonacci"
       [doc-text "Pattern matching with " [doc-code "match"] " and " [doc-code "=>"] " makes recursive definitions concise. The wildcard " [doc-code "_"] " catches everything else."]
-      [code-block {:label "fib.loon"} [str "[fn fib [n]\n" "  [match n\n" "    0 => 0\n" "    1 => 1\n" "    _ => [+ [fib [- n 1]]\n" "            [fib [- n 2]]]]]\n" "\n" "[println [fib 10]]  ; 55"]]]
+      [code-block {:label "fib.loon"} [str "[fn fib [n]\n" "  [match n\n" "    0 0\n" "    1 1\n" "    _ [+ [fib [- n 1]]\n" "            [fib [- n 2]]]]]\n" "\n" "[println [fib 10]]  ; 55"]]]
 
     [doc-section "FizzBuzz"
       [doc-text "Pipe a range through " [doc-code "map"] " and print each result. Nested " [doc-code "if"] " replaces cond — branches are checked top to bottom."]
       [code-block {:label "fizzbuzz.loon"} [str "[pipe [range 1 101]\n" "  [map [fn [n]\n" "    [if [= 0 [% n 15]] \"FizzBuzz\"\n" "      [if [= 0 [% n 3]] \"Fizz\"\n" "        [if [= 0 [% n 5]] \"Buzz\"\n" "          [str n]]]]]]\n" "  [each println]]"]]]
 
     [doc-section "Word Counter"
-      [doc-text "Build a frequency map by folding over a list of words. Maps use " [doc-code "{:key value}"] " syntax and " [doc-code "get"] " with a default."]
-      [code-block {:label "words.loon"} [str "[let words #[\"the\" \"cat\" \"sat\" \"on\" \"the\" \"mat\"]]\n" "\n" "[let counts [fold words {} [fn [acc w]\n" "  [assoc acc w [+ 1 [get acc w 0]]]]]]\n" "\n" "[println counts]"]]]
+      [doc-text "Build a frequency map by folding over a list of words. Maps use " [doc-code "\{:key value\}"] " syntax and " [doc-code "get"] " with a default."]
+      [code-block {:label "words.loon"} [str "[let words #[\"the\" \"cat\" \"sat\" \"on\" \"the\" \"mat\"]]\n" "\n" "[let counts [fold words \{\} [fn [acc w]\n" "  [assoc acc w [+ 1 [get acc w 0]]]]]]\n" "\n" "[println counts]"]]]
 
     [doc-section "Data Pipeline"
       [doc-text "Chain " [doc-code "filter"] ", " [doc-code "map"] ", and " [doc-code "sort-by"] " with " [doc-code "pipe"] ". Each step passes its result to the next."]
-      [code-block {:label "pipeline.loon"} [str "[let people #[\n" "  {:name \"Alice\" :age 32}\n" "  {:name \"Bob\" :age 17}\n" "  {:name \"Carol\" :age 25}]]\n" "\n" "[pipe people\n" "  [filter [fn [p] [>= [get p :age 0] 18]]]\n" "  [map [fn [p] [get p :name \"?\"]]]\n" "  [sort]\n" "  [each println]]"]]]
+      [code-block {:label "pipeline.loon"} [str "[let people #[\n" "  \{:name \"Alice\" :age 32\}\n" "  \{:name \"Bob\" :age 17\}\n" "  \{:name \"Carol\" :age 25\}]]\n" "\n" "[pipe people\n" "  [filter [fn [p] [>= [get p :age 0] 18]]]\n" "  [map [fn [p] [get p :name \"?\"]]]\n" "  [sort]\n" "  [each println]]"]]]
 
     [doc-section "Effect Handling"
       [doc-text "Declare an effect with " [doc-code "effect"] ", perform it inside functions, and handle it at the call site. Effects replace exceptions and dependency injection."]
-      [code-block {:label "effects.loon"} [str "[effect Ask\n" "  [prompt [q : Str] : Str]]\n" "\n" "[fn greet []\n" "  [let name [Ask.prompt \"Name?\"]]\n" "  [println [str \"Hello, \" name \"!\"]]]\n" "\n" "[handle [greet]\n" "  [Ask.prompt q] => \"World\"]"]]]
+      [code-block {:label "effects.loon"} [str "[effect Ask\n" "  [prompt [q : Str] : Str]]\n" "\n" "[fn greet []\n" "  [let name [Ask.prompt \"Name?\"]]\n" "  [println [str \"Hello, \" name \"!\"]]]\n" "\n" "[handle [greet]\n" "  [Ask.prompt q] \"World\"]"]]]
 
     [doc-section "Testing"
       [doc-text "The " [doc-code "test"] " form defines inline tests. Run them with " [doc-code "loon test"] " — no separate test files needed."]

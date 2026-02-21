@@ -35,20 +35,20 @@
         [doc-text "The Loon VS Code extension supports format-on-save out of the box. "
           "Enable it in settings:"]
         [code-block {:label "JSON"} [str
-          "{\n"
+          "\{\n"
           "  \"editor.formatOnSave\": true,\n"
-          "  \"[loon]\": {\n"
+          "  \"[loon]\": \{\n"
           "    \"editor.defaultFormatter\": \"loon-lang.loon-vscode\"\n"
-          "  }\n"
-          "}"]]]
+          "  \}\n"
+          "\}"]]]
       [doc-subsection "Neovim"
         [doc-text "Use an autocommand to format on save:"]
         [code-block {:label "LUA"} [str
-          "vim.api.nvim_create_autocmd('BufWritePre', {\n"
+          "vim.api.nvim_create_autocmd('BufWritePre', \{\n"
           "  pattern = '*.loon',\n"
           "  callback = function()\n"
           "    vim.lsp.buf.format()\n"
           "  end,\n"
-          "})"]]]]
+          "\})"]]]]
 
     [doc-prev-next "LSP" "/ref/lsp" "Why Invisible Types" "/concepts/invisible-types"]]]

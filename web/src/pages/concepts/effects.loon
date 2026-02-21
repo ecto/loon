@@ -64,8 +64,8 @@
           "This is where things get powerful:"]
         [code-block {} [str
           "[handle [greet]\n"
-          "  [Console.readline prompt] => [resume \"World\"]\n"
-          "  [Console.writeline text]  => [do\n"
+          "  [Console.readline prompt] [resume \"World\"]\n"
+          "  [Console.writeline text]  [do\n"
           "    [println text]\n"
           "    [resume]]]"]]
         [doc-text "The handler sees each operation as it happens and provides an "
@@ -85,7 +85,7 @@
         "\n"
         "; Handler that provides a fake input for testing\n"
         "[handle [ask-age]\n"
-        "  [Console.readline _] => [resume \"25\"]]"]]
+        "  [Console.readline _] [resume \"25\"]]"]]
       [doc-text "When " [doc-code "ask-age"] " performs " [doc-code "Console.readline"]
         ", control transfers to the handler. The handler calls " [doc-code "[resume \"25\"]"]
         ", which sends " [doc-code "\"25\""] " back to " [doc-code "ask-age"]
@@ -120,7 +120,7 @@
           "  [fn fail [err] -> Nothing]]\n"
           "\n"
           "[handle [parse-config path]\n"
-          "  [Fail.fail err] => [do\n"
+          "  [Fail.fail err] [do\n"
           "    [log-error err]\n"
           "    default-config]]"]]]
 

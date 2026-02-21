@@ -11,9 +11,9 @@
 
 [fn rm-phase [title status & items]
   [let border-color [match status
-    "Done"        => [color :border]
-    "In Progress" => [color :accent]
-    _             => [color :border]]]
+    "Done"        [color :border]
+    "In Progress" [color :accent]
+    _             [color :border]]]
   [div {:style {:margin-bottom "3rem"
                 :padding-left "1.5rem"
                 :border-left [str "2px solid " border-color]}}

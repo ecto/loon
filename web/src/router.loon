@@ -7,11 +7,11 @@
       [= pattern path]]
     route-table]]
   [match result
-    [Some route] => [nth route 1]
-    None => [fn [] [section-el {:class "section"}
+    [Some route] [nth route 1]
+    None [fn [] [section-el {:class "section"}
       [h1 "404"]
       [p "Page not found."]]]]]
 
 [fn navigate-to [path]
-  [dom/push-state path]
-  [dom/set-title [str "Loon — " path]]]
+  [dom.push-state path]
+  [dom.set-title [str "Loon — " path]]]
