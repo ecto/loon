@@ -113,13 +113,18 @@ pub fn register_builtins(env: &mut Env) {
     }
 
     builtin!(env, "+", |_, args: &[Value]| {
-        match (&args[0], &args[1]) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
-            (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + *b as f64)),
-            (Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + b)),
-            _ => Err(err(format!("+ requires numbers, got {} and {}", args[0], args[1]))),
+        if args.len() < 2 { return Err(err("+ requires at least 2 arguments")); }
+        let mut acc = args[0].clone();
+        for arg in &args[1..] {
+            acc = match (&acc, arg) {
+                (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+                (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
+                (Value::Float(a), Value::Int(b)) => Value::Float(a + *b as f64),
+                (Value::Int(a), Value::Float(b)) => Value::Float(*a as f64 + b),
+                _ => return Err(err(format!("+ requires numbers, got {} and {}", acc, arg))),
+            };
         }
+        Ok(acc)
     });
 
     builtin!(env, "-", |_, args: &[Value]| {
@@ -133,13 +138,18 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "*", |_, args: &[Value]| {
-        match (&args[0], &args[1]) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a * b)),
-            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
-            (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a * *b as f64)),
-            (Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 * b)),
-            _ => Err(err("* requires numbers")),
+        if args.len() < 2 { return Err(err("* requires at least 2 arguments")); }
+        let mut acc = args[0].clone();
+        for arg in &args[1..] {
+            acc = match (&acc, arg) {
+                (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
+                (Value::Float(a), Value::Float(b)) => Value::Float(a * b),
+                (Value::Float(a), Value::Int(b)) => Value::Float(a * *b as f64),
+                (Value::Int(a), Value::Float(b)) => Value::Float(*a as f64 * b),
+                _ => return Err(err(format!("* requires numbers, got {} and {}", acc, arg))),
+            };
         }
+        Ok(acc)
     });
 
     builtin!(env, "/", |_, args: &[Value]| {

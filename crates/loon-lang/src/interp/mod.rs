@@ -569,6 +569,7 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                     "match" => return eval_match(&items[1..], env),
                     "pipe" => return eval_pipe(&items[1..], env),
                     "mut" => return eval_mut(&items[1..], env),
+                    "set!" => return eval_set(&items[1..], env),
                     "type" => return eval_type_def(&items[1..], env),
                     "test" => return eval_test_def(&items[1..], env),
                     "effect" => return Ok(Value::Unit), // effect declarations are compile-time
@@ -1007,6 +1008,20 @@ fn eval_mut(args: &[Expr], env: &mut Env) -> IResult {
         return Err(err("mut requires an argument"));
     }
     eval(&args[0], env)
+}
+
+fn eval_set(args: &[Expr], env: &mut Env) -> IResult {
+    // [set! name value] — reassign a mutable binding
+    if args.len() < 2 {
+        return Err(err("set! requires a name and value"));
+    }
+    let name = match &args[0].kind {
+        ExprKind::Symbol(s) => s.clone(),
+        _ => return Err(err("set! requires a symbol as first argument")),
+    };
+    let value = eval(&args[1], env)?;
+    env.set(name, value.clone());
+    Ok(value)
 }
 
 fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {

@@ -17,7 +17,7 @@
         [code-block "[fn fib [n]\n  [match n\n    0 0  1 1\n    _ [+ [fib [- n 1]]\n            [fib [- n 2]]]]]\n[fib 10]"]]
       [card
         [h4 {:style {:font-family [font :serif] :color [color :primary] :margin-bottom "0.5rem"}} "Effects"]
-        [code-block "[effect Ask\n  [fn question [q]]]\n\n[handle\n  [Ask.question \"name?\"]\n  [Ask.question q] =>\n    [resume \"Loon\"]]"]]
+        [code-block "[effect Ask\n  [fn question [q]]]\n\n[handle\n  [Ask.question \"name?\"]\n  [Ask.question q]\n    [resume \"Loon\"]]"]]
       [card
         [h4 {:style {:font-family [font :serif] :color [color :primary] :margin-bottom "0.5rem"}} "Pipelines"]
         [code-block "[pipe [range 1 100]\n  [filter [fn [n] [= 0 [% n 3]]]]\n  [map [fn [n] [* n n]]]\n  [take 5]]"]]]]]

@@ -57,7 +57,7 @@
     [doc-section "Mutation"
       [doc-text "Loon values are immutable by default. When you need to change something, "
         "you opt in explicitly with " [doc-code "mut"] ". This makes mutation visible and intentional."]
-      [code-block {:label "LOON"} [str "[let mut items #[1 2 3]]\n" "[push! items 4]\n" "[set! items [map items [fn [n] [* n 2]]]]\n" "[println items]"]]
+      [code-block {:label "LOON"} [str "[let mut items #[1 2 3]]\n" "[set! items [push! items 4]]\n" "[set! items [map items [fn [n] [* n 2]]]]\n" "[println items]  ; #[2 4 6 8]"]]
       [doc-text "The " [doc-code "!"] " suffix on " [doc-code "push!"] " and " [doc-code "set!"]
         " is a visual signal that these functions modify their argument. "
         "Only the owner of a mutable binding can mutate it, and borrows are always immutable. "

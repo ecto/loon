@@ -117,15 +117,15 @@
         "/concepts/effects"
         [str
           "[effect Ask\n"
-          "  [prompt [q : Str] : Str]]\n"
+          "  [prompt [q]]]\n"
           "\n"
           "[fn greet []\n"
           "  [let name [Ask.prompt \"Name?\"]]\n"
-          "  \"Hello, \{name\}!\"]\n"
+          "  [str \"Hello, \" name \"!\"]]\n"
           "\n"
           "; The caller decides how to handle it\n"
           "[handle [greet]\n"
-          "  [Ask.prompt q] \"World\"]  ; \"Hello, World!\""]]
+          "  [Ask.prompt q] [resume \"World\"]]  ; \"Hello, World!\""]]
 
       [tour-section
         "Pattern matching"

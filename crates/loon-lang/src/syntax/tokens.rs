@@ -56,6 +56,8 @@ pub enum Token {
     Slash,
     #[token("->")]
     Arrow,
+    #[token(":")]
+    Colon,
 
     // Macro quasiquoting
     #[token("`")]

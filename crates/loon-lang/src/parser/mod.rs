@@ -132,6 +132,7 @@ impl<'a> Parser<'a> {
             Token::Symbol(s) => Ok(Expr::new(ExprKind::Symbol(s), span)),
             Token::Slash => Ok(Expr::new(ExprKind::Symbol("/".to_string()), span)),
             Token::Arrow => Ok(Expr::new(ExprKind::Symbol("->".to_string()), span)),
+            Token::Colon => Ok(Expr::new(ExprKind::Symbol(":".to_string()), span)),
 
             // S-expression: [head args...]
             Token::LBracket => {
