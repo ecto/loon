@@ -1,2 +1,2 @@
-*.oo linguist-language=Common Lisp
-*.loon linguist-language=Common Lisp
+*.oo linguist-language=Clojure
+*.loon linguist-language=Clojure
