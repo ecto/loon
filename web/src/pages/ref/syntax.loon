@@ -50,12 +50,11 @@
         "[let x 42]  ; inline comment"]]]
 
     [doc-section "String Interpolation"
-      [doc-text "All strings support inline interpolation with " [doc-code "\{expr\}"] ". Any expression inside braces is evaluated and coerced to a string. Use " [doc-code "\\{"] " to write a literal brace."]
+      [doc-text "All strings support inline interpolation with " [doc-code "\{expr\}"] ". Any expression inside braces is evaluated and coerced to a string. Escape literal braces with a backslash."]
       [code-block {} [str
         "[let name \"world\"]\n"
         "\"hello, \{name\}!\"          ; \"hello, world!\"\n"
-        "\"2 + 2 = \{[+ 2 2]\}\"      ; \"2 + 2 = 4\"\n"
-        "\"literal \\{braces\\}\"    ; \"literal \{braces\}\""]]]
+        "\"2 + 2 = \{[+ 2 2]\}\"      ; \"2 + 2 = 4\""]]]
 
     [doc-section "Quasiquoting"
       [doc-text "Quasiquoting is mainly used inside macros. A quasiquoted expression is like a template: most of it is taken literally, but you can selectively \"unquote\" parts to splice in computed values."]

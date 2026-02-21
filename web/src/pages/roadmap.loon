@@ -87,8 +87,8 @@
 
       [rm-phase "v0.4.1 — Syntax Refresh" "Done"
         "Kill => in match/handle — positional pairs"
-        "Kill / for effects — #{IO Fail} set literals"
-        "Universal string interpolation — \"{name}\" desugars automatically"
+        "Kill / for effects — set literals for annotations"
+        "Universal string interpolation"
         "Fix dom/ to dom. namespace convention"
         "Map destructuring with defaults in fn params"
         "Match guards — expression patterns via match true"
