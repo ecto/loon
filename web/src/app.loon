@@ -6,7 +6,7 @@
     #["/" home-page]
     #["/tour" tour-page]
     #["/play" play-page]
-    #["/blog" blog-page]
+    #["/changelog" blog-page]
     #["/roadmap" roadmap-page]
     #["/install" install-page]
     #["/examples" examples-page]

@@ -13,26 +13,39 @@
     [li-el "Basic WASM codegen"]]]
 
 [fn blog-article [title date & body]
-  [article-el {:style {:background [color :white]
-                       :border [str "1px solid " [color :border]]
-                       :border-radius [radius :md]
-                       :padding "2rem"
-                       :margin-bottom "2rem"}}
-    [h2 {:style {:font-family [font :serif]
-                 :color [color :primary]
-                 :font-size "1.8rem"
-                 :margin-bottom "0.5rem"}}
-      title]
-    [p {:style {:color [color :accent] :font-size "0.9rem" :font-weight "600" :margin-bottom "1rem"}}
+  [article-el {:style {:display "grid"
+                       :grid-template-columns "140px 1fr"
+                       :gap "0 3rem"
+                       :padding "3.5rem 0"}}
+    [div {:style {:position "sticky"
+                  :top "2rem"
+                  :align-self "start"
+                  :color [color :muted]
+                  :font-family [font :mono]
+                  :font-size "0.8rem"
+                  :letter-spacing "0.05em"
+                  :padding-top "0.35rem"}}
       date]
-    [div {:style {:font-family [font :serif] :line-height "1.7" :color [color :text]}}
-      body]]]
+    [div {:style {:min-width "0"}}
+      [h2 {:style {:font-family [font :serif]
+                   :color [color :primary]
+                   :font-size "2.2rem"
+                   :font-weight "600"
+                   :line-height "1.2"
+                   :margin-bottom "1.5rem"}}
+        title]
+      [div {:style {:font-family [font :serif]
+                    :font-size "1.05rem"
+                    :line-height "1.8"
+                    :color [color :text]}}
+        body]]]]
 
 [fn blog-h3 [text]
   [h3 {:style {:font-family [font :serif]
                :color [color :primary]
-               :font-size "1.3rem"
-               :margin-top "1.5rem"
+               :font-size "1.4rem"
+               :font-weight "600"
+               :margin-top "2.5rem"
                :margin-bottom "0.75rem"}}
     text]]
 
@@ -40,24 +53,18 @@
   [code-block {} src]]
 
 [fn blog-page []
-  [div {:class "page"}
-    [main-el {:style {:max-width "720px"
-                      :margin "0 auto"
-                      :padding "3rem 2rem"}}
+  [div {:class "page changelog"}
+    [main-el {:style {:padding "3rem 0"}}
       [h1 {:style {:font-family [font :serif]
                    :color [color :primary]
                    :font-size "2.5rem"
-                   :margin-bottom "0.5rem"}}
-        "Blog"]
-      [p {:style {:color [color :muted]
-                  :font-family [font :serif]
-                  :font-size "1.1rem"
-                  :margin-bottom "2.5rem"}}
-        "Dispatches from the lake."]
+                   :font-weight "400"
+                   :margin-bottom "3.5rem"}}
+        "Changelog"]
 
       ; ── v0.4.1 — Syntax Refresh ────────────────────────────────────
 
-      [blog-article "The Syntax Refresh" "February 2026"
+      [blog-article "The Syntax Refresh" "Feb 20, 2026"
 
         [p "Loon v0.4.1 ships nine changes that make the language smaller and more expressive. Three remove syntax, six add features. Every change was motivated by real patterns in the Loon web app and sample programs."]
 
@@ -156,7 +163,7 @@
 
       ; ── Hello World ─────────────────────────────────────────────────
 
-      [blog-article "Hello, World — Introducing Loon" "February 2026"
+      [blog-article "Hello, World — Introducing Loon" "Feb 1, 2026"
         [p "Today we're sharing Loon with the world. It started as a question: what if a LISP had invisible types, Rust-style ownership without annotations, and algebraic effects instead of exceptions?"]
         [p "Loon is the answer. It's a v0.1 — the interpreter works, type inference works, the effect system works. There's a long road to v1.0, but the foundations are solid."]
         [p "And this website? It's written entirely in Loon. The Rust interpreter compiles to WebAssembly, evaluates Loon source code in your browser, and manipulates the DOM through a thin bridge. It's Loon all the way down."]

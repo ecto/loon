@@ -293,6 +293,11 @@ a:hover {
   max-width: 860px;
 }
 
+/* Blog/changelog: wider content area */
+.doc-content:has(.changelog) {
+  max-width: 1100px;
+}
+
 /* Hover */
 .tour-step:hover { border-color: var(--muted); }
 .card:hover { border-color: var(--muted); }

@@ -77,7 +77,7 @@
   [let src-path [if [= path "/"] "pages/home.loon"
                 [if [= path "/tour"] "pages/tour.loon"
                 [if [= path "/play"] "pages/play.loon"
-                [if [= path "/blog"] "pages/blog.loon"
+                [if [= path "/changelog"] "pages/blog.loon"
                 [if [= path "/roadmap"] "pages/roadmap.loon"
                 [if [= path "/install"] "pages/install.loon"
                 [if [= path "/examples"] "pages/examples.loon"
