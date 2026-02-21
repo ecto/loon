@@ -46,6 +46,7 @@ pub fn get_tutorial(code: ErrorCode) -> Option<Tutorial> {
         ErrorCode::E0500 => Some(tutorial_unresolved_module()),
         ErrorCode::E0501 => Some(tutorial_private_symbol()),
         ErrorCode::E0502 => Some(tutorial_circular_dependency()),
+        ErrorCode::W0100 => None, // warnings don't need tutorials
     }
 }
 

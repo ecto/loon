@@ -1,9 +1,10 @@
-/// Error codes for Loon diagnostics.
+/// Error and warning codes for Loon diagnostics.
 /// E01xx = parse errors
 /// E02xx = type errors
 /// E03xx = ownership errors
 /// E04xx = effect errors
 /// E05xx = module errors
+/// W01xx = warnings
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorCode {
     // Parse errors
@@ -35,6 +36,9 @@ pub enum ErrorCode {
     E0500, // unresolved module
     E0501, // private symbol
     E0502, // circular dependency
+
+    // Warnings
+    W0100, // transparent wildcard
 }
 
 impl ErrorCode {
@@ -60,7 +64,12 @@ impl ErrorCode {
             ErrorCode::E0500 => "E0500",
             ErrorCode::E0501 => "E0501",
             ErrorCode::E0502 => "E0502",
+            ErrorCode::W0100 => "W0100",
         }
+    }
+
+    pub fn is_warning(&self) -> bool {
+        matches!(self, ErrorCode::W0100)
     }
 
     pub fn category(&self) -> &'static str {
@@ -77,6 +86,7 @@ impl ErrorCode {
             ErrorCode::E0300 | ErrorCode::E0301 | ErrorCode::E0302 => "ownership",
             ErrorCode::E0400 | ErrorCode::E0401 => "effect",
             ErrorCode::E0500 | ErrorCode::E0501 | ErrorCode::E0502 => "module",
+            ErrorCode::W0100 => "warning",
         }
     }
 
@@ -102,6 +112,7 @@ impl ErrorCode {
             ErrorCode::E0500 => "unresolved module",
             ErrorCode::E0501 => "private symbol",
             ErrorCode::E0502 => "circular dependency",
+            ErrorCode::W0100 => "transparent wildcard",
         }
     }
 }

@@ -166,10 +166,14 @@ pub fn report_diagnostic(filename: &str, source: &str, diag: &LoonDiagnostic) {
         }
     }
 
-    let diagnostic = Diagnostic::error()
-        .with_message(message)
-        .with_labels(labels)
-        .with_notes(notes);
+    let diagnostic = if diag.code.is_warning() {
+        Diagnostic::warning()
+    } else {
+        Diagnostic::error()
+    }
+    .with_message(message)
+    .with_labels(labels)
+    .with_notes(notes);
 
     let writer = StandardStream::stderr(ColorChoice::Auto);
     let config = term::Config::default();

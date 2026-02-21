@@ -62,6 +62,30 @@
                    :margin-bottom "3.5rem"}}
         "Changelog"]
 
+      ; ── Transparent Wildcards ────────────────────────────────────────
+
+      [blog-article "Transparent Wildcards" "Feb 21, 2026"
+
+        [p "Match expressions with a wildcard arm now emit a compiler warning listing exactly which constructors the wildcard catches. This is W0100, the first warning code in Loon."]
+
+        [blog-code [str
+          "[type Shape [Circle f64] [Rect f64 f64] Point]\n"
+          "\n"
+          "[match s\n"
+          "  [Circle r] \"circle\"\n"
+          "  _ \"other\"]"]]
+
+        [p "The compiler tells you:"]
+        [blog-code [str
+          "W0100: _ catches 2 constructors of Shape: Rect, Point\n"
+          "  why: adding a variant to `Shape` will silently fall into this arm\n"
+          "  fix: add explicit arms for each constructor, or keep _ if intentional"]]
+
+        [p "The motivation: in most languages, a wildcard suppresses exhaustiveness checking entirely. If you add a new variant to an ADT, the compiler stays silent and your wildcard quietly swallows the new case. This has caused real bugs in production systems."]
+        [p "Loon's approach: the wildcard still works, but the compiler makes it transparent. You see exactly what it catches. When a new variant appears, the warning updates to include it, so you can decide whether the fallback is still correct."]
+        [p "The warning fires only on known ADTs. Matching on strings, ints, or polymorphic types produces no warning. Variable bindings (not just _) trigger the same check."]
+        [p "The LSP surfaces W0100 as a proper warning severity, so your editor shows it in yellow rather than red."]]
+
       ; ── v0.4.1 — Syntax Refresh ────────────────────────────────────
 
       [blog-article "The Syntax Refresh" "Feb 20, 2026"

@@ -38,7 +38,11 @@ impl LoonLanguageServer {
                 let range = span_to_range(&state.rope, span);
                 Some(Diagnostic {
                     range,
-                    severity: Some(DiagnosticSeverity::ERROR),
+                    severity: Some(if d.code.is_warning() {
+                        DiagnosticSeverity::WARNING
+                    } else {
+                        DiagnosticSeverity::ERROR
+                    }),
                     code: Some(NumberOrString::String(d.code.to_string())),
                     source: Some("loon".to_string()),
                     message: d.what.clone(),

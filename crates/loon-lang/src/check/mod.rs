@@ -2089,16 +2089,17 @@ impl Checker {
             i += 1;
         }
 
-        if !has_wildcard {
-            let resolved = self.subst.resolve(&scrutinee_ty);
-            if let Type::Con(ref type_name, _) = resolved {
-                if let Some(all_ctors) = self.type_constructors.get(type_name).cloned() {
-                    let missing: Vec<&String> = all_ctors
-                        .iter()
-                        .filter(|c| !covered_ctors.contains(c))
-                        .collect();
-                    if !missing.is_empty() {
-                        let missing_str = missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
+        let resolved = self.subst.resolve(&scrutinee_ty);
+        if let Type::Con(ref type_name, _) = resolved {
+            if let Some(all_ctors) = self.type_constructors.get(type_name).cloned() {
+                let caught: Vec<&String> = all_ctors
+                    .iter()
+                    .filter(|c| !covered_ctors.contains(c))
+                    .collect();
+                if !has_wildcard {
+                    // Error: non-exhaustive match
+                    if !caught.is_empty() {
+                        let missing_str = caught.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
                         self.errors.push(
                             LoonDiagnostic::new(
                                 ErrorCode::E0206,
@@ -2109,6 +2110,22 @@ impl Checker {
                             .with_label(span, "non-exhaustive match", true),
                         );
                     }
+                } else if !caught.is_empty() {
+                    // Warning: transparent wildcard
+                    let caught_str = caught.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
+                    self.errors.push(
+                        LoonDiagnostic::new(
+                            ErrorCode::W0100,
+                            format!(
+                                "_ catches {} constructor{} of {type_name}: {caught_str}",
+                                caught.len(),
+                                if caught.len() == 1 { "" } else { "s" },
+                            ),
+                        )
+                        .with_why(format!("adding a variant to `{type_name}` will silently fall into this arm"))
+                        .with_fix("add explicit arms for each constructor, or keep _ if the fallback is intentional".to_string())
+                        .with_label(span, "wildcard match", true),
+                    );
                 }
             }
         }
@@ -3401,5 +3418,64 @@ mod tests {
                 sorted
             }
         );
+    }
+
+    // ── Transparent wildcard warnings (W0100) ─────────────────
+
+    #[test]
+    fn wildcard_warning_lists_caught_constructors() {
+        let errors = check_errors(
+            "[type Color Red Green Blue]\n\
+             [let c Red]\n\
+             [match c Red \"red\" _ \"other\"]",
+        );
+        let warnings: Vec<_> = errors.iter().filter(|e| e.code == ErrorCode::W0100).collect();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].what.contains("Green"), "should list Green: {}", warnings[0].what);
+        assert!(warnings[0].what.contains("Blue"), "should list Blue: {}", warnings[0].what);
+        assert!(warnings[0].what.contains("2 constructors"), "should say 2: {}", warnings[0].what);
+    }
+
+    #[test]
+    fn wildcard_warning_not_emitted_for_full_coverage() {
+        let errors = check_errors(
+            "[type Color Red Green Blue]\n\
+             [let c Red]\n\
+             [match c Red \"red\" Green \"green\" Blue \"blue\" _ \"unreachable\"]",
+        );
+        let warnings: Vec<_> = errors.iter().filter(|e| e.code == ErrorCode::W0100).collect();
+        assert!(warnings.is_empty(), "all constructors covered, _ catches nothing: {:?}", warnings);
+    }
+
+    #[test]
+    fn variable_binding_also_warns() {
+        let errors = check_errors(
+            "[type Dir North South]\n\
+             [let d North]\n\
+             [match d other \"fallback\"]",
+        );
+        let warnings: Vec<_> = errors.iter().filter(|e| e.code == ErrorCode::W0100).collect();
+        assert_eq!(warnings.len(), 1, "lowercase var should trigger warning: {:?}", errors);
+        assert!(warnings[0].what.contains("North"), "{}", warnings[0].what);
+        assert!(warnings[0].what.contains("South"), "{}", warnings[0].what);
+    }
+
+    #[test]
+    fn no_warning_for_non_adt_match() {
+        let errors = check_errors(
+            "[match 1 0 \"zero\" _ \"other\"]",
+        );
+        let warnings: Vec<_> = errors.iter().filter(|e| e.code == ErrorCode::W0100).collect();
+        assert!(warnings.is_empty(), "int match should not warn: {:?}", warnings);
+    }
+
+    #[test]
+    fn no_warning_without_wildcard() {
+        let errors = check_errors(
+            "[type Bool2 True2 False2]\n\
+             [let b True2]\n\
+             [match b True2 \"yes\" False2 \"no\"]",
+        );
+        assert!(errors.is_empty(), "exhaustive explicit match: {:?}", errors);
     }
 }
