@@ -56,7 +56,10 @@ const bootOrder = [
   'src/app.loon',
 ];
 
-// Step 1: Build WASM (or copy pre-built artifacts)
+// Step 1: Build WASM (or copy pre-built artifacts from public/pkg/)
+// IMPORTANT: public/pkg/ is the single source of truth for pre-built WASM.
+// After changing Rust code, rebuild with: wasm-pack build crates/loon-wasm --target web --out-dir web/public/pkg
+// Do NOT put loon_wasm* files in public/ root — only public/pkg/.
 if (noRust) {
   console.log('Copying pre-built WASM artifacts...');
   mkdirSync(DIST, { recursive: true });

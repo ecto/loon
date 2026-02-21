@@ -60,12 +60,16 @@
 
 [fn initial-copy! []
   [IO.mkdir dist-dir]
-  ; Copy public/ to dist/, but skip index.html to preserve pre-rendered SSR pages
+  ; Copy public/ to dist/, skipping index.html (preserve SSR pages),
+  ; pkg/ (WASM managed by build.ts), and any stale loon_wasm* files
   [let entries [IO.list-dir public-dir]]
   [each [fn [name]
     [let src [str public-dir "/" name]]
     [let dst [str dist-dir "/" name]]
-    [if [= name "index.html"]
+    [let skip [or [= name "index.html"]
+                  [= name "pkg"]
+                  [starts-with? name "loon_wasm"]]]
+    [if skip
       []
       [do
         [let children [IO.list-dir src]]

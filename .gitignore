@@ -3,3 +3,5 @@
 web/dist/
 web/node_modules/
 web/package-lock.json
+# WASM build output — only public/pkg/ is tracked (force-added)
+web/public/loon_wasm*
