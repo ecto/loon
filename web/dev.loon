@@ -9,6 +9,64 @@
 [let src-dir [str web-dir "/src"]]
 [let dist-dir [str web-dir "/dist"]]
 
+; --- Boot order (must match build.ts) ---
+[let boot-order #[
+  "src/ui.loon"
+  "src/lib/utils.loon"
+  "src/lib/theme.loon"
+  "src/lib/components.loon"
+  "src/lib/doc.loon"
+  "src/router.loon"
+  "src/components/footer.loon"
+  "src/components/code.loon"
+  "src/components/editor.loon"
+  "src/components/sidebar.loon"
+  "src/pages/home.loon"
+  "src/pages/tour.loon"
+  "src/pages/play.loon"
+  "src/pages/blog.loon"
+  "src/pages/roadmap.loon"
+  "src/pages/install.loon"
+  "src/pages/examples.loon"
+  "src/pages/guide/basics.loon"
+  "src/pages/guide/functions.loon"
+  "src/pages/guide/types.loon"
+  "src/pages/guide/collections.loon"
+  "src/pages/guide/pattern-matching.loon"
+  "src/pages/guide/ownership.loon"
+  "src/pages/guide/effects.loon"
+  "src/pages/guide/modules.loon"
+  "src/pages/guide/macros.loon"
+  "src/pages/guide/testing.loon"
+  "src/pages/guide/errors.loon"
+  "src/pages/ref/syntax.loon"
+  "src/pages/ref/builtins.loon"
+  "src/pages/ref/cli.loon"
+  "src/pages/ref/effects.loon"
+  "src/pages/ref/lsp.loon"
+  "src/pages/ref/formatter.loon"
+  "src/pages/concepts/invisible-types.loon"
+  "src/pages/concepts/effects.loon"
+  "src/pages/concepts/ownership.loon"
+  "src/pages/concepts/from-rust.loon"
+  "src/pages/concepts/from-js.loon"
+  "src/pages/concepts/from-clojure.loon"
+  "src/app.loon"]]
+
+; --- Bundle regeneration ---
+[fn rebuild-bundle! []
+  [let parts [map [fn [file]
+    [let path [str web-dir "/" file]]
+    [let content [try [IO.read-file path] [fn [_] ""]]]
+    [str "; --- " file " ---\n" content]]
+    boot-order]]
+  [let bundle [join "\n\n" parts]]
+  [IO.write-file [str dist-dir "/bundle.loon"] bundle]
+  ; Update hash so boot.js cache-busts localStorage
+  [let hash [str [len bundle] "-" [len parts]]]
+  [IO.write-file [str dist-dir "/bundle.hash"] hash]
+  bundle]
+
 ; --- MIME types ---
 [fn mime-type [path]
   [if [ends-with? path ".html"] "text/html; charset=utf-8"
@@ -83,6 +141,9 @@
 [let sse-script "<script>(function()\{var es=new EventSource('/__dev/sse');es.addEventListener('loon',function(e)\{window.__loon_sse&&window.__loon_sse('loon',e.data)\});es.addEventListener('css',function(e)\{window.__loon_sse&&window.__loon_sse('css',e.data)\});es.addEventListener('full',function()\{window.location.reload()\});es.onopen=function()\{console.log('[loon] dev server connected')\};es.onerror=function()\{console.log('[loon] reconnecting...')\}\})();</script>"]
 
 [fn inject-sse [html]
+  ; Cache-bust CSS and JS links
+  [let html [replace html "/style.css" "/style.css?dev=1"]]
+  [let html [replace html "/boot.js" "/boot.js?dev=1"]]
   [replace html "</body>" [str sse-script "</body>"]]]
 
 ; --- Change classification ---
@@ -139,6 +200,9 @@
 
   [if [= path "/__dev/sse"]
     [Net.sse-open id]
+  [if [= path "/bundle.hash"]
+    ; Block bundle.hash so boot.js enters dev mode (fetches individual files)
+    [Net.respond id {:status 404 :body "not found" :headers {}}]
     [do
       ; SPA fallback: paths without a dot serve route-specific index.html if it exists,
       ; otherwise fall back to root index.html
@@ -150,19 +214,22 @@
           [if [contains? dir-entries "index.html"]
             [str route-dir "/index.html"]
             [str dist-dir "/index.html"]]]]]
-      ; HTML files need SSE injection, so read as text
-      [if [ends-with? file-path ".html"]
+      ; HTML and text files: serve with no-cache headers
+      [if [or [ends-with? file-path ".html"]
+              [ends-with? file-path ".loon"]
+              [ends-with? file-path ".css"]
+              [ends-with? file-path ".js"]]
         [do
           [let body [try [IO.read-file file-path]
             [fn [_err] ""]]]
           [if [= body ""]
             [Net.respond id {:status 404 :body "not found" :headers {}}]
             [Net.respond id {:status 200
-                            :body [inject-sse body]
-                            :headers {"content-type" "text/html; charset=utf-8"
+                            :body [if [ends-with? file-path ".html"] [inject-sse body] body]
+                            :headers {"content-type" [mime-type file-path]
                                       "cache-control" "no-cache"}}]]]
-        ; All other files: serve binary-safe via Net.serve-file
-        [Net.serve-file id file-path [mime-type file-path]]]]]]
+        ; Binary files: serve via Net.serve-file
+        [Net.serve-file id file-path [mime-type file-path]]]]]]]
 
 ; --- File watcher step (called by Async.loop, no recursion) ---
 [fn watch-step [snap]
@@ -177,6 +244,9 @@
       [if [not [empty? changed]]
         [do
           [copy-changed! changed]
+          ; Rebuild bundle when any .loon file changes
+          [let has-loon [pipe changed [any? [fn [p] [ends-with? p ".loon"]]]]]
+          [if has-loon [rebuild-bundle!] []]
           [notify-changes! changed]
           final-snap]
         final-snap]]
@@ -186,6 +256,8 @@
 [fn main []
   [IO.println "Copying assets to dist/..."]
   [initial-copy!]
+  [IO.println "Rebuilding bundle.loon..."]
+  [rebuild-bundle!]
   [IO.println [str "Starting dev server on http://localhost:" [str port]]]
 
   ; Start HTTP server
