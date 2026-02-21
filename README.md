@@ -41,9 +41,9 @@ curl -fsSL https://loonlang.com/install.sh | sh
 ```
 
 ```bash
-loon run hello.loon        # Run a program
+loon run hello.oo        # Run a program
 loon repl                  # Interactive REPL with time-travel
-loon fmt hello.loon        # Format source
+loon fmt hello.oo        # Format source
 loon explain E0201         # Interactive error tutorial
 ```
 

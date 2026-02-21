@@ -360,14 +360,14 @@ UTF-8 by default. Same owned/borrowed distinction as Rust, but inferred:
 
 ### File = Module
 
-Every `.loon` file is a module. The module name matches the file path relative to `src/`:
+Every `.oo` file is a module (`.loon` also supported as fallback). The module name matches the file path relative to `src/`:
 
 ```
 src/
-  main.loon          ; module: main
+  main.oo            ; module: main
   http/
-    server.loon      ; module: http.server
-    client.loon      ; module: http.client
+    server.oo        ; module: http.server
+    client.oo        ; module: http.client
 ```
 
 ### Visibility
@@ -576,7 +576,7 @@ $ loon test
     assert-eq failed:
       expected: 42
       actual:   41
-      at: src/math.loon:28
+      at: src/math.oo:28
   3 passed, 1 failed (0.7ms)
 ```
 
@@ -726,7 +726,7 @@ loon> [+ 1 2]
 
 loon> what does the greet function do?
   greet takes a String and returns "hello, {name}!"
-  Defined at src/main.loon:3. Last modified 2 minutes ago.
+  Defined at src/main.oo:3. Last modified 2 minutes ago.
 
 loon> add a test for greet that checks empty strings
   ✓ Generated test:
@@ -746,9 +746,9 @@ loon> refactor fib to use tail recursion
 
 loon> show me everything that depends on Config
   3 functions reference Config:
-    load-config  (src/config.loon:12) — constructs Config
-    validate     (src/config.loon:28) — borrows Config
-    main         (src/main.loon:5)    — owns Config
+    load-config  (src/config.oo:12) — constructs Config
+    validate     (src/config.oo:28) — borrows Config
+    main         (src/main.oo:5)    — owns Config
 ```
 
 The AI operates on the typed AST, the effect system, and the dependency graph. It can't propose code that doesn't type-check, violates ownership, or exceeds capabilities. The language *constrains* the AI's output to be correct.
@@ -777,7 +777,7 @@ Every Loon error includes three things: **what** went wrong, **why** it's wrong,
 ```
 error[E0312]: cannot borrow `data` as mutable — already borrowed as immutable
 
-   ┌─ src/main.loon:14:5
+   ┌─ src/main.oo:14:5
    │
 12 │  [let view [slice data 0 3]]
    │            ───── immutable borrow occurs here
@@ -803,7 +803,7 @@ error[E0312]: cannot borrow `data` as mutable — already borrowed as immutable
 **Error features:**
 - **Visual ownership diagrams** showing who owns what and where the conflict is
 - **`[explain E0312]`** opens an interactive REPL-based tutorial for that error class
-- **Errors are data.** `[catch-errors [compile "src/main.loon"]]` returns structured error values
+- **Errors are data.** `[catch-errors [compile "src/main.oo"]]` returns structured error values
 
 ### D. Macros That See Types
 
@@ -968,7 +968,7 @@ Loon's persistent data structures can be transparently backed by durable storage
 
 ### K. Notebooks as First-Class Programs
 
-`.loon` files are programs. `.loon.nb` files are notebooks — interleaved Markdown and code cells:
+`.oo` files are programs. `.oo.nb` files are notebooks — interleaved Markdown and code cells:
 
 ````loon-nb
 # Data Analysis
@@ -987,8 +987,8 @@ Notebooks compile to the same WASM as regular files. Type-checked, ownership-che
 ```
 $ loon new my-project
   ✓ Created my-project/
-  ✓ Created my-project/src/main.loon
-  ✓ Created my-project/loon.toml
+  ✓ Created my-project/src/main.oo
+  ✓ Created my-project/pkg.oo
   → cd my-project && loon run
 
 $ loon run
@@ -998,7 +998,7 @@ $ loon run
 
 - Colors, Unicode box-drawing, progress spinners
 - `loon new` creates exactly 2 files — no boilerplate
-- The docs site is generated from `.loon.nb` notebooks, dogfooding the whole stack
+- The docs site is generated from `.oo.nb` notebooks, dogfooding the whole stack
 
 ### M. First-Class LLM & Agentic Programming
 

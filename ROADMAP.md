@@ -32,7 +32,7 @@
 - [x] Vec: `zip`, `flatten`, `chunk`, `reverse`, `drop`, `find`
 - [x] Map: `keys`, `values`, `merge`, `remove`
 - [x] Pipe operator type checking
-- [x] `word-count.loon` working
+- [x] `word-count.oo` working
 - [x] Clippy warnings clean
 
 ---
@@ -142,7 +142,7 @@ What's left to finish v0.2 properly.
 ## v0.8 — Package Manager
 
 ### Phase 1 — Manifest, CLI, local deps (done)
-- [x] `pkg.loon` manifest format (Loon data format, not TOML)
+- [x] `pkg.oo` manifest format (Loon data format, not TOML)
 - [x] `loon new`, `loon init` — project scaffolding
 - [x] `loon add`, `loon remove` — dependency management
 - [x] Path dependencies: `{:path "../my-lib"}`
@@ -160,18 +160,18 @@ What's left to finish v0.2 properly.
 - [x] Archive URL derivation for GitHub, GitLab, Codeberg
 - [x] BLAKE3 content-addressed hashing
 - [x] Cache at `~/.loon/cache/blake3/<hash>/`
-- [x] `lock.loon` — lockfile in Loon data format
+- [x] `lock.oo` — lockfile in Loon data format
 - [x] `loon add` auto-fetches and locks domain-qualified deps
 - [x] `loon cache warm` — fetch all unfetched deps
 - [x] Feature-gated: `pkg-fetch` (CLI only, not WASM)
 - [x] Subpath support: `github.com/cam/std#http`
 
 ### Phase 3 — Resolution, registry, transitive deps (done)
-- [x] Transitive dependency resolution (parse fetched pkg.loon, resolve recursively)
+- [x] Transitive dependency resolution (parse fetched pkg.oo, resolve recursively)
 - [x] MVS (Minimum Version Selection) across the dep graph
-- [x] `loon update` — re-resolve and update lock.loon
+- [x] `loon update` — re-resolve and update lock.oo
 - [x] Package registry/index — built-in seed + fetchable remote indices
-- [x] Custom indices via `:indices` in pkg.loon
+- [x] Custom indices via `:indices` in pkg.oo
 - [x] `loon search` searches across builtin + custom indices
 - [x] `loon why` traces transitive dependency chains
 
@@ -181,6 +181,12 @@ What's left to finish v0.2 properly.
 - [x] `loon audit` — full audit: capabilities, transitive grants, cache integrity, lockfile status
 - [x] Hash verification on load (verify cache integrity in `resolve_remote_dep`)
 - [x] Capability propagation (transitive grant checking)
+
+### File extension migration
+- [x] `.oo` as primary file extension (from l-**oo**-n), `.loon` as fallback
+- [x] `pkg.oo` / `lock.oo` manifest and lockfile (falls back to `.loon`)
+- [x] `loon new` creates `.oo` files
+- [x] Module resolution tries `.oo` first, falls back to `.loon`
 
 ### Future
 - [ ] IPFS distribution
@@ -219,7 +225,7 @@ What's left to finish v0.2 properly.
 - [ ] Zero cost for untracked paths
 
 ### Notebooks
-- [ ] `.loon.nb` — interleaved markdown and code cells
+- [ ] `.oo.nb` — interleaved markdown and code cells
 - [ ] Same type/ownership checking as regular files
 - [ ] Compiles to WASM
 

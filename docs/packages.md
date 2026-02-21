@@ -5,15 +5,15 @@ Loon's package manager is built into the `loon` CLI. It uses content-addressed c
 ## Quick Start
 
 ```bash
-loon new my-app             # Create project with pkg.loon
+loon new my-app             # Create project with pkg.oo
 cd my-app
 loon add github.com/cam/json --version "^1.0"
-loon run src/main.loon
+loon run src/main.oo
 ```
 
-## Manifest: `pkg.loon`
+## Manifest: `pkg.oo`
 
-Every Loon project has a `pkg.loon` file at its root. It uses Loon's own data format (dogfooding).
+Every Loon project has a `pkg.oo` file at its root (falls back to `pkg.loon`). It uses Loon's own data format (dogfooding).
 
 ```loon
 {
@@ -77,9 +77,9 @@ Every Loon project has a `pkg.loon` file at its root. It uses Loon's own data fo
 | `*` | Any version |
 | `1.2.3` | Same as `^1.2.3` (bare version = caret) |
 
-## Lockfile: `lock.loon`
+## Lockfile: `lock.oo`
 
-After fetching dependencies, `lock.loon` is written to pin exact versions and content hashes. This ensures reproducible builds.
+After fetching dependencies, `lock.oo` is written to pin exact versions and content hashes (falls back to `lock.loon`). This ensures reproducible builds.
 
 ```loon
 {
@@ -96,7 +96,7 @@ After fetching dependencies, `lock.loon` is written to pin exact versions and co
 }
 ```
 
-The lockfile is automatically created/updated by `loon add` and `loon cache warm`. Commit it to version control for reproducible builds.
+The lockfile is automatically created/updated by `loon add` and `loon cache warm`. Commit `lock.oo` to version control for reproducible builds.
 
 ## Source Resolution
 
@@ -164,10 +164,10 @@ Cached packages are verified against lockfile hashes at multiple points:
 
 When loading a dependency, Loon looks for entry point files in order:
 
-1. `src/lib.loon` (library entry point)
-2. `src/main.loon` (executable entry point)
+1. `src/lib.oo` (library entry point, falls back to `src/lib.loon`)
+2. `src/main.oo` (executable entry point, falls back to `src/main.loon`)
 
-For path dependencies, it also checks `<dep-name>.loon` in the dep root.
+For path dependencies, it also checks `<dep-name>.oo` (then `<dep-name>.loon`) in the dep root.
 
 ## Capability-Based Security
 
@@ -217,8 +217,8 @@ $ loon audit
 ### Project Setup
 
 ```bash
-loon new <name>           # Create a new project with pkg.loon
-loon init                 # Initialize pkg.loon in current directory
+loon new <name>           # Create a new project with pkg.oo
+loon init                 # Initialize pkg.oo in current directory
 ```
 
 ### Dependency Management
@@ -257,7 +257,7 @@ loon search <query>       # Search the package index (builtin + custom)
 
 ## Transitive Dependencies
 
-When a dependency has its own `pkg.loon`, its dependencies are resolved recursively. The resolver uses **Minimum Version Selection (MVS)**: when multiple packages depend on the same dep at different version constraints, it picks the minimum version that satisfies all constraints.
+When a dependency has its own `pkg.oo` (or `pkg.loon`), its dependencies are resolved recursively. The resolver uses **Minimum Version Selection (MVS)**: when multiple packages depend on the same dep at different version constraints, it picks the minimum version that satisfies all constraints.
 
 ```
 my-app
@@ -268,7 +268,7 @@ my-app
 
 Version conflicts (e.g. `^1.0` and `^2.0` for the same dep) produce clear error messages.
 
-All transitive deps are recorded in `lock.loon` with their hashes and dependency lists, enabling `loon why` to trace the full dependency chain.
+All transitive deps are recorded in `lock.oo` with their hashes and dependency lists, enabling `loon why` to trace the full dependency chain.
 
 ## Package Index
 
@@ -283,7 +283,7 @@ loon search json
 
 ### Custom Indices
 
-Add custom package indices in `pkg.loon`:
+Add custom package indices in `pkg.oo`:
 
 ```loon
 {
@@ -327,9 +327,9 @@ Import a dependency with `[use]`:
 
 The module system resolves dependencies in this order:
 
-1. **Path dependencies** — local `:path` deps from `pkg.loon`
+1. **Path dependencies** — local `:path` deps from `pkg.oo`
 2. **Remote dependencies** — domain-qualified sources, resolved via lockfile/cache/fetch
-3. **Local modules** — file-relative `.loon` files (e.g. `http.server` -> `http/server.loon`)
+3. **Local modules** — file-relative `.oo` files (e.g. `http.server` -> `http/server.oo`, falls back to `.loon`)
 
 ## Package Structure
 
@@ -337,12 +337,12 @@ A typical Loon package:
 
 ```
 my-package/
-  pkg.loon              # Manifest
-  lock.loon             # Lockfile (auto-generated)
+  pkg.oo                # Manifest
+  lock.oo               # Lockfile (auto-generated)
   src/
-    lib.loon            # Library entry point (pub exports)
-    main.loon           # Executable entry point (optional)
-    utils.loon          # Internal module
+    lib.oo              # Library entry point (pub exports)
+    main.oo             # Executable entry point (optional)
+    utils.oo            # Internal module
 ```
 
 ## Publishing
@@ -353,7 +353,7 @@ Prepare a package for publishing with `loon publish`:
 $ loon publish
 
   Package: my-lib v1.0.0
-  Entry:   src/lib.loon
+  Entry:   src/lib.oo
   Hash:    7f3a2b1c4d5e6f...
   Size:    2.3 KB (4 files)
   Archive: target/my-lib-1.0.0.tar.gz
@@ -362,10 +362,10 @@ $ loon publish
 ```
 
 Requirements:
-- `pkg.loon` must have `:name` and `:version` fields
-- `src/lib.loon` must exist (library entry point)
+- `pkg.oo` must have `:name` and `:version` fields
+- `src/lib.oo` (or `src/lib.loon`) must exist (library entry point)
 
-The command creates a `.tar.gz` archive in `target/`, excluding `.git/`, `target/`, and `lock.loon`. The BLAKE3 hash of the source tree is printed for verification.
+The command creates a `.tar.gz` archive in `target/`, excluding `.git/`, `target/`, and `lock.oo`. The BLAKE3 hash of the source tree is printed for verification.
 
 ## Feature Gating
 
