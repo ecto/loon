@@ -82,13 +82,13 @@
         "function add(a, b) \{ return a + b \}"
         "[fn add [a b] [+ a b]]"]
       [doc-row
-        "(x) x * 2"
+        "(x) => x * 2"
         "[fn [x] [* x 2]]"]
       [doc-row
-        "arr.map(x x * 2)"
+        "arr.map(x => x * 2)"
         "[map [fn [x] [* x 2]] arr]"]
       [doc-row
-        "arr.filter(x x > 2)"
+        "arr.filter(x => x > 2)"
         "[filter [fn [x] [> x 2]] arr]"]
       [doc-row
         "x > 0 ? \"pos\" : \"neg\""
