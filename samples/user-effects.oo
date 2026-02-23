@@ -1,0 +1,24 @@
+; User-defined effects demo
+; Declare a custom Fs effect with read-file and list-dir operations
+[effect Fs
+  [read-file [String] String]
+  [list-dir [String] String]]
+
+; Functions that use the effect — no built-in handler needed
+[fn load-config [path]
+  [Fs.read-file path]]
+
+[fn list-project-files []
+  [Fs.list-dir "."]]
+
+; Handle the effects with mock implementations
+[fn main []
+  [let result
+    [handle
+      [do
+        [let config [load-config "config.toml"]]
+        [let files [list-project-files]]
+        [str "config: " config "\nfiles: " files]]
+      [Fs.read-file path] [resume [str "mock-content-of:" path]]
+      [Fs.list-dir path] [resume "main.oo, lib.oo, test.oo"]]]
+  [IO.println result]]
