@@ -1,4 +1,4 @@
-use tower_lsp::jsonrpc::Result;
+use tower_lsp::jsonrpc::{Error as JsonrpcError, ErrorCode as JsonrpcErrorCode, Result};
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -76,6 +76,7 @@ impl LanguageServer for LoonLanguageServer {
                     trigger_characters: Some(vec![".".to_string(), ":".to_string()]),
                     ..Default::default()
                 }),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
@@ -115,6 +116,46 @@ impl LanguageServer for LoonLanguageServer {
         self.documents.remove(&uri);
         // Clear diagnostics
         self.client.publish_diagnostics(uri, vec![], None).await;
+    }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let uri = &params.text_document.uri;
+
+        let Some(doc) = self.documents.get(uri) else {
+            return Ok(None);
+        };
+
+        let source = doc.rope.to_string();
+
+        let Ok(exprs) = loon_lang::parser::parse(&source) else {
+            return Err(JsonrpcError {
+                code: JsonrpcErrorCode::InternalError,
+                message: "failed to parse source".into(),
+                data: None,
+            });
+        };
+
+        let formatted = loon_lang::fmt::format_program(&exprs);
+
+        if formatted == source {
+            return Ok(None);
+        }
+
+        let end = Position {
+            line: doc.rope.len_lines() as u32,
+            character: 0,
+        };
+
+        Ok(Some(vec![TextEdit {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end,
+            },
+            new_text: formatted,
+        }]))
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
