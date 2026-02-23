@@ -1420,7 +1420,7 @@ dependencies = [
 
 [[package]]
 name = "loon-cli"
-version = "0.4.20"
+version = "0.4.3"
 dependencies = [
  "clap",
  "dirs 6.0.0",
@@ -1437,7 +1437,7 @@ dependencies = [
 
 [[package]]
 name = "loon-lang"
-version = "0.4.20"
+version = "0.4.3"
 dependencies = [
  "blake3",
  "codespan-reporting",
@@ -1454,7 +1454,7 @@ dependencies = [
 
 [[package]]
 name = "loon-lsp"
-version = "0.4.20"
+version = "0.4.3"
 dependencies = [
  "dashmap 6.1.0",
  "loon-lang",
@@ -1466,7 +1466,7 @@ dependencies = [
 
 [[package]]
 name = "loon-wasm"
-version = "0.4.20"
+version = "0.4.3"
 dependencies = [
  "js-sys",
  "loon-lang",
