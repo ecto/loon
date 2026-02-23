@@ -64,6 +64,12 @@ struct Compiler {
     compiled_modules: std::collections::HashSet<std::path::PathBuf>,
     force_heap: bool,
     used_wasi_imports: Option<Vec<u32>>,
+    /// Effect imports: "Effect.op" → import function index
+    effect_imports: HashMap<String, u32>,
+    /// Effect import definitions in order: (module_namespace, func_name, arity)
+    effect_import_defs: Vec<(String, String, usize)>,
+    /// Effect registry (populated from [effect ...] declarations)
+    effect_registry: crate::effects::EffectRegistry,
 }
 
 struct FunctionBody { params: Vec<ValType>, results: Vec<ValType>, locals: Vec<ValType>, instructions: Vec<WasmInstruction> }
@@ -142,6 +148,8 @@ impl Compiler {
             table_entries: Vec::new(), table_map: HashMap::new(), indirect_type_cache: HashMap::new(),
             type_count: PRE_ALLOC_TYPES, string_runtime: None, collections_runtime: None,
             base_dir: None, compiled_modules: std::collections::HashSet::new(), force_heap: false, used_wasi_imports: None,
+            effect_imports: HashMap::new(), effect_import_defs: Vec::new(),
+            effect_registry: crate::effects::EffectRegistry::new(),
         }
     }
     fn ensure_in_table(&mut self, func_idx: u32) -> u32 {
@@ -166,6 +174,8 @@ impl Compiler {
         self.collections_runtime = Some(CollectionsRuntime { vec_new_idx: n, vec_push_idx: p, vec_get_idx: g });
     }
     fn compile_program(&mut self, exprs: &[Expr]) -> Result<(), String> {
+        // Pass 0: collect [effect ...] declarations
+        for expr in exprs { if let ExprKind::List(items) = &expr.kind { if items.len() >= 2 { if let ExprKind::Symbol(s) = &items[0].kind { if s == "effect" { self.collect_effect_def(&items[1..]); } } } } }
         for expr in exprs { if let ExprKind::List(items) = &expr.kind { if !items.is_empty() { if let ExprKind::Symbol(s) = &items[0].kind { if s == "use" { self.compile_use(&items[1..])?; } } } } }
         for expr in exprs { if let ExprKind::List(items) = &expr.kind { if items.len() >= 2 { if let ExprKind::Symbol(s) = &items[0].kind { if s == "type" { self.collect_adt_def(&items[1..])?; } } } } }
         #[allow(clippy::possible_missing_else)]
@@ -178,13 +188,15 @@ impl Compiler {
             Some(def) => def.func_idx,
             None => return,
         };
+        // Total imports = WASI + effect imports
+        let total_import_count = WASI_IMPORT_COUNT + self.effect_import_defs.len() as u32;
         let mut reachable = std::collections::HashSet::new();
         let mut queue = std::collections::VecDeque::new();
         reachable.insert(main_idx);
         queue.push_back(main_idx);
         while let Some(idx) = queue.pop_front() {
-            if idx < WASI_IMPORT_COUNT { continue; }
-            let fn_offset = (idx - WASI_IMPORT_COUNT) as usize;
+            if idx < total_import_count { continue; }
+            let fn_offset = (idx - total_import_count) as usize;
             if fn_offset >= self.functions.len() { continue; }
             let mut has_indirect = false;
             for instr in &self.functions[fn_offset].instructions {
@@ -207,10 +219,16 @@ impl Compiler {
         let mut remap = HashMap::new();
         let mut new_idx = 0u32;
         for &old in &used_wasi { remap.insert(old, new_idx); new_idx += 1; }
+        // Effect imports are always kept (host provides them)
+        let effect_start = WASI_IMPORT_COUNT;
+        for i in 0..self.effect_import_defs.len() as u32 {
+            remap.insert(effect_start + i, new_idx);
+            new_idx += 1;
+        }
         let new_import_count = new_idx;
         let mut kept_fn_indices = Vec::new();
         for i in 0..self.functions.len() {
-            let old = WASI_IMPORT_COUNT + i as u32;
+            let old = total_import_count + i as u32;
             if reachable.contains(&old) { remap.insert(old, new_idx); kept_fn_indices.push(i); new_idx += 1; }
         }
         // Filter functions
@@ -232,6 +250,10 @@ impl Compiler {
         for def in self.fn_map.values_mut() {
             if let Some(&new) = remap.get(&def.func_idx) { def.func_idx = new; }
         }
+        // Update effect_imports
+        for idx in self.effect_imports.values_mut() {
+            if let Some(&new) = remap.get(idx) { *idx = new; }
+        }
         self.used_wasi_imports = Some(used_wasi);
         self.import_count = new_import_count;
         self.next_fn_idx = new_idx;
@@ -251,6 +273,53 @@ impl Compiler {
         self.compile_program(&module_exprs)?;
         self.base_dir = old_base;
         Ok(())
+    }
+    /// Collect [effect Name [op [Type...] Ret] ...] into effect_registry
+    fn collect_effect_def(&mut self, args: &[Expr]) {
+        if args.is_empty() { return; }
+        let name = match &args[0].kind { ExprKind::Symbol(s) => s.clone(), _ => return };
+        let mut operations = Vec::new();
+        for op_expr in &args[1..] {
+            if let ExprKind::List(op_items) = &op_expr.kind {
+                if op_items.is_empty() { continue; }
+                let op_name = match &op_items[0].kind { ExprKind::Symbol(s) => s.clone(), _ => continue };
+                let mut params = Vec::new();
+                let mut return_type = None;
+                if op_items.len() >= 2 {
+                    if let ExprKind::List(param_types) = &op_items[1].kind {
+                        for pt in param_types {
+                            if let ExprKind::Symbol(ty_name) = &pt.kind {
+                                params.push((ty_name.clone(), Some(ty_name.clone())));
+                            }
+                        }
+                    }
+                }
+                if op_items.len() >= 3 {
+                    if let ExprKind::Symbol(ret) = &op_items[2].kind {
+                        return_type = Some(ret.clone());
+                    }
+                }
+                operations.push(crate::effects::EffectOp { name: op_name, params, return_type });
+            }
+        }
+        self.effect_registry.register(crate::effects::EffectDecl { name, operations });
+    }
+    /// Get or create an import index for an effect operation.
+    fn get_or_create_effect_import(&mut self, effect: &str, op: &str) -> u32 {
+        let key = format!("{effect}.{op}");
+        if let Some(&idx) = self.effect_imports.get(&key) {
+            return idx;
+        }
+        // Determine arity from registry
+        let arity = self.effect_registry.get_op(effect, op)
+            .map(|o| o.params.len())
+            .unwrap_or(0);
+        let idx = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        let namespace = format!("loon:effects/{}", effect.to_lowercase());
+        self.effect_import_defs.push((namespace, op.to_string(), arity));
+        self.effect_imports.insert(key, idx);
+        idx
     }
     fn collect_adt_def(&mut self, args: &[Expr]) -> Result<(), String> {
         if args.is_empty() { return Ok(()); }
@@ -294,12 +363,20 @@ impl Compiler {
         types.ty().function(vec![ValType::I32, ValType::I32], vec![ValType::I32]); // 4: args_sizes_get
         types.ty().function(vec![ValType::I32, ValType::I32], vec![ValType::I32]); // 5: environ_get
         types.ty().function(vec![ValType::I32, ValType::I32], vec![ValType::I32]); // 6: environ_sizes_get
+        // Effect import types (all i64 params → i64 result)
+        let mut effect_type_indices = Vec::new();
+        for (_ns, _name, arity) in &self.effect_import_defs {
+            let ti = types.len();
+            types.ty().function(vec![ValType::I64; *arity], vec![ValType::I64]);
+            effect_type_indices.push(ti);
+        }
         let mut fn_type_indices = Vec::new();
         for func in &self.functions { let ti = types.len(); types.ty().function(func.params.clone(), func.results.clone()); fn_type_indices.push(ti); }
+        let effect_type_count = self.effect_import_defs.len() as u32;
         let mut ie: Vec<(usize, u32)> = self.indirect_type_cache.iter().map(|(&a, &t)| (a, t)).collect();
         ie.sort_by_key(|&(_, idx)| idx);
         let indirect_type_remap: HashMap<u32, u32> = ie.iter().enumerate().map(|(i, &(_, cached_idx))| {
-            (cached_idx, PRE_ALLOC_TYPES + self.functions.len() as u32 + i as u32)
+            (cached_idx, PRE_ALLOC_TYPES + effect_type_count + self.functions.len() as u32 + i as u32)
         }).collect();
         for (arity, _) in &ie { types.ty().function(vec![ValType::I64; *arity], vec![ValType::I64]); }
         module.section(&types);
@@ -311,6 +388,10 @@ impl Compiler {
         match &self.used_wasi_imports {
             Some(used) => { for &idx in used { let (_, name, type_idx) = wasi_defs[idx as usize]; imports.import("wasi_snapshot_preview1", name, EntityType::Function(type_idx)); } }
             None => { for &(_, name, type_idx) in &wasi_defs { imports.import("wasi_snapshot_preview1", name, EntityType::Function(type_idx)); } }
+        }
+        // Effect imports
+        for (i, (namespace, func_name, _arity)) in self.effect_import_defs.iter().enumerate() {
+            imports.import(namespace, func_name, EntityType::Function(effect_type_indices[i]));
         }
         module.section(&imports);
         let mut functions = FunctionSection::new();
@@ -393,8 +474,17 @@ impl<'a> FnCtx<'a> {
                 }
                 "match" => { if items.len() < 2 { return Err("match requires a value".into()); } self.compile_expr(&items[1])?; let sc = self.alloc_local(); self.instructions.push(WasmInstruction::LocalSet(sc)); self.compile_match_arms(sc, &items[2..])?; return Ok(()); }
                 "map" | "filter" => { if items.len() >= 3 { if let ExprKind::List(li) = &items[1].kind { if !li.is_empty() { if let ExprKind::Symbol(fs) = &li[0].kind { if fs == "fn" { return self.compile_hof_lambda(s, &li[1..], &items[2..]); } } } } } return Err(format!("codegen: {s} requires a lambda literal argument.")); }
-                "type" | "use" => { self.instructions.push(WasmInstruction::I64Const(0)); return Ok(()); }
+                "type" | "use" | "effect" => { self.instructions.push(WasmInstruction::I64Const(0)); return Ok(()); }
                 name => {
+                    // Effect.op pattern → compile to import call
+                    if let Some((effect, op)) = name.split_once('.') {
+                        if effect.starts_with(char::is_uppercase) {
+                            let import_idx = self.compiler.get_or_create_effect_import(effect, op);
+                            for arg in &items[1..] { self.compile_expr(arg)?; }
+                            self.instructions.push(WasmInstruction::Call(import_idx));
+                            return Ok(());
+                        }
+                    }
                     if let Some((tag, arity)) = self.compiler.adt_constructors.get(name).cloned() { return self.compile_adt_constructor(name, tag, arity, &items[1..]); }
                     if let Some(fn_def) = self.compiler.fn_map.get(name).cloned() { if fn_def.is_closure { return self.compile_closure_call_named(name, &items[1..]); } for arg in &items[1..] { self.compile_expr(arg)?; } self.instructions.push(WasmInstruction::Call(fn_def.func_idx)); return Ok(()); }
                     if self.locals.contains_key(name) { return self.compile_closure_call_local(name, &items[1..]); }
@@ -580,5 +670,41 @@ mod tests {
         let with_unused = compile(&parse(r#"[fn unused [] 99] [fn main [] [let f [fn [x] [+ x 1]]] [f 41]]"#).unwrap()).unwrap();
         let without = compile(&parse(r#"[fn main [] [let f [fn [x] [+ x 1]]] [f 41]]"#).unwrap()).unwrap();
         assert_eq!(with_unused.len(), without.len(), "unused fn should be stripped even with closures");
+    }
+    #[test] fn compile_effect_import() {
+        // User-defined effect should compile to a WASM import call
+        let wasm = compile(&parse(r#"
+            [effect Fs [read-file [String] String]]
+            [fn main [] [Fs.read-file "test.txt"]]
+        "#).unwrap()).unwrap();
+        assert_eq!(&wasm[0..4], b"\0asm", "should produce valid WASM");
+        let wasm_str = String::from_utf8_lossy(&wasm);
+        assert!(wasm_str.contains("loon:effects/fs"), "should contain effect import namespace");
+        assert!(wasm_str.contains("read-file"), "should contain effect op name");
+    }
+    #[test] fn compile_effect_declaration_only() {
+        // Effect declaration without usage should compile fine
+        ok(r#"[effect Fs [read-file [String] String]] [fn main [] 42]"#);
+    }
+    #[test] fn compile_effect_multi_ops() {
+        let wasm = compile(&parse(r#"
+            [effect Fs
+                [read-file [String] String]
+                [write-file [String String] Unit]]
+            [fn main [] [do [Fs.write-file "out" "data"] [Fs.read-file "in"]]]
+        "#).unwrap()).unwrap();
+        assert_eq!(&wasm[0..4], b"\0asm");
+        let wasm_str = String::from_utf8_lossy(&wasm);
+        assert!(wasm_str.contains("read-file"), "should have read-file import");
+        assert!(wasm_str.contains("write-file"), "should have write-file import");
+    }
+    #[test] fn compile_effect_tree_shake_preserves_imports() {
+        // Effect imports should survive tree-shaking
+        let wasm = compile(&parse(r#"
+            [effect Fs [read-file [String] String]]
+            [fn main [] [Fs.read-file "test"]]
+        "#).unwrap()).unwrap();
+        let wasm_str = String::from_utf8_lossy(&wasm);
+        assert!(wasm_str.contains("loon:effects/fs"), "effect import should survive tree-shaking");
     }
 }

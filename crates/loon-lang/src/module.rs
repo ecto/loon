@@ -249,22 +249,30 @@ impl ModuleCache {
         }
 
         let module_dir = file_path.parent().unwrap_or(base_dir);
-        for expr in &exprs {
-            // Handle [use ...] inside imported modules too
-            if let crate::ast::ExprKind::List(items) = &expr.kind {
-                if !items.is_empty() {
-                    if let crate::ast::ExprKind::Symbol(s) = &items[0].kind {
-                        if s == "use" {
-                            crate::interp::eval_use_with_cache(&items[1..], &mut env, module_dir, self)
-                                .map_err(|e| format!("in module '{module_path}': {e}"))?;
-                            continue;
+        // Set current module for grant enforcement (dep modules get restricted)
+        crate::interp::set_current_module(Some(module_path.to_string()));
+        let eval_result = (|| -> Result<(), String> {
+            for expr in &exprs {
+                // Handle [use ...] inside imported modules too
+                if let crate::ast::ExprKind::List(items) = &expr.kind {
+                    if !items.is_empty() {
+                        if let crate::ast::ExprKind::Symbol(s) = &items[0].kind {
+                            if s == "use" {
+                                crate::interp::eval_use_with_cache(&items[1..], &mut env, module_dir, self)
+                                    .map_err(|e| format!("in module '{module_path}': {e}"))?;
+                                continue;
+                            }
                         }
                     }
                 }
+                crate::interp::eval(expr, &mut env)
+                    .map_err(|e| format!("in module '{module_path}': {e}"))?;
             }
-            crate::interp::eval(expr, &mut env)
-                .map_err(|e| format!("in module '{module_path}': {e}"))?;
-        }
+            Ok(())
+        })();
+        // Restore to root module
+        crate::interp::set_current_module(None);
+        eval_result?;
 
         // Extract pub exports
         let mut values = HashMap::new();

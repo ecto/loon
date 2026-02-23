@@ -87,6 +87,8 @@ pub struct Checker {
     pub fn_effects: HashMap<String, EffectSet>,
     /// Effect set of the currently-checked function body
     current_fn_effects: EffectSet,
+    /// Registry of declared effects (built-in + user-defined)
+    pub effect_registry: crate::effects::EffectRegistry,
     /// Base directory for module resolution (None = no file-system access)
     base_dir: Option<PathBuf>,
     /// Names declared as `pub` in this module
@@ -117,6 +119,7 @@ impl Checker {
             pending_sigs: HashMap::new(),
             fn_effects: HashMap::new(),
             current_fn_effects: EffectSet::empty(),
+            effect_registry: crate::effects::EffectRegistry::new(),
             base_dir: None,
             pub_names: HashSet::new(),
             module_cache: Rc::new(RefCell::new(TypeModuleCache::new())),
@@ -1171,6 +1174,100 @@ impl Checker {
                 },
             );
         }
+
+        // sqrt: Float → Float
+        self.env.set_global(
+            "sqrt".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Float], Box::new(Type::Float))),
+        );
+
+        // pow: Float → Float → Float
+        self.env.set_global(
+            "pow".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float))),
+        );
+
+        // abs: Float → Float
+        self.env.set_global(
+            "abs".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Float], Box::new(Type::Float))),
+        );
+
+        // first: ∀a. Vec a → a
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "first".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tva],
+                    ty: Type::Fn(
+                        vec![Type::Con("Vec".to_string(), vec![Type::Var(tva)])],
+                        Box::new(Type::Var(tva)),
+                    ),
+                },
+            );
+        }
+
+        // last: ∀a. Vec a → a
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "last".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tva],
+                    ty: Type::Fn(
+                        vec![Type::Con("Vec".to_string(), vec![Type::Var(tva)])],
+                        Box::new(Type::Var(tva)),
+                    ),
+                },
+            );
+        }
+
+        // some?: ∀a. a → Bool
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "some?".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tva],
+                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                },
+            );
+        }
+
+        // nil?: ∀a. a → Bool
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "nil?".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tva],
+                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                },
+            );
+        }
+
+        // type-of: ∀a. a → Str
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "type-of".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tva],
+                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Str)),
+                },
+            );
+        }
     }
 
     /// Register type signatures for all DOM builtins.
@@ -1603,6 +1700,7 @@ impl Checker {
                 "match" => return self.infer_match(&items[1..], span),
                 "pipe" => return self.infer_pipe(&items[1..], span),
                 "type" => return self.infer_type_def(&items[1..]),
+                "effect" => return self.infer_effect_def(&items[1..], span),
                 "trait" => return self.infer_trait_def(&items[1..]),
                 "impl" => return self.infer_impl_def(&items[1..], span),
                 "sig" => return self.infer_sig(&items[1..], span),
@@ -1674,14 +1772,63 @@ impl Checker {
             }
 
             // Check for Effect.op pattern (e.g. IO.read-file)
-            if let Some((effect, _op)) = s.split_once('.') {
+            if let Some((effect, op)) = s.split_once('.') {
                 if effect.starts_with(char::is_uppercase) {
                     self.current_fn_effects.insert(effect.to_string());
-                    // Infer args but return a fresh type (effect ops have unknown return type)
-                    for a in &items[1..] {
-                        self.infer(a);
+                    // Look up operation in registry for type checking
+                    if let Some(op_def) = self.effect_registry.get_op(effect, op).cloned() {
+                        // Type-check arguments against declared param types
+                        let arg_types: Vec<Type> =
+                            items[1..].iter().map(|a| self.infer(a)).collect();
+                        if arg_types.len() != op_def.params.len() {
+                            self.errors.push(
+                                LoonDiagnostic::new(
+                                    ErrorCode::E0202,
+                                    format!(
+                                        "`{effect}.{op}` expects {} argument(s), got {}",
+                                        op_def.params.len(),
+                                        arg_types.len()
+                                    ),
+                                )
+                                .with_label(span, "effect operation call", true),
+                            );
+                        } else {
+                            for (i, ((_pname, pty), arg_ty)) in
+                                op_def.params.iter().zip(arg_types.iter()).enumerate()
+                            {
+                                if let Some(ty_name) = pty {
+                                    let expected = self.resolve_type_name(ty_name);
+                                    if let Err(e) = unify(&mut self.subst, arg_ty, &expected) {
+                                        self.push_unify_error(e, items[1 + i].span);
+                                    }
+                                }
+                            }
+                        }
+                        // Return declared return type or fresh
+                        return match &op_def.return_type {
+                            Some(ty_name) => self.resolve_type_name(ty_name),
+                            None => self.subst.fresh(),
+                        };
+                    } else if self.effect_registry.has_effect(effect) {
+                        // Effect exists but operation unknown
+                        self.errors.push(
+                            LoonDiagnostic::new(
+                                ErrorCode::E0402,
+                                format!("effect `{effect}` has no operation `{op}`"),
+                            )
+                            .with_label(span, "unknown operation", true),
+                        );
+                        for a in &items[1..] {
+                            self.infer(a);
+                        }
+                        return self.subst.fresh();
+                    } else {
+                        // Unknown effect — still allow it (might be defined later or external)
+                        for a in &items[1..] {
+                            self.infer(a);
+                        }
+                        return self.subst.fresh();
                     }
-                    return self.subst.fresh();
                 }
             }
         }
@@ -1853,6 +2000,70 @@ impl Checker {
         Type::Unit
     }
 
+    /// Infer [effect Name [op-name [ParamType ...] ReturnType] ...]
+    fn infer_effect_def(&mut self, args: &[Expr], span: Span) -> Type {
+        if args.is_empty() {
+            return Type::Unit;
+        }
+        let name = match &args[0].kind {
+            ExprKind::Symbol(s) => s.clone(),
+            _ => return Type::Unit,
+        };
+        // Effect names must start with uppercase
+        if !name.starts_with(char::is_uppercase) {
+            self.errors.push(
+                LoonDiagnostic::new(
+                    ErrorCode::E0200,
+                    format!("effect name `{name}` must start with an uppercase letter"),
+                )
+                .with_label(span, "effect declaration", true),
+            );
+            return Type::Unit;
+        }
+        let mut operations = Vec::new();
+        // Each remaining arg is [op-name [ParamType ...] ReturnType]
+        for op_expr in &args[1..] {
+            if let ExprKind::List(op_items) = &op_expr.kind {
+                if op_items.is_empty() {
+                    continue;
+                }
+                let op_name = match &op_items[0].kind {
+                    ExprKind::Symbol(s) => s.clone(),
+                    _ => continue,
+                };
+                let mut params = Vec::new();
+                let mut return_type = None;
+                // Parse [ParamType ...] and ReturnType
+                // Format: [op-name [Type1 Type2 ...] RetType]
+                if op_items.len() >= 2 {
+                    if let ExprKind::List(param_types) = &op_items[1].kind {
+                        for pt in param_types {
+                            if let ExprKind::Symbol(ty_name) = &pt.kind {
+                                params.push((ty_name.clone(), Some(ty_name.clone())));
+                            }
+                        }
+                    }
+                }
+                if op_items.len() >= 3 {
+                    if let ExprKind::Symbol(ret) = &op_items[2].kind {
+                        return_type = Some(ret.clone());
+                    }
+                }
+                operations.push(crate::effects::EffectOp {
+                    name: op_name,
+                    params,
+                    return_type,
+                });
+            }
+        }
+        let decl = crate::effects::EffectDecl {
+            name: name.clone(),
+            operations,
+        };
+        self.effect_registry.register(decl);
+        Type::Unit
+    }
+
     fn infer_handle(&mut self, args: &[Expr], _span: Span) -> Type {
         if args.is_empty() {
             return Type::Unit;
@@ -1916,6 +2127,26 @@ impl Checker {
         // handle expression's effects = body_effects - handled
         self.current_fn_effects = saved_effects.union(&body_effects.subtract(&handled));
         body_ty
+    }
+
+    /// Resolve a type name string to a Type (for effect declarations).
+    fn resolve_type_name(&mut self, name: &str) -> Type {
+        match name {
+            "Int" => Type::Int,
+            "Float" => Type::Float,
+            "Bool" => Type::Bool,
+            "String" | "Str" => Type::Str,
+            "Unit" => Type::Unit,
+            _ => {
+                // Check if it's a known type constructor
+                if let Some(scheme) = self.env.get(name) {
+                    instantiate(&mut self.subst, &scheme)
+                } else {
+                    // Unknown type name — use fresh var
+                    self.subst.fresh()
+                }
+            }
+        }
     }
 
     fn parse_effect_set(&self, expr: &Expr) -> EffectSet {
@@ -3477,5 +3708,94 @@ mod tests {
              [match b True2 \"yes\" False2 \"no\"]",
         );
         assert!(errors.is_empty(), "exhaustive explicit match: {:?}", errors);
+    }
+
+    // --- User-defined effects ---
+
+    #[test]
+    fn user_effect_declaration_no_error() {
+        let errors = check_errors(r#"
+            [effect Fs [read-file [String] String]]
+        "#);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    #[test]
+    fn user_effect_infer_propagates() {
+        let (effects, errors) = infer_effects(r#"
+            [effect Fs [read-file [String] String]]
+            [fn load [p] [Fs.read-file p]]
+        "#);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let load_eff = effects.get("load").unwrap();
+        assert!(load_eff.contains("Fs"), "load should infer Fs effect, got {:?}", load_eff);
+    }
+
+    #[test]
+    fn user_effect_return_type_flows() {
+        let (_ty, errors) = infer_type(r#"
+            [effect Fs [read-file [String] String]]
+            [fn load [p] [Fs.read-file p]]
+        "#);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        // load's return type should be String — verify via handle expression
+        let (ty2, errors2) = infer_type(r#"
+            [effect Fs [read-file [String] String]]
+            [handle [Fs.read-file "a"]
+                [Fs.read-file p] [resume "hi"]]
+        "#);
+        assert!(errors2.is_empty(), "errors: {:?}", errors2);
+        assert_eq!(ty2, Type::Str, "handle should return String");
+    }
+
+    #[test]
+    fn user_effect_arg_type_mismatch() {
+        let errors = check_errors(r#"
+            [effect Fs [read-file [String] String]]
+            [Fs.read-file 42]
+        "#);
+        assert!(!errors.is_empty(), "should have type error for Int arg");
+        assert!(
+            errors.iter().any(|e| e.code == ErrorCode::E0200),
+            "should be a type mismatch error, got: {:?}", errors
+        );
+    }
+
+    #[test]
+    fn user_effect_arity_mismatch() {
+        let errors = check_errors(r#"
+            [effect Fs [read-file [String] String]]
+            [Fs.read-file "a" "b"]
+        "#);
+        assert!(!errors.is_empty(), "should have arity error");
+        assert!(
+            errors.iter().any(|e| e.code == ErrorCode::E0202),
+            "should be arity mismatch, got: {:?}", errors
+        );
+    }
+
+    #[test]
+    fn user_effect_unknown_op() {
+        let errors = check_errors(r#"
+            [effect Fs [read-file [String] String]]
+            [Fs.write-file "a"]
+        "#);
+        assert!(!errors.is_empty(), "should have unknown op error");
+        assert!(
+            errors.iter().any(|e| e.code == ErrorCode::E0402),
+            "should be E0402 unknown op, got: {:?}", errors
+        );
+    }
+
+    #[test]
+    fn user_effect_multi_ops() {
+        let errors = check_errors(r#"
+            [effect Fs
+                [read-file [String] String]
+                [write-file [String String] Unit]]
+            [Fs.read-file "test.txt"]
+            [Fs.write-file "out.txt" "data"]
+        "#);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
     }
 }

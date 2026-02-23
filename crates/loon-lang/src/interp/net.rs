@@ -49,7 +49,107 @@ pub fn try_net_handler(performed: &PerformedEffect) -> Option<IResult> {
         "sse-open" => Some(sse_open(&performed.args)),
         "sse-send" => Some(sse_send(&performed.args)),
         "sse-broadcast" => Some(sse_broadcast(&performed.args)),
+        #[cfg(feature = "pkg-fetch")]
+        "get" => Some(net_get(&performed.args)),
+        #[cfg(feature = "pkg-fetch")]
+        "post" => Some(net_post(&performed.args)),
         _ => None,
+    }
+}
+
+// --- HTTP client (requires ureq via pkg-fetch feature) ---
+
+#[cfg(feature = "pkg-fetch")]
+fn net_get(args: &[Value]) -> IResult {
+    let url = match args.first() {
+        Some(Value::Str(s)) => s.clone(),
+        _ => return Err(err("Net.get requires a URL string")),
+    };
+
+    let mut req = ureq::get(&url);
+
+    // Optional headers map as second arg
+    if let Some(Value::Map(headers)) = args.get(1) {
+        for (k, v) in headers {
+            let key = match k {
+                Value::Str(s) => s.clone(),
+                Value::Keyword(s) => s.clone(),
+                _ => continue,
+            };
+            let val = match v {
+                Value::Str(s) => s.clone(),
+                _ => continue,
+            };
+            req = req.set(&key, &val);
+        }
+    }
+
+    match req.call() {
+        Ok(response) => {
+            let status = response.status();
+            let body = response.into_string().unwrap_or_default();
+            Ok(Value::Map(vec![
+                (Value::Keyword("status".to_string()), Value::Int(status as i64)),
+                (Value::Keyword("body".to_string()), Value::Str(body)),
+            ]))
+        }
+        Err(ureq::Error::Status(code, response)) => {
+            let body = response.into_string().unwrap_or_default();
+            Ok(Value::Map(vec![
+                (Value::Keyword("status".to_string()), Value::Int(code as i64)),
+                (Value::Keyword("body".to_string()), Value::Str(body)),
+            ]))
+        }
+        Err(e) => Err(err(format!("Net.get: {e}"))),
+    }
+}
+
+#[cfg(feature = "pkg-fetch")]
+fn net_post(args: &[Value]) -> IResult {
+    let url = match args.first() {
+        Some(Value::Str(s)) => s.clone(),
+        _ => return Err(err("Net.post requires a URL string")),
+    };
+
+    let options = match args.get(1) {
+        Some(Value::Map(m)) => m.clone(),
+        _ => return Err(err("Net.post requires an options map {:headers Map :body String}")),
+    };
+
+    let body = get_map_str(&options, "body").unwrap_or_default();
+    let headers = get_map_map(&options, "headers").unwrap_or_default();
+
+    let mut req = ureq::post(&url);
+    for (k, v) in &headers {
+        let key = match k {
+            Value::Str(s) => s.clone(),
+            Value::Keyword(s) => s.clone(),
+            _ => continue,
+        };
+        let val = match v {
+            Value::Str(s) => s.clone(),
+            _ => continue,
+        };
+        req = req.set(&key, &val);
+    }
+
+    match req.send_string(&body) {
+        Ok(response) => {
+            let status = response.status();
+            let resp_body = response.into_string().unwrap_or_default();
+            Ok(Value::Map(vec![
+                (Value::Keyword("status".to_string()), Value::Int(status as i64)),
+                (Value::Keyword("body".to_string()), Value::Str(resp_body)),
+            ]))
+        }
+        Err(ureq::Error::Status(code, response)) => {
+            let resp_body = response.into_string().unwrap_or_default();
+            Ok(Value::Map(vec![
+                (Value::Keyword("status".to_string()), Value::Int(code as i64)),
+                (Value::Keyword("body".to_string()), Value::Str(resp_body)),
+            ]))
+        }
+        Err(e) => Err(err(format!("Net.post: {e}"))),
     }
 }
 

@@ -5,7 +5,7 @@ edition.workspace = true
 
 [features]
 default = []
-pkg-fetch = ["dep:blake3", "dep:ureq", "dep:flate2", "dep:tar"]
+pkg-fetch = ["dep:blake3", "dep:ureq", "dep:flate2", "dep:tar", "dep:uuid"]
 
 [dependencies]
 logos = "0.15"
@@ -17,6 +17,7 @@ blake3 = { version = "1", optional = true }
 ureq = { version = "2", optional = true }
 flate2 = { version = "1", optional = true }
 tar = { version = "0.4", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
 
 [dev-dependencies]
 insta = "1"

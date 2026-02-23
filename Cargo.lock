@@ -1448,6 +1448,7 @@ dependencies = [
  "serde_json",
  "tar",
  "ureq",
+ "uuid",
  "wasm-encoder 0.227.1",
 ]
 
@@ -2602,6 +2603,7 @@ version = "1.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b672338555252d43fd2240c714dc444b8c6fb0a5c5335e65a07bba7742735ddb"
 dependencies = [
+ "getrandom 0.4.1",
  "js-sys",
  "wasm-bindgen",
 ]

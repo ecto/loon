@@ -22,6 +22,10 @@ thread_local! {
     static SOURCE_TEXT: RefCell<Option<String>> = const { RefCell::new(None) };
     static EFFECT_LOG_ENABLED: Cell<bool> = const { Cell::new(false) };
     static EFFECT_LOG: RefCell<Vec<EffectEntry>> = RefCell::new(Vec::new());
+    /// Current module name for grant enforcement (None = root module, unrestricted)
+    static CURRENT_MODULE: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// Effect grants loaded from manifest (None = no enforcement)
+    static EFFECT_GRANTS: RefCell<Option<crate::pkg::capability::EffectGrants>> = const { RefCell::new(None) };
 }
 
 #[derive(Debug, Clone)]
@@ -119,7 +123,7 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
         ("IO", "parse-json") => {
             if let Some(Value::Str(text)) = performed.args.first() {
                 match serde_json::from_str::<serde_json::Value>(text) {
-                    Ok(val) => Some(Ok(Value::Json(std::sync::Arc::new(val)))),
+                    Ok(val) => Some(Ok(json_to_value(val))),
                     Err(e) => Some(Err(perform_effect(
                         "Fail",
                         "fail",
@@ -215,8 +219,12 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
             }
         }
         ("Async", "sleep") => {
-            // Mock: no-op, just return Unit
-            Some(Ok(Value::Unit))
+            if let Some(Value::Int(ms)) = performed.args.first() {
+                std::thread::sleep(std::time::Duration::from_millis(*ms as u64));
+                Some(Ok(Value::Unit))
+            } else {
+                Some(Err(err("Async.sleep requires an integer (milliseconds)")))
+            }
         }
         ("Async", "loop") => {
             // Stateful infinite loop without stack growth.
@@ -357,6 +365,101 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
                 ))),
             }
         }
+        ("IO", "file-exists?") => {
+            if let Some(Value::Str(path)) = performed.args.first() {
+                Some(Ok(Value::Bool(std::path::Path::new(path).exists())))
+            } else {
+                Some(Err(err("IO.file-exists? requires a string path")))
+            }
+        }
+        ("IO", "delete-file") => {
+            if let Some(Value::Str(path)) = performed.args.first() {
+                match std::fs::remove_file(path) {
+                    Ok(()) => Some(Ok(Value::Unit)),
+                    Err(e) => Some(Err(perform_effect(
+                        "Fail",
+                        "fail",
+                        vec![Value::Str(e.to_string())],
+                    ))),
+                }
+            } else {
+                Some(Err(err("IO.delete-file requires a string path")))
+            }
+        }
+        ("IO", "now") => {
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            Some(Ok(Value::Int(secs)))
+        }
+        #[cfg(feature = "pkg-fetch")]
+        ("IO", "uuid") => {
+            Some(Ok(Value::Str(uuid::Uuid::new_v4().to_string())))
+        }
+        #[cfg(feature = "pkg-fetch")]
+        ("IO", "blake3") => {
+            if let Some(Value::Str(text)) = performed.args.first() {
+                let hash = blake3::hash(text.as_bytes());
+                Some(Ok(Value::Str(hash.to_hex().to_string())))
+            } else {
+                Some(Err(err("IO.blake3 requires a string argument")))
+            }
+        }
+        ("IO", "to-json") => {
+            if let Some(val) = performed.args.first() {
+                let json = value_to_json(val);
+                match serde_json::to_string(&json) {
+                    Ok(s) => Some(Ok(Value::Str(s))),
+                    Err(e) => Some(Err(err(format!("IO.to-json: {e}")))),
+                }
+            } else {
+                Some(Err(err("IO.to-json requires a value argument")))
+            }
+        }
+        ("Process", "exec") => {
+            let cmd_str = match performed.args.first() {
+                Some(Value::Str(s)) => s.clone(),
+                _ => return Some(Err(err("Process.exec requires a command string"))),
+            };
+            let input = performed.args.get(1).and_then(|v| match v {
+                Value::Str(s) => Some(s.clone()),
+                _ => None,
+            });
+            let parts: Vec<&str> = cmd_str.split_whitespace().collect();
+            if parts.is_empty() {
+                return Some(Err(err("Process.exec: empty command")));
+            }
+            let mut cmd = std::process::Command::new(parts[0]);
+            cmd.args(&parts[1..]);
+            if input.is_some() {
+                cmd.stdin(std::process::Stdio::piped());
+            }
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+            match cmd.spawn() {
+                Ok(mut child) => {
+                    if let Some(stdin_data) = input {
+                        if let Some(mut stdin) = child.stdin.take() {
+                            use std::io::Write;
+                            let _ = stdin.write_all(stdin_data.as_bytes());
+                        }
+                    }
+                    match child.wait_with_output() {
+                        Ok(output) => {
+                            let result = Value::Map(vec![
+                                (Value::Keyword("exit-code".to_string()), Value::Int(output.status.code().unwrap_or(-1) as i64)),
+                                (Value::Keyword("stdout".to_string()), Value::Str(String::from_utf8_lossy(&output.stdout).to_string())),
+                                (Value::Keyword("stderr".to_string()), Value::Str(String::from_utf8_lossy(&output.stderr).to_string())),
+                            ]);
+                            Some(Ok(result))
+                        }
+                        Err(e) => Some(Err(err(format!("Process.exec: {e}")))),
+                    }
+                }
+                Err(e) => Some(Err(err(format!("Process.exec: {e}")))),
+            }
+        }
         _ => {
             // Try Net.* effects
             if performed.effect == "Net" {
@@ -369,7 +472,9 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
 
 fn perform_effect(effect: &str, op: &str, args: Vec<Value>) -> InterpError {
     InterpError {
-        message: format!("unhandled effect: {effect}.{op}"),
+        message: format!(
+            "unhandled effect: {effect}.{op} — add a [handle ...] block to handle this effect"
+        ),
         span: None,
         stack: CALL_STACK.with(|s| s.borrow().clone()),
         performed_effect: Some(PerformedEffect {
@@ -377,6 +482,86 @@ fn perform_effect(effect: &str, op: &str, args: Vec<Value>) -> InterpError {
             operation: op.to_string(),
             args,
         }),
+    }
+}
+
+/// Convert a Loon Value to a serde_json::Value for IO.to-json.
+fn value_to_json(val: &Value) -> serde_json::Value {
+    match val {
+        Value::Int(n) => serde_json::Value::Number((*n).into()),
+        Value::Float(f) => {
+            serde_json::Number::from_f64(*f)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null)
+        }
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Str(s) => serde_json::Value::String(s.clone()),
+        Value::Keyword(k) => serde_json::Value::String(k.clone()),
+        Value::Vec(items) | Value::Set(items) | Value::Tuple(items) => {
+            serde_json::Value::Array(items.iter().map(value_to_json).collect())
+        }
+        Value::Map(pairs) => {
+            let mut map = serde_json::Map::new();
+            for (k, v) in pairs {
+                let key = match k {
+                    Value::Str(s) => s.clone(),
+                    Value::Keyword(k) => k.clone(),
+                    other => other.display_str(),
+                };
+                map.insert(key, value_to_json(v));
+            }
+            serde_json::Value::Object(map)
+        }
+        Value::Adt(tag, fields) => {
+            if fields.is_empty() {
+                serde_json::Value::String(tag.clone())
+            } else {
+                // Check for named fields
+                let named = ADT_FIELDS.with(|f| f.borrow().get(tag).cloned());
+                let mut map = serde_json::Map::new();
+                map.insert("_tag".to_string(), serde_json::Value::String(tag.clone()));
+                if let Some(names) = named {
+                    for (name, field) in names.iter().zip(fields.iter()) {
+                        map.insert(name.clone(), value_to_json(field));
+                    }
+                } else {
+                    map.insert(
+                        "_fields".to_string(),
+                        serde_json::Value::Array(fields.iter().map(value_to_json).collect()),
+                    );
+                }
+                serde_json::Value::Object(map)
+            }
+        }
+        Value::Json(j) => (**j).clone(),
+        Value::Unit => serde_json::Value::Null,
+        _ => serde_json::Value::Null, // Functions, channels, etc → null
+    }
+}
+
+/// Convert serde_json::Value to native Loon Value
+fn json_to_value(j: serde_json::Value) -> Value {
+    match j {
+        serde_json::Value::Null => Value::Unit,
+        serde_json::Value::Bool(b) => Value::Bool(b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else {
+                Value::Float(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => Value::Str(s),
+        serde_json::Value::Array(arr) => {
+            Value::Vec(arr.into_iter().map(json_to_value).collect())
+        }
+        serde_json::Value::Object(obj) => {
+            Value::Map(
+                obj.into_iter()
+                    .map(|(k, v)| (Value::Str(k), json_to_value(v)))
+                    .collect(),
+            )
+        }
     }
 }
 
@@ -395,6 +580,16 @@ pub fn set_source_text(source: &str) {
 
 pub fn enable_effect_log(enabled: bool) {
     EFFECT_LOG_ENABLED.with(|e| e.set(enabled));
+}
+
+/// Set effect grants for runtime enforcement (from manifest).
+pub fn set_effect_grants(grants: crate::pkg::capability::EffectGrants) {
+    EFFECT_GRANTS.with(|g| *g.borrow_mut() = Some(grants));
+}
+
+/// Set the current module for grant checking. None = root (unrestricted).
+pub fn set_current_module(module: Option<String>) {
+    CURRENT_MODULE.with(|m| *m.borrow_mut() = module);
 }
 
 pub fn get_effect_log() -> Vec<EffectEntry> {
@@ -428,11 +623,16 @@ pub fn eval_program_with_base_dir(exprs: &[Expr], base_dir: Option<&Path>) -> IR
     let base = base_dir.unwrap_or(&default_base);
     let mut cache = match crate::pkg::Manifest::load(base) {
         Ok(Some(manifest)) => {
+            // Load effect grants from manifest deps for runtime enforcement
+            let grants = crate::pkg::capability::grants_from_manifest(&manifest.deps);
+            set_effect_grants(grants);
             let lockfile = crate::pkg::lockfile::Lockfile::load(base).ok().flatten();
             ModuleCache::with_manifest_and_lockfile(manifest, lockfile, base.to_path_buf())
         }
         _ => ModuleCache::new(),
     };
+    // Root module is unrestricted
+    set_current_module(None);
     // Initial sync so spawned threads/callbacks can access the global env
     sync_global_env(&env);
 
@@ -525,6 +725,23 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                             return Ok(field_val);
                         }
                     }
+                    // Map keyword field access: map.field → (get map :field)
+                    if let Value::Map(pairs) = &val {
+                        let key = Value::Keyword(field.to_string());
+                        for (k, v) in pairs {
+                            if *k == key {
+                                return Ok(v.clone());
+                            }
+                        }
+                    }
+                    // JSON object field access: json.field → json["field"]
+                    if let Value::Json(json_val) = &val {
+                        if let Some(obj) = json_val.as_object() {
+                            if let Some(v) = obj.get(field) {
+                                return Ok(Value::Json(Arc::new(v.clone())));
+                            }
+                        }
+                    }
                 }
             }
             Err(err_at(format!("unbound symbol '{s}'"), expr.span))
@@ -565,6 +782,7 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                     "fn" => return eval_fn(&items[1..], env),
                     "let" => return eval_let(&items[1..], env),
                     "if" => return eval_if(&items[1..], env),
+                    "when" => return eval_when(&items[1..], env),
                     "do" => return eval_do(&items[1..], env),
                     "match" => return eval_match(&items[1..], env),
                     "pipe" => return eval_pipe(&items[1..], env),
@@ -659,6 +877,32 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                         let args: Result<Vec<_>, _> =
                             items[1..].iter().map(|e| eval(e, env)).collect();
                         let args = args?;
+                        // Check grant enforcement
+                        let grant_denied = CURRENT_MODULE.with(|m| {
+                            let module = m.borrow();
+                            if let Some(ref mod_name) = *module {
+                                EFFECT_GRANTS.with(|g| {
+                                    let grants = g.borrow();
+                                    if let Some(ref grants) = *grants {
+                                        if !grants.is_allowed(mod_name, effect) {
+                                            return Some(mod_name.clone());
+                                        }
+                                    }
+                                    None
+                                })
+                            } else {
+                                None // root module, unrestricted
+                            }
+                        });
+                        if let Some(mod_name) = grant_denied {
+                            return Err(err_at(
+                                format!(
+                                    "effect `{effect}` not granted to module `{mod_name}` — \
+                                     add `:grant [{effect}]` in pkg.oo"
+                                ),
+                                expr.span,
+                            ));
+                        }
                         // Log effect if enabled
                         if EFFECT_LOG_ENABLED.with(|e| e.get()) {
                             EFFECT_LOG.with(|l| l.borrow_mut().push(EffectEntry {
@@ -736,7 +980,7 @@ fn eval_fn(args: &[Expr], env: &mut Env) -> IResult {
             let lf = value::LoonFn {
                 name: Some(name.clone()),
                 clauses,
-                captured_env: None,
+                captured_env: Some(env.clone()),
             };
             env.set_global(name, Value::Fn(lf));
             return Ok(Value::Unit);
@@ -756,7 +1000,7 @@ fn eval_fn(args: &[Expr], env: &mut Env) -> IResult {
         let lf = value::LoonFn {
             name: Some(name.clone()),
             clauses: vec![(params, body)],
-            captured_env: None,
+            captured_env: Some(env.clone()),
         };
         env.set_global(name, Value::Fn(lf));
         return Ok(Value::Unit);
@@ -805,6 +1049,23 @@ fn eval_if(args: &[Expr], env: &mut Env) -> IResult {
         eval(&args[1], env)
     } else if args.len() > 2 {
         eval(&args[2], env)
+    } else {
+        Ok(Value::Unit)
+    }
+}
+
+/// [when condition body...] — evaluate body expressions if condition is truthy, else Unit.
+fn eval_when(args: &[Expr], env: &mut Env) -> IResult {
+    if args.len() < 2 {
+        return Err(err("when requires condition and body"));
+    }
+    let cond = eval(&args[0], env)?;
+    if cond.is_truthy() {
+        let mut last = Value::Unit;
+        for expr in &args[1..] {
+            last = eval(expr, env)?;
+        }
+        Ok(last)
     } else {
         Ok(Value::Unit)
     }

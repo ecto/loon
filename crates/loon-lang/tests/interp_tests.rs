@@ -250,6 +250,51 @@ fn effect_handle_no_resume() {
 }
 
 #[test]
+fn user_defined_effect_handled() {
+    assert_eq!(
+        run(r#"
+            [effect Fs [read-file [String] String]]
+            [fn main []
+              [handle [Fs.read-file "test.txt"]
+                [Fs.read-file path] [resume "mocked content"]]]
+            [main]
+        "#),
+        Value::Str("mocked content".to_string())
+    );
+}
+
+#[test]
+fn user_defined_effect_multi_ops() {
+    assert_eq!(
+        run(r#"
+            [effect Fs
+                [read-file [String] String]
+                [list-dir [String] String]]
+            [handle
+              [do
+                [let content [Fs.read-file "a.txt"]]
+                [let listing [Fs.list-dir "."]]
+                [str content " | " listing]]
+              [Fs.read-file p] [resume "file-data"]
+              [Fs.list-dir p] [resume "dir-listing"]]
+        "#),
+        Value::Str("file-data | dir-listing".to_string())
+    );
+}
+
+#[test]
+fn user_defined_effect_declaration_is_noop() {
+    // effect declarations return Unit at runtime
+    assert_eq!(
+        run(r#"
+            [effect Fs [read-file [String] String]]
+            42
+        "#),
+        Value::Int(42)
+    );
+}
+
+#[test]
 fn fn_param_destructuring() {
     assert_eq!(
         run(r#"
@@ -834,4 +879,73 @@ fn derive_copy_evaluates_type() {
         }
         other => panic!("expected Adt, got: {:?}", other),
     }
+}
+
+// --- Grant enforcement tests ---
+
+#[test]
+fn grant_enforcement_blocks_ungranted_effect() {
+    use loon_lang::interp::{set_effect_grants, set_current_module, eval, Env};
+    use loon_lang::pkg::capability::EffectGrants;
+
+    // Set up grants: module "dep-a" is granted nothing
+    let grants = EffectGrants::new();
+    set_effect_grants(grants);
+    set_current_module(Some("dep-a".to_string()));
+
+    let exprs = parse("[IO.println \"hello\"]").unwrap();
+    let mut env = Env::new();
+    loon_lang::interp::register_builtins_pub(&mut env);
+    let result = eval(&exprs[0], &mut env);
+
+    // Restore to root
+    set_current_module(None);
+
+    assert!(result.is_err(), "should block ungranted effect");
+    let msg = result.unwrap_err().message;
+    assert!(msg.contains("not granted"), "error should mention grants: {msg}");
+}
+
+#[test]
+fn grant_enforcement_allows_granted_effect() {
+    use loon_lang::interp::{set_effect_grants, set_current_module, eval, Env};
+    use loon_lang::pkg::capability::EffectGrants;
+    use std::collections::HashSet;
+
+    // Set up grants: module "dep-b" is granted IO
+    let mut grants = EffectGrants::new();
+    grants.grants.insert("dep-b".to_string(), {
+        let mut s = HashSet::new();
+        s.insert("IO".to_string());
+        s
+    });
+    set_effect_grants(grants);
+    set_current_module(Some("dep-b".to_string()));
+
+    let exprs = parse("[IO.println \"hello\"]").unwrap();
+    let mut env = Env::new();
+    loon_lang::interp::register_builtins_pub(&mut env);
+    let result = eval(&exprs[0], &mut env);
+
+    // Restore
+    set_current_module(None);
+
+    assert!(result.is_ok(), "granted effect should succeed: {:?}", result.err());
+}
+
+#[test]
+fn grant_enforcement_root_is_unrestricted() {
+    use loon_lang::interp::{set_effect_grants, set_current_module, eval, Env};
+    use loon_lang::pkg::capability::EffectGrants;
+
+    // Set up empty grants but root module (None)
+    set_effect_grants(EffectGrants::new());
+    set_current_module(None);
+
+    let exprs = parse("[IO.println \"hello\"]").unwrap();
+    let mut env = Env::new();
+    loon_lang::interp::register_builtins_pub(&mut env);
+    let result = eval(&exprs[0], &mut env);
+
+    assert!(result.is_ok(), "root module should be unrestricted: {:?}", result.err());
 }

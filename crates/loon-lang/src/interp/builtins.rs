@@ -552,9 +552,23 @@ pub fn register_builtins(env: &mut Env) {
         };
         match (&args[0], &args[1]) {
             (Value::Map(pairs), key) => {
+                // Try exact match first
                 for (k, v) in pairs {
                     if k == key {
                         return Ok(v.clone());
+                    }
+                }
+                // Fuzzy match: keyword ↔ string interop
+                let alt_key = match key {
+                    Value::Keyword(k) => Some(Value::Str(k.clone())),
+                    Value::Str(s) => Some(Value::Keyword(s.clone())),
+                    _ => None,
+                };
+                if let Some(ref alt) = alt_key {
+                    for (k, v) in pairs {
+                        if k == alt {
+                            return Ok(v.clone());
+                        }
                     }
                 }
                 Ok(default())
@@ -641,6 +655,18 @@ pub fn register_builtins(env: &mut Env) {
                     _ => Err(err("contains? on string requires a string needle")),
                 }
             }
+            Value::Json(j) => match (j.as_ref(), &args[1]) {
+                (serde_json::Value::Array(a), Value::Str(s)) => {
+                    Ok(Value::Bool(a.iter().any(|v| v.as_str() == Some(s.as_str()))))
+                }
+                (serde_json::Value::Array(a), Value::Int(n)) => {
+                    Ok(Value::Bool(a.iter().any(|v| v.as_i64() == Some(*n))))
+                }
+                (serde_json::Value::Object(o), Value::Str(s)) => {
+                    Ok(Value::Bool(o.contains_key(s.as_str())))
+                }
+                _ => Err(err("contains? on JSON requires array/object")),
+            }
             _ => Err(err("contains? requires a collection or string")),
         }
     });
@@ -677,6 +703,9 @@ pub fn register_builtins(env: &mut Env) {
             [func, order, Value::Vec(v)] if func.is_callable() => {
                 let desc = matches!(order, Value::Keyword(k) if k == "desc");
                 do_sort(func, desc, v)
+            }
+            [func, Value::Vec(v)] if func.is_callable() => {
+                do_sort(func, false, v)
             }
             [func, order] => {
                 let func_clone = func.clone();
@@ -1255,6 +1284,88 @@ pub fn register_builtins(env: &mut Env) {
             }
             _ => Err(err("sum requires a vector")),
         }
+    });
+
+    builtin!(env, "sqrt", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Float(f) => Ok(Value::Float(f.sqrt())),
+            Value::Int(n) => Ok(Value::Float((*n as f64).sqrt())),
+            _ => Err(err("sqrt requires a number")),
+        }
+    });
+
+    builtin!(env, "pow", |_, args: &[Value]| {
+        if args.len() < 2 {
+            return Err(err("pow requires base and exponent"));
+        }
+        let base = match &args[0] {
+            Value::Float(f) => *f,
+            Value::Int(n) => *n as f64,
+            _ => return Err(err("pow requires numeric base")),
+        };
+        let exp = match &args[1] {
+            Value::Float(f) => *f,
+            Value::Int(n) => *n as f64,
+            _ => return Err(err("pow requires numeric exponent")),
+        };
+        Ok(Value::Float(base.powf(exp)))
+    });
+
+    builtin!(env, "abs", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Int(n) => Ok(Value::Int(n.abs())),
+            Value::Float(f) => Ok(Value::Float(f.abs())),
+            _ => Err(err("abs requires a number")),
+        }
+    });
+
+    builtin!(env, "first", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Vec(v) => Ok(v.first().cloned().unwrap_or(Value::Unit)),
+            _ => Err(err("first requires a vector")),
+        }
+    });
+
+    builtin!(env, "last", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Vec(v) => Ok(v.last().cloned().unwrap_or(Value::Unit)),
+            _ => Err(err("last requires a vector")),
+        }
+    });
+
+    builtin!(env, "some?", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Unit => Ok(Value::Bool(false)),
+            Value::Adt(tag, _) if tag == "None" => Ok(Value::Bool(false)),
+            _ => Ok(Value::Bool(true)),
+        }
+    });
+
+    builtin!(env, "nil?", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Unit => Ok(Value::Bool(true)),
+            Value::Adt(tag, _) if tag == "None" => Ok(Value::Bool(true)),
+            _ => Ok(Value::Bool(false)),
+        }
+    });
+
+    builtin!(env, "type-of", |_, args: &[Value]| {
+        let t = match &args[0] {
+            Value::Int(_) => "Int",
+            Value::Float(_) => "Float",
+            Value::Bool(_) => "Bool",
+            Value::Str(_) => "String",
+            Value::Keyword(_) => "Keyword",
+            Value::Vec(_) => "Vec",
+            Value::Set(_) => "Set",
+            Value::Map(_) => "Map",
+            Value::Tuple(_) => "Tuple",
+            Value::Fn(_) | Value::Builtin(_, _) => "Fn",
+            Value::Adt(tag, _) => tag.as_str(),
+            Value::Unit => "Unit",
+            _ => "Unknown",
+        };
+        Ok(Value::Str(t.to_string()))
     });
 
     // --- Conversion ---
