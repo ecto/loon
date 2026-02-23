@@ -129,7 +129,18 @@ impl<'a> Parser<'a> {
                 Ok(Expr::new(ExprKind::Str(s), span))
             }
             Token::Keyword(k) => Ok(Expr::new(ExprKind::Keyword(k), span)),
-            Token::Symbol(s) => Ok(Expr::new(ExprKind::Symbol(s), span)),
+            Token::Symbol(s) => {
+                if s.contains('.') {
+                    let parts: Vec<&str> = s.split('.').collect();
+                    let mut expr = Expr::new(ExprKind::Symbol(parts[0].to_string()), span);
+                    for part in &parts[1..] {
+                        expr = Expr::new(ExprKind::DotAccess(Box::new(expr), part.to_string()), span);
+                    }
+                    Ok(expr)
+                } else {
+                    Ok(Expr::new(ExprKind::Symbol(s), span))
+                }
+            }
             Token::Slash => Ok(Expr::new(ExprKind::Symbol("/".to_string()), span)),
             Token::Arrow => Ok(Expr::new(ExprKind::Symbol("->".to_string()), span)),
             Token::Colon => Ok(Expr::new(ExprKind::Symbol(":".to_string()), span)),
@@ -387,7 +398,13 @@ fn desugar_question(expr: Expr, span: Span) -> Expr {
     );
     let fail_call = Expr::new(
         ExprKind::List(vec![
-            Expr::new(ExprKind::Symbol("Fail.fail".to_string()), span),
+            Expr::new(
+                ExprKind::DotAccess(
+                    Box::new(Expr::new(ExprKind::Symbol("Fail".to_string()), span)),
+                    "fail".to_string(),
+                ),
+                span,
+            ),
             err_var,
         ]),
         span,

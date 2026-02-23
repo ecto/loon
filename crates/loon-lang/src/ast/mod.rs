@@ -30,6 +30,19 @@ impl Expr {
             id: NodeId::next(),
         }
     }
+
+    /// Reconstruct a dotted path from a DotAccess chain.
+    /// e.g. `DotAccess(DotAccess(Symbol("a"), "b"), "c")` → `Some("a.b.c")`
+    /// Returns `Some(name)` for plain Symbols or DotAccess chains rooted in a Symbol.
+    pub fn as_dotted_path(&self) -> Option<String> {
+        match &self.kind {
+            ExprKind::Symbol(s) => Some(s.clone()),
+            ExprKind::DotAccess(inner, field) => {
+                inner.as_dotted_path().map(|base| format!("{base}.{field}"))
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +69,8 @@ pub enum ExprKind {
     Unquote(Box<Expr>),
     /// Unquote-splice: ~@expr (splice list elements into template)
     UnquoteSplice(Box<Expr>),
+    /// Dot access: expr.field
+    DotAccess(Box<Expr>, String),
 }
 
 impl fmt::Display for Expr {
@@ -120,6 +135,7 @@ impl fmt::Display for Expr {
             ExprKind::Quote(inner) => write!(f, "`{inner}"),
             ExprKind::Unquote(inner) => write!(f, "~{inner}"),
             ExprKind::UnquoteSplice(inner) => write!(f, "~@{inner}"),
+            ExprKind::DotAccess(inner, field) => write!(f, "{inner}.{field}"),
         }
     }
 }
@@ -150,6 +166,11 @@ pub fn node_at_offset(exprs: &[Expr], offset: usize) -> Option<&Expr> {
                 }
             }
             ExprKind::Quote(inner) | ExprKind::Unquote(inner) | ExprKind::UnquoteSplice(inner) => {
+                if let Some(deeper) = walk(inner, offset) {
+                    return Some(deeper);
+                }
+            }
+            ExprKind::DotAccess(inner, _) => {
                 if let Some(deeper) = walk(inner, offset) {
                     return Some(deeper);
                 }

@@ -1645,6 +1645,27 @@ impl Checker {
                 Type::Tuple(types)
             }
 
+            ExprKind::DotAccess(_, _) => {
+                // Try qualified name lookup first (e.g. math.double from [use math])
+                if let Some(path) = expr.as_dotted_path() {
+                    if let Some(scheme) = self.env.get(&path) {
+                        self.references.push(RefInfo {
+                            span: expr.span,
+                            name: path,
+                            node_id: expr.id,
+                        });
+                        return instantiate(&mut self.subst, scheme);
+                    }
+                }
+                // Fall back to record field access
+                if let ExprKind::DotAccess(inner, field) = &expr.kind {
+                    let inner_ty = self.infer(inner);
+                    self.infer_record_get(&inner_ty, field, expr.span)
+                } else {
+                    unreachable!()
+                }
+            }
+
             // Quasiquote nodes should be expanded before type checking
             ExprKind::Quote(_) | ExprKind::Unquote(_) | ExprKind::UnquoteSplice(_) => Type::Unit,
 
@@ -1771,8 +1792,11 @@ impl Checker {
                 _ => {}
             }
 
-            // Check for Effect.op pattern (e.g. IO.read-file)
-            if let Some((effect, op)) = s.split_once('.') {
+        }
+
+        // Check for Effect.op pattern via DotAccess (e.g. IO.read-file)
+        if let ExprKind::DotAccess(obj, op) = &head.kind {
+            if let ExprKind::Symbol(effect) = &obj.kind {
                 if effect.starts_with(char::is_uppercase) {
                     self.current_fn_effects.insert(effect.to_string());
                     // Look up operation in registry for type checking
@@ -2080,8 +2104,8 @@ impl Checker {
         while i < handler_args.len() {
             if let ExprKind::List(pattern) = &handler_args[i].kind {
                 if !pattern.is_empty() {
-                    if let ExprKind::Symbol(qualified) = &pattern[0].kind {
-                        if let Some((effect, _op)) = qualified.split_once('.') {
+                    if let ExprKind::DotAccess(obj, _op) = &pattern[0].kind {
+                        if let ExprKind::Symbol(effect) = &obj.kind {
                             if effect.starts_with(char::is_uppercase) {
                                 handled.insert(effect.to_string());
                             }
@@ -2093,30 +2117,28 @@ impl Checker {
             if i + 1 < handler_args.len() {
                 if let ExprKind::List(pattern) = &handler_args[i].kind {
                     if !pattern.is_empty() {
-                        if let ExprKind::Symbol(qualified) = &pattern[0].kind {
-                            if qualified.contains('.') {
-                                // Bind handler params and resume in scope for handler body
-                                self.push_scope();
-                                for p in &pattern[1..] {
-                                    if let ExprKind::Symbol(name) = &p.kind {
-                                        let t = self.subst.fresh();
-                                        self.env.set(name.clone(), Scheme::mono(t));
-                                    }
+                        if let ExprKind::DotAccess(_, _) = &pattern[0].kind {
+                            // Bind handler params and resume in scope for handler body
+                            self.push_scope();
+                            for p in &pattern[1..] {
+                                if let ExprKind::Symbol(name) = &p.kind {
+                                    let t = self.subst.fresh();
+                                    self.env.set(name.clone(), Scheme::mono(t));
                                 }
-                                // resume: a -> a (one-shot continuation)
-                                let resume_arg = self.subst.fresh();
-                                self.env.set(
-                                    "resume".to_string(),
-                                    Scheme::mono(Type::Fn(
-                                        vec![resume_arg.clone()],
-                                        Box::new(resume_arg),
-                                    )),
-                                );
-                                self.infer(&handler_args[i + 1]);
-                                self.pop_scope();
-                                i += 2;
-                                continue;
                             }
+                            // resume: a -> a (one-shot continuation)
+                            let resume_arg = self.subst.fresh();
+                            self.env.set(
+                                "resume".to_string(),
+                                Scheme::mono(Type::Fn(
+                                    vec![resume_arg.clone()],
+                                    Box::new(resume_arg),
+                                )),
+                            );
+                            self.infer(&handler_args[i + 1]);
+                            self.pop_scope();
+                            i += 2;
+                            continue;
                         }
                     }
                 }
@@ -2898,9 +2920,9 @@ impl Checker {
             return Type::Unit;
         }
 
-        let module_path = match &args[0].kind {
-            ExprKind::Symbol(s) => s.clone(),
-            _ => {
+        let module_path = match args[0].as_dotted_path() {
+            Some(s) => s,
+            None => {
                 self.errors.push(
                     LoonDiagnostic::new(ErrorCode::E0500, "use module path must be a symbol")
                         .with_label(span, "expected symbol", true),

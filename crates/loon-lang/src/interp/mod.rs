@@ -697,6 +697,60 @@ pub(crate) fn get_global_env() -> Option<Env> {
     })
 }
 
+/// Access a field on a value: ADT named fields, Map keyword, JSON object, Tuple index.
+fn access_field(val: &Value, field: &str, span: Span) -> IResult {
+    // ADT named field access
+    if let Value::Adt(tag, fields) = val {
+        let found = ADT_FIELDS.with(|f| {
+            let map = f.borrow();
+            if let Some(names) = map.get(tag.as_str()) {
+                if let Some(idx) = names.iter().position(|n| n == field) {
+                    return fields.get(idx).cloned();
+                }
+            }
+            None
+        });
+        if let Some(field_val) = found {
+            return Ok(field_val);
+        }
+    }
+    // Map keyword field access: map.field → (get map :field)
+    if let Value::Map(pairs) = val {
+        let key = Value::Keyword(field.to_string());
+        for (k, v) in pairs {
+            if *k == key {
+                return Ok(v.clone());
+            }
+        }
+    }
+    // JSON object field access: json.field → json["field"]
+    if let Value::Json(json_val) = val {
+        if let Some(obj) = json_val.as_object() {
+            if let Some(v) = obj.get(field) {
+                return Ok(Value::Json(Arc::new(v.clone())));
+            }
+        }
+    }
+    // Tuple index access: t.0, t.1, etc.
+    if let Value::Tuple(items) = val {
+        if let Ok(idx) = field.parse::<usize>() {
+            if let Some(v) = items.get(idx) {
+                return Ok(v.clone());
+            }
+        }
+    }
+    // Vec properties: v.length, v.first, v.last
+    if let Value::Vec(items) = val {
+        match field {
+            "length" => return Ok(Value::Int(items.len() as i64)),
+            "first" => return Ok(items.first().cloned().unwrap_or(Value::Unit)),
+            "last" => return Ok(items.last().cloned().unwrap_or(Value::Unit)),
+            _ => {}
+        }
+    }
+    Err(err_at(format!("no field '{field}' on value"), span))
+}
+
 pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
     match &expr.kind {
         ExprKind::Int(n) => Ok(Value::Int(*n)),
@@ -708,43 +762,23 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
             if let Some(v) = env.get(s) {
                 return Ok(v);
             }
-            // Try field access: var.field
-            if let Some((var, field)) = s.split_once('.') {
-                if let Some(val) = env.get(var) {
-                    if let Value::Adt(tag, fields) = &val {
-                        let found = ADT_FIELDS.with(|f| {
-                            let map = f.borrow();
-                            if let Some(names) = map.get(tag.as_str()) {
-                                if let Some(idx) = names.iter().position(|n| n == field) {
-                                    return fields.get(idx).cloned();
-                                }
-                            }
-                            None
-                        });
-                        if let Some(field_val) = found {
-                            return Ok(field_val);
-                        }
-                    }
-                    // Map keyword field access: map.field → (get map :field)
-                    if let Value::Map(pairs) = &val {
-                        let key = Value::Keyword(field.to_string());
-                        for (k, v) in pairs {
-                            if *k == key {
-                                return Ok(v.clone());
-                            }
-                        }
-                    }
-                    // JSON object field access: json.field → json["field"]
-                    if let Value::Json(json_val) = &val {
-                        if let Some(obj) = json_val.as_object() {
-                            if let Some(v) = obj.get(field) {
-                                return Ok(Value::Json(Arc::new(v.clone())));
-                            }
-                        }
-                    }
+            Err(err_at(format!("unbound symbol '{s}'"), expr.span))
+        }
+
+        ExprKind::DotAccess(_, _) => {
+            // Try qualified name lookup first (e.g. math.double from [use math])
+            if let Some(path) = expr.as_dotted_path() {
+                if let Some(v) = env.get(&path) {
+                    return Ok(v);
                 }
             }
-            Err(err_at(format!("unbound symbol '{s}'"), expr.span))
+            // Fall back to field access on evaluated inner expression
+            if let ExprKind::DotAccess(inner, field) = &expr.kind {
+                let val = eval(inner, env)?;
+                access_field(&val, field, expr.span)
+            } else {
+                unreachable!()
+            }
         }
 
         ExprKind::Vec(items) => {
@@ -862,9 +896,9 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                 }
             }
 
-            // Check for effect operations (Effect.op pattern)
-            if let ExprKind::Symbol(s) = &head.kind {
-                if let Some((effect, op)) = s.split_once('.') {
+            // Check for effect operations (Effect.op pattern via DotAccess)
+            if let ExprKind::DotAccess(obj, op) = &head.kind {
+                if let ExprKind::Symbol(effect) = &obj.kind {
                     if effect.starts_with(char::is_uppercase) {
                         // Check for override (from resumable handle)
                         if let Some(override_val) = check_effect_override(effect, op) {
@@ -1691,8 +1725,8 @@ fn collect_handlers<'a>(handler_args: &'a [Expr]) -> Vec<Handler<'a>> {
     while i < handler_args.len() {
         if let ExprKind::List(pattern) = &handler_args[i].kind {
             if !pattern.is_empty() {
-                if let ExprKind::Symbol(qualified) = &pattern[0].kind {
-                    if let Some((effect, op)) = qualified.split_once('.') {
+                if let ExprKind::DotAccess(obj, op) = &pattern[0].kind {
+                    if let ExprKind::Symbol(effect) = &obj.kind {
                         let params: Vec<String> = pattern[1..]
                             .iter()
                             .filter_map(|p| {
@@ -1988,9 +2022,9 @@ pub fn eval_use_with_cache(
         return Err(err("use requires a module path"));
     }
 
-    let module_path = match &args[0].kind {
-        ExprKind::Symbol(s) => s.clone(),
-        _ => return Err(err("use module path must be a symbol")),
+    let module_path = match args[0].as_dotted_path() {
+        Some(s) => s,
+        None => return Err(err("use module path must be a symbol")),
     };
 
     let exports = cache

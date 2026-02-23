@@ -25,6 +25,7 @@ pub enum TypedExprKind {
     Map(Vec<(TypedExpr, TypedExpr)>),
     Set(Vec<TypedExpr>),
     Tuple(Vec<TypedExpr>),
+    DotAccess(Box<TypedExpr>, String),
 }
 
 /// Convert an untyped AST to a typed AST using the type checker's side-table.
@@ -61,6 +62,9 @@ pub fn to_typed(expr: &Expr, type_of: &HashMap<NodeId, Type>, subst: &Subst) -> 
         }
         ExprKind::Tuple(items) => {
             TypedExprKind::Tuple(items.iter().map(|e| to_typed(e, type_of, subst)).collect())
+        }
+        ExprKind::DotAccess(inner, field) => {
+            TypedExprKind::DotAccess(Box::new(to_typed(inner, type_of, subst)), field.clone())
         }
         // Quasiquote nodes should be expanded before type checking
         ExprKind::Quote(inner) | ExprKind::Unquote(inner) | ExprKind::UnquoteSplice(inner) => {

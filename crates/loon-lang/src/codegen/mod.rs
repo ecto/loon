@@ -260,7 +260,10 @@ impl Compiler {
     }
     fn compile_use(&mut self, args: &[Expr]) -> Result<(), String> {
         if args.is_empty() { return Ok(()); }
-        let module_path = match &args[0].kind { ExprKind::Symbol(s) | ExprKind::Str(s) => s.clone(), _ => return Ok(()) };
+        let module_path = match args[0].as_dotted_path() {
+            Some(s) => s,
+            None => if let ExprKind::Str(s) = &args[0].kind { s.clone() } else { return Ok(()) },
+        };
         let base_dir = match &self.base_dir { Some(d) => d.clone(), None => return Ok(()) };
         let file_path = crate::module::ModuleCache::resolve_path(&module_path, &base_dir);
         let canonical = file_path.canonicalize().unwrap_or_else(|_| file_path.clone());
@@ -436,6 +439,7 @@ impl<'a> FnCtx<'a> {
                 else if let Some((tag, 0)) = self.compiler.adt_constructors.get(name.as_str()).cloned() { self.compile_adt_constructor(name, tag, 0, &[]) }
                 else { Err(format!("codegen: unbound symbol '{name}'")) }
             }
+            ExprKind::DotAccess(_, _) => Err("codegen: dot access not supported as expression".into()),
             ExprKind::List(items) if items.is_empty() => { self.instructions.push(WasmInstruction::I64Const(0)); Ok(()) }
             ExprKind::List(items) => { if let ExprKind::Symbol(s) = &items[0].kind { if s == "fn" { return self.compile_closure(&items[1..]); } } self.compile_call(items) }
             _ => Err(format!("codegen: unsupported expression: {:?}", expr.kind)),
@@ -476,19 +480,21 @@ impl<'a> FnCtx<'a> {
                 "map" | "filter" => { if items.len() >= 3 { if let ExprKind::List(li) = &items[1].kind { if !li.is_empty() { if let ExprKind::Symbol(fs) = &li[0].kind { if fs == "fn" { return self.compile_hof_lambda(s, &li[1..], &items[2..]); } } } } } return Err(format!("codegen: {s} requires a lambda literal argument.")); }
                 "type" | "use" | "effect" => { self.instructions.push(WasmInstruction::I64Const(0)); return Ok(()); }
                 name => {
-                    // Effect.op pattern → compile to import call
-                    if let Some((effect, op)) = name.split_once('.') {
-                        if effect.starts_with(char::is_uppercase) {
-                            let import_idx = self.compiler.get_or_create_effect_import(effect, op);
-                            for arg in &items[1..] { self.compile_expr(arg)?; }
-                            self.instructions.push(WasmInstruction::Call(import_idx));
-                            return Ok(());
-                        }
-                    }
                     if let Some((tag, arity)) = self.compiler.adt_constructors.get(name).cloned() { return self.compile_adt_constructor(name, tag, arity, &items[1..]); }
                     if let Some(fn_def) = self.compiler.fn_map.get(name).cloned() { if fn_def.is_closure { return self.compile_closure_call_named(name, &items[1..]); } for arg in &items[1..] { self.compile_expr(arg)?; } self.instructions.push(WasmInstruction::Call(fn_def.func_idx)); return Ok(()); }
                     if self.locals.contains_key(name) { return self.compile_closure_call_local(name, &items[1..]); }
                     return Err(format!("codegen: unknown function '{name}'"));
+                }
+            }
+        }
+        // Check for DotAccess head (Effect.op pattern)
+        if let ExprKind::DotAccess(obj, op) = &items[0].kind {
+            if let ExprKind::Symbol(effect) = &obj.kind {
+                if effect.starts_with(char::is_uppercase) {
+                    let import_idx = self.compiler.get_or_create_effect_import(effect, op);
+                    for arg in &items[1..] { self.compile_expr(arg)?; }
+                    self.instructions.push(WasmInstruction::Call(import_idx));
+                    return Ok(());
                 }
             }
         }
