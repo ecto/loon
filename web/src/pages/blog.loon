@@ -62,6 +62,33 @@
                    :margin-bottom "3.5rem"}}
         "Changelog"]
 
+      ; ── v0.4.21 — Interpolation fix, dot access, builtins ───────────
+
+      [blog-article "JSON & Interpolation" "Feb 24, 2026"
+
+        [p "Four fixes that make Loon usable for real applications touching JSON data."]
+
+        [blog-h3 "Dot access on string-keyed maps"]
+        [p "map.field now tries string keys after keyword keys. Combined with IO.parse-json returning keyword keys by default, dot access works on parsed JSON without workarounds."]
+        [blog-code [str
+          "[let m [IO.parse-json \"\\\{\\\"name\\\":\\\"cam\\\"\\\}\"]]\n"
+          "m.name  ; \x97 \"cam\""]]
+
+        [blog-h3 "Fix \\n inside string interpolation"]
+        [p "Escape sequences like \\n inside \{..\} interpolation blocks were being converted too early, corrupting inner strings during re-parse. The unescape pass is now interpolation-aware: it converts \\\" to \" for inner string delimiters but preserves \\n, \\t, and \\\\ verbatim for the inner parse."]
+        [blog-code [str
+          "[let items #[\"a\" \"b\"]]\n"
+          "[str \"list:\\n\{[join \\\"\\n\\\" items]\}\"]  ; \x97 \"list:\\na\\nb\""]]
+
+        [blog-h3 "keyword and keywordize-keys builtins"]
+        [p "keyword converts a string to a keyword (the inverse of name). keywordize-keys converts all string keys in a map to keywords."]
+        [blog-code [str
+          "[keyword \"hello\"]       ; \x97 :hello\n"
+          "[keywordize-keys m]     ; string keys \x97 keyword keys"]]
+
+        [blog-h3 "IO.parse-json returns keyword keys"]
+        [p "JSON object keys are now keywords instead of strings, matching Loon's map literal convention \{:key val\}. The get builtin's fuzzy matching means [get m \"key\"] still works."]]
+
       ; ── v0.4.20 — .oo file extension ─────────────────────────────────
 
       [blog-article ".oo" "Feb 21, 2026"

@@ -1096,6 +1096,27 @@ impl Checker {
             Scheme::mono(Type::Fn(vec![Type::Keyword], Box::new(Type::Str))),
         );
 
+        // keyword: Str → Keyword
+        self.env.set_global(
+            "keyword".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Keyword))),
+        );
+
+        // keywordize-keys: ∀a. Map<Str,a> → Map<Keyword,a>
+        // Simplified: ∀a. a → a (maps aren't parameterized in the checker yet)
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "keywordize-keys".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tva],
+                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Var(tva))),
+                },
+            );
+        }
+
         // map?: ∀a. a → Bool
         {
             let a = self.subst.fresh();

@@ -2,22 +2,58 @@ use logos::Logos;
 
 fn unescape(s: &str) -> String {
     let mut out = String::new();
-    let mut chars = s[1..s.len() - 1].chars();
+    let mut chars = s[1..s.len() - 1].chars().peekable();
+    let mut brace_depth: u32 = 0;
+    let mut in_string = false; // inside "..." within interpolation
+
     while let Some(c) = chars.next() {
+        if brace_depth > 0 {
+            // Inside {…} interpolation block.
+            // Convert \" → " (needed for inner string delimiters).
+            // Preserve other escapes (\n, \t, \\) verbatim for re-parse.
+            if c == '\\' {
+                match chars.next() {
+                    Some('"') => {
+                        out.push('"');
+                        in_string = !in_string;
+                    }
+                    Some(other) => {
+                        out.push('\\');
+                        out.push(other);
+                    }
+                    None => out.push('\\'),
+                }
+            } else {
+                out.push(c);
+                if !in_string {
+                    match c {
+                        '{' => brace_depth += 1,
+                        '}' => brace_depth -= 1,
+                        _ => {}
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Outside interpolation — normal unescape
         if c == '\\' {
             match chars.next() {
                 Some('n') => out.push('\n'),
                 Some('t') => out.push('\t'),
                 Some('\\') => out.push('\\'),
                 Some('"') => out.push('"'),
-                Some('{') => out.push_str("{{"),  // \{ → escaped brace (won't interpolate)
-                Some('}') => out.push_str("}}"),  // \} → escaped brace
+                Some('{') => out.push_str("{{"),
+                Some('}') => out.push_str("}}"),
                 Some(other) => {
                     out.push('\\');
                     out.push(other);
                 }
                 None => out.push('\\'),
             }
+        } else if c == '{' {
+            out.push('{');
+            brace_depth = 1;
         } else {
             out.push(c);
         }

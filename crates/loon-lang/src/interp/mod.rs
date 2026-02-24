@@ -558,7 +558,7 @@ fn json_to_value(j: serde_json::Value) -> Value {
         serde_json::Value::Object(obj) => {
             Value::Map(
                 obj.into_iter()
-                    .map(|(k, v)| (Value::Str(k), json_to_value(v)))
+                    .map(|(k, v)| (Value::Keyword(k), json_to_value(v)))
                     .collect(),
             )
         }
@@ -719,6 +719,13 @@ fn access_field(val: &Value, field: &str, span: Span) -> IResult {
         let key = Value::Keyword(field.to_string());
         for (k, v) in pairs {
             if *k == key {
+                return Ok(v.clone());
+            }
+        }
+        // Fallback: string key (IO.parse-json returns string-keyed maps)
+        let str_key = Value::Str(field.to_string());
+        for (k, v) in pairs {
+            if *k == str_key {
                 return Ok(v.clone());
             }
         }

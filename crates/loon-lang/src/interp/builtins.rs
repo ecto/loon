@@ -976,6 +976,28 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
+    builtin!(env, "keyword", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Str(s) => Ok(Value::Keyword(s.clone())),
+            Value::Keyword(k) => Ok(Value::Keyword(k.clone())),
+            _ => Err(err("keyword requires a string or keyword")),
+        }
+    });
+
+    builtin!(env, "keywordize-keys", |_, args: &[Value]| {
+        if let Value::Map(pairs) = &args[0] {
+            Ok(Value::Map(pairs.iter().map(|(k, v)| {
+                let new_k = match k {
+                    Value::Str(s) => Value::Keyword(s.clone()),
+                    other => other.clone(),
+                };
+                (new_k, v.clone())
+            }).collect()))
+        } else {
+            Err(err("keywordize-keys requires a map"))
+        }
+    });
+
     builtin!(env, "map?", |_, args: &[Value]| {
         Ok(Value::Bool(matches!(&args[0], Value::Map(_))))
     });

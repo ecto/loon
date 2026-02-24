@@ -949,3 +949,113 @@ fn grant_enforcement_root_is_unrestricted() {
 
     assert!(result.is_ok(), "root module should be unrestricted: {:?}", result.err());
 }
+
+#[test]
+fn dot_access_string_keyed_map() {
+    // String-keyed map: dot access should fall back to string keys
+    assert_eq!(
+        run(r#"
+            [let m {"name" "cam"}]
+            m.name
+        "#),
+        Value::Str("cam".to_string())
+    );
+}
+
+#[test]
+fn newline_inside_interpolation() {
+    // \n inside {…} interpolation should be preserved for re-parse
+    assert_eq!(
+        run(r#"
+            [let items #["a" "b"]]
+            [str "list:\n{[join \"\n\" items]}"]
+        "#),
+        Value::Str("list:\na\nb".to_string())
+    );
+}
+
+#[test]
+fn keyword_builtin() {
+    assert_eq!(
+        run(r#"[keyword "hello"]"#),
+        Value::Keyword("hello".to_string())
+    );
+    assert_eq!(
+        run(r#"[name [keyword "x"]]"#),
+        Value::Str("x".to_string())
+    );
+}
+
+#[test]
+fn keywordize_keys_builtin() {
+    assert_eq!(
+        run(r#"
+            [let m {"a" 1 "b" 2}]
+            [let kw [keywordize-keys m]]
+            kw.a
+        "#),
+        Value::Int(1)
+    );
+}
+
+#[test]
+fn json_parse_keyword_keys() {
+    // IO.parse-json returns keyword keys; use \{ \} to get literal braces
+    assert_eq!(
+        run(r#"
+            [let m [IO.parse-json "\{\"x\":42\}"]]
+            [get m :x]
+        "#),
+        Value::Int(42)
+    );
+}
+
+#[test]
+fn json_dot_access() {
+    // IO.parse-json returns keyword keys, dot access works via keyword match
+    assert_eq!(
+        run(r#"
+            [let m [IO.parse-json "\{\"name\":\"cam\"\}"]]
+            m.name
+        "#),
+        Value::Str("cam".to_string())
+    );
+}
+
+#[test]
+fn all_source_files_parse() {
+    // Catch parse errors in web/, samples/, and docs/ at build time.
+    // Every .oo and .loon file in the repo must parse without errors.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent().unwrap().parent().unwrap();
+    let mut failures = Vec::new();
+    for dir in &["web", "samples"] {
+        let base = root.join(dir);
+        if !base.exists() { continue; }
+        for entry in walkdir(&base) {
+            let path = entry.path();
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext != "oo" && ext != "loon" { continue; }
+            let src = std::fs::read_to_string(&path).unwrap();
+            if let Err(e) = parse(&src) {
+                failures.push(format!("{}:{}: {}", path.display(), e.span.start, e.message));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "parse errors in source files:\n  {}", failures.join("\n  "));
+}
+
+fn walkdir(dir: &std::path::Path) -> Vec<std::fs::DirEntry> {
+    let mut results = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                results.extend(walkdir(&path));
+            } else {
+                results.push(entry);
+            }
+        }
+    }
+    results
+}
