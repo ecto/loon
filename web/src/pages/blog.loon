@@ -68,10 +68,10 @@
 
       [blog-article "Tail Call Optimization" "Feb 25, 2026"
 
-        [p "Loon v0.5 adds three tiers of tail call optimization. Recursive patterns \x97 the only way to loop in a functional language \x97 now run in constant stack space. The interpreter used to overflow at ~200 recursive calls. Now it handles millions."]
+        [p "Loon v0.5 adds three tiers of tail call optimization. Recursive patterns — the only way to loop in a functional language — now run in constant stack space. The interpreter used to overflow at ~200 recursive calls. Now it handles millions."]
 
         [blog-h3 "loop/recur"]
-        [p "The new loop form binds locals and iterates. recur jumps back to the nearest loop with new values. Zero overhead \x97 no function object, no closure, no stack frame."]
+        [p "The new loop form binds locals and iterates. recur jumps back to the nearest loop with new values. Zero overhead — no function object, no closure, no stack frame."]
         [blog-code [str
           "[loop [i 0 sum 0]\n"
           "  [if [>= i 1000000] sum\n"
@@ -87,7 +87,7 @@
           "[factorial 1000000 1]  ; constant stack space"]]
 
         [blog-h3 "General tail calls"]
-        [p "Any function call in tail position \x97 the last expression in if, match, do, when, or try \x97 reuses the current stack frame via a trampoline. This means mutual recursion works at scale too."]
+        [p "Any function call in tail position — the last expression in if, match, do, when, or try — reuses the current stack frame via a trampoline. This means mutual recursion works at scale too."]
         [blog-code [str
           "[fn is-even [n]\n"
           "  [if [= n 0] true [is-odd [- n 1]]]]\n"
@@ -98,7 +98,7 @@
           "[is-even 100000]  ; true, no stack overflow"]]
 
         [blog-h3 "Collections at scale"]
-        [p "With TCO, the persistent data structures from v0.4.23 are finally unlocked. The benchmark suite now runs at 100,000 elements \x97 500x larger than before. Building a 100K-element vector via loop/recur takes under a second in release mode."]
+        [p "With TCO, the persistent data structures from v0.4.23 are finally unlocked. The benchmark suite now runs at 100,000 elements — 500x larger than before. Building a 100K-element vector via loop/recur takes under a second in release mode."]
         [blog-code [str
           "[fn build-vec [n]\n"
           "  [loop [v #[] i 0]\n"
@@ -114,10 +114,10 @@
 
       [blog-article "Persistent Data Structures" "Feb 25, 2026"
 
-        [p "Loon's collections are now backed by persistent data structures via the imbl crate. Cloning a 10,000-element vector or map is now O(1) instead of O(n), and map lookup is O(log\x{2083}\x{2082} n) instead of O(n). Every conj, assoc, filter, and map operation benefits from structural sharing."]
+        [p "Loon's collections are now backed by persistent data structures via the imbl crate. Cloning a 10,000-element vector or map is now O(1) instead of O(n), and map lookup is O(log₃₂ n) instead of O(n). Every conj, assoc, filter, and map operation benefits from structural sharing."]
 
         [blog-h3 "What changed"]
-        [p "Vec is now an RRB-tree vector (imbl::Vector), Map is a hash array mapped trie (imbl::HashMap), and Set is imbl::HashSet. The API is identical \x97 existing Loon code runs without changes."]
+        [p "Vec is now an RRB-tree vector (imbl::Vector), Map is a hash array mapped trie (imbl::HashMap), and Set is imbl::HashSet. The API is identical — existing Loon code runs without changes."]
         [blog-code [str
           "; These are now O(1) clone + O(log n) insert:\n"
           "[let v [conj big-vector 42]]\n"
@@ -129,11 +129,11 @@
         [blog-h3 "Performance improvements"]
         [p "The asymptotic wins are dramatic:"]
         [ul-el {:style {:margin-left "1.5rem" :line-height "1.8"}}
-          [li-el "Clone: O(n) \x97 O(1) (structural sharing)"]
-          [li-el "Vec append/prepend: O(n) \x97 O(log n)"]
-          [li-el "Map lookup: O(n) \x97 O(log\x{2083}\x{2082} n) \x{2248} O(1)"]
-          [li-el "Map insert/remove: O(n) \x97 O(log\x{2083}\x{2082} n)"]
-          [li-el "Set membership: O(n) \x97 O(log\x{2083}\x{2082} n) \x{2248} O(1)"]]
+          [li-el "Clone: O(n) — O(1) (structural sharing)"]
+          [li-el "Vec append/prepend: O(n) — O(log n)"]
+          [li-el "Map lookup: O(n) — O(log₃₂ n) ≈ O(1)"]
+          [li-el "Map insert/remove: O(n) — O(log₃₂ n)"]
+          [li-el "Set membership: O(n) — O(log₃₂ n) ≈ O(1)"]]
 
         [blog-h3 "Hash and Eq for Value"]
         [p "Value now implements Hash and Eq, required for HashMap/HashSet keys. Floats hash via to_bits(), collections use commutative XOR for order-independent hashing, and non-hashable types (Fn, Builtin) use a sentinel. This also means sets and maps can contain any value type as keys."]
@@ -156,7 +156,7 @@
           "[let f [* 80.0kg [/ d [* t t]]]]  ; Force"]]
 
         [blog-h3 "No dimensionless"]
-        [p "When you divide meters by meters, you get Scalar \x97 not Float. To get a raw Float, you must explicitly call magnitude. This is the same philosophy as no-null: once in the physics world, you stay until you explicitly leave."]
+        [p "When you divide meters by meters, you get Scalar — not Float. To get a raw Float, you must explicitly call magnitude. This is the same philosophy as no-null: once in the physics world, you stay until you explicitly leave."]
         [blog-code [str
           "[/ 10.0m 5.0m]        ; Scalar (NOT Float)\n"
           "[magnitude 10.0m]     ; 10.0 : Float (explicit exit)\n"
@@ -170,7 +170,7 @@
           "    = hint: did you mean Velocity? try [/ a b]"]]
 
         [blog-h3 "Physics as an algebraic effect"]
-        [p "Physical constants and material properties are effects \x97 swap them by changing handlers. The new Physics effect provides gravity, yield-strength, elastic-modulus, density, temperature, and thermal-conductivity. The Sim effect provides stress, deflection, natural-freq, and thermal-field."]
+        [p "Physical constants and material properties are effects — swap them by changing handlers. The new Physics effect provides gravity, yield-strength, elastic-modulus, density, temperature, and thermal-conductivity. The Sim effect provides stress, deflection, natural-freq, and thermal-field."]
         [blog-code [str
           "[handle [design-beam 10.0kN 5.0m]\n"
           "  [Physics.yield-strength] [resume 250.0MPa]\n"
@@ -195,19 +195,19 @@
         [p "map.field now tries string keys after keyword keys. Combined with IO.parse-json returning keyword keys by default, dot access works on parsed JSON without workarounds."]
         [blog-code [str
           "[let m [IO.parse-json \"\\\{\\\"name\\\":\\\"cam\\\"\\\}\"]]\n"
-          "m.name  ; \x97 \"cam\""]]
+          "m.name  ; — \"cam\""]]
 
         [blog-h3 "Fix \\n inside string interpolation"]
         [p "Escape sequences like \\n inside \{..\} interpolation blocks were being converted too early, corrupting inner strings during re-parse. The unescape pass is now interpolation-aware: it converts \\\" to \" for inner string delimiters but preserves \\n, \\t, and \\\\ verbatim for the inner parse."]
         [blog-code [str
           "[let items #[\"a\" \"b\"]]\n"
-          "[str \"list:\\n\{[join \\\"\\n\\\" items]\}\"]  ; \x97 \"list:\\na\\nb\""]]
+          "[str \"list:\\n\{[join \\\"\\n\\\" items]\}\"]  ; — \"list:\\na\\nb\""]]
 
         [blog-h3 "keyword and keywordize-keys builtins"]
         [p "keyword converts a string to a keyword (the inverse of name). keywordize-keys converts all string keys in a map to keywords."]
         [blog-code [str
-          "[keyword \"hello\"]       ; \x97 :hello\n"
-          "[keywordize-keys m]     ; string keys \x97 keyword keys"]]
+          "[keyword \"hello\"]       ; — :hello\n"
+          "[keywordize-keys m]     ; string keys — keyword keys"]]
 
         [blog-h3 "IO.parse-json returns keyword keys"]
         [p "JSON object keys are now keywords instead of strings, matching Loon's map literal convention \{:key val\}. The get builtin's fuzzy matching means [get m \"key\"] still works."]]
@@ -226,7 +226,7 @@
           ";   my-app/pkg.oo\n"
           ";   my-app/src/main.oo"]]
 
-        [p "Module resolution, manifest loading (pkg.oo), and lockfiles (lock.oo) all try .oo first, then fall back to .loon. The tree-sitter grammar recognizes both extensions. No migration required \x97 rename your files when you feel like it."]]
+        [p "Module resolution, manifest loading (pkg.oo), and lockfiles (lock.oo) all try .oo first, then fall back to .loon. The tree-sitter grammar recognizes both extensions. No migration required — rename your files when you feel like it."]]
 
       ; ── Transparent Wildcards ────────────────────────────────────────
 
