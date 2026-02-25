@@ -131,4 +131,30 @@
         " doesn't care about those. You get structural typing for maps without any "
         "special syntax or interface declarations."]]
 
+    [doc-section "Dimensional Types"
+      [doc-text "Loon has compile-time dimensional analysis. Write numbers with unit suffixes and the type checker tracks physical dimensions through arithmetic. If you try to add meters to seconds, it is a type error. Zero runtime overhead."]
+      [code-block {} [str
+        "[let d 100.0m]              ; Length\n"
+        "[let t 9.58s]               ; Time\n"
+        "[let v [/ d t]]             ; Velocity\n"
+        "[let f [* 80.0kg [/ d [* t t]]]]  ; Force"]]
+      [doc-text "Unit suffixes like " [doc-code "m"] ", " [doc-code "s"] ", " [doc-code "kg"] " desugar to calls to the " [doc-code "unit"] " builtin at parse time. So " [doc-code "5.0m"] " is exactly " [doc-code "[unit 5.0 :m]"] ". There are 30+ recognized units with SI prefixes."]
+      [doc-text "The type checker knows 21 named physical quantities. When you hover over a variable in the LSP, you see " [doc-code "Velocity"] " or " [doc-code "Force"] " rather than raw dimension exponents."]]
+
+    [doc-section "No Dimensionless"
+      [doc-text "Just as Loon has no null, it has no silent escape from the physics type world. When you divide meters by meters, you get " [doc-code "Scalar"] " — not " [doc-code "Float"] ". To get a raw float, you must explicitly call " [doc-code "magnitude"] ". To enter the physics world from a float, call " [doc-code "scalar"] "."]
+      [code-block {} [str
+        "[/ 10.0m 5.0m]        ; Scalar (NOT Float)\n"
+        "[magnitude 10.0m]     ; 10.0 : Float (explicit exit)\n"
+        "[scalar 2.0]          ; Scalar (explicit entry)"]]
+      [doc-note "info" "Float literals can still multiply/divide dimensional values as scalar multipliers. The no-dimensionless rule only applies to the output of dimensional arithmetic."]]
+
+    [doc-section "Physics as Effects"
+      [doc-text "Physical constants and material properties are algebraic effects. Swap assumptions by changing handlers. This lets the same analysis code run with different materials, gravity, or simulation backends."]
+      [code-block {} [str
+        "[handle [design-beam 10.0kN 5.0m]\n"
+        "  [Physics.yield-strength] [resume 250.0MPa]\n"
+        "  [Physics.gravity] [resume [unit 9.81 :m]]]"]]
+      [doc-text "The " [doc-code "Physics"] " effect provides gravity, yield-strength, elastic-modulus, density, temperature, and thermal-conductivity. The " [doc-code "Sim"] " effect provides stress, deflection, natural-freq, and thermal-field."]]
+
     [doc-prev-next "Functions" "/guide/functions" "Collections" "/guide/collections"]]]

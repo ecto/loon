@@ -154,6 +154,38 @@ Implementations don't need type annotations — the trait provides them:
 
 There is no null, nil, or undefined. Use `Option` for values that might not exist. Use `Result` for operations that might fail. The type system enforces exhaustive handling.
 
+### No Dimensionless — Physics Type System
+
+Just as Loon has no `null`, Loon has no silent escape from the physics type world. SI dimensions are compile-time types with zero runtime overhead.
+
+```loon
+[let d 100.0m]              ; → Length
+[let t 9.58s]               ; → Time
+[let v [/ d t]]             ; → Velocity
+[+ d t]                     ; TYPE ERROR: cannot add Length and Time
+```
+
+When you divide meters by meters, you get `Scalar` — not `Float`. To get a raw `Float`, you must explicitly call `magnitude`. Flexible inputs (Float literals can multiply Dim values), strict outputs (Dim arithmetic never silently produces Float).
+
+```loon
+[/ 10.0m 5.0m]          ; → Scalar (NOT Float)
+[magnitude [/ 10.0m 5.0m]] ; → 2.0 : Float (explicit exit)
+[scalar 2.0]             ; → Scalar (explicit entry)
+```
+
+Physical properties are algebraic effects — swap assumptions by changing handlers:
+
+```loon
+[fn analyze [load span]
+  [let sigma_y [Physics.yield-strength]]
+  [< [/ [* load span] [* span span]] sigma_y]]
+
+[handle [analyze 10.0kN 5.0m]
+  [Physics.yield-strength] [resume 250.0MPa]]
+```
+
+~21 named quantities (Velocity, Force, Energy, Pressure, etc.), 30+ units with SI prefixes, and physics constants (`Const.c`, `Const.G`, `Const.h`, `Const.k-B`, `Const.e-charge`).
+
 ---
 
 ## 4. Ownership & Borrowing

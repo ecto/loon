@@ -41,4 +41,25 @@
       [doc-def "listen : Int -> (Conn -> ()) -> ()" "Listen for TCP connections on a port and handle each one."]
       [doc-def "serve : Int -> (Request -> Response) -> ()" "Start an HTTP server on a port with a request handler."]]
 
+    [doc-section "Physics"
+      [doc-text "Physical constants and material properties as swappable effects. Use " [doc-code "handle"] " to provide values for a specific environment — different materials, planets, or simulation contexts."]
+      [doc-def "gravity : () -> Acceleration" "Return gravitational acceleration for the current environment."]
+      [doc-def "yield-strength : () -> Pressure" "Return the yield strength of the current material."]
+      [doc-def "elastic-modulus : () -> Pressure" "Return the elastic (Young's) modulus of the current material."]
+      [doc-def "density : () -> Density" "Return the density of the current material."]
+      [doc-def "temperature : () -> Temperature" "Return the ambient temperature."]
+      [doc-def "thermal-conductivity : () -> ThermalConductivity" "Return the thermal conductivity of the current material."]
+      [code-block {} [str
+        "[handle [analyze beam 10.0kN]\n"
+        "  [Physics.gravity] [resume [unit 9.81 :m]]\n"
+        "  [Physics.yield-strength] [resume 250.0MPa]\n"
+        "  [Physics.density] [resume [unit 7850.0 :kg]]]"]]]
+
+    [doc-section "Sim"
+      [doc-text "Simulation operations for structural and thermal analysis. Handlers can be analytical formulas, numerical solvers, or surrogate models — the caller does not need to know which."]
+      [doc-def "stress : geometry -> material -> load -> Pressure" "Compute stress for a given geometry, material, and load."]
+      [doc-def "deflection : geometry -> material -> load -> Length" "Compute deflection under load."]
+      [doc-def "natural-freq : geometry -> material -> Frequency" "Compute the natural frequency of a structure."]
+      [doc-def "thermal-field : geometry -> material -> sources -> Temperature" "Compute the temperature field for given heat sources."]]
+
     [doc-prev-next "CLI" "/ref/cli" "LSP" "/ref/lsp"]]]

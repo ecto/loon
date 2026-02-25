@@ -62,6 +62,50 @@
                    :margin-bottom "3.5rem"}}
         "Changelog"]
 
+      ; ── v0.4.22 — Physics Type System ─────────────────────────────────
+
+      [blog-article "Physics Type System" "Feb 25, 2026"
+
+        [p "Loon now has compile-time dimensional analysis. The type checker rejects code that violates physical law, with zero runtime overhead. Just as Loon has no null, Loon now has no silent escape from the physics type world."]
+
+        [blog-h3 "Literal unit suffixes"]
+        [p "Write numbers with unit suffixes. They desugar to calls to the " [doc-code "unit"] " builtin at parse time."]
+        [blog-code [str
+          "[let d 100.0m]              ; Length\n"
+          "[let t 9.58s]               ; Time\n"
+          "[let v [/ d t]]             ; Velocity\n"
+          "[let f [* 80.0kg [/ d [* t t]]]]  ; Force"]]
+
+        [blog-h3 "No dimensionless"]
+        [p "When you divide meters by meters, you get Scalar \x97 not Float. To get a raw Float, you must explicitly call magnitude. This is the same philosophy as no-null: once in the physics world, you stay until you explicitly leave."]
+        [blog-code [str
+          "[/ 10.0m 5.0m]        ; Scalar (NOT Float)\n"
+          "[magnitude 10.0m]     ; 10.0 : Float (explicit exit)\n"
+          "[scalar 2.0]          ; Scalar (explicit entry)"]]
+
+        [blog-h3 "Physics-aware errors"]
+        [p "Dimension mismatches produce E0208 errors with named quantities and operation hints."]
+        [blog-code [str
+          "error[E0208]: cannot add Length and Time\n"
+          "  1 | [+ distance duration]\n"
+          "    = hint: did you mean Velocity? try [/ a b]"]]
+
+        [blog-h3 "Physics as an algebraic effect"]
+        [p "Physical constants and material properties are effects \x97 swap them by changing handlers. The new Physics effect provides gravity, yield-strength, elastic-modulus, density, temperature, and thermal-conductivity. The Sim effect provides stress, deflection, natural-freq, and thermal-field."]
+        [blog-code [str
+          "[handle [design-beam 10.0kN 5.0m]\n"
+          "  [Physics.yield-strength] [resume 250.0MPa]\n"
+          "  [Physics.gravity] [resume [unit 9.81 :m]]]"]]
+
+        [blog-h3 "Dimensional polymorphism"]
+        [p "Functions that multiply by a scalar are automatically polymorphic over dimensions."]
+        [blog-code [str
+          "[fn double [x] [* 2.0 x]]\n"
+          "[double 5.0m]   ; 10.0m  (Length)\n"
+          "[double 3.0N]   ; 6.0N   (Force)"]]
+
+        [p "21 named quantities recognized (Velocity, Force, Energy, Power, Pressure, etc.), 30+ units with SI prefixes, and 5 physics constants (Const.c, Const.G, Const.h, Const.k-B, Const.e-charge)."]]
+
       ; ── v0.4.21 — Interpolation fix, dot access, builtins ───────────
 
       [blog-article "JSON & Interpolation" "Feb 24, 2026"

@@ -99,4 +99,18 @@
       [doc-def "println" "Print a value followed by a newline."]
       [doc-def "print" "Print a value without a trailing newline."]]
 
+    [doc-section "Physics"
+      [doc-text "Dimensional analysis builtins. " [doc-code "unit"] " creates dimensional values, " [doc-code "magnitude"] " extracts the raw number, and " [doc-code "scalar"] " wraps a float as a dimensionless Scalar."]
+      [doc-def "unit : Number -> Keyword -> Dim" "Create a dimensional value: [unit 5.0 :m] or use literal syntax 5.0m. Supports 30+ units with SI prefixes."]
+      [doc-def "magnitude : Dim -> Float" "Extract the raw float from a dimensional value. This is the explicit exit from the physics type world."]
+      [doc-def "scalar : Float -> Scalar" "Wrap a float as a dimensionless Scalar. This is the explicit entry into the physics type world."]]
+
+    [doc-section "Physics Constants"
+      [doc-text "Fundamental physical constants, namespaced under " [doc-code "Const"] ". These return dimensional values with the correct types."]
+      [doc-def "Const.c" "Speed of light: 299,792,458 m/s (Velocity)"]
+      [doc-def "Const.G" "Gravitational constant: 6.674e-11 m³/(kg·s²)"]
+      [doc-def "Const.h" "Planck constant: 6.626e-34 J·s (Energy × Time)"]
+      [doc-def "Const.k-B" "Boltzmann constant: 1.381e-23 J/K"]
+      [doc-def "Const.e-charge" "Elementary charge: 1.602e-19 C (Charge)"]]
+
     [doc-prev-next "Syntax" "/ref/syntax" "CLI" "/ref/cli"]]]

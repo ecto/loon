@@ -86,6 +86,19 @@ What's left to finish v0.2 properly.
 - [x] `Async`: placeholder runtime handler, mock handler for testing
 - [x] Channels: `[let [tx rx] [channel]]`, `[send tx val]`, `[recv rx]`
 
+### Physics type system (v0.4.22)
+- [x] `Dimension` struct with SI exponents (mass, length, time, current, temperature)
+- [x] `Type::Dim` variant in type system — compile-time dimensional analysis, zero runtime overhead
+- [x] Literal unit suffixes: `5.0m`, `9.81kg`, `10kN` desugar to `[unit value :keyword]`
+- [x] 30+ units with SI prefixes (m, km, cm, mm, s, ms, kg, g, N, kN, Pa, MPa, GPa, J, W, kW, Hz, A, mA, V, C, ohm, K)
+- [x] 21 named quantities (Velocity, Force, Energy, Power, Pressure, Density, etc.)
+- [x] No-dimensionless rule: `Dim÷Dim → Scalar` (not Float), explicit `magnitude` to exit
+- [x] `Physics` effect (gravity, yield-strength, elastic-modulus, density, temperature, thermal-conductivity)
+- [x] `Sim` effect (stress, deflection, natural-freq, thermal-field) — bridge point for phyz
+- [x] Dimensional polymorphism: `[fn double [x] [* 2.0 x]]` works on any dimension
+- [x] Physics-aware E0208 errors with named quantities and operation hints
+- [x] 5 physics constants: `Const.c`, `Const.G`, `Const.h`, `Const.k-B`, `Const.e-charge`
+
 ---
 
 ## v0.5 — WASM gets real
