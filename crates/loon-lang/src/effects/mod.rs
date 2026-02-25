@@ -37,6 +37,15 @@ fn op(name: &str, param_names: &[&str]) -> EffectOp {
     }
 }
 
+/// Helper to build a typed EffectOp with typed params and return type
+fn typed_op(name: &str, param_names: &[&str], ret: &str) -> EffectOp {
+    EffectOp {
+        name: name.to_string(),
+        params: params(param_names),
+        return_type: Some(ret.to_string()),
+    }
+}
+
 impl EffectRegistry {
     pub fn new() -> Self {
         let mut reg = Self::default();
@@ -101,6 +110,28 @@ impl EffectRegistry {
         reg.register(EffectDecl {
             name: "Embed".to_string(),
             operations: vec![op("encode", &["text"])],
+        });
+        // Physics effect — material properties and physical constants (swappable per environment)
+        reg.register(EffectDecl {
+            name: "Physics".to_string(),
+            operations: vec![
+                typed_op("gravity", &[], "Acceleration"),
+                typed_op("yield-strength", &[], "Pressure"),
+                typed_op("elastic-modulus", &[], "Pressure"),
+                typed_op("density", &[], "Density"),
+                typed_op("temperature", &[], "Temperature"),
+                typed_op("thermal-conductivity", &[], "ThermalConductivity"),
+            ],
+        });
+        // Sim effect — simulation operations (swappable between analytical/numerical/phyz)
+        reg.register(EffectDecl {
+            name: "Sim".to_string(),
+            operations: vec![
+                typed_op("stress", &["geometry", "material", "load"], "Pressure"),
+                typed_op("deflection", &["geometry", "material", "load"], "Length"),
+                typed_op("natural-freq", &["geometry", "material"], "Frequency"),
+                typed_op("thermal-field", &["geometry", "material", "sources"], "Temperature"),
+            ],
         });
         reg
     }

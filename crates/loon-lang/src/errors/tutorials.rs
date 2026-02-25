@@ -38,6 +38,7 @@ pub fn get_tutorial(code: ErrorCode) -> Option<Tutorial> {
         ErrorCode::E0205 => Some(tutorial_missing_trait_impl()),
         ErrorCode::E0206 => Some(tutorial_non_exhaustive_match()),
         ErrorCode::E0207 => Some(tutorial_field_mismatch()),
+        ErrorCode::E0208 => Some(tutorial_dimension_mismatch()),
         ErrorCode::E0300 => Some(tutorial_use_after_move()),
         ErrorCode::E0301 => Some(tutorial_mutate_immutable()),
         ErrorCode::E0302 => Some(tutorial_double_borrow()),
@@ -426,6 +427,36 @@ fn tutorial_field_mismatch() -> Tutorial {
             TutorialStep::Try {
                 prompt: "Create a record with two fields and construct it correctly.".to_string(),
                 hint: "Try: [type Pair {:a Int :b Int}] [Pair {:a 10 :b 20}]".to_string(),
+                expected_output: None,
+            },
+        ],
+    }
+}
+
+fn tutorial_dimension_mismatch() -> Tutorial {
+    Tutorial {
+        code: ErrorCode::E0208,
+        title: "Dimension mismatch".to_string(),
+        steps: vec![
+            TutorialStep::Text(
+                "This error occurs when you try to combine physical quantities \
+                 with incompatible dimensions. For example, adding a Length to \
+                 a Time doesn't make physical sense."
+                    .to_string(),
+            ),
+            TutorialStep::Demo {
+                code: r#"[+ 5.0m 2.0s]  ;; error: cannot add Length and Time"#.to_string(),
+                explanation: "Length (m) and Time (s) are incompatible dimensions for addition."
+                    .to_string(),
+            },
+            TutorialStep::Fix {
+                before: r#"[+ distance duration]"#.to_string(),
+                after: r#"[/ distance duration]  ;; → Velocity"#.to_string(),
+                explanation: "Use division to get Velocity from Length and Time.".to_string(),
+            },
+            TutorialStep::Try {
+                prompt: "Compute a velocity by dividing a distance by a time.".to_string(),
+                hint: "Try: [/ 100.0m 9.58s]".to_string(),
                 expected_output: None,
             },
         ],

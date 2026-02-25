@@ -1,0 +1,48 @@
+; === Loon Physics Type System Demo ===
+;
+; The type checker rejects designs that violate physical law.
+; Zero runtime overhead — dimensions are compile-time types.
+
+; === 1. Literal Unit Suffixes ===
+[let distance 100.0m]
+[let time 9.58s]
+[let speed [/ distance time]]         ; → Velocity
+[let accel [/ speed time]]            ; → Acceleration
+
+; === 2. No Dimensionless ===
+[let ratio [/ distance [unit 50.0 :m]]]   ; → Scalar (not Float!)
+[let scaled [* ratio distance]]            ; → Length (Scalar × Length)
+[let raw [magnitude ratio]]                ; → 2.0 : Float (explicit exit)
+
+; === 3. Explicit unit form ===
+[let d2 [unit 5.0 :m]]         ; same as 5.0m
+[let t2 [unit 2.0 :s]]         ; same as 2.0s
+[let v2 [/ d2 t2]]             ; → Velocity
+
+; === 4. Physics Effect ===
+[fn design-beam [load span]
+  [let sigma_y [Physics.yield-strength]]
+  [let moment [/ [* load span] 8.0]]
+  [< [/ moment [* span span]] sigma_y]]
+
+; Earth, steel
+[handle [design-beam [unit 10.0 :kN] 5.0m]
+  [Physics.yield-strength] [resume [unit 250.0 :MPa]]]
+
+; === 5. Named Quantities + Derived Units ===
+[let force [* 80.0kg accel]]          ; → Force
+[let energy [* force distance]]       ; → Energy
+[let power [/ energy time]]           ; → Power
+
+; === 6. Dimensional Polymorphism ===
+[fn double [x] [* 2.0 x]]
+[double distance]                      ; → Length
+[double force]                         ; → Force
+
+; === 7. Comparison ===
+[let fast [> speed [/ 50.0m 5.0s]]]   ; → Bool
+
+; === 8. Physics Constants ===
+[let c Const.c]                        ; → Velocity (speed of light)
+
+[println "physics demo complete"]

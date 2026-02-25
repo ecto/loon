@@ -22,6 +22,7 @@ pub enum ErrorCode {
     E0205, // missing trait impl
     E0206, // non-exhaustive match
     E0207, // field mismatch
+    E0208, // dimension mismatch
 
     // Ownership errors
     E0300, // use after move
@@ -57,6 +58,7 @@ impl ErrorCode {
             ErrorCode::E0205 => "E0205",
             ErrorCode::E0206 => "E0206",
             ErrorCode::E0207 => "E0207",
+            ErrorCode::E0208 => "E0208",
             ErrorCode::E0300 => "E0300",
             ErrorCode::E0301 => "E0301",
             ErrorCode::E0302 => "E0302",
@@ -84,7 +86,8 @@ impl ErrorCode {
             | ErrorCode::E0204
             | ErrorCode::E0205
             | ErrorCode::E0206
-            | ErrorCode::E0207 => "type",
+            | ErrorCode::E0207
+            | ErrorCode::E0208 => "type",
             ErrorCode::E0300 | ErrorCode::E0301 | ErrorCode::E0302 => "ownership",
             ErrorCode::E0400 | ErrorCode::E0401 | ErrorCode::E0402 => "effect",
             ErrorCode::E0500 | ErrorCode::E0501 | ErrorCode::E0502 => "module",
@@ -106,6 +109,7 @@ impl ErrorCode {
             ErrorCode::E0205 => "missing trait implementation",
             ErrorCode::E0206 => "non-exhaustive match",
             ErrorCode::E0207 => "field mismatch",
+            ErrorCode::E0208 => "dimension mismatch",
             ErrorCode::E0300 => "use after move",
             ErrorCode::E0301 => "mutate immutable binding",
             ErrorCode::E0302 => "double mutable borrow",

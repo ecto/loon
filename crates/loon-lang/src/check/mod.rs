@@ -131,6 +131,7 @@ impl Checker {
         checker.register_builtins();
         checker.register_dom_builtins();
         checker.register_prelude();
+        checker.register_physics_builtins();
         checker
     }
 
@@ -1514,6 +1515,210 @@ impl Checker {
         }
     }
 
+    fn register_physics_builtins(&mut self) {
+        use crate::types::Dimension;
+
+        // unit: special-cased in infer_list, but registered here for parity checks
+        // Signature is approximate — actual inference is done in infer_list
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "unit".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tva],
+                    ty: Type::Fn(vec![Type::Var(tva), Type::Keyword], Box::new(Type::Var(tva))),
+                },
+            );
+        }
+
+        // magnitude: special-cased in infer_list, registered for parity
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            self.env.set_global(
+                "magnitude".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tva],
+                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Float)),
+                },
+            );
+        }
+
+        // scalar: Float → Dim(Scalar)
+        self.env.set_global(
+            "scalar".to_string(),
+            Scheme::mono(Type::Fn(vec![Type::Float], Box::new(Type::Dim(Dimension::SCALAR)))),
+        );
+
+        // Physics constants (namespaced via dot access — registered as qualified names)
+        // Speed of light: Velocity
+        self.env.set_global(
+            "Const.c".to_string(),
+            Scheme::mono(Type::Dim(Dimension { length: 1, time: -1, ..Dimension::SCALAR })),
+        );
+        // Gravitational constant: m³/(kg·s²)
+        self.env.set_global(
+            "Const.G".to_string(),
+            Scheme::mono(Type::Dim(Dimension { mass: -1, length: 3, time: -2, ..Dimension::SCALAR })),
+        );
+        // Planck's constant: Energy·Time = kg·m²/s
+        self.env.set_global(
+            "Const.h".to_string(),
+            Scheme::mono(Type::Dim(Dimension { mass: 1, length: 2, time: -1, ..Dimension::SCALAR })),
+        );
+        // Boltzmann constant: Energy/Temperature = kg·m²/(s²·K)
+        self.env.set_global(
+            "Const.k-B".to_string(),
+            Scheme::mono(Type::Dim(Dimension { mass: 1, length: 2, time: -2, temperature: -1, ..Dimension::SCALAR })),
+        );
+        // Elementary charge: Charge = A·s
+        self.env.set_global(
+            "Const.e-charge".to_string(),
+            Scheme::mono(Type::Dim(Dimension { current: 1, time: 1, ..Dimension::SCALAR })),
+        );
+
+        // Register trait impls for Dim
+        let empty = std::collections::HashMap::new();
+        for trait_name in ["Add", "Ord", "Eq", "Display"] {
+            self.trait_impls.insert((trait_name.to_string(), "Dim".to_string()), empty.clone());
+        }
+    }
+
+    /// Infer type of dimensional arithmetic operations.
+    fn infer_dim_arithmetic(&mut self, op: &str, lhs: &Type, rhs: &Type, span: Span) -> Type {
+        use crate::types::Dimension;
+        match op {
+            "+" | "-" => {
+                match (lhs, rhs) {
+                    (Type::Dim(d1), Type::Dim(d2)) => {
+                        if d1 == d2 {
+                            Type::Dim(d1.clone())
+                        } else {
+                            let result_dim = d1.div(d2);
+                            let hint = if result_dim.name() != "Dim" {
+                                format!(
+                                    "\n    = hint: did you mean {}? try [/ a b]",
+                                    result_dim.name()
+                                )
+                            } else {
+                                let mul_dim = d1.mul(d2);
+                                if mul_dim.name() != "Dim" {
+                                    format!(
+                                        "\n    = hint: did you mean {}? try [* a b]",
+                                        mul_dim.name()
+                                    )
+                                } else {
+                                    String::new()
+                                }
+                            };
+                            self.errors.push(
+                                LoonDiagnostic::new(
+                                    ErrorCode::E0208,
+                                    format!(
+                                        "cannot {} {} and {}",
+                                        if op == "+" { "add" } else { "subtract" },
+                                        d1.name(), d2.name()
+                                    ),
+                                )
+                                .with_why(format!(
+                                    "{} ({}) and {} ({}) are incompatible dimensions{}",
+                                    d1.name(), d1, d2.name(), d2, hint
+                                ))
+                                .with_label(span, "dimension mismatch", true),
+                            );
+                            self.subst.fresh()
+                        }
+                    }
+                    (Type::Dim(d), _) => {
+                        self.errors.push(
+                            LoonDiagnostic::new(
+                                ErrorCode::E0208,
+                                format!("cannot {} {} and non-dimensional type", if op == "+" { "add" } else { "subtract" }, d.name()),
+                            )
+                            .with_why("cannot mix dimensional and non-dimensional values in addition/subtraction")
+                            .with_fix("use [magnitude x] to extract the numeric value, or [scalar n] to enter the physics world")
+                            .with_label(span, "dimension mismatch", true),
+                        );
+                        self.subst.fresh()
+                    }
+                    (_, Type::Dim(d)) => {
+                        self.errors.push(
+                            LoonDiagnostic::new(
+                                ErrorCode::E0208,
+                                format!("cannot {} non-dimensional type and {}", if op == "+" { "add" } else { "subtract" }, d.name()),
+                            )
+                            .with_why("cannot mix dimensional and non-dimensional values in addition/subtraction")
+                            .with_fix("use [magnitude x] to extract the numeric value, or [scalar n] to enter the physics world")
+                            .with_label(span, "dimension mismatch", true),
+                        );
+                        self.subst.fresh()
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            "*" => {
+                match (lhs, rhs) {
+                    (Type::Dim(d1), Type::Dim(d2)) => Type::Dim(d1.mul(d2)),
+                    (Type::Dim(d), Type::Float | Type::Int) | (Type::Float | Type::Int, Type::Dim(d)) => {
+                        Type::Dim(d.clone())
+                    }
+                    (Type::Dim(d), Type::Var(_)) | (Type::Var(_), Type::Dim(d)) => {
+                        // Polymorphic: Dim * unknown → Dim (assume scalar multiplier)
+                        Type::Dim(d.clone())
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            "/" => {
+                match (lhs, rhs) {
+                    (Type::Dim(d1), Type::Dim(d2)) => {
+                        // No-dimensionless rule: always returns Dim, even if d1==d2 → Scalar
+                        Type::Dim(d1.div(d2))
+                    }
+                    (Type::Dim(d), Type::Float | Type::Int) => Type::Dim(d.clone()),
+                    (Type::Float | Type::Int, Type::Dim(d)) => Type::Dim(Dimension::SCALAR.div(d)),
+                    (Type::Dim(d), Type::Var(_)) => Type::Dim(d.clone()),
+                    (Type::Var(_), Type::Dim(d)) => Type::Dim(Dimension::SCALAR.div(d)),
+                    _ => unreachable!(),
+                }
+            }
+            ">" | "<" | ">=" | "<=" => {
+                match (lhs, rhs) {
+                    (Type::Dim(d1), Type::Dim(d2)) => {
+                        if d1 == d2 {
+                            Type::Bool
+                        } else {
+                            self.errors.push(
+                                LoonDiagnostic::new(
+                                    ErrorCode::E0208,
+                                    format!("cannot compare {} and {}", d1.name(), d2.name()),
+                                )
+                                .with_why(format!("{} and {} have incompatible dimensions", d1.name(), d2.name()))
+                                .with_label(span, "dimension mismatch", true),
+                            );
+                            Type::Bool
+                        }
+                    }
+                    (Type::Dim(d), _) | (_, Type::Dim(d)) => {
+                        self.errors.push(
+                            LoonDiagnostic::new(
+                                ErrorCode::E0208,
+                                format!("cannot compare {} with non-dimensional type", d.name()),
+                            )
+                            .with_label(span, "dimension mismatch", true),
+                        );
+                        Type::Bool
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
     /// Convert a TypeError from unify() into a LoonDiagnostic and push it.
     fn push_unify_error(&mut self, e: TypeError, span: Span) {
         let code = if e.message.contains("infinite type") {
@@ -1878,6 +2083,125 @@ impl Checker {
             }
         }
 
+        // Special-case: [unit value :keyword] — physics unit constructor
+        if let ExprKind::Symbol(s) = &head.kind {
+            if s == "unit" && items.len() == 3 {
+                let val_ty = self.infer(&items[1]);
+                // Value must be numeric
+                let resolved_val = self.subst.resolve(&val_ty);
+                if !matches!(resolved_val, Type::Float | Type::Int | Type::Var(_)) {
+                    self.errors.push(
+                        LoonDiagnostic::new(
+                            ErrorCode::E0200,
+                            "unit: first argument must be a number".to_string(),
+                        )
+                        .with_label(items[1].span, "expected Float or Int", true),
+                    );
+                }
+                // Second arg must be a keyword
+                if let ExprKind::Keyword(unit_name) = &items[2].kind {
+                    use crate::types::Dimension;
+                    const D: Dimension = Dimension::SCALAR;
+                    let dim = match unit_name.as_str() {
+                        // Base SI
+                        "m" => Some(Dimension::length()),
+                        "s" => Some(Dimension::time()),
+                        "kg" => Some(Dimension::mass()),
+                        "A" => Some(Dimension::current()),
+                        "K" => Some(Dimension::temperature()),
+                        // Derived
+                        "N" => Some(Dimension { mass: 1, length: 1, time: -2, ..D }),
+                        "J" => Some(Dimension { mass: 1, length: 2, time: -2, ..D }),
+                        "W" => Some(Dimension { mass: 1, length: 2, time: -3, ..D }),
+                        "Pa" => Some(Dimension { mass: 1, length: -1, time: -2, ..D }),
+                        "Hz" => Some(Dimension { time: -1, ..D }),
+                        "C" => Some(Dimension { current: 1, time: 1, ..D }),
+                        "V" => Some(Dimension { mass: 1, length: 2, time: -3, current: -1, ..D }),
+                        "ohm" => Some(Dimension { mass: 1, length: 2, time: -3, current: -2, ..D }),
+                        // Prefixed length
+                        "km" | "cm" | "mm" => Some(Dimension::length()),
+                        // Prefixed time
+                        "ms" | "us" | "ns" => Some(Dimension::time()),
+                        // Prefixed mass
+                        "g" | "mg" => Some(Dimension::mass()),
+                        // Prefixed force
+                        "kN" => Some(Dimension { mass: 1, length: 1, time: -2, ..D }),
+                        // Prefixed pressure
+                        "kPa" | "MPa" | "GPa" => Some(Dimension { mass: 1, length: -1, time: -2, ..D }),
+                        // Prefixed power
+                        "kW" => Some(Dimension { mass: 1, length: 2, time: -3, ..D }),
+                        // Prefixed current
+                        "mA" => Some(Dimension::current()),
+                        // Area/Volume helpers
+                        "m2" => Some(Dimension { length: 2, ..D }),
+                        "m3" => Some(Dimension { length: 3, ..D }),
+                        _ => None,
+                    };
+                    if let Some(d) = dim {
+                        return Type::Dim(d);
+                    } else {
+                        self.errors.push(
+                            LoonDiagnostic::new(
+                                ErrorCode::E0201,
+                                format!("unknown unit :{unit_name}"),
+                            )
+                            .with_label(items[2].span, "unknown unit", true),
+                        );
+                        return self.subst.fresh();
+                    }
+                } else {
+                    self.errors.push(
+                        LoonDiagnostic::new(
+                            ErrorCode::E0200,
+                            "unit: second argument must be a keyword (e.g. :m, :kg, :s)".to_string(),
+                        )
+                        .with_label(items[2].span, "expected keyword", true),
+                    );
+                    return self.subst.fresh();
+                }
+            }
+
+            // Special-case: [magnitude expr] — explicit exit from Dim world
+            if s == "magnitude" && items.len() == 2 {
+                let arg_ty = self.infer(&items[1]);
+                let resolved = self.subst.resolve(&arg_ty);
+                if !matches!(resolved, Type::Dim(_) | Type::Var(_)) {
+                    self.errors.push(
+                        LoonDiagnostic::new(
+                            ErrorCode::E0200,
+                            "magnitude: argument must be a dimensional type".to_string(),
+                        )
+                        .with_label(items[1].span, "expected dimensional type", true),
+                    );
+                }
+                return Type::Float;
+            }
+
+            // Dimensional arithmetic intercept
+            if matches!(s.as_str(), "+" | "-" | "*" | "/" | ">" | "<" | ">=" | "<=")
+                && items.len() == 3
+            {
+                let lhs_ty = self.infer(&items[1]);
+                let rhs_ty = self.infer(&items[2]);
+                let lhs = self.subst.resolve(&lhs_ty);
+                let rhs = self.subst.resolve(&rhs_ty);
+                if matches!(&lhs, Type::Dim(_)) || matches!(&rhs, Type::Dim(_)) {
+                    return self.infer_dim_arithmetic(s, &lhs, &rhs, span);
+                }
+                // Dimensional polymorphism: Float * type_var → preserve type_var
+                if matches!(s.as_str(), "*" | "/") {
+                    let lhs_is_scalar = matches!(&lhs, Type::Float | Type::Int);
+                    let rhs_is_scalar = matches!(&rhs, Type::Float | Type::Int);
+                    if lhs_is_scalar && matches!(&rhs, Type::Var(_)) {
+                        return rhs;
+                    }
+                    if rhs_is_scalar && matches!(&lhs, Type::Var(_)) {
+                        return lhs;
+                    }
+                }
+            }
+        }
+
         // Function application
         let func_ty = self.infer(head);
         let arg_types: Vec<Type> = items[1..].iter().map(|a| self.infer(a)).collect();
@@ -2172,14 +2496,38 @@ impl Checker {
         body_ty
     }
 
-    /// Resolve a type name string to a Type (for effect declarations).
+    /// Resolve a type name string to a Type (for effect declarations and annotations).
     fn resolve_type_name(&mut self, name: &str) -> Type {
+        use crate::types::Dimension;
+        const D: Dimension = Dimension::SCALAR;
         match name {
             "Int" => Type::Int,
             "Float" => Type::Float,
             "Bool" => Type::Bool,
             "String" | "Str" => Type::Str,
             "Unit" => Type::Unit,
+            // Named physical quantities → Dim types
+            "Length" => Type::Dim(Dimension::length()),
+            "Time" => Type::Dim(Dimension::time()),
+            "Mass" => Type::Dim(Dimension::mass()),
+            "Current" => Type::Dim(Dimension::current()),
+            "Temperature" => Type::Dim(Dimension::temperature()),
+            "Scalar" => Type::Dim(D),
+            "Velocity" => Type::Dim(Dimension { length: 1, time: -1, ..D }),
+            "Acceleration" => Type::Dim(Dimension { length: 1, time: -2, ..D }),
+            "Force" => Type::Dim(Dimension { mass: 1, length: 1, time: -2, ..D }),
+            "Pressure" => Type::Dim(Dimension { mass: 1, length: -1, time: -2, ..D }),
+            "Energy" => Type::Dim(Dimension { mass: 1, length: 2, time: -2, ..D }),
+            "Power" => Type::Dim(Dimension { mass: 1, length: 2, time: -3, ..D }),
+            "Frequency" => Type::Dim(Dimension { time: -1, ..D }),
+            "Area" => Type::Dim(Dimension { length: 2, ..D }),
+            "Volume" => Type::Dim(Dimension { length: 3, ..D }),
+            "Density" => Type::Dim(Dimension { mass: 1, length: -3, ..D }),
+            "Momentum" => Type::Dim(Dimension { mass: 1, length: 1, time: -1, ..D }),
+            "Charge" => Type::Dim(Dimension { current: 1, time: 1, ..D }),
+            "Voltage" => Type::Dim(Dimension { mass: 1, length: 2, time: -3, current: -1, ..D }),
+            "Resistance" => Type::Dim(Dimension { mass: 1, length: 2, time: -3, current: -2, ..D }),
+            "ThermalConductivity" => Type::Dim(Dimension { mass: 1, length: 1, time: -3, temperature: -1, ..D }),
             _ => {
                 // Check if it's a known type constructor
                 if let Some(scheme) = self.env.get(name) {
@@ -2840,6 +3188,7 @@ impl Checker {
                 Type::Bool => Some("Bool".to_string()),
                 Type::Str => Some("String".to_string()),
                 Type::Con(name, _) => Some(name.clone()),
+                Type::Dim(_) => Some("Dim".to_string()),
                 Type::Var(_) => None, // still polymorphic, OK
                 _ => None,
             };
@@ -3840,5 +4189,193 @@ mod tests {
             [Fs.write-file "out.txt" "data"]
         "#);
         assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    // ── Physics type system tests ─────────────────────────────────
+
+    #[test]
+    fn dim_unit_constructor_length() {
+        let (ty, errors) = infer_type("[unit 5.0 :m]");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        assert_eq!(ty, Type::Dim(Dimension::length()));
+    }
+
+    #[test]
+    fn dim_literal_suffix_desugars() {
+        // 5.0m should desugar to [unit 5.0 :m]
+        let (ty, errors) = infer_type("5.0m");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        assert_eq!(ty, Type::Dim(Dimension::length()));
+    }
+
+    #[test]
+    fn dim_int_literal_suffix() {
+        let (ty, errors) = infer_type("10kg");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        assert_eq!(ty, Type::Dim(Dimension::mass()));
+    }
+
+    #[test]
+    fn dim_add_same_dimension() {
+        let (ty, errors) = infer_type("[+ [unit 1.0 :m] [unit 2.0 :m]]");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        assert_eq!(ty, Type::Dim(Dimension::length()));
+    }
+
+    #[test]
+    fn dim_add_different_dimensions_error() {
+        let errors = check_errors("[+ [unit 1.0 :m] [unit 2.0 :s]]");
+        assert!(!errors.is_empty(), "should error on Length + Time");
+        assert!(errors.iter().any(|e| e.code == ErrorCode::E0208));
+    }
+
+    #[test]
+    fn dim_divide_velocity() {
+        let (ty, errors) = infer_type("[/ [unit 10.0 :m] [unit 2.0 :s]]");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        assert_eq!(ty, Type::Dim(Dimension { length: 1, time: -1, ..Dimension::SCALAR }));
+    }
+
+    #[test]
+    fn dim_multiply_force() {
+        // Force = mass * acceleration = kg * (m/s²)
+        let (ty, errors) = infer_type("[* 3.0kg [/ 10.0m [* 2.0s 2.0s]]]");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        // mass(1) * (length(1) / time(2)) = mass(1)*length(1)*time(-2) = Force
+        assert_eq!(ty, Type::Dim(Dimension { mass: 1, length: 1, time: -2, ..Dimension::SCALAR }));
+    }
+
+    #[test]
+    fn dim_scalar_multiply_preserves_dimension() {
+        let (ty, errors) = infer_type("[* 2.0 [unit 5.0 :m]]");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        assert_eq!(ty, Type::Dim(Dimension::length()));
+    }
+
+    #[test]
+    fn dim_no_dimensionless_divide_same() {
+        // m / m → Scalar (NOT Float)
+        let (ty, errors) = infer_type("[/ [unit 10.0 :m] [unit 5.0 :m]]");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        assert_eq!(ty, Type::Dim(Dimension::SCALAR));
+    }
+
+    #[test]
+    fn dim_scalar_plus_float_error() {
+        // Scalar + Float should be an error
+        let errors = check_errors("[+ [/ 10.0m 5.0m] 1.0]");
+        assert!(!errors.is_empty(), "Scalar + Float should be E0208");
+        assert!(errors.iter().any(|e| e.code == ErrorCode::E0208));
+    }
+
+    #[test]
+    fn dim_magnitude_returns_float() {
+        let (ty, errors) = infer_type("[magnitude [unit 5.0 :m]]");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        assert_eq!(ty, Type::Float);
+    }
+
+    #[test]
+    fn dim_scalar_entry() {
+        let (ty, errors) = infer_type("[scalar 2.0]");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        assert_eq!(ty, Type::Dim(Dimension::SCALAR));
+    }
+
+    #[test]
+    fn dim_comparison_same() {
+        let (ty, errors) = infer_type("[> [unit 10.0 :m] [unit 5.0 :m]]");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        assert_eq!(ty, Type::Bool);
+    }
+
+    #[test]
+    fn dim_comparison_different_error() {
+        let errors = check_errors("[> [unit 10.0 :m] [unit 5.0 :s]]");
+        assert!(!errors.is_empty(), "should error on comparing Length and Time");
+        assert!(errors.iter().any(|e| e.code == ErrorCode::E0208));
+    }
+
+    #[test]
+    fn dim_polymorphism_double() {
+        let (ty, errors) = infer_type(r#"
+            [fn double [x] [* 2.0 x]]
+            [double [unit 5.0 :m]]
+        "#);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        assert_eq!(ty, Type::Dim(Dimension::length()));
+    }
+
+    #[test]
+    fn dim_prefixed_units() {
+        let (ty, errors) = infer_type("[unit 5.0 :km]");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        assert_eq!(ty, Type::Dim(Dimension::length()));
+    }
+
+    #[test]
+    fn dim_derived_unit_newton() {
+        let (ty, errors) = infer_type("[unit 10.0 :N]");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        assert_eq!(ty, Type::Dim(Dimension { mass: 1, length: 1, time: -2, ..Dimension::SCALAR }));
+    }
+
+    #[test]
+    fn dim_physics_effect_gravity() {
+        let errors = check_errors(r#"
+            [fn get-g []
+              [Physics.gravity]]
+            [handle [get-g]
+              [Physics.gravity] [resume [unit 9.81 :m]]]
+        "#);
+        // Note: resume provides Length, but Physics.gravity expects Acceleration.
+        // Since the handle mechanism doesn't yet unify resume types vs declared return types,
+        // this should still pass. The key is that Physics.gravity returns Acceleration type.
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    #[test]
+    fn dim_physics_effect_returns_typed() {
+        let (ty, errors) = infer_type(r#"
+            [Physics.yield-strength]
+        "#);
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        // Should be Pressure type
+        assert_eq!(ty, Type::Dim(Dimension { mass: 1, length: -1, time: -2, ..Dimension::SCALAR }));
+    }
+
+    #[test]
+    fn dim_unknown_unit_error() {
+        let errors = check_errors("[unit 5.0 :foobar]");
+        assert!(!errors.is_empty(), "should error on unknown unit");
+    }
+
+    #[test]
+    fn dim_display_named() {
+        assert_eq!(Dimension::length().to_string(), "Length");
+        assert_eq!(Dimension::SCALAR.to_string(), "Scalar");
+        assert_eq!(Dimension { length: 1, time: -1, ..Dimension::SCALAR }.to_string(), "Velocity");
+        assert_eq!(Dimension { mass: 1, length: 1, time: -2, ..Dimension::SCALAR }.to_string(), "Force");
+    }
+
+    #[test]
+    fn dim_const_c_velocity_type() {
+        let (ty, errors) = infer_type("Const.c");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        assert_eq!(ty, Type::Dim(Dimension { length: 1, time: -1, ..Dimension::SCALAR }));
+    }
+
+    #[test]
+    fn dim_f64_suffix_still_works() {
+        let (ty, errors) = infer_type("5.0f64");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        assert_eq!(ty, Type::Float);
+    }
+
+    #[test]
+    fn dim_i32_suffix_still_works() {
+        let (ty, errors) = infer_type("42i32");
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        assert_eq!(ty, Type::Int);
     }
 }

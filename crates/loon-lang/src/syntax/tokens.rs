@@ -104,9 +104,9 @@ pub enum Token {
     Tilde,
 
     // Literals — higher priority than Symbol
-    #[regex(r"-?[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?(f32|f64)?", priority = 10, callback = |lex| lex.slice().to_string())]
+    #[regex(r"-?[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?(f32|f64|[a-zA-Z]+)?", priority = 10, callback = |lex| lex.slice().to_string())]
     Float(String),
-    #[regex(r"-?[0-9]+(i32|i64|u32|u64)?", priority = 10, callback = |lex| lex.slice().to_string())]
+    #[regex(r"-?[0-9]+(i32|i64|u32|u64|[a-zA-Z]+)?", priority = 10, callback = |lex| lex.slice().to_string())]
     Int(String),
     #[token("true")]
     True,

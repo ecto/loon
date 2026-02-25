@@ -3,6 +3,143 @@ use std::fmt;
 
 use crate::syntax::Span;
 
+// ── Dimensional Analysis ─────────────────────────────────────────────
+
+/// SI dimension exponents for compile-time dimensional analysis.
+/// Represents mass^m · length^l · time^t · current^i · temperature^θ.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Dimension {
+    pub mass: i8,
+    pub length: i8,
+    pub time: i8,
+    pub current: i8,
+    pub temperature: i8,
+}
+
+impl Dimension {
+    /// Scalar: all exponents zero (NOT called "dimensionless" — we don't have that concept)
+    pub const SCALAR: Dimension = Dimension { mass: 0, length: 0, time: 0, current: 0, temperature: 0 };
+
+    pub fn is_scalar(&self) -> bool {
+        self.mass == 0 && self.length == 0 && self.time == 0 && self.current == 0 && self.temperature == 0
+    }
+
+    pub fn length() -> Dimension { Dimension { length: 1, ..Self::SCALAR } }
+    pub fn time() -> Dimension { Dimension { time: 1, ..Self::SCALAR } }
+    pub fn mass() -> Dimension { Dimension { mass: 1, ..Self::SCALAR } }
+    pub fn current() -> Dimension { Dimension { current: 1, ..Self::SCALAR } }
+    pub fn temperature() -> Dimension { Dimension { temperature: 1, ..Self::SCALAR } }
+
+    /// Multiply dimensions (add exponents)
+    pub fn mul(&self, other: &Dimension) -> Dimension {
+        Dimension {
+            mass: self.mass + other.mass,
+            length: self.length + other.length,
+            time: self.time + other.time,
+            current: self.current + other.current,
+            temperature: self.temperature + other.temperature,
+        }
+    }
+
+    /// Divide dimensions (subtract exponents)
+    pub fn div(&self, other: &Dimension) -> Dimension {
+        Dimension {
+            mass: self.mass - other.mass,
+            length: self.length - other.length,
+            time: self.time - other.time,
+            current: self.current - other.current,
+            temperature: self.temperature - other.temperature,
+        }
+    }
+
+    /// Raise dimension to a power (multiply exponents)
+    pub fn pow(&self, n: i8) -> Dimension {
+        Dimension {
+            mass: self.mass * n,
+            length: self.length * n,
+            time: self.time * n,
+            current: self.current * n,
+            temperature: self.temperature * n,
+        }
+    }
+
+    /// ALWAYS returns a name — no Option, no escape hatch
+    pub fn name(&self) -> &'static str {
+        match (self.mass, self.length, self.time, self.current, self.temperature) {
+            (0, 0, 0, 0, 0) => "Scalar",
+            (0, 1, 0, 0, 0) => "Length",
+            (0, 0, 1, 0, 0) => "Time",
+            (1, 0, 0, 0, 0) => "Mass",
+            (0, 0, 0, 1, 0) => "Current",
+            (0, 0, 0, 0, 1) => "Temperature",
+            (0, 1, -1, 0, 0) => "Velocity",
+            (0, 1, -2, 0, 0) => "Acceleration",
+            (1, 1, -2, 0, 0) => "Force",
+            (1, -1, -2, 0, 0) => "Pressure",
+            (1, 2, -2, 0, 0) => "Energy",
+            (1, 2, -3, 0, 0) => "Power",
+            (0, 0, -1, 0, 0) => "Frequency",
+            (0, 2, 0, 0, 0) => "Area",
+            (0, 3, 0, 0, 0) => "Volume",
+            (1, -3, 0, 0, 0) => "Density",
+            (1, 1, -1, 0, 0) => "Momentum",
+            (0, 0, 1, 1, 0) => "Charge",
+            (1, 2, -3, -1, 0) => "Voltage",
+            (1, 2, -3, -2, 0) => "Resistance",
+            (1, 1, -3, 0, -1) => "ThermalConductivity",
+            _ => "Dim", // fallback — Display will show computed notation
+        }
+    }
+}
+
+impl fmt::Display for Dimension {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let n = self.name();
+        if n != "Dim" {
+            return write!(f, "{n}");
+        }
+        // Computed notation with Unicode superscripts for unknown combinations
+        let mut parts = Vec::new();
+        let bases = [
+            (self.mass, "kg"),
+            (self.length, "m"),
+            (self.time, "s"),
+            (self.current, "A"),
+            (self.temperature, "K"),
+        ];
+        for (exp, unit) in bases {
+            if exp == 1 {
+                parts.push(unit.to_string());
+            } else if exp != 0 {
+                let sup = format_superscript(exp);
+                parts.push(format!("{unit}{sup}"));
+            }
+        }
+        if parts.is_empty() {
+            write!(f, "Scalar")
+        } else {
+            write!(f, "{}", parts.join("\u{22c5}"))
+        }
+    }
+}
+
+fn format_superscript(n: i8) -> String {
+    const SUPER_DIGITS: &[char] = &['\u{2070}', '\u{00b9}', '\u{00b2}', '\u{00b3}',
+        '\u{2074}', '\u{2075}', '\u{2076}', '\u{2077}', '\u{2078}', '\u{2079}'];
+    let mut s = String::new();
+    if n < 0 {
+        s.push('\u{207b}'); // superscript minus
+        for c in n.unsigned_abs().to_string().chars() {
+            s.push(SUPER_DIGITS[c.to_digit(10).unwrap() as usize]);
+        }
+    } else {
+        for c in n.to_string().chars() {
+            s.push(SUPER_DIGITS[c.to_digit(10).unwrap() as usize]);
+        }
+    }
+    s
+}
+
 /// Unique type variable identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TypeVar(pub u32);
@@ -31,6 +168,8 @@ pub enum Type {
     Row(Vec<(String, Type)>, Option<TypeVar>),
     /// Record type: a map with a row type
     Record(Box<Type>),
+    /// Dimensional type for physics (e.g., Length, Velocity, Force)
+    Dim(Dimension),
 }
 
 /// Set of effect names.
@@ -142,6 +281,7 @@ impl fmt::Display for Type {
             Type::Record(row) => {
                 write!(f, "Record{row}")
             }
+            Type::Dim(d) => write!(f, "{d}"),
         }
     }
 }
@@ -237,6 +377,7 @@ impl Subst {
                 Type::Row(resolved_fields, *rest)
             }
             Type::Record(inner) => Type::Record(Box::new(self.resolve(inner))),
+            Type::Dim(_) => ty.clone(),
             _ => ty.clone(),
         }
     }
@@ -256,6 +397,7 @@ impl Subst {
                     || rest.is_some_and(|r| r == v)
             }
             Type::Record(inner) => self.occurs_in(v, &inner),
+            Type::Dim(_) => false,
             _ => false,
         }
     }
@@ -391,6 +533,10 @@ pub fn unify(subst: &mut Subst, a: &Type, b: &Type) -> Result<(), TypeError> {
         (Type::Record(r1), Type::Record(r2)) => unify(subst, r1, r2),
         (Type::Row(fields_a, rest_a), Type::Row(fields_b, rest_b)) => {
             unify_rows(subst, fields_a, *rest_a, fields_b, *rest_b)
+        }
+        (Type::Dim(d1), Type::Dim(d2)) => {
+            if d1 == d2 { Ok(()) }
+            else { Err(TypeError::bare(format!("dimension mismatch: {} vs {}", d1, d2))) }
         }
         _ => Err(TypeError::bare(format!("cannot unify {a} with {b}"))),
     }
@@ -619,6 +765,7 @@ fn free_vars_ty(ty: &Type, out: &mut BTreeSet<TypeVar>) {
             }
         }
         Type::Record(inner) => free_vars_ty(inner, out),
+        Type::Dim(_) => {}
         _ => {}
     }
 }
@@ -659,6 +806,7 @@ fn free_vars_ordered(ty: &Type, out: &mut Vec<TypeVar>) {
             }
         }
         Type::Record(inner) => free_vars_ordered(inner, out),
+        Type::Dim(_) => {}
         _ => {}
     }
 }
@@ -710,6 +858,7 @@ fn pretty_type(ty: &Type, var_names: &HashMap<TypeVar, String>, nested: bool) ->
         Type::Effect(inner, effects) => {
             format!("{} / {{{}}}", pretty_type(inner, var_names, false), effects.0.iter().cloned().collect::<Vec<_>>().join(" "))
         }
+        Type::Dim(d) => d.to_string(),
     }
 }
 
@@ -859,6 +1008,7 @@ fn substitute(ty: &Type, mapping: &HashMap<TypeVar, Type>) -> Type {
             Type::Row(new_fields, new_rest)
         }
         Type::Record(inner) => Type::Record(Box::new(substitute(inner, mapping))),
+        Type::Dim(_) => ty.clone(),
         _ => ty.clone(),
     }
 }

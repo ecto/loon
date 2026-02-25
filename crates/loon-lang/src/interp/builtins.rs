@@ -1494,6 +1494,82 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
+    // ── Physics builtins ─────────────────────────────────────────────
+
+    // unit: [unit value :keyword] → applies scale and returns Float
+    builtin!(env, "unit", |_, args: &[Value]| {
+        if args.len() != 2 {
+            return Err(err("unit requires exactly 2 arguments: value and :unit"));
+        }
+        let val = match &args[0] {
+            Value::Float(f) => *f,
+            Value::Int(n) => *n as f64,
+            _ => return Err(err("unit: first argument must be a number")),
+        };
+        let unit_name = match &args[1] {
+            Value::Keyword(k) => k.as_str(),
+            _ => return Err(err("unit: second argument must be a keyword")),
+        };
+        let scale = match unit_name {
+            // Base SI (scale = 1)
+            "m" | "s" | "kg" | "A" | "K" | "N" | "J" | "W" | "Pa" | "Hz" | "C" | "V" | "ohm" | "m2" | "m3" => 1.0,
+            // Prefixed length
+            "km" => 1e3,
+            "cm" => 1e-2,
+            "mm" => 1e-3,
+            // Prefixed time
+            "ms" => 1e-3,
+            "us" => 1e-6,
+            "ns" => 1e-9,
+            // Prefixed mass
+            "g" => 1e-3,
+            "mg" => 1e-6,
+            // Prefixed force
+            "kN" => 1e3,
+            // Prefixed pressure
+            "kPa" => 1e3,
+            "MPa" => 1e6,
+            "GPa" => 1e9,
+            // Prefixed power
+            "kW" => 1e3,
+            // Prefixed current
+            "mA" => 1e-3,
+            _ => return Err(err(format!("unknown unit: {unit_name}"))),
+        };
+        Ok(Value::Float(val * scale))
+    });
+
+    // magnitude: extracts numeric value from a Dim (identity at runtime — types are erased)
+    builtin!(env, "magnitude", |_, args: &[Value]| {
+        if args.len() != 1 {
+            return Err(err("magnitude requires exactly 1 argument"));
+        }
+        match &args[0] {
+            Value::Float(f) => Ok(Value::Float(*f)),
+            Value::Int(n) => Ok(Value::Float(*n as f64)),
+            _ => Err(err("magnitude: argument must be a number")),
+        }
+    });
+
+    // scalar: explicit entry into Dim world (identity at runtime)
+    builtin!(env, "scalar", |_, args: &[Value]| {
+        if args.len() != 1 {
+            return Err(err("scalar requires exactly 1 argument"));
+        }
+        match &args[0] {
+            Value::Float(f) => Ok(Value::Float(*f)),
+            Value::Int(n) => Ok(Value::Float(*n as f64)),
+            _ => Err(err("scalar: argument must be a number")),
+        }
+    });
+
+    // Physics constants (namespaced)
+    env.set("Const.c".to_string(), Value::Float(299_792_458.0));
+    env.set("Const.G".to_string(), Value::Float(6.674_30e-11));
+    env.set("Const.h".to_string(), Value::Float(6.626_070_15e-34));
+    env.set("Const.k-B".to_string(), Value::Float(1.380_649e-23));
+    env.set("Const.e-charge".to_string(), Value::Float(1.602_176_634e-19));
+
 }
 
 pub fn apply_value(func: &Value, args: &[Value]) -> IResult {

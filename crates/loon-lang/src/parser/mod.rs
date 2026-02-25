@@ -20,6 +20,25 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Extract a suffix from a numeric literal string.
+/// Handles both type suffixes (f32, f64, i32, etc.) and unit suffixes (m, kg, MPa, etc.).
+fn extract_suffix(s: &str) -> String {
+    // Check for known type suffixes first (these contain digits)
+    for ts in &["f32", "f64", "i32", "i64", "u32", "u64"] {
+        if s.ends_with(ts) {
+            return ts.to_string();
+        }
+    }
+    // Otherwise extract trailing alphabetic characters as unit suffix
+    s.chars()
+        .rev()
+        .take_while(|c| c.is_alphabetic())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect()
+}
+
 struct Parser<'a> {
     tokens: Vec<(Token, Span)>,
     pos: usize,
@@ -101,24 +120,44 @@ impl<'a> Parser<'a> {
 
         match tok {
             Token::Int(s) => {
-                let n: i64 = s
-                    .trim_end_matches(|c: char| c.is_alphabetic())
+                let suffix = extract_suffix(&s);
+                let num_str = &s[..s.len() - suffix.len()];
+                let n: i64 = num_str
                     .parse()
                     .map_err(|e| ParseError {
                         message: format!("invalid integer: {e}"),
                         span,
                     })?;
-                Ok(Expr::new(ExprKind::Int(n), span))
+                if suffix.is_empty() || matches!(suffix.as_str(), "i32" | "i64" | "u32" | "u64") {
+                    Ok(Expr::new(ExprKind::Int(n), span))
+                } else {
+                    // Desugar: 10m → [unit 10 :m]
+                    Ok(Expr::new(ExprKind::List(vec![
+                        Expr::new(ExprKind::Symbol("unit".to_string()), span),
+                        Expr::new(ExprKind::Int(n), span),
+                        Expr::new(ExprKind::Keyword(suffix), span),
+                    ]), span))
+                }
             }
             Token::Float(s) => {
-                let n: f64 = s
-                    .trim_end_matches(|c: char| c.is_alphabetic())
+                let suffix = extract_suffix(&s);
+                let num_str = &s[..s.len() - suffix.len()];
+                let n: f64 = num_str
                     .parse()
                     .map_err(|e| ParseError {
                         message: format!("invalid float: {e}"),
                         span,
                     })?;
-                Ok(Expr::new(ExprKind::Float(n), span))
+                if suffix.is_empty() || matches!(suffix.as_str(), "f32" | "f64") {
+                    Ok(Expr::new(ExprKind::Float(n), span))
+                } else {
+                    // Desugar: 5.0m → [unit 5.0 :m]
+                    Ok(Expr::new(ExprKind::List(vec![
+                        Expr::new(ExprKind::Symbol("unit".to_string()), span),
+                        Expr::new(ExprKind::Float(n), span),
+                        Expr::new(ExprKind::Keyword(suffix), span),
+                    ]), span))
+                }
             }
             Token::True => Ok(Expr::new(ExprKind::Bool(true), span)),
             Token::False => Ok(Expr::new(ExprKind::Bool(false), span)),
