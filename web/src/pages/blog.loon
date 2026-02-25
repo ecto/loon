@@ -2,6 +2,7 @@
 
 [fn blog-features []
   [ul-el {:style {:margin-left "1.5rem" :color [color :muted] :line-height "1.8"}}
+    [li-el "Persistent data structures (imbl)"]
     [li-el "Full interpreter with 50+ builtins"]
     [li-el "Hindley-Milner type inference"]
     [li-el "Ownership checking (inferred)"]
@@ -61,6 +62,37 @@
                    :font-weight "400"
                    :margin-bottom "3.5rem"}}
         "Changelog"]
+
+      ; ── v0.4.23 — Persistent Data Structures ────────────────────────────
+
+      [blog-article "Persistent Data Structures" "Feb 25, 2026"
+
+        [p "Loon's collections are now backed by persistent data structures via the imbl crate. Cloning a 10,000-element vector or map is now O(1) instead of O(n), and map lookup is O(log\x{2083}\x{2082} n) instead of O(n). Every conj, assoc, filter, and map operation benefits from structural sharing."]
+
+        [blog-h3 "What changed"]
+        [p "Vec is now an RRB-tree vector (imbl::Vector), Map is a hash array mapped trie (imbl::HashMap), and Set is imbl::HashSet. The API is identical \x97 existing Loon code runs without changes."]
+        [blog-code [str
+          "; These are now O(1) clone + O(log n) insert:\n"
+          "[let v [conj big-vector 42]]\n"
+          "[let m [assoc big-map :key val]]\n"
+          "\n"
+          "; Map lookup is now O(1) instead of O(n):\n"
+          "[get big-map :key]"]]
+
+        [blog-h3 "Performance improvements"]
+        [p "The asymptotic wins are dramatic:"]
+        [ul-el {:style {:margin-left "1.5rem" :line-height "1.8"}}
+          [li-el "Clone: O(n) \x97 O(1) (structural sharing)"]
+          [li-el "Vec append/prepend: O(n) \x97 O(log n)"]
+          [li-el "Map lookup: O(n) \x97 O(log\x{2083}\x{2082} n) \x{2248} O(1)"]
+          [li-el "Map insert/remove: O(n) \x97 O(log\x{2083}\x{2082} n)"]
+          [li-el "Set membership: O(n) \x97 O(log\x{2083}\x{2082} n) \x{2248} O(1)"]]
+
+        [blog-h3 "Hash and Eq for Value"]
+        [p "Value now implements Hash and Eq, required for HashMap/HashSet keys. Floats hash via to_bits(), collections use commutative XOR for order-independent hashing, and non-hashable types (Fn, Builtin) use a sentinel. This also means sets and maps can contain any value type as keys."]
+
+        [blog-h3 "Other fixes"]
+        [p "sort now works correctly on keywords (previously keywords compared as equal). Tuple stays as a plain Vec since it's fixed-size and doesn't benefit from persistence."]]
 
       ; ── v0.4.22 — Physics Type System ─────────────────────────────────
 
