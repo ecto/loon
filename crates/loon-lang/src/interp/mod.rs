@@ -135,7 +135,7 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
             }
         }
         ("Process", "args") => {
-            let args: Vec<Value> = std::env::args().map(Value::Str).collect();
+            let args: imbl::Vector<Value> = std::env::args().map(Value::Str).collect();
             Some(Ok(Value::Vec(args)))
         }
         ("Process", "env") => {
@@ -267,14 +267,14 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
             if let Some(Value::Str(path)) = performed.args.first() {
                 match std::fs::read_dir(path) {
                     Ok(entries) => {
-                        let names: Vec<Value> = entries
+                        let names: imbl::Vector<Value> = entries
                             .filter_map(|e| e.ok())
                             .map(|e| Value::Str(e.file_name().to_string_lossy().into_owned()))
                             .collect();
                         Some(Ok(Value::Vec(names)))
                     }
                     // Not a directory (or doesn't exist) → return empty vec
-                    Err(_) => Some(Ok(Value::Vec(vec![]))),
+                    Err(_) => Some(Ok(Value::Vec(imbl::Vector::new()))),
                 }
             } else {
                 Some(Err(err("IO.list-dir requires a string path")))
@@ -447,11 +447,11 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
                     }
                     match child.wait_with_output() {
                         Ok(output) => {
-                            let result = Value::Map(vec![
+                            let result = Value::Map([
                                 (Value::Keyword("exit-code".to_string()), Value::Int(output.status.code().unwrap_or(-1) as i64)),
                                 (Value::Keyword("stdout".to_string()), Value::Str(String::from_utf8_lossy(&output.stdout).to_string())),
                                 (Value::Keyword("stderr".to_string()), Value::Str(String::from_utf8_lossy(&output.stderr).to_string())),
-                            ]);
+                            ].into_iter().collect());
                             Some(Ok(result))
                         }
                         Err(e) => Some(Err(err(format!("Process.exec: {e}")))),
@@ -497,7 +497,13 @@ fn value_to_json(val: &Value) -> serde_json::Value {
         Value::Bool(b) => serde_json::Value::Bool(*b),
         Value::Str(s) => serde_json::Value::String(s.clone()),
         Value::Keyword(k) => serde_json::Value::String(k.clone()),
-        Value::Vec(items) | Value::Set(items) | Value::Tuple(items) => {
+        Value::Vec(items) => {
+            serde_json::Value::Array(items.iter().map(value_to_json).collect())
+        }
+        Value::Set(items) => {
+            serde_json::Value::Array(items.iter().map(value_to_json).collect())
+        }
+        Value::Tuple(items) => {
             serde_json::Value::Array(items.iter().map(value_to_json).collect())
         }
         Value::Map(pairs) => {
@@ -715,19 +721,15 @@ fn access_field(val: &Value, field: &str, span: Span) -> IResult {
         }
     }
     // Map keyword field access: map.field → (get map :field)
-    if let Value::Map(pairs) = val {
+    if let Value::Map(m) = val {
         let key = Value::Keyword(field.to_string());
-        for (k, v) in pairs {
-            if *k == key {
-                return Ok(v.clone());
-            }
+        if let Some(v) = m.get(&key) {
+            return Ok(v.clone());
         }
         // Fallback: string key (IO.parse-json returns string-keyed maps)
         let str_key = Value::Str(field.to_string());
-        for (k, v) in pairs {
-            if *k == str_key {
-                return Ok(v.clone());
-            }
+        if let Some(v) = m.get(&str_key) {
+            return Ok(v.clone());
         }
     }
     // JSON object field access: json.field → json["field"]
@@ -750,8 +752,8 @@ fn access_field(val: &Value, field: &str, span: Span) -> IResult {
     if let Value::Vec(items) = val {
         match field {
             "length" => return Ok(Value::Int(items.len() as i64)),
-            "first" => return Ok(items.first().cloned().unwrap_or(Value::Unit)),
-            "last" => return Ok(items.last().cloned().unwrap_or(Value::Unit)),
+            "first" => return Ok(items.front().cloned().unwrap_or(Value::Unit)),
+            "last" => return Ok(items.back().cloned().unwrap_or(Value::Unit)),
             _ => {}
         }
     }
@@ -789,17 +791,17 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
         }
 
         ExprKind::Vec(items) => {
-            let vals: Result<Vec<_>, _> = items.iter().map(|e| eval(e, env)).collect();
+            let vals: Result<imbl::Vector<_>, _> = items.iter().map(|e| eval(e, env)).collect();
             Ok(Value::Vec(vals?))
         }
         ExprKind::Set(items) => {
-            let vals: Result<Vec<_>, _> = items.iter().map(|e| eval(e, env)).collect();
+            let vals: Result<imbl::HashSet<_>, _> = items.iter().map(|e| eval(e, env)).collect();
             Ok(Value::Set(vals?))
         }
         ExprKind::Map(pairs) => {
-            let mut map = Vec::new();
+            let mut map = imbl::HashMap::new();
             for (k, v) in pairs {
-                map.push((eval(k, env)?, eval(v, env)?));
+                map.insert(eval(k, env)?, eval(v, env)?);
             }
             Ok(Value::Map(map))
         }
@@ -851,7 +853,7 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                             };
                             return Ok(eval_catch_errors(&src));
                         }
-                        return Ok(Value::Vec(vec![]));
+                        return Ok(Value::Vec(imbl::Vector::new()));
                     }
                     "impl" => return eval_impl_def(&items[1..], env),
                     "macro" | "macro+" => return Ok(Value::Unit), // macro defs are compile-time
@@ -1410,13 +1412,12 @@ fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
                             Arc::new(move |_name, args| {
                                 // If single arg is a Map and we have named fields, reorder
                                 if has_named && args.len() == 1 {
-                                    if let Value::Map(pairs) = &args[0] {
+                                    if let Value::Map(m) = &args[0] {
                                         let mut ordered = Vec::with_capacity(field_names_for_ctor.len());
                                         for fname in &field_names_for_ctor {
                                             let key = Value::Keyword(fname.clone());
-                                            let val = pairs.iter()
-                                                .find(|(k, _)| *k == key)
-                                                .map(|(_, v)| v.clone())
+                                            let val = m.get(&key)
+                                                .cloned()
                                                 .unwrap_or(Value::Unit);
                                             ordered.push(val);
                                         }
@@ -1912,30 +1913,32 @@ fn bind_param(param: &value::Param, val: &Value, env: &mut Env) -> Result<(), In
             Ok(())
         }
         value::Param::VecDestructure(inner) => {
-            let items = match val {
-                Value::Vec(v) => v,
-                Value::Tuple(v) => v,
+            match val {
+                Value::Vec(v) => {
+                    for (i, p) in inner.iter().enumerate() {
+                        let v = v.get(i).cloned().unwrap_or(Value::Unit);
+                        bind_param(p, &v, env)?;
+                    }
+                }
+                Value::Tuple(v) => {
+                    for (i, p) in inner.iter().enumerate() {
+                        let v = v.get(i).cloned().unwrap_or(Value::Unit);
+                        bind_param(p, &v, env)?;
+                    }
+                }
                 _ => return Err(err("destructuring requires a vector or tuple")),
-            };
-            for (i, p) in inner.iter().enumerate() {
-                let v = items.get(i).cloned().unwrap_or(Value::Unit);
-                bind_param(p, &v, env)?;
             }
             Ok(())
         }
         value::Param::MapDestructure(entries) => {
-            let pairs = match val {
+            let m = match val {
                 Value::Map(m) => m,
                 _ => return Err(err("map destructuring requires a map")),
             };
             for (name, default_expr) in entries {
                 let key = Value::Keyword(name.clone());
-                let found = pairs
-                    .iter()
-                    .find(|(k, _)| *k == key)
-                    .map(|(_, v)| v.clone());
-                let bound = match found {
-                    Some(val) => val,
+                let bound = match m.get(&key) {
+                    Some(val) => val.clone(),
                     None => match default_expr {
                         Some(expr) => eval(expr, env)?,
                         None => Value::Unit,
@@ -1995,7 +1998,7 @@ fn call_fn_inner(lf: &value::LoonFn, args: &[Value], env: &mut Env) -> IResult {
             // Bind rest param if present
             if has_rest {
                 if let Some(value::Param::Rest(name)) = params.last() {
-                    let rest_vals: Vec<Value> = args[required..].to_vec();
+                    let rest_vals: imbl::Vector<Value> = args[required..].iter().cloned().collect();
                     env.set(name.clone(), Value::Vec(rest_vals));
                 }
             }
@@ -2102,14 +2105,14 @@ fn eval_catch_errors(source: &str) -> Value {
     let exprs = match crate::parser::parse(source) {
         Ok(exprs) => exprs,
         Err(e) => {
-            let error_map = vec![
+            let error_map: imbl::HashMap<Value, Value> = [
                 (Value::Keyword("code".to_string()), Value::Str("E0000".to_string())),
                 (Value::Keyword("what".to_string()), Value::Str(e.message)),
                 (Value::Keyword("why".to_string()), Value::Str("parse error".to_string())),
                 (Value::Keyword("fix".to_string()), Value::Str("check syntax".to_string())),
-                (Value::Keyword("spans".to_string()), Value::Vec(vec![])),
-            ];
-            return Value::Vec(vec![Value::Map(error_map)]);
+                (Value::Keyword("spans".to_string()), Value::Vec(imbl::Vector::new())),
+            ].into_iter().collect();
+            return Value::Vec(imbl::vector![Value::Map(error_map)]);
         }
     };
 
@@ -2126,23 +2129,23 @@ fn eval_catch_errors(source: &str) -> Value {
 
     let all_errors: Vec<_> = type_errors.into_iter().chain(ownership_errors).collect();
 
-    let error_maps: Vec<Value> = all_errors
+    let error_maps: imbl::Vector<Value> = all_errors
         .iter()
         .map(|diag| {
-            let spans: Vec<Value> = diag.labels.iter().map(|l| {
-                Value::Map(vec![
+            let spans: imbl::Vector<Value> = diag.labels.iter().map(|l| {
+                Value::Map([
                     (Value::Keyword("start".to_string()), Value::Int(l.span.start as i64)),
                     (Value::Keyword("end".to_string()), Value::Int(l.span.end as i64)),
                     (Value::Keyword("label".to_string()), Value::Str(l.label.clone())),
-                ])
+                ].into_iter().collect())
             }).collect();
-            Value::Map(vec![
+            Value::Map([
                 (Value::Keyword("code".to_string()), Value::Str(format!("{}", diag.code))),
                 (Value::Keyword("what".to_string()), Value::Str(diag.what.clone())),
                 (Value::Keyword("why".to_string()), Value::Str(diag.why.clone())),
                 (Value::Keyword("fix".to_string()), Value::Str(diag.fix.clone())),
                 (Value::Keyword("spans".to_string()), Value::Vec(spans)),
-            ])
+            ].into_iter().collect())
         })
         .collect();
 

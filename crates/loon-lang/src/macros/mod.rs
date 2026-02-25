@@ -706,43 +706,40 @@ fn expr_to_ast_value(expr: &Expr, span: Span) -> Expr {
 /// Convert a runtime Value (from procedural macro execution) back to an AST Expr.
 fn ast_value_to_expr(val: &interp::Value, span: Span) -> Result<Expr, String> {
     match val {
-        interp::Value::Map(pairs) => {
+        interp::Value::Map(m) => {
             // Look up :kind
-            let kind = pairs
-                .iter()
-                .find(|(k, _)| matches!(k, interp::Value::Keyword(k) if k == "kind"))
-                .map(|(_, v)| v);
+            let kind = m.get(&interp::Value::Keyword("kind".to_string()));
 
             match kind {
                 Some(interp::Value::Keyword(k)) => match k.as_str() {
                     "symbol" => {
-                        let name = get_str_field(pairs, "name")?;
+                        let name = get_str_field(m, "name")?;
                         Ok(Expr::new(ExprKind::Symbol(name), span))
                     }
                     "int" => {
-                        let val = get_int_field(pairs, "value")?;
+                        let val = get_int_field(m, "value")?;
                         Ok(Expr::new(ExprKind::Int(val), span))
                     }
                     "str" => {
-                        let val = get_str_field(pairs, "value")?;
+                        let val = get_str_field(m, "value")?;
                         Ok(Expr::new(ExprKind::Str(val), span))
                     }
                     "bool" => {
-                        let val = get_bool_field(pairs, "value")?;
+                        let val = get_bool_field(m, "value")?;
                         Ok(Expr::new(ExprKind::Bool(val), span))
                     }
                     "keyword" => {
-                        let val = get_keyword_field(pairs, "value")?;
+                        let val = get_keyword_field(m, "value")?;
                         Ok(Expr::new(ExprKind::Keyword(val), span))
                     }
                     "list" => {
-                        let items = get_vec_field(pairs, "items")?;
+                        let items = get_vec_field(m, "items")?;
                         let exprs: Result<Vec<_>, _> =
                             items.iter().map(|v| ast_value_to_expr(v, span)).collect();
                         Ok(Expr::new(ExprKind::List(exprs?), span))
                     }
                     "vec" => {
-                        let items = get_vec_field(pairs, "items")?;
+                        let items = get_vec_field(m, "items")?;
                         let exprs: Result<Vec<_>, _> =
                             items.iter().map(|v| ast_value_to_expr(v, span)).collect();
                         Ok(Expr::new(ExprKind::Vec(exprs?), span))
@@ -765,33 +762,27 @@ fn ast_value_to_expr(val: &interp::Value, span: Span) -> Result<Expr, String> {
 
 // Helper functions for extracting fields from Value::Map
 
-fn get_str_field(pairs: &[(interp::Value, interp::Value)], field: &str) -> Result<String, String> {
-    pairs
-        .iter()
-        .find(|(k, _)| matches!(k, interp::Value::Keyword(k) if k == field))
-        .and_then(|(_, v)| match v {
+fn get_str_field(m: &imbl::HashMap<interp::Value, interp::Value>, field: &str) -> Result<String, String> {
+    m.get(&interp::Value::Keyword(field.to_string()))
+        .and_then(|v| match v {
             interp::Value::Str(s) => Some(s.clone()),
             _ => None,
         })
         .ok_or_else(|| format!("AST node missing string field :{field}"))
 }
 
-fn get_int_field(pairs: &[(interp::Value, interp::Value)], field: &str) -> Result<i64, String> {
-    pairs
-        .iter()
-        .find(|(k, _)| matches!(k, interp::Value::Keyword(k) if k == field))
-        .and_then(|(_, v)| match v {
+fn get_int_field(m: &imbl::HashMap<interp::Value, interp::Value>, field: &str) -> Result<i64, String> {
+    m.get(&interp::Value::Keyword(field.to_string()))
+        .and_then(|v| match v {
             interp::Value::Int(n) => Some(*n),
             _ => None,
         })
         .ok_or_else(|| format!("AST node missing int field :{field}"))
 }
 
-fn get_bool_field(pairs: &[(interp::Value, interp::Value)], field: &str) -> Result<bool, String> {
-    pairs
-        .iter()
-        .find(|(k, _)| matches!(k, interp::Value::Keyword(k) if k == field))
-        .and_then(|(_, v)| match v {
+fn get_bool_field(m: &imbl::HashMap<interp::Value, interp::Value>, field: &str) -> Result<bool, String> {
+    m.get(&interp::Value::Keyword(field.to_string()))
+        .and_then(|v| match v {
             interp::Value::Bool(b) => Some(*b),
             _ => None,
         })
@@ -799,13 +790,11 @@ fn get_bool_field(pairs: &[(interp::Value, interp::Value)], field: &str) -> Resu
 }
 
 fn get_keyword_field(
-    pairs: &[(interp::Value, interp::Value)],
+    m: &imbl::HashMap<interp::Value, interp::Value>,
     field: &str,
 ) -> Result<String, String> {
-    pairs
-        .iter()
-        .find(|(k, _)| matches!(k, interp::Value::Keyword(k) if k == field))
-        .and_then(|(_, v)| match v {
+    m.get(&interp::Value::Keyword(field.to_string()))
+        .and_then(|v| match v {
             interp::Value::Keyword(k) => Some(k.clone()),
             _ => None,
         })
@@ -813,13 +802,11 @@ fn get_keyword_field(
 }
 
 fn get_vec_field(
-    pairs: &[(interp::Value, interp::Value)],
+    m: &imbl::HashMap<interp::Value, interp::Value>,
     field: &str,
-) -> Result<Vec<interp::Value>, String> {
-    pairs
-        .iter()
-        .find(|(k, _)| matches!(k, interp::Value::Keyword(k) if k == field))
-        .and_then(|(_, v)| match v {
+) -> Result<imbl::Vector<interp::Value>, String> {
+    m.get(&interp::Value::Keyword(field.to_string()))
+        .and_then(|v| match v {
             interp::Value::Vec(items) => Some(items.clone()),
             _ => None,
         })

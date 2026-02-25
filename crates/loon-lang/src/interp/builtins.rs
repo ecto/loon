@@ -284,7 +284,7 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "split", |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Str(s), Value::Str(delims)) => {
-                let words: Vec<Value> = s
+                let words: imbl::Vector<Value> = s
                     .split(|c: char| delims.contains(c))
                     .map(|w| Value::Str(w.to_string()))
                     .collect();
@@ -367,22 +367,31 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "nth", |_, args: &[Value]| {
-        let items = match &args[0] {
-            Value::Vec(v) => v,
-            Value::Tuple(v) => v,
-            _ => return Err(err(format!(
-                "nth requires a vector/tuple and index, got {} and {}",
-                args[0], args[1]
-            ))),
-        };
         if let Value::Int(i) = &args[1] {
             let idx = *i as usize;
-            if idx < items.len() {
-                Ok(items[idx].clone())
-            } else if args.len() > 2 {
-                Ok(args[2].clone())
-            } else {
-                Err(err(format!("index {i} out of bounds (len {})", items.len())))
+            match &args[0] {
+                Value::Vec(v) => {
+                    if idx < v.len() {
+                        Ok(v[idx].clone())
+                    } else if args.len() > 2 {
+                        Ok(args[2].clone())
+                    } else {
+                        Err(err(format!("index {i} out of bounds (len {})", v.len())))
+                    }
+                }
+                Value::Tuple(v) => {
+                    if idx < v.len() {
+                        Ok(v[idx].clone())
+                    } else if args.len() > 2 {
+                        Ok(args[2].clone())
+                    } else {
+                        Err(err(format!("index {i} out of bounds (len {})", v.len())))
+                    }
+                }
+                _ => Err(err(format!(
+                    "nth requires a vector/tuple and index, got {} and {}",
+                    args[0], args[1]
+                ))),
             }
         } else {
             Err(err(format!(
@@ -393,18 +402,18 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "map", |_, args: &[Value]| {
-        fn map_vec(func: &Value, v: &[Value]) -> IResult {
-            let mut result = Vec::new();
+        fn map_vec(func: &Value, v: &imbl::Vector<Value>) -> IResult {
+            let mut result = imbl::Vector::new();
             for item in v {
-                result.push(apply_value(func, std::slice::from_ref(item))?);
+                result.push_back(apply_value(func, std::slice::from_ref(item))?);
             }
             Ok(Value::Vec(result))
         }
         fn map_json(func: &Value, arr: &[serde_json::Value]) -> IResult {
-            let mut result = Vec::new();
+            let mut result = imbl::Vector::new();
             for item in arr {
                 let v = Value::from_json(item);
-                result.push(apply_value(func, std::slice::from_ref(&v))?);
+                result.push_back(apply_value(func, std::slice::from_ref(&v))?);
             }
             Ok(Value::Vec(result))
         }
@@ -442,21 +451,21 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "filter", |_, args: &[Value]| {
-        fn filter_vec(func: &Value, v: &[Value]) -> IResult {
-            let mut result = Vec::new();
+        fn filter_vec(func: &Value, v: &imbl::Vector<Value>) -> IResult {
+            let mut result = imbl::Vector::new();
             for item in v {
                 if apply_value(func, std::slice::from_ref(item))?.is_truthy() {
-                    result.push(item.clone());
+                    result.push_back(item.clone());
                 }
             }
             Ok(Value::Vec(result))
         }
         fn filter_json(func: &Value, arr: &[serde_json::Value]) -> IResult {
-            let mut result = Vec::new();
+            let mut result = imbl::Vector::new();
             for item in arr {
                 let v = Value::from_json(item);
                 if apply_value(func, std::slice::from_ref(&v))?.is_truthy() {
-                    result.push(v);
+                    result.push_back(v);
                 }
             }
             Ok(Value::Vec(result))
@@ -495,7 +504,7 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "fold", |_, args: &[Value]| {
-        fn do_fold(v: &[Value], init: &Value, func: &Value) -> IResult {
+        fn do_fold(v: &imbl::Vector<Value>, init: &Value, func: &Value) -> IResult {
             let mut acc = init.clone();
             for item in v {
                 acc = apply_value(func, &[acc, item.clone()])?;
@@ -529,16 +538,14 @@ pub fn register_builtins(env: &mut Env) {
             Value::Vec(v) => {
                 let mut new = v.clone();
                 for a in &args[1..] {
-                    new.push(a.clone());
+                    new.push_back(a.clone());
                 }
                 Ok(Value::Vec(new))
             }
             Value::Set(s) => {
                 let mut new = s.clone();
                 for a in &args[1..] {
-                    if !new.contains(a) {
-                        new.push(a.clone());
-                    }
+                    new = new.update(a.clone());
                 }
                 Ok(Value::Set(new))
             }
@@ -551,12 +558,10 @@ pub fn register_builtins(env: &mut Env) {
             if args.len() > 2 { args[2].clone() } else { Value::Unit }
         };
         match (&args[0], &args[1]) {
-            (Value::Map(pairs), key) => {
+            (Value::Map(m), key) => {
                 // Try exact match first
-                for (k, v) in pairs {
-                    if k == key {
-                        return Ok(v.clone());
-                    }
+                if let Some(v) = m.get(key) {
+                    return Ok(v.clone());
                 }
                 // Fuzzy match: keyword ↔ string interop
                 let alt_key = match key {
@@ -565,10 +570,8 @@ pub fn register_builtins(env: &mut Env) {
                     _ => None,
                 };
                 if let Some(ref alt) = alt_key {
-                    for (k, v) in pairs {
-                        if k == alt {
-                            return Ok(v.clone());
-                        }
+                    if let Some(v) = m.get(alt) {
+                        return Ok(v.clone());
                     }
                 }
                 Ok(default())
@@ -597,38 +600,22 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "assoc", |_, args: &[Value]| {
-        if let Value::Map(pairs) = &args[0] {
-            let mut new = pairs.clone();
+        if let Value::Map(m) = &args[0] {
             let key = &args[1];
             let val = &args[2];
-            if let Some(pair) = new.iter_mut().find(|(k, _)| k == key) {
-                pair.1 = val.clone();
-            } else {
-                new.push((key.clone(), val.clone()));
-            }
-            Ok(Value::Map(new))
+            Ok(Value::Map(m.update(key.clone(), val.clone())))
         } else {
             Err(err("assoc requires a map"))
         }
     });
 
     builtin!(env, "update", |_, args: &[Value]| {
-        if let Value::Map(pairs) = &args[0] {
+        if let Value::Map(m) = &args[0] {
             let key = &args[1];
             let func = &args[2];
-            let mut new = pairs.clone();
-            let current = new
-                .iter()
-                .find(|(k, _)| k == key)
-                .map(|(_, v)| v.clone())
-                .unwrap_or(Value::Unit);
+            let current = m.get(key).cloned().unwrap_or(Value::Unit);
             let updated = apply_value(func, &[current])?;
-            if let Some(pair) = new.iter_mut().find(|(k, _)| k == key) {
-                pair.1 = updated;
-            } else {
-                new.push((key.clone(), updated));
-            }
-            Ok(Value::Map(new))
+            Ok(Value::Map(m.update(key.clone(), updated)))
         } else {
             Err(err("update requires a map"))
         }
@@ -637,7 +624,7 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "range", |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Int(start), Value::Int(end)) => {
-                let v: Vec<Value> = (*start..*end).map(Value::Int).collect();
+                let v: imbl::Vector<Value> = (*start..*end).map(Value::Int).collect();
                 Ok(Value::Vec(v))
             }
             _ => Err(err("range requires two integers")),
@@ -647,8 +634,8 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "contains?", |_, args: &[Value]| {
         match &args[0] {
             Value::Set(s) => Ok(Value::Bool(s.contains(&args[1]))),
-            Value::Map(m) => Ok(Value::Bool(m.iter().any(|(k, _)| k == &args[1]))),
-            Value::Vec(v) => Ok(Value::Bool(v.contains(&args[1]))),
+            Value::Map(m) => Ok(Value::Bool(m.contains_key(&args[1]))),
+            Value::Vec(v) => Ok(Value::Bool(v.iter().any(|i| i == &args[1]))),
             Value::Str(s) => {
                 match &args[1] {
                     Value::Str(needle) => Ok(Value::Bool(s.contains(needle.as_str()))),
@@ -688,15 +675,15 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "sort-by", |_, args: &[Value]| {
-        fn do_sort(func: &Value, desc: bool, v: &[Value]) -> IResult {
-            let mut sorted = v.to_vec();
+        fn do_sort(func: &Value, desc: bool, v: &imbl::Vector<Value>) -> IResult {
+            let mut sorted: Vec<Value> = v.iter().cloned().collect();
             sorted.sort_by(|a, b| {
                 let ka = apply_value(func, std::slice::from_ref(a)).unwrap_or(Value::Int(0));
                 let kb = apply_value(func, std::slice::from_ref(b)).unwrap_or(Value::Int(0));
                 let ord = value_cmp(&ka, &kb);
                 if desc { ord.reverse() } else { ord }
             });
-            Ok(Value::Vec(sorted))
+            Ok(Value::Vec(sorted.into_iter().collect()))
         }
 
         match args {
@@ -770,7 +757,7 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "each", |_, args: &[Value]| {
-        fn each_vec(func: &Value, v: &[Value]) -> IResult {
+        fn each_vec(func: &Value, v: &imbl::Vector<Value>) -> IResult {
             for item in v {
                 apply_value(func, std::slice::from_ref(item))?;
             }
@@ -819,7 +806,7 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "entries", |_, args: &[Value]| {
         match &args[0] {
             Value::Map(pairs) => {
-                let v: Vec<Value> = pairs
+                let v: imbl::Vector<Value> = pairs
                     .iter()
                     .map(|(k, v)| Value::Tuple(vec![k.clone(), v.clone()]))
                     .collect();
@@ -837,7 +824,7 @@ pub fn register_builtins(env: &mut Env) {
         if let Value::Vec(v) = &args[0] {
             let mut new = v.clone();
             for a in &args[1..] {
-                new.push(a.clone());
+                new.push_back(a.clone());
             }
             Ok(Value::Vec(new))
         } else if let Value::Str(s) = &args[0] {
@@ -863,7 +850,7 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "HashMap.new", |_, _args: &[Value]| {
-        Ok(Value::Map(vec![]))
+        Ok(Value::Map(imbl::HashMap::new()))
     });
 
     // --- New v0.2 builtins ---
@@ -871,7 +858,7 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "zip", |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Vec(a), Value::Vec(b)) => {
-                let pairs: Vec<Value> = a.iter().zip(b.iter())
+                let pairs: imbl::Vector<Value> = a.iter().zip(b.iter())
                     .map(|(x, y)| Value::Tuple(vec![x.clone(), y.clone()]))
                     .collect();
                 Ok(Value::Vec(pairs))
@@ -883,12 +870,12 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "flatten", |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) => {
-                let mut result = Vec::new();
+                let mut result = imbl::Vector::new();
                 for item in v {
                     if let Value::Vec(inner) = item {
-                        result.extend(inner.iter().cloned());
+                        result.append(inner.clone());
                     } else {
-                        result.push(item.clone());
+                        result.push_back(item.clone());
                     }
                 }
                 Ok(Value::Vec(result))
@@ -900,9 +887,14 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "chunk", |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Int(n), Value::Vec(v)) => {
-                let chunks: Vec<Value> = v.chunks(*n as usize)
-                    .map(|c| Value::Vec(c.to_vec()))
-                    .collect();
+                let n = *n as usize;
+                let mut chunks = imbl::Vector::new();
+                let mut remaining = v.clone();
+                while !remaining.is_empty() {
+                    let end = n.min(remaining.len());
+                    let chunk = remaining.slice(..end);
+                    chunks.push_back(Value::Vec(chunk));
+                }
                 Ok(Value::Vec(chunks))
             }
             _ => Err(err("chunk requires a size and vector")),
@@ -912,8 +904,7 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "reverse", |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) => {
-                let mut rev = v.clone();
-                rev.reverse();
+                let rev: imbl::Vector<Value> = v.iter().rev().cloned().collect();
                 Ok(Value::Vec(rev))
             }
             Value::Str(s) => Ok(Value::Str(s.chars().rev().collect())),
@@ -1011,8 +1002,8 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "cons", |_, args: &[Value]| {
         match &args[1] {
             Value::Vec(v) => {
-                let mut new = vec![args[0].clone()];
-                new.extend(v.iter().cloned());
+                let mut new = v.clone();
+                new.push_front(args[0].clone());
                 Ok(Value::Vec(new))
             }
             _ => Err(err("cons: second arg must be a vec")),
@@ -1024,7 +1015,7 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "keys", |_, args: &[Value]| {
         match &args[0] {
             Value::Map(pairs) => {
-                let ks: Vec<Value> = pairs.iter().map(|(k, _)| k.clone()).collect();
+                let ks: imbl::Vector<Value> = pairs.iter().map(|(k, _)| k.clone()).collect();
                 Ok(Value::Vec(ks))
             }
             _ => Err(err("keys requires a map")),
@@ -1034,7 +1025,7 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "values", |_, args: &[Value]| {
         match &args[0] {
             Value::Map(pairs) => {
-                let vs: Vec<Value> = pairs.iter().map(|(_, v)| v.clone()).collect();
+                let vs: imbl::Vector<Value> = pairs.iter().map(|(_, v)| v.clone()).collect();
                 Ok(Value::Vec(vs))
             }
             _ => Err(err("values requires a map")),
@@ -1046,11 +1037,7 @@ pub fn register_builtins(env: &mut Env) {
             (Value::Map(a), Value::Map(b)) => {
                 let mut merged = a.clone();
                 for (k, v) in b {
-                    if let Some(pair) = merged.iter_mut().find(|(mk, _)| mk == k) {
-                        pair.1 = v.clone();
-                    } else {
-                        merged.push((k.clone(), v.clone()));
-                    }
+                    merged = merged.update(k.clone(), v.clone());
                 }
                 Ok(Value::Map(merged))
             }
@@ -1060,12 +1047,8 @@ pub fn register_builtins(env: &mut Env) {
 
     builtin!(env, "remove", |_, args: &[Value]| {
         match (&args[0], &args[1]) {
-            (Value::Map(pairs), key) => {
-                let filtered: Vec<(Value, Value)> = pairs.iter()
-                    .filter(|(k, _)| k != key)
-                    .cloned()
-                    .collect();
-                Ok(Value::Map(filtered))
+            (Value::Map(m), key) => {
+                Ok(Value::Map(m.without(key)))
             }
             _ => Err(err("remove requires a map and key")),
         }
@@ -1156,43 +1139,31 @@ pub fn register_builtins(env: &mut Env) {
     // --- Collection ops ---
 
     builtin!(env, "group-by", |_, args: &[Value]| {
-        match (&args[0], args.get(1)) {
-            (func, Some(Value::Vec(v))) if func.is_callable() => {
-                let mut groups: Vec<(Value, Vec<Value>)> = Vec::new();
-                for item in v {
-                    let key = apply_value(func, std::slice::from_ref(item))?;
-                    if let Some(group) = groups.iter_mut().find(|(k, _)| k == &key) {
-                        group.1.push(item.clone());
-                    } else {
-                        groups.push((key, vec![item.clone()]));
-                    }
+        fn do_group_by(func: &Value, v: &imbl::Vector<Value>) -> IResult {
+            let mut groups: Vec<(Value, imbl::Vector<Value>)> = Vec::new();
+            for item in v {
+                let key = apply_value(func, std::slice::from_ref(item))?;
+                if let Some(group) = groups.iter_mut().find(|(k, _)| k == &key) {
+                    group.1.push_back(item.clone());
+                } else {
+                    groups.push((key, imbl::vector![item.clone()]));
                 }
-                let map: Vec<(Value, Value)> = groups
-                    .into_iter()
-                    .map(|(k, v)| (k, Value::Vec(v)))
-                    .collect();
-                Ok(Value::Map(map))
             }
+            let map: imbl::HashMap<Value, Value> = groups
+                .into_iter()
+                .map(|(k, v)| (k, Value::Vec(v)))
+                .collect();
+            Ok(Value::Map(map))
+        }
+        match (&args[0], args.get(1)) {
+            (func, Some(Value::Vec(v))) if func.is_callable() => do_group_by(func, v),
             (func, None) if func.is_callable() => {
                 let func_clone = func.clone();
                 Ok(Value::Builtin(
                     "group-by-partial".to_string(),
                     Arc::new(move |_, inner_args: &[Value]| {
                         if let Value::Vec(v) = &inner_args[0] {
-                            let mut groups: Vec<(Value, Vec<Value>)> = Vec::new();
-                            for item in v {
-                                let key = apply_value(&func_clone, std::slice::from_ref(item))?;
-                                if let Some(group) = groups.iter_mut().find(|(k, _)| k == &key) {
-                                    group.1.push(item.clone());
-                                } else {
-                                    groups.push((key, vec![item.clone()]));
-                                }
-                            }
-                            let map: Vec<(Value, Value)> = groups
-                                .into_iter()
-                                .map(|(k, v)| (k, Value::Vec(v)))
-                                .collect();
-                            Ok(Value::Map(map))
+                            do_group_by(&func_clone, v)
                         } else {
                             Err(err("group-by requires a vector"))
                         }
@@ -1204,35 +1175,27 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "flat-map", |_, args: &[Value]| {
-        match (&args[0], args.get(1)) {
-            (func, Some(Value::Vec(v))) if func.is_callable() => {
-                let mut result = Vec::new();
-                for item in v {
-                    let val = apply_value(func, std::slice::from_ref(item))?;
-                    if let Value::Vec(inner) = val {
-                        result.extend(inner);
-                    } else {
-                        result.push(val);
-                    }
+        fn do_flat_map(func: &Value, v: &imbl::Vector<Value>) -> IResult {
+            let mut result = imbl::Vector::new();
+            for item in v {
+                let val = apply_value(func, std::slice::from_ref(item))?;
+                if let Value::Vec(inner) = val {
+                    result.append(inner);
+                } else {
+                    result.push_back(val);
                 }
-                Ok(Value::Vec(result))
             }
+            Ok(Value::Vec(result))
+        }
+        match (&args[0], args.get(1)) {
+            (func, Some(Value::Vec(v))) if func.is_callable() => do_flat_map(func, v),
             (func, None) if func.is_callable() => {
                 let func_clone = func.clone();
                 Ok(Value::Builtin(
                     "flat-map-partial".to_string(),
                     Arc::new(move |_, inner_args: &[Value]| {
                         if let Value::Vec(v) = &inner_args[0] {
-                            let mut result = Vec::new();
-                            for item in v {
-                                let val = apply_value(&func_clone, std::slice::from_ref(item))?;
-                                if let Value::Vec(inner) = val {
-                                    result.extend(inner);
-                                } else {
-                                    result.push(val);
-                                }
-                            }
-                            Ok(Value::Vec(result))
+                            do_flat_map(&func_clone, v)
                         } else {
                             Err(err("flat-map requires a vector"))
                         }
@@ -1246,9 +1209,9 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "sort", |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) => {
-                let mut sorted = v.clone();
+                let mut sorted: Vec<Value> = v.iter().cloned().collect();
                 sorted.sort_by(value_cmp);
-                Ok(Value::Vec(sorted))
+                Ok(Value::Vec(sorted.into_iter().collect()))
             }
             _ => Err(err("sort requires a vector")),
         }
@@ -1258,7 +1221,7 @@ pub fn register_builtins(env: &mut Env) {
         match &args[0] {
             Value::Vec(v) if !v.is_empty() => {
                 let mut result = &v[0];
-                for item in &v[1..] {
+                for item in v.iter().skip(1) {
                     if value_cmp(item, result) == std::cmp::Ordering::Less {
                         result = item;
                     }
@@ -1274,7 +1237,7 @@ pub fn register_builtins(env: &mut Env) {
         match &args[0] {
             Value::Vec(v) if !v.is_empty() => {
                 let mut result = &v[0];
-                for item in &v[1..] {
+                for item in v.iter().skip(1) {
                     if value_cmp(item, result) == std::cmp::Ordering::Greater {
                         result = item;
                     }
@@ -1293,7 +1256,7 @@ pub fn register_builtins(env: &mut Env) {
                     return Ok(Value::Int(0));
                 }
                 let mut acc = v[0].clone();
-                for item in &v[1..] {
+                for item in v.iter().skip(1) {
                     acc = match (&acc, item) {
                         (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
                         (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
@@ -1343,14 +1306,14 @@ pub fn register_builtins(env: &mut Env) {
 
     builtin!(env, "first", |_, args: &[Value]| {
         match &args[0] {
-            Value::Vec(v) => Ok(v.first().cloned().unwrap_or(Value::Unit)),
+            Value::Vec(v) => Ok(v.front().cloned().unwrap_or(Value::Unit)),
             _ => Err(err("first requires a vector")),
         }
     });
 
     builtin!(env, "last", |_, args: &[Value]| {
         match &args[0] {
-            Value::Vec(v) => Ok(v.last().cloned().unwrap_or(Value::Unit)),
+            Value::Vec(v) => Ok(v.back().cloned().unwrap_or(Value::Unit)),
             _ => Err(err("last requires a vector")),
         }
     });
@@ -1395,16 +1358,16 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "into-map", |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) => {
-                let mut pairs = Vec::new();
+                let mut m = imbl::HashMap::new();
                 for item in v {
                     match item {
                         Value::Tuple(kv) if kv.len() == 2 => {
-                            pairs.push((kv[0].clone(), kv[1].clone()));
+                            m = m.update(kv[0].clone(), kv[1].clone());
                         }
                         _ => return Err(err("into-map: each element must be a 2-tuple")),
                     }
                 }
-                Ok(Value::Map(pairs))
+                Ok(Value::Map(m))
             }
             _ => Err(err("into-map requires a vector of pairs")),
         }
@@ -1594,6 +1557,7 @@ pub fn value_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
         (Value::Int(a), Value::Int(b)) => a.cmp(b),
         (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
         (Value::Str(a), Value::Str(b)) => a.cmp(b),
+        (Value::Keyword(a), Value::Keyword(b)) => a.cmp(b),
         _ => std::cmp::Ordering::Equal,
     }
 }

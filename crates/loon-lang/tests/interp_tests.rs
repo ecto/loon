@@ -6,6 +6,16 @@ fn run(src: &str) -> Value {
     eval_program(&exprs).expect("eval failed")
 }
 
+/// Helper: build a Value::Vec from a std Vec
+fn v(items: Vec<Value>) -> Value {
+    Value::Vec(items.into_iter().collect())
+}
+
+/// Helper: build a Value::Map from pairs
+fn m(pairs: Vec<(Value, Value)>) -> Value {
+    Value::Map(pairs.into_iter().collect())
+}
+
 #[test]
 fn hello_world() {
     let result = run(r#"[println "hello, world!"]"#);
@@ -196,7 +206,7 @@ fn match_with_guard() {
 fn range_and_map() {
     assert_eq!(
         run("[pipe [range 0 5] [map [fn [x] [* x x]]] [collect]]"),
-        Value::Vec(vec![
+        v(vec![
             Value::Int(0),
             Value::Int(1),
             Value::Int(4),
@@ -210,7 +220,7 @@ fn range_and_map() {
 fn conj() {
     assert_eq!(
         run("[conj #[1 2 3] 4]"),
-        Value::Vec(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)])
+        v(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)])
     );
 }
 
@@ -374,7 +384,7 @@ fn vec_builtins() {
     // zip
     assert_eq!(
         run("[zip #[1 2 3] #[4 5 6]]"),
-        Value::Vec(vec![
+        v(vec![
             Value::Tuple(vec![Value::Int(1), Value::Int(4)]),
             Value::Tuple(vec![Value::Int(2), Value::Int(5)]),
             Value::Tuple(vec![Value::Int(3), Value::Int(6)]),
@@ -383,26 +393,26 @@ fn vec_builtins() {
     // flatten
     assert_eq!(
         run("[flatten #[#[1 2] #[3 4]]]"),
-        Value::Vec(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)])
+        v(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)])
     );
     // chunk
     assert_eq!(
         run("[chunk 2 #[1 2 3 4 5]]"),
-        Value::Vec(vec![
-            Value::Vec(vec![Value::Int(1), Value::Int(2)]),
-            Value::Vec(vec![Value::Int(3), Value::Int(4)]),
-            Value::Vec(vec![Value::Int(5)]),
+        v(vec![
+            v(vec![Value::Int(1), Value::Int(2)]),
+            v(vec![Value::Int(3), Value::Int(4)]),
+            v(vec![Value::Int(5)]),
         ])
     );
     // reverse
     assert_eq!(
         run("[reverse #[1 2 3]]"),
-        Value::Vec(vec![Value::Int(3), Value::Int(2), Value::Int(1)])
+        v(vec![Value::Int(3), Value::Int(2), Value::Int(1)])
     );
     // drop
     assert_eq!(
         run("[drop 2 #[1 2 3 4 5]]"),
-        Value::Vec(vec![Value::Int(3), Value::Int(4), Value::Int(5)])
+        v(vec![Value::Int(3), Value::Int(4), Value::Int(5)])
     );
     // any? and all?
     assert_eq!(
@@ -437,23 +447,22 @@ fn find_returns_option() {
 
 #[test]
 fn map_builtins() {
-    // keys
+    // keys — order is not guaranteed with HashMap, so sort result
+    let keys_result = run("[sort [keys {:a 1 :b 2}]]");
     assert_eq!(
-        run("[keys {:a 1 :b 2}]"),
-        Value::Vec(vec![
+        keys_result,
+        v(vec![
             Value::Keyword("a".to_string()),
             Value::Keyword("b".to_string()),
         ])
     );
-    // values
-    assert_eq!(
-        run("[values {:a 1 :b 2}]"),
-        Value::Vec(vec![Value::Int(1), Value::Int(2)])
-    );
+    // values — check length and membership instead of order
+    let vals_result = run("[sort [values {:a 1 :b 2}]]");
+    assert_eq!(vals_result, v(vec![Value::Int(1), Value::Int(2)]));
     // remove
     assert_eq!(
         run("[remove {:a 1 :b 2} :b]"),
-        Value::Map(vec![(Value::Keyword("a".to_string()), Value::Int(1))])
+        m(vec![(Value::Keyword("a".to_string()), Value::Int(1))])
     );
 }
 
@@ -566,7 +575,7 @@ fn process_args_mock() {
             [handle [Process.args]
               [Process.args] [resume #["loon" "test"]]]
         "#),
-        Value::Vec(vec![Value::Str("loon".to_string()), Value::Str("test".to_string())])
+        v(vec![Value::Str("loon".to_string()), Value::Str("test".to_string())])
     );
 }
 
@@ -669,9 +678,9 @@ fn stdlib_string_ops() {
 fn stdlib_group_by() {
     assert_eq!(
         run(r#"[group-by [fn [x] [% x 2]] #[1 2 3 4 5]]"#),
-        Value::Map(vec![
-            (Value::Int(1), Value::Vec(vec![Value::Int(1), Value::Int(3), Value::Int(5)])),
-            (Value::Int(0), Value::Vec(vec![Value::Int(2), Value::Int(4)])),
+        m(vec![
+            (Value::Int(1), v(vec![Value::Int(1), Value::Int(3), Value::Int(5)])),
+            (Value::Int(0), v(vec![Value::Int(2), Value::Int(4)])),
         ])
     );
 }
@@ -680,7 +689,7 @@ fn stdlib_group_by() {
 fn stdlib_flat_map() {
     assert_eq!(
         run(r#"[flat-map [fn [x] #[x [* x 2]]] #[1 2 3]]"#),
-        Value::Vec(vec![
+        v(vec![
             Value::Int(1), Value::Int(2),
             Value::Int(2), Value::Int(4),
             Value::Int(3), Value::Int(6),
@@ -692,7 +701,7 @@ fn stdlib_flat_map() {
 fn stdlib_sort() {
     assert_eq!(
         run("[sort #[3 1 2]]"),
-        Value::Vec(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+        v(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
     );
 }
 
@@ -713,7 +722,7 @@ fn stdlib_to_string() {
 fn stdlib_into_map() {
     assert_eq!(
         run("[into-map #[(1 2) (3 4)]]"),
-        Value::Map(vec![
+        m(vec![
             (Value::Int(1), Value::Int(2)),
             (Value::Int(3), Value::Int(4)),
         ])

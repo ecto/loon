@@ -70,7 +70,7 @@ fn net_get(args: &[Value]) -> IResult {
 
     // Optional headers map as second arg
     if let Some(Value::Map(headers)) = args.get(1) {
-        for (k, v) in headers {
+        for (k, v) in headers.iter() {
             let key = match k {
                 Value::Str(s) => s.clone(),
                 Value::Keyword(s) => s.clone(),
@@ -91,14 +91,14 @@ fn net_get(args: &[Value]) -> IResult {
             Ok(Value::Map(vec![
                 (Value::Keyword("status".to_string()), Value::Int(status as i64)),
                 (Value::Keyword("body".to_string()), Value::Str(body)),
-            ]))
+            ].into_iter().collect()))
         }
         Err(ureq::Error::Status(code, response)) => {
             let body = response.into_string().unwrap_or_default();
             Ok(Value::Map(vec![
                 (Value::Keyword("status".to_string()), Value::Int(code as i64)),
                 (Value::Keyword("body".to_string()), Value::Str(body)),
-            ]))
+            ].into_iter().collect()))
         }
         Err(e) => Err(err(format!("Net.get: {e}"))),
     }
@@ -120,7 +120,7 @@ fn net_post(args: &[Value]) -> IResult {
     let headers = get_map_map(&options, "headers").unwrap_or_default();
 
     let mut req = ureq::post(&url);
-    for (k, v) in &headers {
+    for (k, v) in headers.iter() {
         let key = match k {
             Value::Str(s) => s.clone(),
             Value::Keyword(s) => s.clone(),
@@ -140,14 +140,14 @@ fn net_post(args: &[Value]) -> IResult {
             Ok(Value::Map(vec![
                 (Value::Keyword("status".to_string()), Value::Int(status as i64)),
                 (Value::Keyword("body".to_string()), Value::Str(resp_body)),
-            ]))
+            ].into_iter().collect()))
         }
         Err(ureq::Error::Status(code, response)) => {
             let resp_body = response.into_string().unwrap_or_default();
             Ok(Value::Map(vec![
                 (Value::Keyword("status".to_string()), Value::Int(code as i64)),
                 (Value::Keyword("body".to_string()), Value::Str(resp_body)),
-            ]))
+            ].into_iter().collect()))
         }
         Err(e) => Err(err(format!("Net.post: {e}"))),
     }
@@ -192,7 +192,7 @@ fn http_serve(args: &[Value]) -> IResult {
                                 .map(|(k, v)| (Value::Str(k), Value::Str(v)))
                                 .collect()
                         )),
-                    ]);
+                    ].into_iter().collect());
 
                     // Send to channel (ignore errors — channel may be gone)
                     let _ = shared_send(tx_id, req_map);
@@ -250,7 +250,7 @@ fn http_respond(args: &[Value]) -> IResult {
     );
 
     // Add custom headers
-    for (k, v) in &headers {
+    for (k, v) in headers.iter() {
         let key = match k {
             Value::Str(s) => s.clone(),
             Value::Keyword(s) => s.clone(),
@@ -440,47 +440,29 @@ fn parse_request(stream: &TcpStream) -> Result<HttpRequest, ()> {
 
 // --- Map helpers ---
 
-fn get_map_int(pairs: &[(Value, Value)], key: &str) -> Option<u16> {
-    pairs.iter().find_map(|(k, v)| {
-        if matches!(k, Value::Keyword(s) if s == key) {
-            if let Value::Int(n) = v { Some(*n as u16) } else { None }
-        } else {
-            None
-        }
+fn get_map_int(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<u16> {
+    m.get(&Value::Keyword(key.to_string())).and_then(|v| {
+        if let Value::Int(n) = v { Some(*n as u16) } else { None }
     })
 }
 
-fn get_map_str(pairs: &[(Value, Value)], key: &str) -> Option<String> {
-    pairs.iter().find_map(|(k, v)| {
-        if matches!(k, Value::Keyword(s) if s == key) {
+fn get_map_str(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<String> {
+    m.get(&Value::Keyword(key.to_string())).and_then(|v| {
+        if let Value::Str(s) = v { Some(s.clone()) } else { None }
+    })
+}
+
+fn get_map_map(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<imbl::HashMap<Value, Value>> {
+    m.get(&Value::Keyword(key.to_string())).and_then(|v| {
+        if let Value::Map(inner) = v { Some(inner.clone()) } else { None }
+    })
+}
+
+fn get_str_from_pairs(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<String> {
+    // Try keyword key first, then string key
+    m.get(&Value::Keyword(key.to_string()))
+        .or_else(|| m.get(&Value::Str(key.to_string())))
+        .and_then(|v| {
             if let Value::Str(s) = v { Some(s.clone()) } else { None }
-        } else {
-            None
-        }
-    })
-}
-
-fn get_map_map(pairs: &[(Value, Value)], key: &str) -> Option<Vec<(Value, Value)>> {
-    pairs.iter().find_map(|(k, v)| {
-        if matches!(k, Value::Keyword(s) if s == key) {
-            if let Value::Map(m) = v { Some(m.clone()) } else { None }
-        } else {
-            None
-        }
-    })
-}
-
-fn get_str_from_pairs(pairs: &[(Value, Value)], key: &str) -> Option<String> {
-    pairs.iter().find_map(|(k, v)| {
-        let k_str = match k {
-            Value::Str(s) => s.as_str(),
-            Value::Keyword(s) => s.as_str(),
-            _ => return None,
-        };
-        if k_str == key {
-            if let Value::Str(s) = v { Some(s.clone()) } else { None }
-        } else {
-            None
-        }
-    })
+        })
 }

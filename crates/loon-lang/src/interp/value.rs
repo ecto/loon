@@ -1,4 +1,5 @@
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -68,9 +69,9 @@ pub enum Value {
     Bool(bool),
     Str(String),
     Keyword(String),
-    Vec(Vec<Value>),
-    Set(Vec<Value>),
-    Map(Vec<(Value, Value)>),
+    Vec(imbl::Vector<Value>),
+    Set(imbl::HashSet<Value>),
+    Map(imbl::HashMap<Value, Value>),
     Tuple(Vec<Value>),
     Fn(LoonFn),
     Builtin(String, BuiltinFn),
@@ -84,6 +85,70 @@ pub enum Value {
     /// Lazy JSON value — wraps serde_json::Value, converts on access.
     Json(JsonRef),
     Unit,
+}
+
+impl Eq for Value {}
+
+impl Hash for Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Value::Int(n) => n.hash(state),
+            Value::Float(f) => f.to_bits().hash(state),
+            Value::Bool(b) => b.hash(state),
+            Value::Str(s) => s.hash(state),
+            Value::Keyword(k) => k.hash(state),
+            Value::Vec(v) => {
+                for item in v.iter() {
+                    item.hash(state);
+                }
+            }
+            Value::Set(s) => {
+                // Commutative XOR for order-independent hashing
+                let mut h: u64 = 0;
+                for item in s.iter() {
+                    let mut sub = std::hash::DefaultHasher::new();
+                    item.hash(&mut sub);
+                    h ^= sub.finish();
+                }
+                h.hash(state);
+            }
+            Value::Map(m) => {
+                // Commutative XOR for order-independent hashing
+                let mut h: u64 = 0;
+                for (k, v) in m.iter() {
+                    let mut sub = std::hash::DefaultHasher::new();
+                    k.hash(&mut sub);
+                    v.hash(&mut sub);
+                    h ^= sub.finish();
+                }
+                h.hash(state);
+            }
+            Value::Tuple(items) => {
+                for item in items {
+                    item.hash(state);
+                }
+            }
+            Value::Adt(tag, fields) => {
+                tag.hash(state);
+                for field in fields {
+                    field.hash(state);
+                }
+            }
+            Value::DomNode(h) => h.hash(state),
+            Value::ChannelTx(id) => id.hash(state),
+            Value::ChannelRx(id) => id.hash(state),
+            Value::Future(inner) => inner.hash(state),
+            // Non-hashable types use sentinel
+            Value::Fn(_) | Value::Builtin(..) => 0u8.hash(state),
+            Value::AsyncSlot(_) => 0u8.hash(state),
+            Value::Json(j) => {
+                // Hash the JSON string representation
+                j.to_string().hash(state);
+            }
+            Value::Unit => {}
+        }
+    }
 }
 
 impl Value {
