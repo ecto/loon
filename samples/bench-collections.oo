@@ -1,74 +1,68 @@
 ; Loon collection benchmark suite
 ; Run with: time cargo run -p loon-cli -- run samples/bench-collections.oo
 
-; --- 1. Vec append: build 200-element vector via repeated conj ---
+; --- 1. Vec append: build 100,000-element vector via repeated conj ---
 [fn bench-vec-append [n]
-  [fn loop [v i]
+  [loop [v #[] i 0]
     [if [>= i n] v
-      [loop [conj v i] [+ i 1]]]]
-  [loop #[] 0]]
+      [recur [conj v i] [+ i 1]]]]]
 
-[let v1 [bench-vec-append 200]]
-[IO.println [str "vec-append(200): len=" [len v1]]]
+[let v1 [bench-vec-append 100000]]
+[IO.println [str "vec-append(100K): len=" [len v1]]]
 
 ; --- 2. Vec prepend: build vector via repeated cons ---
 [fn bench-vec-prepend [n]
-  [fn loop [v i]
+  [loop [v #[] i 0]
     [if [>= i n] v
-      [loop [cons i v] [+ i 1]]]]
-  [loop #[] 0]]
+      [recur [cons i v] [+ i 1]]]]]
 
-[let v2 [bench-vec-prepend 200]]
-[IO.println [str "vec-prepend(200): len=" [len v2]]]
+[let v2 [bench-vec-prepend 100000]]
+[IO.println [str "vec-prepend(100K): len=" [len v2]]]
 
-; --- 3. Map insert: build 200-entry map via repeated assoc ---
+; --- 3. Map insert: build 100,000-entry map via repeated assoc ---
 [fn bench-map-insert [n]
-  [fn loop [m i]
+  [loop [m {} i 0]
     [if [>= i n] m
-      [loop [assoc m [str "k" i] i] [+ i 1]]]]
-  [loop {} 0]]
+      [recur [assoc m [str "k" i] i] [+ i 1]]]]]
 
-[let m1 [bench-map-insert 200]]
-[IO.println [str "map-insert(200): len=" [len m1]]]
+[let m1 [bench-map-insert 100000]]
+[IO.println [str "map-insert(100K): len=" [len m1]]]
 
-; --- 4. Map lookup: look up 200 keys ---
+; --- 4. Map lookup: look up 1000 keys ---
 [fn bench-map-lookup [m n]
-  [fn loop [sum i]
+  [loop [sum 0 i 0]
     [if [>= i n] sum
-      [loop [+ sum [get m [str "k" i]]] [+ i 1]]]]
-  [loop 0 0]]
+      [recur [+ sum [get m [str "k" i]]] [+ i 1]]]]]
 
-[let sum [bench-map-lookup m1 200]]
-[IO.println [str "map-lookup(200): sum=" sum]]
+[let sum [bench-map-lookup m1 1000]]
+[IO.println [str "map-lookup(1000): sum=" sum]]
 
 ; --- 5. Vec clone + mutate ---
 [fn bench-clone-mutate [v n]
-  [fn loop [i]
+  [loop [i 0]
     [if [>= i n] :done
       [do
         [let v2 [conj v 999]]
-        [loop [+ i 1]]]]]
-  [loop 0]]
+        [recur [+ i 1]]]]]]
 
-[bench-clone-mutate v1 100]
-[IO.println "clone-mutate(100): done"]
+[bench-clone-mutate v1 1000]
+[IO.println "clone-mutate(1000): done"]
 
 ; --- 6. Filter large vec ---
-[let filtered [filter [fn [x] [> x 100]] v1]]
-[IO.println [str "filter(200): len=" [len filtered]]]
+[let filtered [filter [fn [x] [> x 50000]] v1]]
+[IO.println [str "filter(100K): len=" [len filtered]]]
 
-; --- 7. Map merge: merge two 100-entry maps ---
+; --- 7. Map merge: merge two 1000-entry maps ---
 [fn bench-map-merge [n]
   [fn build [prefix n]
-    [fn loop [m i]
+    [loop [m {} i 0]
       [if [>= i n] m
-        [loop [assoc m [str prefix i] i] [+ i 1]]]]
-    [loop {} 0]]
+        [recur [assoc m [str prefix i] i] [+ i 1]]]]]
   [let a [build "a" n]]
   [let b [build "b" n]]
   [merge a b]]
 
-[let merged [bench-map-merge 100]]
-[IO.println [str "map-merge(100+100): len=" [len merged]]]
+[let merged [bench-map-merge 1000]]
+[IO.println [str "map-merge(1K+1K): len=" [len merged]]]
 
 [IO.println "bench complete"]

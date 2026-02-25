@@ -1,0 +1,91 @@
+; TCO stress tests
+; Run with: cargo run -p loon-cli -- run samples/tco-stress.oo
+
+; --- 1. loop/recur counting to 1,000,000 ---
+[let result
+  [loop [i 0]
+    [if [>= i 1000000] i
+      [recur [+ i 1]]]]]
+[IO.println [str "loop/recur count to 1M: " result]]
+
+; --- 2. Self-recursion via recur in fn ---
+[fn countdown [n]
+  [if [= n 0] :done
+    [recur [- n 1]]]]
+
+[IO.println [str "fn recur countdown 1M: " [countdown 1000000]]]
+
+; --- 3. Accumulator factorial ---
+[fn factorial [n acc]
+  [if [<= n 1] acc
+    [recur [- n 1] [* acc n]]]]
+
+[IO.println [str "factorial(20): " [factorial 20 1]]]
+
+; --- 4. Tail call through if ---
+[fn count-if [n]
+  [if [= n 0] :done
+    [count-if [- n 1]]]]
+
+[IO.println [str "tail call through if 100K: " [count-if 100000]]]
+
+; --- 5. Tail call through match ---
+[fn count-match [n]
+  [match n
+    0 :done
+    _ [count-match [- n 1]]]]
+
+[IO.println [str "tail call through match 100K: " [count-match 100000]]]
+
+; --- 6. Tail call through do ---
+[fn count-do [n]
+  [if [= n 0] :done
+    [do
+      [let _ 0]
+      [count-do [- n 1]]]]]
+
+[IO.println [str "tail call through do 100K: " [count-do 100000]]]
+
+; --- 7. Tail call through when ---
+[fn count-when [n acc]
+  [when [> n 0]
+    [recur [- n 1] [+ acc 1]]]
+  [if [= n 0] acc
+    [recur [- n 1] [+ acc 1]]]]
+
+; when returns Unit when false, so use a different pattern
+[fn count-when2 [n]
+  [if [= n 0] :done
+    [when true [count-when2 [- n 1]]]]]
+
+[IO.println [str "tail call through when 100K: " [count-when2 100000]]]
+
+; --- 8. Tail call through try (failure handler is the tail call) ---
+[fn try-handler-tail [n]
+  [if [= n 0] :done
+    [try [Fail.fail n]
+      [fn [msg] [try-handler-tail [- msg 1]]]]]]
+
+[IO.println [str "tail call through try handler 100K: " [try-handler-tail 100000]]]
+
+; --- 9. loop/recur building a vector ---
+[let big-vec
+  [loop [v #[] i 0]
+    [if [>= i 10000] v
+      [recur [conj v i] [+ i 1]]]]]
+
+[IO.println [str "loop/recur vec build 10K: len=" [len big-vec]]]
+
+; --- 10. Mutual recursion (general tail call) ---
+[fn is-even [n]
+  [if [= n 0] true
+    [is-odd [- n 1]]]]
+
+[fn is-odd [n]
+  [if [= n 0] false
+    [is-even [- n 1]]]]
+
+[IO.println [str "mutual recursion even?(100000): " [is-even 100000]]]
+[IO.println [str "mutual recursion odd?(100001): " [is-odd 100001]]]
+
+[IO.println "all TCO stress tests passed"]

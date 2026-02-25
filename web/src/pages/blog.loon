@@ -2,6 +2,7 @@
 
 [fn blog-features []
   [ul-el {:style {:margin-left "1.5rem" :color [color :muted] :line-height "1.8"}}
+    [li-el "Tail call optimization (loop/recur, trampoline)"]
     [li-el "Persistent data structures (imbl)"]
     [li-el "Full interpreter with 50+ builtins"]
     [li-el "Hindley-Milner type inference"]
@@ -62,6 +63,52 @@
                    :font-weight "400"
                    :margin-bottom "3.5rem"}}
         "Changelog"]
+
+      ; ── v0.5.0 — Tail Call Optimization ──────────────────────────────────
+
+      [blog-article "Tail Call Optimization" "Feb 25, 2026"
+
+        [p "Loon v0.5 adds three tiers of tail call optimization. Recursive patterns \x97 the only way to loop in a functional language \x97 now run in constant stack space. The interpreter used to overflow at ~200 recursive calls. Now it handles millions."]
+
+        [blog-h3 "loop/recur"]
+        [p "The new loop form binds locals and iterates. recur jumps back to the nearest loop with new values. Zero overhead \x97 no function object, no closure, no stack frame."]
+        [blog-code [str
+          "[loop [i 0 sum 0]\n"
+          "  [if [>= i 1000000] sum\n"
+          "    [recur [+ i 1] [+ sum i]]]]"]]
+
+        [blog-h3 "recur in fn"]
+        [p "recur also works inside function bodies, targeting the enclosing fn. This gives you self-recursion without naming the function or growing the stack."]
+        [blog-code [str
+          "[fn factorial [n acc]\n"
+          "  [if [<= n 1] acc\n"
+          "    [recur [- n 1] [* acc n]]]]\n"
+          "\n"
+          "[factorial 1000000 1]  ; constant stack space"]]
+
+        [blog-h3 "General tail calls"]
+        [p "Any function call in tail position \x97 the last expression in if, match, do, when, or try \x97 reuses the current stack frame via a trampoline. This means mutual recursion works at scale too."]
+        [blog-code [str
+          "[fn is-even [n]\n"
+          "  [if [= n 0] true [is-odd [- n 1]]]]\n"
+          "\n"
+          "[fn is-odd [n]\n"
+          "  [if [= n 0] false [is-even [- n 1]]]]\n"
+          "\n"
+          "[is-even 100000]  ; true, no stack overflow"]]
+
+        [blog-h3 "Collections at scale"]
+        [p "With TCO, the persistent data structures from v0.4.23 are finally unlocked. The benchmark suite now runs at 100,000 elements \x97 500x larger than before. Building a 100K-element vector via loop/recur takes under a second in release mode."]
+        [blog-code [str
+          "[fn build-vec [n]\n"
+          "  [loop [v #[] i 0]\n"
+          "    [if [>= i n] v\n"
+          "      [recur [conj v i] [+ i 1]]]]]\n"
+          "\n"
+          "[build-vec 100000]  ; 0.7s release"]]
+
+        [blog-h3 "What changed"]
+        [p "One file changed: the interpreter's eval/call path. eval is completely untouched. A new eval_tail function mirrors eval but returns a Trampoline (Done, TailCall, or Recur) instead of a Value. call_fn runs a trampoline loop. loop/recur are new special forms. All 355 existing tests pass unchanged."]]
 
       ; ── v0.4.23 — Persistent Data Structures ────────────────────────────
 

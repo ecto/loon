@@ -1,54 +1,70 @@
-# Collection Benchmarks: Vec → imbl Persistent Data Structures
+# Benchmarks
 
-## Summary
+## Collection Benchmarks (v0.5.0)
 
-Replaced `Vec<Value>`, `Vec<(Value, Value)>` (Map), and `Vec<Value>` (Set) with
-`imbl::Vector`, `imbl::HashMap`, and `imbl::HashSet` respectively.
-
-## Asymptotic Improvements
-
-| Operation | Before (std Vec) | After (imbl) | Improvement |
-|-----------|-----------------|--------------|-------------|
-| Vec clone | O(n) | O(1) | structural sharing |
-| Vec append (conj) | O(n) clone+push | O(log n) | RRB-tree |
-| Vec prepend (cons) | O(n) | O(log n) | RRB-tree |
-| Map lookup (get) | O(n) linear scan | O(log₃₂ n) ≈ O(1) | HAMT |
-| Map insert (assoc) | O(n) clone+scan | O(log₃₂ n) | HAMT |
-| Map remove | O(n) | O(log₃₂ n) | HAMT |
-| Map merge | O(n*m) | O(n log m) | HAMT |
-| Set contains | O(n) | O(log₃₂ n) ≈ O(1) | HAMT |
-| Set insert (conj) | O(n) | O(log₃₂ n) | HAMT |
-
-## Wall-Clock Benchmarks
+100,000-element collections using `loop`/`recur` with persistent data structures (imbl).
 
 Benchmark script: `samples/bench-collections.oo`
 
-Sizes kept small (200 elements) due to interpreter stack depth limits.
-At these sizes, interpreter overhead dominates, so wall-clock differences are minimal.
-The real payoff is at scale and with repeated clone operations.
-
-### Before (std Vec/Map)
+### Release mode (`cargo build --release`)
 
 | Run | User | System | Total |
 |-----|------|--------|-------|
-| 1 | 0.13s | 0.09s | 1.323s |
-| 2 | 0.13s | 0.07s | 1.325s |
-| 3 | 0.12s | 0.08s | 1.410s |
-| **Median** | **0.13s** | **0.08s** | **1.325s** |
+| 1 | 0.70s | 0.03s | 1.137s |
+| 2 | 0.69s | 0.03s | 0.730s |
+| 3 | 0.71s | 0.02s | 0.743s |
+| **Median** | **0.70s** | **0.03s** | **0.743s** |
 
-### After (imbl persistent)
+Operations at 100K elements:
+- Vec append (conj): 100K insertions
+- Vec prepend (cons): 100K insertions
+- Map insert (assoc): 100K insertions
+- Map lookup: 1K lookups in 100K map
+- Clone + mutate: 1K clones of 100K vec
+- Filter: 100K elements
+- Map merge: two 1K maps
+
+### Before TCO (v0.4.23)
+
+Collections were limited to ~200 elements due to stack overflow at ~200 recursive calls.
+Wall-clock with 200-element collections: ~0.11s user (release).
+
+### Improvement
+
+| | v0.4.23 | v0.5.0 | Change |
+|---|---------|--------|--------|
+| Max collection size | ~200 | unlimited | stack overflow eliminated |
+| Benchmark elements | 200 | 100,000 | 500x larger |
+| User time (release) | 0.11s | 0.70s | 6x more time, 500x more work |
+
+## TCO Stress Tests (v0.5.0)
+
+Stress test script: `samples/tco-stress.oo`
+
+### Release mode
 
 | Run | User | System | Total |
 |-----|------|--------|-------|
-| 1 | 0.10s | 0.08s | 1.339s |
-| 2 | 0.11s | 0.08s | 1.351s |
-| 3 | 0.12s | 0.07s | 1.346s |
-| **Median** | **0.11s** | **0.08s** | **1.346s** |
+| 1 | 1.44s | 0.00s | 1.444s |
+| 2 | 1.43s | 0.00s | 1.437s |
+| 3 | 1.45s | 0.00s | 1.458s |
+| **Median** | **1.44s** | **0.00s** | **1.444s** |
 
-### Notes
+Tests:
+- `loop`/`recur` counting to 1,000,000
+- `recur` in `fn` counting down from 1,000,000
+- Tail call through `if`, `match`, `do`, `when`, `try`
+- `loop`/`recur` building 10K-element vector
+- Mutual recursion (even/odd) to 100,000
 
-- Wall-clock times include cargo overhead (~1.2s) and are dominated by interpreter startup
-- User-time median dropped from 0.13s to 0.11s (~15% improvement even at 200 elements)
-- The key wins (O(1) clone, O(1) map lookup) compound at larger collection sizes
-- With tail-call optimization or larger stack sizes, collections of 10k+ elements
-  would show dramatic improvements (hours → seconds for pathological cases)
+## Asymptotic Improvements (imbl)
+
+| Operation | Before (std Vec) | After (imbl) |
+|-----------|-----------------|--------------|
+| Vec clone | O(n) | O(1) |
+| Vec append (conj) | O(n) | O(log n) |
+| Vec prepend (cons) | O(n) | O(log n) |
+| Map lookup (get) | O(n) | O(log₃₂ n) ≈ O(1) |
+| Map insert (assoc) | O(n) | O(log₃₂ n) |
+| Map merge | O(n*m) | O(n log m) |
+| Set contains | O(n) | O(log₃₂ n) ≈ O(1) |

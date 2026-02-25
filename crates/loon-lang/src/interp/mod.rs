@@ -67,6 +67,13 @@ impl std::error::Error for InterpError {}
 
 type IResult = Result<Value, InterpError>;
 
+enum Trampoline {
+    Done(Value),
+    TailCall { func: Value, args: Vec<Value>, span: Span },
+    Recur(Vec<Value>),
+}
+type TResult = Result<Trampoline, InterpError>;
+
 pub fn err(msg: impl Into<String>) -> InterpError {
     InterpError {
         message: msg.into(),
@@ -880,6 +887,8 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                     }
                     "handle" => return eval_handle(&items[1..], env),
                     "try" => return eval_try(&items[1..], env),
+                    "loop" => return eval_loop(&items[1..], env),
+                    "recur" => return Err(err("recur outside of loop or fn")),
                     "pub" => {
                         // [pub fn name ...] — eval the inner form and mark as pub
                         if items.len() > 1 {
@@ -1831,6 +1840,267 @@ fn eval_try(args: &[Expr], env: &mut Env) -> IResult {
     }
 }
 
+/// Evaluate [loop [name1 val1 name2 val2 ...] body...]
+/// Zero-overhead iteration: rebinds locals and jumps on `recur`.
+fn eval_loop(args: &[Expr], env: &mut Env) -> IResult {
+    if args.is_empty() {
+        return Err(err("loop requires bindings and body"));
+    }
+    // Parse bindings vector
+    let bindings_expr = &args[0];
+    let binding_items = match &bindings_expr.kind {
+        ExprKind::List(items) | ExprKind::Vec(items) => items,
+        _ => return Err(err("loop bindings must be a vector [name val ...]")),
+    };
+    if binding_items.len() % 2 != 0 {
+        return Err(err("loop bindings must have an even number of forms"));
+    }
+    // Extract names and evaluate initial values
+    let mut names = Vec::with_capacity(binding_items.len() / 2);
+    let mut values = Vec::with_capacity(binding_items.len() / 2);
+    let mut i = 0;
+    while i < binding_items.len() {
+        let name = match &binding_items[i].kind {
+            ExprKind::Symbol(s) => s.clone(),
+            _ => return Err(err("loop binding name must be a symbol")),
+        };
+        let val = eval(&binding_items[i + 1], env)?;
+        names.push(name);
+        values.push(val);
+        i += 2;
+    }
+    let body = &args[1..];
+    if body.is_empty() {
+        return Err(err("loop requires a body"));
+    }
+
+    env.push_scope();
+    loop {
+        // Bind current values
+        for (name, val) in names.iter().zip(values.iter()) {
+            env.set(name.clone(), val.clone());
+        }
+        // Evaluate body: all-but-last with eval, last with eval_tail
+        let (last, init) = body.split_last().unwrap();
+        for expr in init {
+            eval(expr, env)?;
+        }
+        match eval_tail(last, env)? {
+            Trampoline::Done(v) => {
+                env.pop_scope();
+                return Ok(v);
+            }
+            Trampoline::Recur(new_values) => {
+                if new_values.len() != names.len() {
+                    env.pop_scope();
+                    return Err(err(format!(
+                        "recur expected {} args, got {}",
+                        names.len(),
+                        new_values.len()
+                    )));
+                }
+                values = new_values;
+                // continue loop
+            }
+            Trampoline::TailCall { func, args, span } => {
+                env.pop_scope();
+                // Resolve the tail call normally
+                return match func {
+                    Value::Fn(lf) => call_fn(&lf, &args, env, span),
+                    Value::Builtin(name, f) => f(&name, &args),
+                    _ => Err(err("not callable")),
+                };
+            }
+        }
+    }
+}
+
+// --- Tail-position evaluation ---
+
+/// Like `eval`, but returns a Trampoline so the caller can perform tail calls
+/// without growing the Rust stack. Only tail-position-aware forms get special
+/// treatment; everything else delegates to `eval` and wraps in `Done`.
+fn eval_tail(expr: &Expr, env: &mut Env) -> TResult {
+    match &expr.kind {
+        ExprKind::List(items) if items.is_empty() => Ok(Trampoline::Done(Value::Unit)),
+        ExprKind::List(items) => {
+            let head = &items[0];
+            // Special forms that propagate tail position
+            if let ExprKind::Symbol(s) = &head.kind {
+                match s.as_str() {
+                    "if" => return eval_tail_if(&items[1..], env),
+                    "do" => return eval_tail_do(&items[1..], env),
+                    "when" => return eval_tail_when(&items[1..], env),
+                    "match" => return eval_tail_match(&items[1..], env),
+                    "try" => return eval_tail_try(&items[1..], env),
+                    "recur" => {
+                        let args: Result<Vec<_>, _> =
+                            items[1..].iter().map(|e| eval(e, env)).collect();
+                        return Ok(Trampoline::Recur(args?));
+                    }
+                    "loop" => {
+                        let val = eval_loop(&items[1..], env)?;
+                        return Ok(Trampoline::Done(val));
+                    }
+                    // All other special forms: delegate to eval (not tail-callable)
+                    "fn" | "let" | "pipe" | "mut" | "set!" | "type" | "test"
+                    | "effect" | "trait" | "sig" | "derive" | "catch-errors"
+                    | "impl" | "macro" | "macro+" | "macroexpand" | "inspect"
+                    | "handle" | "pub" => {
+                        return Ok(Trampoline::Done(eval(expr, env)?));
+                    }
+                    _ => {}
+                }
+            }
+
+            // Effect operations — not tail-callable, evaluate normally
+            if let ExprKind::DotAccess(obj, _) = &head.kind {
+                if let ExprKind::Symbol(effect) = &obj.kind {
+                    if effect.starts_with(char::is_uppercase) {
+                        let val = eval(expr, env)?;
+                        return Ok(Trampoline::Done(val));
+                    }
+                }
+            }
+
+            // Function call in tail position → TailCall
+            let func = eval(head, env)?;
+            let args: Result<Vec<_>, _> = items[1..].iter().map(|e| eval(e, env)).collect();
+            let args = args?;
+            Ok(Trampoline::TailCall { func, args, span: expr.span })
+        }
+        // Everything else: delegate to eval
+        _ => Ok(Trampoline::Done(eval(expr, env)?)),
+    }
+}
+
+fn eval_tail_if(args: &[Expr], env: &mut Env) -> TResult {
+    if args.len() < 2 {
+        return Err(err("if requires condition and then-branch"));
+    }
+    let cond = eval(&args[0], env)?;
+    if cond.is_truthy() {
+        eval_tail(&args[1], env)
+    } else if args.len() > 2 {
+        eval_tail(&args[2], env)
+    } else {
+        Ok(Trampoline::Done(Value::Unit))
+    }
+}
+
+fn eval_tail_do(args: &[Expr], env: &mut Env) -> TResult {
+    if args.is_empty() {
+        return Ok(Trampoline::Done(Value::Unit));
+    }
+    let (last, init) = args.split_last().unwrap();
+    for expr in init {
+        eval(expr, env)?;
+    }
+    eval_tail(last, env)
+}
+
+fn eval_tail_when(args: &[Expr], env: &mut Env) -> TResult {
+    if args.len() < 2 {
+        return Err(err("when requires condition and body"));
+    }
+    let cond = eval(&args[0], env)?;
+    if cond.is_truthy() {
+        eval_tail_do(&args[1..], env)
+    } else {
+        Ok(Trampoline::Done(Value::Unit))
+    }
+}
+
+fn eval_tail_match(args: &[Expr], env: &mut Env) -> TResult {
+    if args.is_empty() {
+        return Err(err("match requires a value"));
+    }
+    let scrutinee = eval(&args[0], env)?;
+    let arms = &args[1..];
+
+    let mut i = 0;
+    while i < arms.len() {
+        let pattern = &arms[i];
+
+        // Guard: pattern [when guard] body → i += 3
+        if i + 2 < arms.len() {
+            if let ExprKind::List(guard_form) = &arms[i + 1].kind {
+                if !guard_form.is_empty() {
+                    if let ExprKind::Symbol(s) = &guard_form[0].kind {
+                        if s == "when" {
+                            let mut bindings = HashMap::new();
+                            if pattern_matches(pattern, &scrutinee, &mut bindings, env)? {
+                                env.push_scope();
+                                for (k, v) in &bindings {
+                                    env.set(k.clone(), v.clone());
+                                }
+                                let guard_val = eval(&guard_form[1], env)?;
+                                if guard_val.is_truthy() {
+                                    let result = eval_tail(&arms[i + 2], env);
+                                    env.pop_scope();
+                                    return result;
+                                }
+                                env.pop_scope();
+                            }
+                            i += 3;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Simple: pattern body → i += 2
+        if i + 1 < arms.len() {
+            let mut bindings = HashMap::new();
+            if pattern_matches(pattern, &scrutinee, &mut bindings, env)? {
+                env.push_scope();
+                for (k, v) in bindings {
+                    env.set(k, v);
+                }
+                let result = eval_tail(&arms[i + 1], env);
+                env.pop_scope();
+                return result;
+            }
+            i += 2;
+            continue;
+        }
+
+        i += 1;
+    }
+
+    Err(err(format!("no match arm matched value: {scrutinee}")))
+}
+
+fn eval_tail_try(args: &[Expr], env: &mut Env) -> TResult {
+    if args.len() < 2 {
+        return Err(err("try requires a body and failure handler"));
+    }
+    let body = &args[0];
+    let on_fail = eval(&args[1], env)?;
+
+    match eval(body, env) {
+        Ok(val) => Ok(Trampoline::Done(val)),
+        Err(e) => {
+            if let Some(ref performed) = e.performed_effect {
+                if performed.effect == "Fail" && performed.operation == "fail" {
+                    let msg = performed.args.first().cloned().unwrap_or(Value::Unit);
+                    // Tail call to the failure handler
+                    Ok(Trampoline::TailCall {
+                        func: on_fail,
+                        args: vec![msg],
+                        span: Span::ZERO,
+                    })
+                } else {
+                    Err(e)
+                }
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
 fn eval_test_def(args: &[Expr], env: &mut Env) -> IResult {
     // [test name [params] body...] — register as a named test function
     // Also supports [test fn name ...] for backward compat
@@ -1962,12 +2232,49 @@ pub(crate) fn call_fn(lf: &value::LoonFn, args: &[Value], env: &mut Env, call_sp
         fn_name: fn_name.clone(),
         call_site: call_span,
     }));
-    let result = call_fn_inner(lf, args, env);
+
+    let mut current_fn = lf.clone();
+    let mut current_args: Vec<Value> = args.to_vec();
+
+    let result = loop {
+        match call_fn_inner(&current_fn, &current_args, env) {
+            Ok(Trampoline::Done(v)) => break Ok(v),
+            Ok(Trampoline::Recur(new_args)) => {
+                // Self-recursion: rebind params, re-evaluate body
+                current_args = new_args;
+                continue;
+            }
+            Ok(Trampoline::TailCall { func, args: tc_args, span }) => {
+                match func {
+                    Value::Fn(new_lf) => {
+                        // Replace call stack frame
+                        let new_name = new_lf.name.as_deref().unwrap_or("anonymous").to_string();
+                        CALL_STACK.with(|s| {
+                            let mut stack = s.borrow_mut();
+                            if let Some(frame) = stack.last_mut() {
+                                frame.fn_name = new_name;
+                                frame.call_site = span;
+                            }
+                        });
+                        current_fn = new_lf;
+                        current_args = tc_args;
+                        continue;
+                    }
+                    Value::Builtin(name, f) => {
+                        break f(&name, &tc_args);
+                    }
+                    _ => break Err(err("not callable")),
+                }
+            }
+            Err(e) => break Err(e),
+        }
+    };
+
     CALL_STACK.with(|s| s.borrow_mut().pop());
     result
 }
 
-fn call_fn_inner(lf: &value::LoonFn, args: &[Value], env: &mut Env) -> IResult {
+fn call_fn_inner(lf: &value::LoonFn, args: &[Value], env: &mut Env) -> TResult {
     // Use captured env if present (closures), otherwise use caller's env
     let mut use_env = if let Some(ref captured) = lf.captured_env {
         let mut e = captured.clone();
@@ -2002,12 +2309,18 @@ fn call_fn_inner(lf: &value::LoonFn, args: &[Value], env: &mut Env) -> IResult {
                     env.set(name.clone(), Value::Vec(rest_vals));
                 }
             }
-            let mut result = Value::Unit;
-            for expr in body.iter() {
-                result = eval(expr, env)?;
+            // Evaluate body: all-but-last with eval, last with eval_tail
+            if body.is_empty() {
+                env.pop_scope();
+                return Ok(Trampoline::Done(Value::Unit));
             }
+            let (last, init) = body.split_last().unwrap();
+            for expr in init {
+                eval(expr, env)?;
+            }
+            let result = eval_tail(last, env);
             env.pop_scope();
-            return Ok(result);
+            return result;
         }
     }
     Err(err(format!(

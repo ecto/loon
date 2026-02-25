@@ -3,5 +3,5 @@ members = ["crates/loon-lang", "crates/loon-cli", "crates/loon-wasm", "crates/lo
 resolver = "2"
 
 [workspace.package]
-version = "0.4.23"
+version = "0.5.0"
 edition = "2021"
