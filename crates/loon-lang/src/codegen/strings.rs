@@ -140,18 +140,18 @@ impl StringRuntime {
 
         // Loop: while i < len_a
         instrs.push(Block(BlockType::Empty)); // block (break target)
-        instrs.push(Loop(BlockType::Empty));  // loop
+        instrs.push(Loop(BlockType::Empty)); // loop
 
         // if i >= len_a, break
         instrs.push(LocalGet(6));
         instrs.push(LocalGet(2));
         instrs.push(I64GtS); // i64.ge_s not available, use (i >= len) == !(i < len)
-        // Actually we don't have ge_s. Use: if !(i < len_a) break
-        // But we pushed GtS which is i > len. We need i >= len.
-        // i >= len is equivalent to !(i < len). Or: (len - i) <= 0 which is (len - i) eqz when len==i
-        // Simplest: check i == len_a
-        // Redo: pop the GtS result
-        // Actually, let me restructure. Remove the GtS.
+                             // Actually we don't have ge_s. Use: if !(i < len_a) break
+                             // But we pushed GtS which is i > len. We need i >= len.
+                             // i >= len is equivalent to !(i < len). Or: (len - i) <= 0 which is (len - i) eqz when len==i
+                             // Simplest: check i == len_a
+                             // Redo: pop the GtS result
+                             // Actually, let me restructure. Remove the GtS.
 
         // Remove last instruction (I64GtS) — we'll redo the check
         instrs.pop(); // remove I64GtS

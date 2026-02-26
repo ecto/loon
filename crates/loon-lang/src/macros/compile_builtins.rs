@@ -6,16 +6,13 @@
 //! - Env: environment variable access
 //! - Print: compile-time diagnostics
 
+use super::CompileEffect;
 use crate::interp::{self, Value};
 use std::collections::HashSet;
-use super::CompileEffect;
 
 /// Register compile-time builtins into an interpreter environment.
 /// Only registers builtins for effects that are declared.
-pub fn register_compile_builtins(
-    env: &mut interp::Env,
-    declared_effects: &HashSet<CompileEffect>,
-) {
+pub fn register_compile_builtins(env: &mut interp::Env, declared_effects: &HashSet<CompileEffect>) {
     if declared_effects.contains(&CompileEffect::IO) {
         register_io_builtins(env);
     }
@@ -67,9 +64,7 @@ fn register_io_builtins(env: &mut interp::Env) {
         Value::Builtin(
             "IO.write-file".to_string(),
             Arc::new(|_name, args| {
-                if let (Some(Value::Str(path)), Some(contents)) =
-                    (args.first(), args.get(1))
-                {
+                if let (Some(Value::Str(path)), Some(contents)) = (args.first(), args.get(1)) {
                     match std::fs::write(path, contents.display_str()) {
                         Ok(()) => Ok(Value::Unit),
                         Err(e) => Err(interp::err(format!("IO.write-file: {e}"))),

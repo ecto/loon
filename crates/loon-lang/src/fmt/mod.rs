@@ -265,14 +265,7 @@ fn defn_to_doc(items: &[Expr]) -> Doc {
     let name = expr_to_doc(&items[1]);
     let params = expr_to_doc(&items[2]);
 
-    let header = concat_all(vec![
-        text("["),
-        keyword,
-        text(" "),
-        name,
-        text(" "),
-        params,
-    ]);
+    let header = concat_all(vec![text("["), keyword, text(" "), name, text(" "), params]);
 
     if items.len() == 3 {
         return concat(header, text("]"));

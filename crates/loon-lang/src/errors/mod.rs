@@ -101,10 +101,7 @@ impl LoonDiagnostic {
 
     /// Primary span (first primary label, if any).
     pub fn primary_span(&self) -> Option<Span> {
-        self.labels
-            .iter()
-            .find(|l| l.is_primary)
-            .map(|l| l.span)
+        self.labels.iter().find(|l| l.is_primary).map(|l| l.span)
     }
 
     /// Compatibility: expose `what` as `message` for test assertions that
@@ -194,8 +191,7 @@ impl From<ParseError> for LoonDiagnostic {
             ErrorCode::E0101
         };
 
-        LoonDiagnostic::new(code, &e.message)
-            .with_label(e.span, &e.message, true)
+        LoonDiagnostic::new(code, &e.message).with_label(e.span, &e.message, true)
     }
 }
 
@@ -320,8 +316,11 @@ mod tests {
 
     #[test]
     fn rendering_does_not_panic() {
-        let diag = LoonDiagnostic::new(ErrorCode::E0200, "test error")
-            .with_label(Span::new(0, 3), "here", true);
+        let diag = LoonDiagnostic::new(ErrorCode::E0200, "test error").with_label(
+            Span::new(0, 3),
+            "here",
+            true,
+        );
         // Just verify it doesn't panic
         report_diagnostic("test.oo", "[+ 1 2]", &diag);
     }

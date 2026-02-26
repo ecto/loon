@@ -223,7 +223,10 @@ fn collect_free(expr: &Expr, bound: &HashSet<String>, free: &mut HashSet<String>
             }
         }
         // Literals: no free vars
-        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_)
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
         | ExprKind::Keyword(_) => {}
         ExprKind::List(_) => {} // empty list handled above
         // Dot access — recurse into inner expr

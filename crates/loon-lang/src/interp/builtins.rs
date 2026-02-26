@@ -93,12 +93,7 @@ pub fn capture_output<F: FnOnce() -> R, R>(f: F) -> (R, String) {
         *buf.borrow_mut() = Some(Vec::new());
     });
     let result = f();
-    let output = PRINT_BUF.with(|buf| {
-        buf.borrow_mut()
-            .take()
-            .unwrap_or_default()
-            .join("\n")
-    });
+    let output = PRINT_BUF.with(|buf| buf.borrow_mut().take().unwrap_or_default().join("\n"));
     (result, output)
 }
 
@@ -113,7 +108,9 @@ pub fn register_builtins(env: &mut Env) {
     }
 
     builtin!(env, "+", |_, args: &[Value]| {
-        if args.len() < 2 { return Err(err("+ requires at least 2 arguments")); }
+        if args.len() < 2 {
+            return Err(err("+ requires at least 2 arguments"));
+        }
         let mut acc = args[0].clone();
         for arg in &args[1..] {
             acc = match (&acc, arg) {
@@ -138,7 +135,9 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "*", |_, args: &[Value]| {
-        if args.len() < 2 { return Err(err("* requires at least 2 arguments")); }
+        if args.len() < 2 {
+            return Err(err("* requires at least 2 arguments"));
+        }
         let mut acc = args[0].clone();
         for arg in &args[1..] {
             acc = match (&acc, arg) {
@@ -155,7 +154,9 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "/", |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => {
-                if *b == 0 { return Err(err("division by zero")); }
+                if *b == 0 {
+                    return Err(err("division by zero"));
+                }
                 Ok(Value::Int(a / b))
             }
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
@@ -168,7 +169,9 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "%", |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => {
-                if *b == 0 { return Err(err("modulo by zero")); }
+                if *b == 0 {
+                    return Err(err("modulo by zero"));
+                }
                 Ok(Value::Int(a % b))
             }
             _ => Err(err("% requires integers")),
@@ -179,7 +182,10 @@ pub fn register_builtins(env: &mut Env) {
         match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a > b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a > b)),
-            _ => Err(err(format!("> requires numbers, got {} and {}", args[0], args[1]))),
+            _ => Err(err(format!(
+                "> requires numbers, got {} and {}",
+                args[0], args[1]
+            ))),
         }
     });
 
@@ -187,7 +193,10 @@ pub fn register_builtins(env: &mut Env) {
         match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a < b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a < b)),
-            _ => Err(err(format!("< requires numbers, got {} and {}", args[0], args[1]))),
+            _ => Err(err(format!(
+                "< requires numbers, got {} and {}",
+                args[0], args[1]
+            ))),
         }
     });
 
@@ -199,7 +208,10 @@ pub fn register_builtins(env: &mut Env) {
         match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a >= b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a >= b)),
-            _ => Err(err(format!(">= requires numbers, got {} and {}", args[0], args[1]))),
+            _ => Err(err(format!(
+                ">= requires numbers, got {} and {}",
+                args[0], args[1]
+            ))),
         }
     });
 
@@ -207,7 +219,10 @@ pub fn register_builtins(env: &mut Env) {
         match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a <= b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a <= b)),
-            _ => Err(err(format!("<= requires numbers, got {} and {}", args[0], args[1]))),
+            _ => Err(err(format!(
+                "<= requires numbers, got {} and {}",
+                args[0], args[1]
+            ))),
         }
     });
 
@@ -353,7 +368,11 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "len", |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) => Ok(Value::Int(v.len() as i64)),
-            Value::Str(s) => Ok(Value::Int(if s.is_ascii() { s.len() } else { s.chars().count() } as i64)),
+            Value::Str(s) => Ok(Value::Int(if s.is_ascii() {
+                s.len()
+            } else {
+                s.chars().count()
+            } as i64)),
             Value::Map(m) => Ok(Value::Int(m.len() as i64)),
             Value::Set(s) => Ok(Value::Int(s.len() as i64)),
             Value::Json(j) => match j.as_ref() {
@@ -431,18 +450,16 @@ pub fn register_builtins(env: &mut Env) {
                 let func_clone = func.clone();
                 Ok(Value::Builtin(
                     "map-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| {
-                        match &inner_args[0] {
-                            Value::Vec(v) => map_vec(&func_clone, v),
-                            Value::Json(j) => {
-                                if let serde_json::Value::Array(arr) = j.as_ref() {
-                                    map_json(&func_clone, arr)
-                                } else {
-                                    Err(err("map requires a vector"))
-                                }
+                    Arc::new(move |_, inner_args: &[Value]| match &inner_args[0] {
+                        Value::Vec(v) => map_vec(&func_clone, v),
+                        Value::Json(j) => {
+                            if let serde_json::Value::Array(arr) = j.as_ref() {
+                                map_json(&func_clone, arr)
+                            } else {
+                                Err(err("map requires a vector"))
                             }
-                            _ => Err(err("map requires a vector")),
                         }
+                        _ => Err(err("map requires a vector")),
                     }),
                 ))
             }
@@ -484,18 +501,16 @@ pub fn register_builtins(env: &mut Env) {
                 let func_clone = func.clone();
                 Ok(Value::Builtin(
                     "filter-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| {
-                        match &inner_args[0] {
-                            Value::Vec(v) => filter_vec(&func_clone, v),
-                            Value::Json(j) => {
-                                if let serde_json::Value::Array(arr) = j.as_ref() {
-                                    filter_json(&func_clone, arr)
-                                } else {
-                                    Err(err("filter requires a vector"))
-                                }
+                    Arc::new(move |_, inner_args: &[Value]| match &inner_args[0] {
+                        Value::Vec(v) => filter_vec(&func_clone, v),
+                        Value::Json(j) => {
+                            if let serde_json::Value::Array(arr) = j.as_ref() {
+                                filter_json(&func_clone, arr)
+                            } else {
+                                Err(err("filter requires a vector"))
                             }
-                            _ => Err(err("filter requires a vector"))
                         }
+                        _ => Err(err("filter requires a vector")),
                     }),
                 ))
             }
@@ -555,7 +570,11 @@ pub fn register_builtins(env: &mut Env) {
 
     builtin!(env, "get", |_, args: &[Value]| {
         let default = || {
-            if args.len() > 2 { args[2].clone() } else { Value::Unit }
+            if args.len() > 2 {
+                args[2].clone()
+            } else {
+                Value::Unit
+            }
         };
         match (&args[0], &args[1]) {
             (Value::Map(m), key) => {
@@ -636,16 +655,14 @@ pub fn register_builtins(env: &mut Env) {
             Value::Set(s) => Ok(Value::Bool(s.contains(&args[1]))),
             Value::Map(m) => Ok(Value::Bool(m.contains_key(&args[1]))),
             Value::Vec(v) => Ok(Value::Bool(v.iter().any(|i| i == &args[1]))),
-            Value::Str(s) => {
-                match &args[1] {
-                    Value::Str(needle) => Ok(Value::Bool(s.contains(needle.as_str()))),
-                    _ => Err(err("contains? on string requires a string needle")),
-                }
-            }
+            Value::Str(s) => match &args[1] {
+                Value::Str(needle) => Ok(Value::Bool(s.contains(needle.as_str()))),
+                _ => Err(err("contains? on string requires a string needle")),
+            },
             Value::Json(j) => match (j.as_ref(), &args[1]) {
-                (serde_json::Value::Array(a), Value::Str(s)) => {
-                    Ok(Value::Bool(a.iter().any(|v| v.as_str() == Some(s.as_str()))))
-                }
+                (serde_json::Value::Array(a), Value::Str(s)) => Ok(Value::Bool(
+                    a.iter().any(|v| v.as_str() == Some(s.as_str())),
+                )),
                 (serde_json::Value::Array(a), Value::Int(n)) => {
                     Ok(Value::Bool(a.iter().any(|v| v.as_i64() == Some(*n))))
                 }
@@ -653,7 +670,7 @@ pub fn register_builtins(env: &mut Env) {
                     Ok(Value::Bool(o.contains_key(s.as_str())))
                 }
                 _ => Err(err("contains? on JSON requires array/object")),
-            }
+            },
             _ => Err(err("contains? requires a collection or string")),
         }
     });
@@ -681,7 +698,11 @@ pub fn register_builtins(env: &mut Env) {
                 let ka = apply_value(func, std::slice::from_ref(a)).unwrap_or(Value::Int(0));
                 let kb = apply_value(func, std::slice::from_ref(b)).unwrap_or(Value::Int(0));
                 let ord = value_cmp(&ka, &kb);
-                if desc { ord.reverse() } else { ord }
+                if desc {
+                    ord.reverse()
+                } else {
+                    ord
+                }
             });
             Ok(Value::Vec(sorted.into_iter().collect()))
         }
@@ -691,9 +712,7 @@ pub fn register_builtins(env: &mut Env) {
                 let desc = matches!(order, Value::Keyword(k) if k == "desc");
                 do_sort(func, desc, v)
             }
-            [func, Value::Vec(v)] if func.is_callable() => {
-                do_sort(func, false, v)
-            }
+            [func, Value::Vec(v)] if func.is_callable() => do_sort(func, false, v),
             [func, order] => {
                 let func_clone = func.clone();
                 let desc = matches!(order, Value::Keyword(k) if k == "desc");
@@ -784,18 +803,16 @@ pub fn register_builtins(env: &mut Env) {
                 let func_clone = func.clone();
                 Ok(Value::Builtin(
                     "each-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| {
-                        match &inner_args[0] {
-                            Value::Vec(v) => each_vec(&func_clone, v),
-                            Value::Json(j) => {
-                                if let serde_json::Value::Array(arr) = j.as_ref() {
-                                    each_json(&func_clone, arr)
-                                } else {
-                                    Err(err("each requires a vector"))
-                                }
+                    Arc::new(move |_, inner_args: &[Value]| match &inner_args[0] {
+                        Value::Vec(v) => each_vec(&func_clone, v),
+                        Value::Json(j) => {
+                            if let serde_json::Value::Array(arr) = j.as_ref() {
+                                each_json(&func_clone, arr)
+                            } else {
+                                Err(err("each requires a vector"))
                             }
-                            _ => Err(err("each requires a vector")),
                         }
+                        _ => Err(err("each requires a vector")),
                     }),
                 ))
             }
@@ -816,9 +833,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "collect", |_, args: &[Value]| {
-        Ok(args[0].clone())
-    });
+    builtin!(env, "collect", |_, args: &[Value]| { Ok(args[0].clone()) });
 
     builtin!(env, "push!", |_, args: &[Value]| {
         if let Value::Vec(v) = &args[0] {
@@ -858,7 +873,9 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "zip", |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Vec(a), Value::Vec(b)) => {
-                let pairs: imbl::Vector<Value> = a.iter().zip(b.iter())
+                let pairs: imbl::Vector<Value> = a
+                    .iter()
+                    .zip(b.iter())
                     .map(|(x, y)| Value::Tuple(vec![x.clone(), y.clone()]))
                     .collect();
                 Ok(Value::Vec(pairs))
@@ -977,13 +994,18 @@ pub fn register_builtins(env: &mut Env) {
 
     builtin!(env, "keywordize-keys", |_, args: &[Value]| {
         if let Value::Map(pairs) = &args[0] {
-            Ok(Value::Map(pairs.iter().map(|(k, v)| {
-                let new_k = match k {
-                    Value::Str(s) => Value::Keyword(s.clone()),
-                    other => other.clone(),
-                };
-                (new_k, v.clone())
-            }).collect()))
+            Ok(Value::Map(
+                pairs
+                    .iter()
+                    .map(|(k, v)| {
+                        let new_k = match k {
+                            Value::Str(s) => Value::Keyword(s.clone()),
+                            other => other.clone(),
+                        };
+                        (new_k, v.clone())
+                    })
+                    .collect(),
+            ))
         } else {
             Err(err("keywordize-keys requires a map"))
         }
@@ -1047,9 +1069,7 @@ pub fn register_builtins(env: &mut Env) {
 
     builtin!(env, "remove", |_, args: &[Value]| {
         match (&args[0], &args[1]) {
-            (Value::Map(m), key) => {
-                Ok(Value::Map(m.without(key)))
-            }
+            (Value::Map(m), key) => Ok(Value::Map(m.without(key))),
             _ => Err(err("remove requires a map and key")),
         }
     });
@@ -1058,7 +1078,9 @@ pub fn register_builtins(env: &mut Env) {
 
     builtin!(env, "int", |_, args: &[Value]| {
         match &args[0] {
-            Value::Str(s) => s.trim().parse::<i64>()
+            Value::Str(s) => s
+                .trim()
+                .parse::<i64>()
                 .map(Value::Int)
                 .map_err(|e| err(format!("int: cannot parse '{}': {}", s, e))),
             Value::Int(n) => Ok(Value::Int(*n)),
@@ -1069,7 +1091,9 @@ pub fn register_builtins(env: &mut Env) {
 
     builtin!(env, "float", |_, args: &[Value]| {
         match &args[0] {
-            Value::Str(s) => s.trim().parse::<f64>()
+            Value::Str(s) => s
+                .trim()
+                .parse::<f64>()
                 .map(Value::Float)
                 .map_err(|e| err(format!("float: cannot parse '{}': {}", s, e))),
             Value::Float(f) => Ok(Value::Float(*f)),
@@ -1090,12 +1114,23 @@ pub fn register_builtins(env: &mut Env) {
                     if idx < bytes.len() {
                         Ok(Value::Str(String::from(bytes[idx] as char)))
                     } else {
-                        Err(err(format!("char-at: index {} out of bounds (len {})", i, bytes.len())))
+                        Err(err(format!(
+                            "char-at: index {} out of bounds (len {})",
+                            i,
+                            bytes.len()
+                        )))
                     }
                 } else {
-                    s.chars().nth(idx)
+                    s.chars()
+                        .nth(idx)
                         .map(|c| Value::Str(c.to_string()))
-                        .ok_or_else(|| err(format!("char-at: index {} out of bounds (len {})", i, s.chars().count())))
+                        .ok_or_else(|| {
+                            err(format!(
+                                "char-at: index {} out of bounds (len {})",
+                                i,
+                                s.chars().count()
+                            ))
+                        })
                 }
             }
             _ => Err(err("char-at requires a string and index")),
@@ -1109,13 +1144,23 @@ pub fn register_builtins(env: &mut Env) {
                 let end = *end as usize;
                 if s.is_ascii() {
                     if start > s.len() || end > s.len() || start > end {
-                        return Err(err(format!("substring: invalid range {}..{} for len {}", start, end, s.len())));
+                        return Err(err(format!(
+                            "substring: invalid range {}..{} for len {}",
+                            start,
+                            end,
+                            s.len()
+                        )));
                     }
                     Ok(Value::Str(s[start..end].to_string()))
                 } else {
                     let chars: Vec<char> = s.chars().collect();
                     if start > chars.len() || end > chars.len() || start > end {
-                        return Err(err(format!("substring: invalid range {}..{} for len {}", start, end, chars.len())));
+                        return Err(err(format!(
+                            "substring: invalid range {}..{} for len {}",
+                            start,
+                            end,
+                            chars.len()
+                        )));
                     }
                     Ok(Value::Str(chars[start..end].iter().collect()))
                 }
@@ -1126,12 +1171,10 @@ pub fn register_builtins(env: &mut Env) {
 
     builtin!(env, "index-of", |_, args: &[Value]| {
         match (&args[0], &args[1]) {
-            (Value::Str(haystack), Value::Str(needle)) => {
-                match haystack.find(needle.as_str()) {
-                    Some(pos) => Ok(Value::Int(pos as i64)),
-                    None => Ok(Value::Int(-1)),
-                }
-            }
+            (Value::Str(haystack), Value::Str(needle)) => match haystack.find(needle.as_str()) {
+                Some(pos) => Ok(Value::Int(pos as i64)),
+                None => Ok(Value::Int(-1)),
+            },
             _ => Err(err("index-of requires two strings")),
         }
     });
@@ -1384,7 +1427,10 @@ pub fn register_builtins(env: &mut Env) {
         CHANNELS.with(|ch| {
             ch.borrow_mut().insert(id, VecDeque::new());
         });
-        Ok(Value::Tuple(vec![Value::ChannelTx(id), Value::ChannelRx(id)]))
+        Ok(Value::Tuple(vec![
+            Value::ChannelTx(id),
+            Value::ChannelRx(id),
+        ]))
     });
 
     builtin!(env, "send", |_, args: &[Value]| {
@@ -1475,7 +1521,8 @@ pub fn register_builtins(env: &mut Env) {
         };
         let scale = match unit_name {
             // Base SI (scale = 1)
-            "m" | "s" | "kg" | "A" | "K" | "N" | "J" | "W" | "Pa" | "Hz" | "C" | "V" | "ohm" | "m2" | "m3" => 1.0,
+            "m" | "s" | "kg" | "A" | "K" | "N" | "J" | "W" | "Pa" | "Hz" | "C" | "V" | "ohm"
+            | "m2" | "m3" => 1.0,
             // Prefixed length
             "km" => 1e3,
             "cm" => 1e-2,
@@ -1531,8 +1578,10 @@ pub fn register_builtins(env: &mut Env) {
     env.set("Const.G".to_string(), Value::Float(6.674_30e-11));
     env.set("Const.h".to_string(), Value::Float(6.626_070_15e-34));
     env.set("Const.k-B".to_string(), Value::Float(1.380_649e-23));
-    env.set("Const.e-charge".to_string(), Value::Float(1.602_176_634e-19));
-
+    env.set(
+        "Const.e-charge".to_string(),
+        Value::Float(1.602_176_634e-19),
+    );
 }
 
 pub fn apply_value(func: &Value, args: &[Value]) -> IResult {

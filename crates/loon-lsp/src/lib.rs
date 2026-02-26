@@ -114,9 +114,7 @@ impl LanguageServer for LoonLanguageServer {
         let uri = params.text_document.uri;
         self.documents.remove(&uri);
         // Clear diagnostics
-        self.client
-            .publish_diagnostics(uri, vec![], None)
-            .await;
+        self.client.publish_diagnostics(uri, vec![], None).await;
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -177,9 +175,10 @@ impl LanguageServer for LoonLanguageServer {
         };
 
         // Find a reference at this offset
-        let ref_info = checker.references.iter().find(|r| {
-            r.span.start <= offset && offset < r.span.end
-        });
+        let ref_info = checker
+            .references
+            .iter()
+            .find(|r| r.span.start <= offset && offset < r.span.end);
 
         let Some(ref_info) = ref_info else {
             return Ok(None);
@@ -310,8 +309,11 @@ fn collect_inlay_hints(
                         if binding_idx < items.len() {
                             if let ExprKind::Symbol(name) = &items[binding_idx].kind {
                                 if name != "_" {
-                                    if let Some(resolved) = checker.get_resolved_type(items[binding_idx].id) {
-                                        let pos = offset_to_position(rope, items[binding_idx].span.end);
+                                    if let Some(resolved) =
+                                        checker.get_resolved_type(items[binding_idx].id)
+                                    {
+                                        let pos =
+                                            offset_to_position(rope, items[binding_idx].span.end);
                                         hints.push(InlayHint {
                                             position: pos,
                                             label: InlayHintLabel::String(format!(": {resolved}")),
@@ -334,11 +336,15 @@ fn collect_inlay_hints(
                                 for param in params {
                                     if let ExprKind::Symbol(pname) = &param.kind {
                                         if pname != "_" {
-                                            if let Some(resolved) = checker.get_resolved_type(param.id) {
+                                            if let Some(resolved) =
+                                                checker.get_resolved_type(param.id)
+                                            {
                                                 let pos = offset_to_position(rope, param.span.end);
                                                 hints.push(InlayHint {
                                                     position: pos,
-                                                    label: InlayHintLabel::String(format!(": {resolved}")),
+                                                    label: InlayHintLabel::String(format!(
+                                                        ": {resolved}"
+                                                    )),
                                                     kind: Some(InlayHintKind::TYPE),
                                                     text_edits: None,
                                                     tooltip: None,
@@ -413,7 +419,11 @@ mod tests {
         assert!(state.checker.is_some());
 
         let checker = state.checker.as_ref().unwrap();
-        let name_strs: Vec<&str> = checker.visible_names.iter().map(|(n, _)| n.as_str()).collect();
+        let name_strs: Vec<&str> = checker
+            .visible_names
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect();
         assert!(name_strs.contains(&"add"), "should contain 'add'");
         assert!(name_strs.contains(&"+"), "should contain '+'");
     }
@@ -451,7 +461,11 @@ mod tests {
         assert!(def.is_some(), "should have definition for 'add'");
 
         // There should be references to 'add'
-        let add_refs: Vec<_> = checker.references.iter().filter(|r| r.name == "add").collect();
+        let add_refs: Vec<_> = checker
+            .references
+            .iter()
+            .filter(|r| r.name == "add")
+            .collect();
         assert!(!add_refs.is_empty(), "should have references to 'add'");
     }
 

@@ -87,7 +87,12 @@ pub fn builtin_index() -> PackageIndex {
                 source: "github.com/loon-lang/http".to_string(),
                 description: "HTTP client and server for Loon".to_string(),
                 license: Some("MIT".to_string()),
-                keywords: vec!["http".into(), "server".into(), "client".into(), "web".into()],
+                keywords: vec![
+                    "http".into(),
+                    "server".into(),
+                    "client".into(),
+                    "web".into(),
+                ],
                 versions: vec![IndexVersion {
                     version: "0.1.0".to_string(),
                     hash: String::new(),
@@ -156,8 +161,8 @@ pub fn builtin_index() -> PackageIndex {
 /// }
 /// ```
 pub fn parse_index(source: &str) -> Result<PackageIndex, String> {
-    let exprs = crate::parser::parse(source)
-        .map_err(|e| format!("index parse error: {}", e.message))?;
+    let exprs =
+        crate::parser::parse(source).map_err(|e| format!("index parse error: {}", e.message))?;
 
     if exprs.len() != 1 {
         return Err("index must contain exactly one map expression".into());
@@ -199,9 +204,7 @@ pub fn parse_index(source: &str) -> Result<PackageIndex, String> {
     Ok(PackageIndex { name, entries })
 }
 
-fn parse_index_entry(
-    pairs: &[(crate::ast::Expr, crate::ast::Expr)],
-) -> Result<IndexEntry, String> {
+fn parse_index_entry(pairs: &[(crate::ast::Expr, crate::ast::Expr)]) -> Result<IndexEntry, String> {
     let mut source = String::new();
     let mut description = String::new();
     let mut license = None;
@@ -336,9 +339,7 @@ pub fn load_remote_index(name: &str, _url: &str) -> Result<PackageIndex, String>
 }
 
 /// Build a combined index from the builtin + any custom indices from the manifest.
-pub fn combined_index(
-    custom_indices: &std::collections::HashMap<String, String>,
-) -> PackageIndex {
+pub fn combined_index(custom_indices: &std::collections::HashMap<String, String>) -> PackageIndex {
     let mut index = builtin_index();
     for (name, url) in custom_indices {
         match load_remote_index(name, url) {

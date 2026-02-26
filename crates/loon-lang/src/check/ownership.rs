@@ -70,8 +70,25 @@ impl<'a> OwnershipChecker<'a> {
         let mut borrow_fns = std::collections::HashSet::new();
         // Builtins that only read/borrow their arguments
         for name in [
-            "println", "print", "str", "len", "nth", "get", "contains?", "empty?", "+", "-", "*",
-            ">", "<", ">=", "<=", "=", "not", "and", "or",
+            "println",
+            "print",
+            "str",
+            "len",
+            "nth",
+            "get",
+            "contains?",
+            "empty?",
+            "+",
+            "-",
+            "*",
+            ">",
+            "<",
+            ">=",
+            "<=",
+            "=",
+            "not",
+            "and",
+            "or",
         ] {
             borrow_fns.insert(name.to_string());
         }
@@ -169,12 +186,24 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// Build an ownership diagram showing the lifecycle of a binding.
-    fn make_move_diagram(&self, name: &str, defined: Span, moved: Span, used: Span) -> OwnershipDiagram {
+    fn make_move_diagram(
+        &self,
+        name: &str,
+        defined: Span,
+        moved: Span,
+        used: Span,
+    ) -> OwnershipDiagram {
         OwnershipDiagram {
             lines: vec![
                 format!("  {name} defined at {}..{}", defined.start, defined.end),
-                format!("  {name} moved   at {}..{}  -- ownership transferred", moved.start, moved.end),
-                format!("  {name} used    at {}..{}  -- ERROR: value no longer available", used.start, used.end),
+                format!(
+                    "  {name} moved   at {}..{}  -- ownership transferred",
+                    moved.start, moved.end
+                ),
+                format!(
+                    "  {name} used    at {}..{}  -- ERROR: value no longer available",
+                    used.start, used.end
+                ),
             ],
         }
     }
@@ -188,7 +217,8 @@ impl<'a> OwnershipChecker<'a> {
                     "'{name}' was moved at {}..{} and can no longer be used",
                     moved.start, moved.end
                 );
-                let fix_msg = format!("clone '{name}' before moving, or restructure to avoid the move");
+                let fix_msg =
+                    format!("clone '{name}' before moving, or restructure to avoid the move");
                 let diagram = self.make_move_diagram(name, defined, moved, span);
                 self.errors.push(
                     LoonDiagnostic::new(ErrorCode::E0300, format!("use of moved value '{name}'"))
@@ -243,7 +273,11 @@ impl<'a> OwnershipChecker<'a> {
                     )
                     .with_why("only bindings declared with [let mut ...] can be mutably borrowed")
                     .with_fix(format!("declare '{name}' as [let mut {name} ...]"))
-                    .with_label(span, "mutable borrow of immutable binding", true),
+                    .with_label(
+                        span,
+                        "mutable borrow of immutable binding",
+                        true,
+                    ),
                 );
                 return;
             }
@@ -374,9 +408,7 @@ impl<'a> OwnershipChecker<'a> {
                             let callee_modes = self.fn_param_modes.get(fname).cloned();
                             for (i, item) in items.iter().skip(1).enumerate() {
                                 if let ExprKind::Symbol(name) = &item.kind {
-                                    if let Some(idx) =
-                                        param_names.iter().position(|p| p == name)
-                                    {
+                                    if let Some(idx) = param_names.iter().position(|p| p == name) {
                                         // Determine what mode the callee uses for this arg position
                                         let arg_mode = callee_modes
                                             .as_ref()
@@ -499,7 +531,8 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     return;
                 }
-                "match" | "pipe" | "type" | "test" | "pub" | "trait" | "impl" | "sig" | "derive" => {
+                "match" | "pipe" | "type" | "test" | "pub" | "trait" | "impl" | "sig"
+                | "derive" => {
                     for item in &items[1..] {
                         self.check_expr(item);
                     }
@@ -617,15 +650,15 @@ impl<'a> OwnershipChecker<'a> {
         if args.len() < 2 {
             return;
         }
-        let (binding, val_idx, is_mut) =
-            if matches!(&args[0].kind, ExprKind::Symbol(s) if s == "mut") {
-                if args.len() < 3 {
-                    return;
-                }
-                (&args[1], 2, true)
-            } else {
-                (&args[0], 1, false)
-            };
+        let (binding, val_idx, is_mut) = if matches!(&args[0].kind, ExprKind::Symbol(s) if s == "mut")
+        {
+            if args.len() < 3 {
+                return;
+            }
+            (&args[1], 2, true)
+        } else {
+            (&args[0], 1, false)
+        };
 
         // Check the value expression first
         if val_idx < args.len() {
@@ -693,7 +726,8 @@ mod tests {
         for expr in &exprs {
             type_checker.infer(expr);
         }
-        let mut checker = OwnershipChecker::with_type_info(&type_checker.type_of, &type_checker.subst);
+        let mut checker =
+            OwnershipChecker::with_type_info(&type_checker.type_of, &type_checker.subst);
         checker.check_program(&exprs)
     }
 
@@ -761,7 +795,11 @@ mod tests {
             [println x]
         "#,
         );
-        assert!(errors.is_empty(), "Int is Copy, should not error: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "Int is Copy, should not error: {:?}",
+            errors
+        );
     }
 
     #[test]
@@ -793,7 +831,11 @@ mod tests {
             [println name]
         "#,
         );
-        assert!(errors.is_empty(), "read-only param should not move: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "read-only param should not move: {:?}",
+            errors
+        );
     }
 
     #[test]
@@ -827,7 +869,11 @@ mod tests {
         "#,
         );
         // x should NOT be moved (only read via println inside pick_second)
-        assert!(errors.is_empty(), "read-only param x should not move: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "read-only param x should not move: {:?}",
+            errors
+        );
     }
 
     #[test]
@@ -852,20 +898,28 @@ mod tests {
     #[test]
     fn derive_copy_no_move_error() {
         // A type with [derive Copy] should not trigger move errors
-        let exprs = parse(r#"
+        let exprs = parse(
+            r#"
             [derive Copy [type Point [Point Int Int]]]
             [fn take [p] p]
             [let p [Point 1 2]]
             [take p]
             [println p]
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let mut type_checker = crate::check::Checker::new();
         for expr in &exprs {
             type_checker.infer(expr);
         }
-        let mut checker = OwnershipChecker::with_type_info(&type_checker.type_of, &type_checker.subst)
-            .with_derived_copy_types(&type_checker.derived_copy_types);
+        let mut checker =
+            OwnershipChecker::with_type_info(&type_checker.type_of, &type_checker.subst)
+                .with_derived_copy_types(&type_checker.derived_copy_types);
         let errors = checker.check_program(&exprs);
-        assert!(errors.is_empty(), "derive Copy type should not trigger move error: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "derive Copy type should not trigger move error: {:?}",
+            errors
+        );
     }
 }

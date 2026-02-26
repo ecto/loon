@@ -69,7 +69,11 @@ type IResult = Result<Value, InterpError>;
 
 enum Trampoline {
     Done(Value),
-    TailCall { func: Value, args: Vec<Value>, span: Span },
+    TailCall {
+        func: Value,
+        args: Vec<Value>,
+        span: Span,
+    },
     Recur(Vec<Value>),
 }
 type TResult = Result<Trampoline, InterpError>;
@@ -211,20 +215,18 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
                 Some(Err(err("Async.spawn requires a thunk argument")))
             }
         }
-        ("Async", "await") => {
-            match performed.args.first() {
-                Some(Value::Future(inner)) => Some(Ok(*inner.clone())),
-                Some(Value::AsyncSlot(slot)) => {
-                    let (lock, cvar) = &**slot;
-                    let mut guard = lock.lock().unwrap();
-                    while guard.is_none() {
-                        guard = cvar.wait(guard).unwrap();
-                    }
-                    Some(Ok(guard.take().unwrap()))
+        ("Async", "await") => match performed.args.first() {
+            Some(Value::Future(inner)) => Some(Ok(*inner.clone())),
+            Some(Value::AsyncSlot(slot)) => {
+                let (lock, cvar) = &**slot;
+                let mut guard = lock.lock().unwrap();
+                while guard.is_none() {
+                    guard = cvar.wait(guard).unwrap();
                 }
-                _ => Some(Err(err("Async.await requires a Future value"))),
+                Some(Ok(guard.take().unwrap()))
             }
-        }
+            _ => Some(Err(err("Async.await requires a Future value"))),
+        },
         ("Async", "sleep") => {
             if let Some(Value::Int(ms)) = performed.args.first() {
                 std::thread::sleep(std::time::Duration::from_millis(*ms as u64));
@@ -401,9 +403,7 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
             Some(Ok(Value::Int(secs)))
         }
         #[cfg(feature = "pkg-fetch")]
-        ("IO", "uuid") => {
-            Some(Ok(Value::Str(uuid::Uuid::new_v4().to_string())))
-        }
+        ("IO", "uuid") => Some(Ok(Value::Str(uuid::Uuid::new_v4().to_string()))),
         #[cfg(feature = "pkg-fetch")]
         ("IO", "blake3") => {
             if let Some(Value::Str(text)) = performed.args.first() {
@@ -454,11 +454,28 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
                     }
                     match child.wait_with_output() {
                         Ok(output) => {
-                            let result = Value::Map([
-                                (Value::Keyword("exit-code".to_string()), Value::Int(output.status.code().unwrap_or(-1) as i64)),
-                                (Value::Keyword("stdout".to_string()), Value::Str(String::from_utf8_lossy(&output.stdout).to_string())),
-                                (Value::Keyword("stderr".to_string()), Value::Str(String::from_utf8_lossy(&output.stderr).to_string())),
-                            ].into_iter().collect());
+                            let result = Value::Map(
+                                [
+                                    (
+                                        Value::Keyword("exit-code".to_string()),
+                                        Value::Int(output.status.code().unwrap_or(-1) as i64),
+                                    ),
+                                    (
+                                        Value::Keyword("stdout".to_string()),
+                                        Value::Str(
+                                            String::from_utf8_lossy(&output.stdout).to_string(),
+                                        ),
+                                    ),
+                                    (
+                                        Value::Keyword("stderr".to_string()),
+                                        Value::Str(
+                                            String::from_utf8_lossy(&output.stderr).to_string(),
+                                        ),
+                                    ),
+                                ]
+                                .into_iter()
+                                .collect(),
+                            );
                             Some(Ok(result))
                         }
                         Err(e) => Some(Err(err(format!("Process.exec: {e}")))),
@@ -496,23 +513,15 @@ fn perform_effect(effect: &str, op: &str, args: Vec<Value>) -> InterpError {
 fn value_to_json(val: &Value) -> serde_json::Value {
     match val {
         Value::Int(n) => serde_json::Value::Number((*n).into()),
-        Value::Float(f) => {
-            serde_json::Number::from_f64(*f)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null)
-        }
+        Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
         Value::Bool(b) => serde_json::Value::Bool(*b),
         Value::Str(s) => serde_json::Value::String(s.clone()),
         Value::Keyword(k) => serde_json::Value::String(k.clone()),
-        Value::Vec(items) => {
-            serde_json::Value::Array(items.iter().map(value_to_json).collect())
-        }
-        Value::Set(items) => {
-            serde_json::Value::Array(items.iter().map(value_to_json).collect())
-        }
-        Value::Tuple(items) => {
-            serde_json::Value::Array(items.iter().map(value_to_json).collect())
-        }
+        Value::Vec(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
+        Value::Set(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
+        Value::Tuple(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
         Value::Map(pairs) => {
             let mut map = serde_json::Map::new();
             for (k, v) in pairs {
@@ -565,16 +574,12 @@ fn json_to_value(j: serde_json::Value) -> Value {
             }
         }
         serde_json::Value::String(s) => Value::Str(s),
-        serde_json::Value::Array(arr) => {
-            Value::Vec(arr.into_iter().map(json_to_value).collect())
-        }
-        serde_json::Value::Object(obj) => {
-            Value::Map(
-                obj.into_iter()
-                    .map(|(k, v)| (Value::Keyword(k), json_to_value(v)))
-                    .collect(),
-            )
-        }
+        serde_json::Value::Array(arr) => Value::Vec(arr.into_iter().map(json_to_value).collect()),
+        serde_json::Value::Object(obj) => Value::Map(
+            obj.into_iter()
+                .map(|(k, v)| (Value::Keyword(k), json_to_value(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -620,9 +625,7 @@ pub fn eval_program(exprs: &[Expr]) -> IResult {
 pub fn eval_program_with_base_dir(exprs: &[Expr], base_dir: Option<&Path>) -> IResult {
     // Macro expansion phase
     let mut expander = crate::macros::MacroExpander::new();
-    let exprs = expander
-        .expand_program(exprs)
-        .map_err(err)?;
+    let exprs = expander.expand_program(exprs).map_err(err)?;
 
     let mut env = Env::new();
     register_builtins(&mut env);
@@ -704,9 +707,9 @@ fn sync_global_env(env: &Env) {
 
 pub(crate) fn get_global_env() -> Option<Env> {
     GLOBAL_ENV.with(|g| {
-        g.borrow().as_ref().map(|global_rc| {
-            Env::from_global_rc(global_rc.clone())
-        })
+        g.borrow()
+            .as_ref()
+            .map(|global_rc| Env::from_global_rc(global_rc.clone()))
     })
 }
 
@@ -841,8 +844,8 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                     "type" => return eval_type_def(&items[1..], env),
                     "test" => return eval_test_def(&items[1..], env),
                     "effect" => return Ok(Value::Unit), // effect declarations are compile-time
-                    "trait" => return Ok(Value::Unit), // trait declarations are compile-time
-                    "sig" => return Ok(Value::Unit),   // sig assertions are compile-time
+                    "trait" => return Ok(Value::Unit),  // trait declarations are compile-time
+                    "sig" => return Ok(Value::Unit),    // sig assertions are compile-time
                     "derive" => {
                         // [derive Copy [type Name ...]] — evaluate the inner type form
                         if items.len() >= 3 {
@@ -864,7 +867,7 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                     }
                     "impl" => return eval_impl_def(&items[1..], env),
                     "macro" | "macro+" => return Ok(Value::Unit), // macro defs are compile-time
-                    "macroexpand" => return Ok(Value::Unit), // no-op at runtime
+                    "macroexpand" => return Ok(Value::Unit),      // no-op at runtime
                     "inspect" => {
                         if items.len() >= 2 {
                             let expr_to_inspect = &items[1];
@@ -902,10 +905,7 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                                     }
                                 }
                             }
-                            let inner = Expr::new(
-                                ExprKind::List(items[1..].to_vec()),
-                                expr.span,
-                            );
+                            let inner = Expr::new(ExprKind::List(items[1..].to_vec()), expr.span);
                             return eval(&inner, env);
                         }
                         return Ok(Value::Unit);
@@ -957,11 +957,13 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                         }
                         // Log effect if enabled
                         if EFFECT_LOG_ENABLED.with(|e| e.get()) {
-                            EFFECT_LOG.with(|l| l.borrow_mut().push(EffectEntry {
-                                effect: effect.to_string(),
-                                operation: op.to_string(),
-                                span: expr.span,
-                            }));
+                            EFFECT_LOG.with(|l| {
+                                l.borrow_mut().push(EffectEntry {
+                                    effect: effect.to_string(),
+                                    operation: op.to_string(),
+                                    span: expr.span,
+                                })
+                            });
                         }
                         // If not inside a handle block, try built-in handler directly
                         if !INSIDE_HANDLE.with(|h| *h.borrow()) {
@@ -987,10 +989,12 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
             match func {
                 Value::Fn(lf) => call_fn(&lf, &args, env, expr.span),
                 Value::Builtin(name, f) => {
-                    CALL_STACK.with(|s| s.borrow_mut().push(StackFrame {
-                        fn_name: format!("<builtin: {name}>"),
-                        call_site: expr.span,
-                    }));
+                    CALL_STACK.with(|s| {
+                        s.borrow_mut().push(StackFrame {
+                            fn_name: format!("<builtin: {name}>"),
+                            call_site: expr.span,
+                        })
+                    });
                     let result = f(&name, &args);
                     CALL_STACK.with(|s| s.borrow_mut().pop());
                     result
@@ -1305,7 +1309,8 @@ fn pattern_matches(
                     }
                 } else {
                     // Expression guard: evaluate and check truthiness
-                    let result = eval(&Expr::new(ExprKind::List(items.clone()), pattern.span), env)?;
+                    let result =
+                        eval(&Expr::new(ExprKind::List(items.clone()), pattern.span), env)?;
                     return Ok(result.is_truthy());
                 }
             }
@@ -1370,10 +1375,17 @@ fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
                                 if let ExprKind::Symbol(kw) = &inner[0].kind {
                                     if kw == "fn" {
                                         if let ExprKind::Symbol(mname) = &inner[1].kind {
-                                            let params = if let ExprKind::List(ps) = &inner[2].kind {
-                                                ps.iter().filter_map(|p| {
-                                                    if let ExprKind::Symbol(s) = &p.kind { Some(s.clone()) } else { None }
-                                                }).collect()
+                                            let params = if let ExprKind::List(ps) = &inner[2].kind
+                                            {
+                                                ps.iter()
+                                                    .filter_map(|p| {
+                                                        if let ExprKind::Symbol(s) = &p.kind {
+                                                            Some(s.clone())
+                                                        } else {
+                                                            None
+                                                        }
+                                                    })
+                                                    .collect()
                                             } else {
                                                 vec![]
                                             };
@@ -1405,7 +1417,8 @@ fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
                     // Register named fields if present
                     if has_named_fields {
                         ADT_FIELDS.with(|f| {
-                            f.borrow_mut().insert(ctor_name.clone(), field_names.clone());
+                            f.borrow_mut()
+                                .insert(ctor_name.clone(), field_names.clone());
                         });
                     }
 
@@ -1422,12 +1435,11 @@ fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
                                 // If single arg is a Map and we have named fields, reorder
                                 if has_named && args.len() == 1 {
                                     if let Value::Map(m) = &args[0] {
-                                        let mut ordered = Vec::with_capacity(field_names_for_ctor.len());
+                                        let mut ordered =
+                                            Vec::with_capacity(field_names_for_ctor.len());
                                         for fname in &field_names_for_ctor {
                                             let key = Value::Keyword(fname.clone());
-                                            let val = m.get(&key)
-                                                .cloned()
-                                                .unwrap_or(Value::Unit);
+                                            let val = m.get(&key).cloned().unwrap_or(Value::Unit);
                                             ordered.push(val);
                                         }
                                         return Ok(Value::Adt(ctor_name_clone.clone(), ordered));
@@ -1437,9 +1449,13 @@ fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
                                     return Err(InterpError {
                                         message: format!(
                                             "{} expects {} args, got {}",
-                                            ctor_name_clone, field_count_copy, args.len()
+                                            ctor_name_clone,
+                                            field_count_copy,
+                                            args.len()
                                         ),
-                                        span: None, stack: vec![], performed_effect: None,
+                                        span: None,
+                                        stack: vec![],
+                                        performed_effect: None,
                                     });
                                 }
                                 Ok(Value::Adt(ctor_name_clone.clone(), args.to_vec()))
@@ -1449,11 +1465,14 @@ fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
 
                     // Collect methods for dispatch
                     for (mname, params, body) in variant_methods {
-                        methods.entry(mname.to_string()).or_default().push(MethodImpl {
-                            ctor_name: ctor_name.clone(),
-                            params,
-                            body,
-                        });
+                        methods
+                            .entry(mname.to_string())
+                            .or_default()
+                            .push(MethodImpl {
+                                ctor_name: ctor_name.clone(),
+                                params,
+                                body,
+                            });
                     }
                 }
             }
@@ -1461,10 +1480,7 @@ fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
             ExprKind::Symbol(ctor_name) => {
                 if ctor_name.starts_with(char::is_uppercase) {
                     let cn = ctor_name.clone();
-                    env.set(
-                        ctor_name.clone(),
-                        Value::Adt(cn, vec![]),
-                    );
+                    env.set(ctor_name.clone(), Value::Adt(cn, vec![]));
                 }
                 // else it's a type parameter, skip
             }
@@ -1478,7 +1494,10 @@ fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
             let mut map = tm.borrow_mut();
             let type_entry = map.entry(type_name.clone()).or_default();
             for (method_name, impls) in &methods {
-                type_entry.entry(method_name.clone()).or_default().extend(impls.clone());
+                type_entry
+                    .entry(method_name.clone())
+                    .or_default()
+                    .extend(impls.clone());
             }
         });
 
@@ -1493,7 +1512,9 @@ fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
                         if args.is_empty() {
                             return Err(InterpError {
                                 message: format!("{} requires at least one argument", _name),
-                                span: None, stack: vec![], performed_effect: None,
+                                span: None,
+                                stack: vec![],
+                                performed_effect: None,
                             });
                         }
                         let val = &args[0];
@@ -1530,7 +1551,9 @@ fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
                         }
                         Err(InterpError {
                             message: format!("no method {} for value {}", _name, val),
-                            span: None, stack: vec![], performed_effect: None,
+                            span: None,
+                            stack: vec![],
+                            performed_effect: None,
                         })
                     }),
                 ),
@@ -1569,10 +1592,7 @@ fn eval_impl_def(args: &[Expr], env: &mut Env) -> IResult {
                                 captured_env: None,
                             };
                             // Register as TypeName.method_name
-                            env.set_global(
-                                format!("{type_name}.{method_name}"),
-                                Value::Fn(lf),
-                            );
+                            env.set_global(format!("{type_name}.{method_name}"), Value::Fn(lf));
                         }
                     }
                 }
@@ -1632,8 +1652,11 @@ fn eval_handle(args: &[Expr], env: &mut Env) -> IResult {
 
                     if let Some(resume_val) = handler_result {
                         // Count how many times this effect.op has been overridden already
-                        let count = overrides.iter()
-                            .filter(|(eff, op, _, _)| eff == &performed.effect && op == &performed.operation)
+                        let count = overrides
+                            .iter()
+                            .filter(|(eff, op, _, _)| {
+                                eff == &performed.effect && op == &performed.operation
+                            })
                             .count();
                         overrides.push((
                             performed.effect.clone(),
@@ -1656,7 +1679,9 @@ fn eval_handle(args: &[Expr], env: &mut Env) -> IResult {
     }
 
     restore();
-    Err(err("handle: too many sequential effects (possible infinite loop)"))
+    Err(err(
+        "handle: too many sequential effects (possible infinite loop)",
+    ))
 }
 
 /// Evaluate an expression, but intercept effect operations that have overrides.
@@ -1797,9 +1822,7 @@ fn run_handler(
                 "resume".to_string(),
                 Value::Builtin(
                     "resume".to_string(),
-                    Arc::new(|_, args: &[Value]| {
-                        Ok(args.first().cloned().unwrap_or(Value::Unit))
-                    }),
+                    Arc::new(|_, args: &[Value]| Ok(args.first().cloned().unwrap_or(Value::Unit))),
                 ),
             );
             let result = eval(handler.body, env);
@@ -1943,10 +1966,9 @@ fn eval_tail(expr: &Expr, env: &mut Env) -> TResult {
                         return Ok(Trampoline::Done(val));
                     }
                     // All other special forms: delegate to eval (not tail-callable)
-                    "fn" | "let" | "pipe" | "mut" | "set!" | "type" | "test"
-                    | "effect" | "trait" | "sig" | "derive" | "catch-errors"
-                    | "impl" | "macro" | "macro+" | "macroexpand" | "inspect"
-                    | "handle" | "pub" => {
+                    "fn" | "let" | "pipe" | "mut" | "set!" | "type" | "test" | "effect"
+                    | "trait" | "sig" | "derive" | "catch-errors" | "impl" | "macro" | "macro+"
+                    | "macroexpand" | "inspect" | "handle" | "pub" => {
                         return Ok(Trampoline::Done(eval(expr, env)?));
                     }
                     _ => {}
@@ -1967,7 +1989,11 @@ fn eval_tail(expr: &Expr, env: &mut Env) -> TResult {
             let func = eval(head, env)?;
             let args: Result<Vec<_>, _> = items[1..].iter().map(|e| eval(e, env)).collect();
             let args = args?;
-            Ok(Trampoline::TailCall { func, args, span: expr.span })
+            Ok(Trampoline::TailCall {
+                func,
+                args,
+                span: expr.span,
+            })
         }
         // Everything else: delegate to eval
         _ => Ok(Trampoline::Done(eval(expr, env)?)),
@@ -2226,12 +2252,19 @@ fn bind_param(param: &value::Param, val: &Value, env: &mut Env) -> Result<(), In
     }
 }
 
-pub(crate) fn call_fn(lf: &value::LoonFn, args: &[Value], env: &mut Env, call_span: Span) -> IResult {
+pub(crate) fn call_fn(
+    lf: &value::LoonFn,
+    args: &[Value],
+    env: &mut Env,
+    call_span: Span,
+) -> IResult {
     let fn_name = lf.name.as_deref().unwrap_or("anonymous").to_string();
-    CALL_STACK.with(|s| s.borrow_mut().push(StackFrame {
-        fn_name: fn_name.clone(),
-        call_site: call_span,
-    }));
+    CALL_STACK.with(|s| {
+        s.borrow_mut().push(StackFrame {
+            fn_name: fn_name.clone(),
+            call_site: call_span,
+        })
+    });
 
     let mut current_fn = lf.clone();
     let mut current_args: Vec<Value> = args.to_vec();
@@ -2244,7 +2277,11 @@ pub(crate) fn call_fn(lf: &value::LoonFn, args: &[Value], env: &mut Env, call_sp
                 current_args = new_args;
                 continue;
             }
-            Ok(Trampoline::TailCall { func, args: tc_args, span }) => {
+            Ok(Trampoline::TailCall {
+                func,
+                args: tc_args,
+                span,
+            }) => {
                 match func {
                     Value::Fn(new_lf) => {
                         // Replace call stack frame
@@ -2288,8 +2325,14 @@ fn call_fn_inner(lf: &value::LoonFn, args: &[Value], env: &mut Env) -> TResult {
 
     // Find matching clause by arity (with rest param support)
     for (params, body) in &lf.clauses {
-        let has_rest = params.last().is_some_and(|p| matches!(p, value::Param::Rest(_)));
-        let required = if has_rest { params.len() - 1 } else { params.len() };
+        let has_rest = params
+            .last()
+            .is_some_and(|p| matches!(p, value::Param::Rest(_)));
+        let required = if has_rest {
+            params.len() - 1
+        } else {
+            params.len()
+        };
         let matches = if has_rest {
             args.len() >= required
         } else {
@@ -2350,9 +2393,7 @@ pub fn eval_use_with_cache(
         None => return Err(err("use module path must be a symbol")),
     };
 
-    let exports = cache
-        .load_module(&module_path, base_dir)
-        .map_err(err)?;
+    let exports = cache.load_module(&module_path, base_dir).map_err(err)?;
 
     // Determine import style
     if args.len() >= 3 {
@@ -2419,12 +2460,26 @@ fn eval_catch_errors(source: &str) -> Value {
         Ok(exprs) => exprs,
         Err(e) => {
             let error_map: imbl::HashMap<Value, Value> = [
-                (Value::Keyword("code".to_string()), Value::Str("E0000".to_string())),
+                (
+                    Value::Keyword("code".to_string()),
+                    Value::Str("E0000".to_string()),
+                ),
                 (Value::Keyword("what".to_string()), Value::Str(e.message)),
-                (Value::Keyword("why".to_string()), Value::Str("parse error".to_string())),
-                (Value::Keyword("fix".to_string()), Value::Str("check syntax".to_string())),
-                (Value::Keyword("spans".to_string()), Value::Vec(imbl::Vector::new())),
-            ].into_iter().collect();
+                (
+                    Value::Keyword("why".to_string()),
+                    Value::Str("parse error".to_string()),
+                ),
+                (
+                    Value::Keyword("fix".to_string()),
+                    Value::Str("check syntax".to_string()),
+                ),
+                (
+                    Value::Keyword("spans".to_string()),
+                    Value::Vec(imbl::Vector::new()),
+                ),
+            ]
+            .into_iter()
+            .collect();
             return Value::Vec(imbl::vector![Value::Map(error_map)]);
         }
     };
@@ -2433,11 +2488,8 @@ fn eval_catch_errors(source: &str) -> Value {
     let type_errors = checker.check_program(&exprs);
 
     let mut ownership =
-        crate::check::ownership::OwnershipChecker::with_type_info(
-            &checker.type_of,
-            &checker.subst,
-        )
-        .with_derived_copy_types(&checker.derived_copy_types);
+        crate::check::ownership::OwnershipChecker::with_type_info(&checker.type_of, &checker.subst)
+            .with_derived_copy_types(&checker.derived_copy_types);
     let ownership_errors = ownership.check_program(&checker.expanded_program);
 
     let all_errors: Vec<_> = type_errors.into_iter().chain(ownership_errors).collect();
@@ -2445,20 +2497,53 @@ fn eval_catch_errors(source: &str) -> Value {
     let error_maps: imbl::Vector<Value> = all_errors
         .iter()
         .map(|diag| {
-            let spans: imbl::Vector<Value> = diag.labels.iter().map(|l| {
-                Value::Map([
-                    (Value::Keyword("start".to_string()), Value::Int(l.span.start as i64)),
-                    (Value::Keyword("end".to_string()), Value::Int(l.span.end as i64)),
-                    (Value::Keyword("label".to_string()), Value::Str(l.label.clone())),
-                ].into_iter().collect())
-            }).collect();
-            Value::Map([
-                (Value::Keyword("code".to_string()), Value::Str(format!("{}", diag.code))),
-                (Value::Keyword("what".to_string()), Value::Str(diag.what.clone())),
-                (Value::Keyword("why".to_string()), Value::Str(diag.why.clone())),
-                (Value::Keyword("fix".to_string()), Value::Str(diag.fix.clone())),
-                (Value::Keyword("spans".to_string()), Value::Vec(spans)),
-            ].into_iter().collect())
+            let spans: imbl::Vector<Value> = diag
+                .labels
+                .iter()
+                .map(|l| {
+                    Value::Map(
+                        [
+                            (
+                                Value::Keyword("start".to_string()),
+                                Value::Int(l.span.start as i64),
+                            ),
+                            (
+                                Value::Keyword("end".to_string()),
+                                Value::Int(l.span.end as i64),
+                            ),
+                            (
+                                Value::Keyword("label".to_string()),
+                                Value::Str(l.label.clone()),
+                            ),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    )
+                })
+                .collect();
+            Value::Map(
+                [
+                    (
+                        Value::Keyword("code".to_string()),
+                        Value::Str(format!("{}", diag.code)),
+                    ),
+                    (
+                        Value::Keyword("what".to_string()),
+                        Value::Str(diag.what.clone()),
+                    ),
+                    (
+                        Value::Keyword("why".to_string()),
+                        Value::Str(diag.why.clone()),
+                    ),
+                    (
+                        Value::Keyword("fix".to_string()),
+                        Value::Str(diag.fix.clone()),
+                    ),
+                    (Value::Keyword("spans".to_string()), Value::Vec(spans)),
+                ]
+                .into_iter()
+                .collect(),
+            )
         })
         .collect();
 
@@ -2488,7 +2573,10 @@ fn eval_spawned_fn(lf: &value::LoonFn, env: &mut Env) -> Value {
                         }
                     }
                 } else {
-                    eprintln!("[Async.spawn] unhandled effect: {}.{}", performed.effect, performed.operation);
+                    eprintln!(
+                        "[Async.spawn] unhandled effect: {}.{}",
+                        performed.effect, performed.operation
+                    );
                     Value::Unit
                 }
             } else {

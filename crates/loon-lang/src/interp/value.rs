@@ -209,7 +209,6 @@ impl Value {
     }
 }
 
-
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -258,11 +257,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, ")")
             }
-            Value::Fn(lf) => write!(
-                f,
-                "<fn {}>",
-                lf.name.as_deref().unwrap_or("anonymous")
-            ),
+            Value::Fn(lf) => write!(f, "<fn {}>", lf.name.as_deref().unwrap_or("anonymous")),
             Value::Builtin(name, _) => write!(f, "<builtin {name}>"),
             Value::Adt(tag, fields) if fields.is_empty() => write!(f, "{tag}"),
             Value::Adt(tag, fields) => {
@@ -280,7 +275,11 @@ impl fmt::Display for Value {
             Value::Json(j) => match j.as_ref() {
                 serde_json::Value::String(s) => write!(f, "\"{s}\""),
                 serde_json::Value::Null => write!(f, "()"),
-                other => write!(f, "<json {}>", &other.to_string()[..64.min(other.to_string().len())]),
+                other => write!(
+                    f,
+                    "<json {}>",
+                    &other.to_string()[..64.min(other.to_string().len())]
+                ),
             },
             Value::Unit => write!(f, "()"),
         }
@@ -316,7 +315,11 @@ impl PartialEq for Value {
                 let native = Value::from_json(j);
                 if matches!(native, Value::Json(_)) {
                     // Both compound Json
-                    if let Value::Json(j2) = other { j == j2 } else { false }
+                    if let Value::Json(j2) = other {
+                        j == j2
+                    } else {
+                        false
+                    }
                 } else {
                     native == *other
                 }

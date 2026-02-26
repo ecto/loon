@@ -37,9 +37,7 @@ fn call_bridge(op: &str, args: &[Value]) -> IResult {
         let guard = b.borrow();
         match guard.as_ref() {
             Some(bridge) => bridge(op, args),
-            None => Err(err(format!(
-                "DOM bridge not initialized (called {op})"
-            ))),
+            None => Err(err(format!("DOM bridge not initialized (called {op})"))),
         }
     })
 }

@@ -232,8 +232,10 @@ impl MacroExpander {
                         return self.expand_type_aware_expr(&expanded);
                     }
                 }
-                let expanded_items: Result<Vec<_>, _> =
-                    items.iter().map(|e| self.expand_type_aware_expr(e)).collect();
+                let expanded_items: Result<Vec<_>, _> = items
+                    .iter()
+                    .map(|e| self.expand_type_aware_expr(e))
+                    .collect();
                 Ok(Expr::new(ExprKind::List(expanded_items?), expr.span))
             }
             _ => Ok(expr.clone()),
@@ -356,9 +358,7 @@ impl MacroExpander {
 
         match mac.style {
             MacroStyle::Template => self.expand_template(&mac.body, &bindings, call_span),
-            MacroStyle::Procedural => {
-                self.expand_procedural(mac, &bindings, call_span)
-            }
+            MacroStyle::Procedural => self.expand_procedural(mac, &bindings, call_span),
         }
     }
 
@@ -485,13 +485,17 @@ impl MacroExpander {
                 Ok(Expr::new(ExprKind::Map(expanded?), span))
             }
             ExprKind::Tuple(items) => {
-                let expanded: Result<Vec<_>, _> =
-                    items.iter().map(|e| self.substitute(e, bindings, span)).collect();
+                let expanded: Result<Vec<_>, _> = items
+                    .iter()
+                    .map(|e| self.substitute(e, bindings, span))
+                    .collect();
                 Ok(Expr::new(ExprKind::Tuple(expanded?), span))
             }
             ExprKind::Set(items) => {
-                let expanded: Result<Vec<_>, _> =
-                    items.iter().map(|e| self.substitute(e, bindings, span)).collect();
+                let expanded: Result<Vec<_>, _> = items
+                    .iter()
+                    .map(|e| self.substitute(e, bindings, span))
+                    .collect();
                 Ok(Expr::new(ExprKind::Set(expanded?), span))
             }
             // Nested quotes — don't substitute inside
@@ -525,7 +529,10 @@ impl MacroExpander {
                 expr_to_ast_value(&vals[0], call_span)
             } else {
                 // Rest param → vector of AST values
-                let items: Vec<Expr> = vals.iter().map(|v| expr_to_ast_value(v, call_span)).collect();
+                let items: Vec<Expr> = vals
+                    .iter()
+                    .map(|v| expr_to_ast_value(v, call_span))
+                    .collect();
                 Expr::new(ExprKind::Vec(items), call_span)
             };
             program.push(Expr::new(
@@ -762,7 +769,10 @@ fn ast_value_to_expr(val: &interp::Value, span: Span) -> Result<Expr, String> {
 
 // Helper functions for extracting fields from Value::Map
 
-fn get_str_field(m: &imbl::HashMap<interp::Value, interp::Value>, field: &str) -> Result<String, String> {
+fn get_str_field(
+    m: &imbl::HashMap<interp::Value, interp::Value>,
+    field: &str,
+) -> Result<String, String> {
     m.get(&interp::Value::Keyword(field.to_string()))
         .and_then(|v| match v {
             interp::Value::Str(s) => Some(s.clone()),
@@ -771,7 +781,10 @@ fn get_str_field(m: &imbl::HashMap<interp::Value, interp::Value>, field: &str) -
         .ok_or_else(|| format!("AST node missing string field :{field}"))
 }
 
-fn get_int_field(m: &imbl::HashMap<interp::Value, interp::Value>, field: &str) -> Result<i64, String> {
+fn get_int_field(
+    m: &imbl::HashMap<interp::Value, interp::Value>,
+    field: &str,
+) -> Result<i64, String> {
     m.get(&interp::Value::Keyword(field.to_string()))
         .and_then(|v| match v {
             interp::Value::Int(n) => Some(*n),
@@ -780,7 +793,10 @@ fn get_int_field(m: &imbl::HashMap<interp::Value, interp::Value>, field: &str) -
         .ok_or_else(|| format!("AST node missing int field :{field}"))
 }
 
-fn get_bool_field(m: &imbl::HashMap<interp::Value, interp::Value>, field: &str) -> Result<bool, String> {
+fn get_bool_field(
+    m: &imbl::HashMap<interp::Value, interp::Value>,
+    field: &str,
+) -> Result<bool, String> {
     m.get(&interp::Value::Keyword(field.to_string()))
         .and_then(|v| match v {
             interp::Value::Bool(b) => Some(*b),

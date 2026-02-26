@@ -102,8 +102,8 @@ mod inner {
         for rel in &paths {
             hasher.update(rel.as_bytes());
             let full = dir.join(rel);
-            let contents = std::fs::read(&full)
-                .map_err(|e| format!("reading {}: {e}", full.display()))?;
+            let contents =
+                std::fs::read(&full).map_err(|e| format!("reading {}: {e}", full.display()))?;
             hasher.update(&contents);
         }
         Ok(hasher.finalize().to_hex().to_string())
@@ -158,8 +158,7 @@ mod inner {
         // Remove .git directory
         let git_dir = tmp.join(".git");
         if git_dir.exists() {
-            std::fs::remove_dir_all(&git_dir)
-                .map_err(|e| format!("removing .git: {e}"))?;
+            std::fs::remove_dir_all(&git_dir).map_err(|e| format!("removing .git: {e}"))?;
         }
 
         Ok(tmp)
@@ -182,8 +181,7 @@ mod inner {
         if tmp.exists() {
             let _ = std::fs::remove_dir_all(&tmp);
         }
-        std::fs::create_dir_all(&tmp)
-            .map_err(|e| format!("creating temp dir: {e}"))?;
+        std::fs::create_dir_all(&tmp).map_err(|e| format!("creating temp dir: {e}"))?;
 
         // Extract tar.gz
         let decoder = flate2::read::GzDecoder::new(body.as_slice());
@@ -199,9 +197,7 @@ mod inner {
         if let Some(expected) = expected_hash {
             let actual = normalize_and_hash(&result_dir)?;
             if actual != expected {
-                return Err(format!(
-                    "hash mismatch: expected {expected}, got {actual}"
-                ));
+                return Err(format!("hash mismatch: expected {expected}, got {actual}"));
             }
         }
 
@@ -229,14 +225,15 @@ mod inner {
         if dest.exists() {
             return Ok(dest);
         }
-        std::fs::create_dir_all(&dest)
-            .map_err(|e| format!("creating cache dir: {e}"))?;
+        std::fs::create_dir_all(&dest).map_err(|e| format!("creating cache dir: {e}"))?;
         copy_dir_recursive(source_dir, &dest)?;
         Ok(dest)
     }
 
     fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
-        for entry in std::fs::read_dir(src).map_err(|e| format!("reading {}: {e}", src.display()))? {
+        for entry in
+            std::fs::read_dir(src).map_err(|e| format!("reading {}: {e}", src.display()))?
+        {
             let entry = entry.map_err(|e| format!("dir entry: {e}"))?;
             let src_path = entry.path();
             let dst_path = dst.join(entry.file_name());
@@ -277,8 +274,8 @@ mod inner {
             .finish()
             .map_err(|e| format!("compressing archive: {e}"))?;
 
-        let metadata = std::fs::metadata(output_path)
-            .map_err(|e| format!("reading archive size: {e}"))?;
+        let metadata =
+            std::fs::metadata(output_path).map_err(|e| format!("reading archive size: {e}"))?;
         Ok(metadata.len())
     }
 

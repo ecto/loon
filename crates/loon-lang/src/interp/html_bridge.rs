@@ -244,8 +244,8 @@ fn arg_handle(args: &[Value], idx: usize, op: &str) -> Result<usize, InterpError
 // --- HTML Serialization ---
 
 const VOID_ELEMENTS: &[&str] = &[
-    "area", "base", "br", "col", "embed", "hr", "img", "input",
-    "link", "meta", "param", "source", "track", "wbr",
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
+    "track", "wbr",
 ];
 
 fn serialize_node(nodes: &[HtmlNode], idx: usize, out: &mut String) {

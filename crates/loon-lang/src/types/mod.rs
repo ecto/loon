@@ -18,17 +18,52 @@ pub struct Dimension {
 
 impl Dimension {
     /// Scalar: all exponents zero (NOT called "dimensionless" — we don't have that concept)
-    pub const SCALAR: Dimension = Dimension { mass: 0, length: 0, time: 0, current: 0, temperature: 0 };
+    pub const SCALAR: Dimension = Dimension {
+        mass: 0,
+        length: 0,
+        time: 0,
+        current: 0,
+        temperature: 0,
+    };
 
     pub fn is_scalar(&self) -> bool {
-        self.mass == 0 && self.length == 0 && self.time == 0 && self.current == 0 && self.temperature == 0
+        self.mass == 0
+            && self.length == 0
+            && self.time == 0
+            && self.current == 0
+            && self.temperature == 0
     }
 
-    pub fn length() -> Dimension { Dimension { length: 1, ..Self::SCALAR } }
-    pub fn time() -> Dimension { Dimension { time: 1, ..Self::SCALAR } }
-    pub fn mass() -> Dimension { Dimension { mass: 1, ..Self::SCALAR } }
-    pub fn current() -> Dimension { Dimension { current: 1, ..Self::SCALAR } }
-    pub fn temperature() -> Dimension { Dimension { temperature: 1, ..Self::SCALAR } }
+    pub fn length() -> Dimension {
+        Dimension {
+            length: 1,
+            ..Self::SCALAR
+        }
+    }
+    pub fn time() -> Dimension {
+        Dimension {
+            time: 1,
+            ..Self::SCALAR
+        }
+    }
+    pub fn mass() -> Dimension {
+        Dimension {
+            mass: 1,
+            ..Self::SCALAR
+        }
+    }
+    pub fn current() -> Dimension {
+        Dimension {
+            current: 1,
+            ..Self::SCALAR
+        }
+    }
+    pub fn temperature() -> Dimension {
+        Dimension {
+            temperature: 1,
+            ..Self::SCALAR
+        }
+    }
 
     /// Multiply dimensions (add exponents)
     pub fn mul(&self, other: &Dimension) -> Dimension {
@@ -65,7 +100,13 @@ impl Dimension {
 
     /// ALWAYS returns a name — no Option, no escape hatch
     pub fn name(&self) -> &'static str {
-        match (self.mass, self.length, self.time, self.current, self.temperature) {
+        match (
+            self.mass,
+            self.length,
+            self.time,
+            self.current,
+            self.temperature,
+        ) {
             (0, 0, 0, 0, 0) => "Scalar",
             (0, 1, 0, 0, 0) => "Length",
             (0, 0, 1, 0, 0) => "Time",
@@ -124,8 +165,10 @@ impl fmt::Display for Dimension {
 }
 
 fn format_superscript(n: i8) -> String {
-    const SUPER_DIGITS: &[char] = &['\u{2070}', '\u{00b9}', '\u{00b2}', '\u{00b3}',
-        '\u{2074}', '\u{2075}', '\u{2076}', '\u{2077}', '\u{2078}', '\u{2079}'];
+    const SUPER_DIGITS: &[char] = &[
+        '\u{2070}', '\u{00b9}', '\u{00b2}', '\u{00b3}', '\u{2074}', '\u{2075}', '\u{2076}',
+        '\u{2077}', '\u{2078}', '\u{2079}',
+    ];
     let mut s = String::new();
     if n < 0 {
         s.push('\u{207b}'); // superscript minus
@@ -347,9 +390,7 @@ impl Subst {
             Type::Con(name, args) => {
                 Type::Con(name.clone(), args.iter().map(|a| self.resolve(a)).collect())
             }
-            Type::Tuple(items) => {
-                Type::Tuple(items.iter().map(|t| self.resolve(t)).collect())
-            }
+            Type::Tuple(items) => Type::Tuple(items.iter().map(|t| self.resolve(t)).collect()),
             Type::Effect(inner, effects) => {
                 Type::Effect(Box::new(self.resolve(inner)), effects.clone())
             }
@@ -393,8 +434,7 @@ impl Subst {
             Type::Tuple(items) => items.iter().any(|t| self.occurs_in(v, t)),
             Type::Effect(inner, _) => self.occurs_in(v, &inner),
             Type::Row(fields, rest) => {
-                fields.iter().any(|(_, t)| self.occurs_in(v, t))
-                    || rest.is_some_and(|r| r == v)
+                fields.iter().any(|(_, t)| self.occurs_in(v, t)) || rest.is_some_and(|r| r == v)
             }
             Type::Record(inner) => self.occurs_in(v, &inner),
             Type::Dim(_) => false,
@@ -535,8 +575,14 @@ pub fn unify(subst: &mut Subst, a: &Type, b: &Type) -> Result<(), TypeError> {
             unify_rows(subst, fields_a, *rest_a, fields_b, *rest_b)
         }
         (Type::Dim(d1), Type::Dim(d2)) => {
-            if d1 == d2 { Ok(()) }
-            else { Err(TypeError::bare(format!("dimension mismatch: {} vs {}", d1, d2))) }
+            if d1 == d2 {
+                Ok(())
+            } else {
+                Err(TypeError::bare(format!(
+                    "dimension mismatch: {} vs {}",
+                    d1, d2
+                )))
+            }
         }
         _ => Err(TypeError::bare(format!("cannot unify {a} with {b}"))),
     }
@@ -644,9 +690,15 @@ impl Scheme {
 impl fmt::Display for Scheme {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !self.bounds.is_empty() {
-            let bound_strs: Vec<String> = self.bounds.iter().flat_map(|(tv, bounds)| {
-                bounds.iter().map(move |b| format!("{} t{}", b.trait_name, tv.0))
-            }).collect();
+            let bound_strs: Vec<String> = self
+                .bounds
+                .iter()
+                .flat_map(|(tv, bounds)| {
+                    bounds
+                        .iter()
+                        .map(move |b| format!("{} t{}", b.trait_name, tv.0))
+                })
+                .collect();
             write!(f, "{} => ", bound_strs.join(", "))?;
         }
         write!(f, "{}", self.ty)
@@ -820,7 +872,10 @@ fn pretty_type(ty: &Type, var_names: &HashMap<TypeVar, String>, nested: bool) ->
         Type::Str => "String".to_string(),
         Type::Keyword => "Keyword".to_string(),
         Type::Unit => "()".to_string(),
-        Type::Var(v) => var_names.get(v).cloned().unwrap_or_else(|| format!("t{}", v.0)),
+        Type::Var(v) => var_names
+            .get(v)
+            .cloned()
+            .unwrap_or_else(|| format!("t{}", v.0)),
         Type::Fn(params, ret) => {
             let mut parts = Vec::new();
             for p in params {
@@ -837,11 +892,17 @@ fn pretty_type(ty: &Type, var_names: &HashMap<TypeVar, String>, nested: bool) ->
         }
         Type::Con(name, args) if args.is_empty() => name.clone(),
         Type::Con(name, args) => {
-            let arg_strs: Vec<String> = args.iter().map(|a| pretty_type(a, var_names, true)).collect();
+            let arg_strs: Vec<String> = args
+                .iter()
+                .map(|a| pretty_type(a, var_names, true))
+                .collect();
             format!("{} {}", name, arg_strs.join(" "))
         }
         Type::Tuple(items) => {
-            let inner: Vec<String> = items.iter().map(|t| pretty_type(t, var_names, false)).collect();
+            let inner: Vec<String> = items
+                .iter()
+                .map(|t| pretty_type(t, var_names, false))
+                .collect();
             format!("({})", inner.join(", "))
         }
         Type::Record(row) => pretty_type(row, var_names, false),
@@ -851,12 +912,21 @@ fn pretty_type(ty: &Type, var_names: &HashMap<TypeVar, String>, nested: bool) ->
                 .map(|(n, t)| format!("{}: {}", n, pretty_type(t, var_names, false)))
                 .collect();
             if let Some(r) = rest {
-                parts.push(var_names.get(r).cloned().unwrap_or_else(|| format!("t{}", r.0)));
+                parts.push(
+                    var_names
+                        .get(r)
+                        .cloned()
+                        .unwrap_or_else(|| format!("t{}", r.0)),
+                );
             }
             format!("{{{}}}", parts.join(", "))
         }
         Type::Effect(inner, effects) => {
-            format!("{} / {{{}}}", pretty_type(inner, var_names, false), effects.0.iter().cloned().collect::<Vec<_>>().join(" "))
+            format!(
+                "{} / {{{}}}",
+                pretty_type(inner, var_names, false),
+                effects.0.iter().cloned().collect::<Vec<_>>().join(" ")
+            )
         }
         Type::Dim(d) => d.to_string(),
     }
@@ -910,9 +980,19 @@ pub fn pretty_scheme(scheme: &Scheme, subst: &Subst) -> String {
 
     // ∀ prefix for polymorphic vars (only if there are quantified free vars)
     if !ordered_vars.is_empty() {
-        let var_list: Vec<&String> = ordered_vars.iter().filter_map(|v| var_names.get(v)).collect();
+        let var_list: Vec<&String> = ordered_vars
+            .iter()
+            .filter_map(|v| var_names.get(v))
+            .collect();
         if !var_list.is_empty() {
-            result.push_str(&format!("\u{2200}{}", var_list.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ")));
+            result.push_str(&format!(
+                "\u{2200}{}",
+                var_list
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ));
             result.push_str(". ");
         }
     }
@@ -937,9 +1017,7 @@ pub fn generalize(env: &TypeEnv, subst: &Subst, ty: &Type) -> Scheme {
     // Collect trait bounds for quantified variables
     let bounds: Vec<(TypeVar, Vec<TraitBound>)> = vars
         .iter()
-        .filter_map(|v| {
-            subst.constraints.get(v).map(|bs| (*v, bs.clone()))
-        })
+        .filter_map(|v| subst.constraints.get(v).map(|bs| (*v, bs.clone())))
         .filter(|(_, bs)| !bs.is_empty())
         .collect();
     Scheme {
@@ -951,11 +1029,7 @@ pub fn generalize(env: &TypeEnv, subst: &Subst, ty: &Type) -> Scheme {
 
 /// Instantiate a scheme with fresh type variables, propagating constraints.
 pub fn instantiate(subst: &mut Subst, scheme: &Scheme) -> Type {
-    let mapping: HashMap<TypeVar, Type> = scheme
-        .vars
-        .iter()
-        .map(|v| (*v, subst.fresh()))
-        .collect();
+    let mapping: HashMap<TypeVar, Type> = scheme.vars.iter().map(|v| (*v, subst.fresh())).collect();
     // Propagate constraints from old vars to fresh vars
     for (old_var, new_ty) in &mapping {
         if let Type::Var(new_var) = new_ty {
@@ -984,12 +1058,11 @@ fn substitute(ty: &Type, mapping: &HashMap<TypeVar, Type>) -> Type {
             params.iter().map(|p| substitute(p, mapping)).collect(),
             Box::new(substitute(ret, mapping)),
         ),
-        Type::Con(name, args) => {
-            Type::Con(name.clone(), args.iter().map(|a| substitute(a, mapping)).collect())
-        }
-        Type::Tuple(items) => {
-            Type::Tuple(items.iter().map(|t| substitute(t, mapping)).collect())
-        }
+        Type::Con(name, args) => Type::Con(
+            name.clone(),
+            args.iter().map(|a| substitute(a, mapping)).collect(),
+        ),
+        Type::Tuple(items) => Type::Tuple(items.iter().map(|t| substitute(t, mapping)).collect()),
         Type::Effect(inner, effects) => {
             Type::Effect(Box::new(substitute(inner, mapping)), effects.clone())
         }

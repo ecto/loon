@@ -105,7 +105,10 @@ fn macroexpand_debugging() {
     );
     assert_eq!(expanded.len(), 1);
     if let loon_lang::ast::ExprKind::Str(s) = &expanded[0].kind {
-        assert!(s.contains("if"), "macroexpand output should contain 'if': {s}");
+        assert!(
+            s.contains("if"),
+            "macroexpand output should contain 'if': {s}"
+        );
     } else {
         panic!("macroexpand should return a string");
     }
@@ -135,10 +138,7 @@ fn eval_when_macro_false() {
     "#,
     );
     // When condition is false, returns None (ADT)
-    assert_eq!(
-        result,
-        interp::Value::Adt("None".to_string(), vec![])
-    );
+    assert_eq!(result, interp::Value::Adt("None".to_string(), vec![]));
 }
 
 #[test]
@@ -263,9 +263,9 @@ fn macro_plus_collected_but_not_expanded_in_phase_1() {
     // my-derive should remain unexpanded (it's type-aware)
     assert!(expander.has_type_aware_macros());
     // The my-derive call should still be there (not expanded yet)
-    let has_my_derive = expanded.iter().any(|e| {
-        format!("{e}").contains("my-derive")
-    });
+    let has_my_derive = expanded
+        .iter()
+        .any(|e| format!("{e}").contains("my-derive"));
     assert!(has_my_derive, "my-derive should not be expanded in phase 1");
 }
 
@@ -281,13 +281,9 @@ fn macro_plus_expanded_in_phase_2() {
     let phase1 = expander.expand_program(&exprs).unwrap();
     let phase2 = expander.expand_type_aware(&phase1).unwrap();
     // After phase 2, my-derive should be expanded
-    let has_my_derive = phase2.iter().any(|e| {
-        format!("{e}").contains("my-derive")
-    });
+    let has_my_derive = phase2.iter().any(|e| format!("{e}").contains("my-derive"));
     assert!(!has_my_derive, "my-derive should be expanded in phase 2");
-    let has_let = phase2.iter().any(|e| {
-        format!("{e}").contains("let")
-    });
+    let has_let = phase2.iter().any(|e| format!("{e}").contains("let"));
     assert!(has_let, "expansion should produce a let");
 }
 

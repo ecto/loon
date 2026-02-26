@@ -159,10 +159,24 @@ impl Checker {
         // Arithmetic: ∀a. Add a => a → a → a
         {
             let a = self.subst.fresh();
-            let tv = if let Type::Var(v) = a { v } else { unreachable!() };
-            self.subst.add_constraint(tv, TraitBound { trait_name: "Add".to_string() });
+            let tv = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
+            self.subst.add_constraint(
+                tv,
+                TraitBound {
+                    trait_name: "Add".to_string(),
+                },
+            );
             let add_scheme = Scheme {
-                bounds: vec![(tv, vec![TraitBound { trait_name: "Add".to_string() }])],
+                bounds: vec![(
+                    tv,
+                    vec![TraitBound {
+                        trait_name: "Add".to_string(),
+                    }],
+                )],
                 vars: vec![tv],
                 ty: Type::Fn(vec![Type::Var(tv), Type::Var(tv)], Box::new(Type::Var(tv))),
             };
@@ -174,10 +188,24 @@ impl Checker {
         // Comparison: ∀a. Ord a => a → a → Bool
         {
             let a = self.subst.fresh();
-            let tv = if let Type::Var(v) = a { v } else { unreachable!() };
-            self.subst.add_constraint(tv, TraitBound { trait_name: "Ord".to_string() });
+            let tv = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
+            self.subst.add_constraint(
+                tv,
+                TraitBound {
+                    trait_name: "Ord".to_string(),
+                },
+            );
             let ord_scheme = Scheme {
-                bounds: vec![(tv, vec![TraitBound { trait_name: "Ord".to_string() }])],
+                bounds: vec![(
+                    tv,
+                    vec![TraitBound {
+                        trait_name: "Ord".to_string(),
+                    }],
+                )],
                 vars: vec![tv],
                 ty: Type::Fn(vec![Type::Var(tv), Type::Var(tv)], Box::new(Type::Bool)),
             };
@@ -189,12 +217,26 @@ impl Checker {
         // Equality: ∀a. Eq a => a → a → Bool
         {
             let a = self.subst.fresh();
-            let tv = if let Type::Var(v) = a { v } else { unreachable!() };
-            self.subst.add_constraint(tv, TraitBound { trait_name: "Eq".to_string() });
+            let tv = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
+            self.subst.add_constraint(
+                tv,
+                TraitBound {
+                    trait_name: "Eq".to_string(),
+                },
+            );
             self.env.set_global(
                 "=".to_string(),
                 Scheme {
-                    bounds: vec![(tv, vec![TraitBound { trait_name: "Eq".to_string() }])],
+                    bounds: vec![(
+                        tv,
+                        vec![TraitBound {
+                            trait_name: "Eq".to_string(),
+                        }],
+                    )],
                     vars: vec![tv],
                     ty: Type::Fn(vec![Type::Var(tv), Type::Var(tv)], Box::new(Type::Bool)),
                 },
@@ -211,8 +253,16 @@ impl Checker {
         {
             let a = self.subst.fresh();
             let b = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
-            let tvb = if let Type::Var(v) = b { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
+            let tvb = if let Type::Var(v) = b {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "str".to_string(),
                 Scheme {
@@ -226,7 +276,11 @@ impl Checker {
         // println: ∀a. a → ()
         {
             let a = self.subst.fresh();
-            let tv = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tv = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "println".to_string(),
                 Scheme {
@@ -240,7 +294,11 @@ impl Checker {
         // len: ∀a. Vec a → Int
         {
             let a = self.subst.fresh();
-            let tv = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tv = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "len".to_string(),
                 Scheme {
@@ -257,17 +315,18 @@ impl Checker {
         // nth: ∀a. Vec a → Int → a
         {
             let a = self.subst.fresh();
-            let tv = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tv = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "nth".to_string(),
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
                     ty: Type::Fn(
-                        vec![
-                            Type::Con("Vec".to_string(), vec![Type::Var(tv)]),
-                            Type::Int,
-                        ],
+                        vec![Type::Con("Vec".to_string(), vec![Type::Var(tv)]), Type::Int],
                         Box::new(Type::Var(tv)),
                     ),
                 },
@@ -286,7 +345,11 @@ impl Checker {
         // empty?: ∀a. a → Bool (works on Vec, Str, Map, Set)
         {
             let a = self.subst.fresh();
-            let tv = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tv = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "empty?".to_string(),
                 Scheme {
@@ -300,7 +363,11 @@ impl Checker {
         // contains?: ∀a. Set a → a → Bool
         {
             let a = self.subst.fresh();
-            let tv = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tv = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "contains?".to_string(),
                 Scheme {
@@ -320,7 +387,11 @@ impl Checker {
         // conj: ∀a. Vec a → a → Vec a
         {
             let a = self.subst.fresh();
-            let tv = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tv = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "conj".to_string(),
                 Scheme {
@@ -340,7 +411,11 @@ impl Checker {
         // get: ∀v. Map Keyword v → Keyword → v
         {
             let v = self.subst.fresh();
-            let tv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            let tv = if let Type::Var(vv) = v {
+                vv
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "get".to_string(),
                 Scheme {
@@ -360,7 +435,11 @@ impl Checker {
         // assoc: ∀v. Map Keyword v → Keyword → v → Map Keyword v
         {
             let v = self.subst.fresh();
-            let tv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            let tv = if let Type::Var(vv) = v {
+                vv
+            } else {
+                unreachable!()
+            };
             let map_t = Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)]);
             self.env.set_global(
                 "assoc".to_string(),
@@ -379,8 +458,16 @@ impl Checker {
         {
             let a = self.subst.fresh();
             let b = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
-            let tvb = if let Type::Var(v) = b { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
+            let tvb = if let Type::Var(v) = b {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "map".to_string(),
                 Scheme {
@@ -400,7 +487,11 @@ impl Checker {
         // filter: ∀a. (a → Bool) → Vec a → Vec a
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "filter".to_string(),
                 Scheme {
@@ -421,8 +512,16 @@ impl Checker {
         {
             let a = self.subst.fresh();
             let b = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
-            let tvb = if let Type::Var(v) = b { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
+            let tvb = if let Type::Var(v) = b {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "fold".to_string(),
                 Scheme {
@@ -446,7 +545,11 @@ impl Checker {
         // each: ∀a. (a → ()) → Vec a → ()
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "each".to_string(),
                 Scheme {
@@ -466,7 +569,11 @@ impl Checker {
         // collect: ∀a. Vec a → Vec a
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
             self.env.set_global(
                 "collect".to_string(),
@@ -481,7 +588,11 @@ impl Checker {
         // assert-eq: ∀a. a → a → ()
         {
             let a = self.subst.fresh();
-            let tv = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tv = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "assert-eq".to_string(),
                 Scheme {
@@ -507,7 +618,11 @@ impl Checker {
         // print: ∀a. a → ()
         {
             let a = self.subst.fresh();
-            let tv = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tv = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "print".to_string(),
                 Scheme {
@@ -551,7 +666,10 @@ impl Checker {
         // replace: Str → Str → Str → Str
         self.env.set_global(
             "replace".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str, Type::Str, Type::Str], Box::new(Type::Str))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str, Type::Str, Type::Str],
+                Box::new(Type::Str),
+            )),
         );
 
         // uppercase, lowercase: Str → Str
@@ -564,8 +682,16 @@ impl Checker {
         {
             let a = self.subst.fresh();
             let b = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
-            let tvb = if let Type::Var(v) = b { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
+            let tvb = if let Type::Var(v) = b {
+                v
+            } else {
+                unreachable!()
+            };
             let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
             self.env.set_global(
                 "sort-by".to_string(),
@@ -587,7 +713,11 @@ impl Checker {
         // take: ∀a. Int → Vec a → Vec a
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
             self.env.set_global(
                 "take".to_string(),
@@ -602,7 +732,11 @@ impl Checker {
         // drop: ∀a. Int → Vec a → Vec a
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
             self.env.set_global(
                 "drop".to_string(),
@@ -617,7 +751,11 @@ impl Checker {
         // reverse: ∀a. Vec a → Vec a
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
             self.env.set_global(
                 "reverse".to_string(),
@@ -632,7 +770,11 @@ impl Checker {
         // flatten: ∀a. Vec (Vec a) → Vec a
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
             self.env.set_global(
                 "flatten".to_string(),
@@ -650,7 +792,11 @@ impl Checker {
         // chunk: ∀a. Int → Vec a → Vec (Vec a)
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
             self.env.set_global(
                 "chunk".to_string(),
@@ -669,8 +815,16 @@ impl Checker {
         {
             let a = self.subst.fresh();
             let b = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
-            let tvb = if let Type::Var(v) = b { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
+            let tvb = if let Type::Var(v) = b {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "zip".to_string(),
                 Scheme {
@@ -693,7 +847,11 @@ impl Checker {
         // find: ∀a. (a → Bool) → Vec a → Option a
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "find".to_string(),
                 Scheme {
@@ -713,7 +871,11 @@ impl Checker {
         // any?: ∀a. (a → Bool) → Vec a → Bool
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "any?".to_string(),
                 Scheme {
@@ -733,7 +895,11 @@ impl Checker {
         // all?: ∀a. (a → Bool) → Vec a → Bool
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "all?".to_string(),
                 Scheme {
@@ -753,7 +919,11 @@ impl Checker {
         // update: ∀v. Map Keyword v → Keyword → (v → v) → Map Keyword v
         {
             let v = self.subst.fresh();
-            let tv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            let tv = if let Type::Var(vv) = v {
+                vv
+            } else {
+                unreachable!()
+            };
             let map_t = Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)]);
             self.env.set_global(
                 "update".to_string(),
@@ -776,15 +946,26 @@ impl Checker {
         {
             let k = self.subst.fresh();
             let v = self.subst.fresh();
-            let tvk = if let Type::Var(vv) = k { vv } else { unreachable!() };
-            let tvv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            let tvk = if let Type::Var(vv) = k {
+                vv
+            } else {
+                unreachable!()
+            };
+            let tvv = if let Type::Var(vv) = v {
+                vv
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "entries".to_string(),
                 Scheme {
                     bounds: vec![],
                     vars: vec![tvk, tvv],
                     ty: Type::Fn(
-                        vec![Type::Con("Map".to_string(), vec![Type::Var(tvk), Type::Var(tvv)])],
+                        vec![Type::Con(
+                            "Map".to_string(),
+                            vec![Type::Var(tvk), Type::Var(tvv)],
+                        )],
                         Box::new(Type::Con(
                             "Vec".to_string(),
                             vec![Type::Tuple(vec![Type::Var(tvk), Type::Var(tvv)])],
@@ -798,15 +979,26 @@ impl Checker {
         {
             let k = self.subst.fresh();
             let v = self.subst.fresh();
-            let tvk = if let Type::Var(vv) = k { vv } else { unreachable!() };
-            let tvv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            let tvk = if let Type::Var(vv) = k {
+                vv
+            } else {
+                unreachable!()
+            };
+            let tvv = if let Type::Var(vv) = v {
+                vv
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "keys".to_string(),
                 Scheme {
                     bounds: vec![],
                     vars: vec![tvk, tvv],
                     ty: Type::Fn(
-                        vec![Type::Con("Map".to_string(), vec![Type::Var(tvk), Type::Var(tvv)])],
+                        vec![Type::Con(
+                            "Map".to_string(),
+                            vec![Type::Var(tvk), Type::Var(tvv)],
+                        )],
                         Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvk)])),
                     ),
                 },
@@ -817,15 +1009,26 @@ impl Checker {
         {
             let k = self.subst.fresh();
             let v = self.subst.fresh();
-            let tvk = if let Type::Var(vv) = k { vv } else { unreachable!() };
-            let tvv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            let tvk = if let Type::Var(vv) = k {
+                vv
+            } else {
+                unreachable!()
+            };
+            let tvv = if let Type::Var(vv) = v {
+                vv
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "values".to_string(),
                 Scheme {
                     bounds: vec![],
                     vars: vec![tvk, tvv],
                     ty: Type::Fn(
-                        vec![Type::Con("Map".to_string(), vec![Type::Var(tvk), Type::Var(tvv)])],
+                        vec![Type::Con(
+                            "Map".to_string(),
+                            vec![Type::Var(tvk), Type::Var(tvv)],
+                        )],
                         Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvv)])),
                     ),
                 },
@@ -835,7 +1038,11 @@ impl Checker {
         // merge: ∀v. Map Keyword v → Map Keyword v → Map Keyword v
         {
             let v = self.subst.fresh();
-            let tv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            let tv = if let Type::Var(vv) = v {
+                vv
+            } else {
+                unreachable!()
+            };
             let map_t = Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)]);
             self.env.set_global(
                 "merge".to_string(),
@@ -850,7 +1057,11 @@ impl Checker {
         // remove: ∀v. Map Keyword v → Keyword → Map Keyword v
         {
             let v = self.subst.fresh();
-            let tv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            let tv = if let Type::Var(vv) = v {
+                vv
+            } else {
+                unreachable!()
+            };
             let map_t = Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)]);
             self.env.set_global(
                 "remove".to_string(),
@@ -865,7 +1076,11 @@ impl Checker {
         // push!: ∀a. Vec a → a → Vec a
         {
             let a = self.subst.fresh();
-            let tv = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tv = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tv)]);
             self.env.set_global(
                 "push!".to_string(),
@@ -898,7 +1113,10 @@ impl Checker {
         // substring: Str → Int → Int → Str
         self.env.set_global(
             "substring".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str, Type::Int, Type::Int], Box::new(Type::Str))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str, Type::Int, Type::Int],
+                Box::new(Type::Str),
+            )),
         );
 
         // contains?: Str → Str → Bool
@@ -917,8 +1135,16 @@ impl Checker {
         {
             let a = self.subst.fresh();
             let k = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
-            let tvk = if let Type::Var(v) = k { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
+            let tvk = if let Type::Var(v) = k {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "group-by".to_string(),
                 Scheme {
@@ -929,10 +1155,13 @@ impl Checker {
                             Type::Fn(vec![Type::Var(tva)], Box::new(Type::Var(tvk))),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
-                        Box::new(Type::Con("Map".to_string(), vec![
-                            Type::Var(tvk),
-                            Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
-                        ])),
+                        Box::new(Type::Con(
+                            "Map".to_string(),
+                            vec![
+                                Type::Var(tvk),
+                                Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
+                            ],
+                        )),
                     ),
                 },
             );
@@ -942,8 +1171,16 @@ impl Checker {
         {
             let a = self.subst.fresh();
             let b = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
-            let tvb = if let Type::Var(v) = b { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
+            let tvb = if let Type::Var(v) = b {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "flat-map".to_string(),
                 Scheme {
@@ -951,7 +1188,10 @@ impl Checker {
                     vars: vec![tva, tvb],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvb)]))),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvb)])),
+                            ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvb)])),
@@ -963,7 +1203,11 @@ impl Checker {
         // sort: ∀a. Vec a → Vec a
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
             self.env.set_global(
                 "sort".to_string(),
@@ -978,7 +1222,11 @@ impl Checker {
         // min, max: ∀a. Vec a → a
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
             for name in ["min", "max"] {
                 self.env.set_global(
@@ -1004,7 +1252,11 @@ impl Checker {
         // str: ∀a. a → Str
         {
             let a = self.subst.fresh();
-            let tv = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tv = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "str".to_string(),
                 Scheme {
@@ -1019,16 +1271,30 @@ impl Checker {
         {
             let k = self.subst.fresh();
             let v = self.subst.fresh();
-            let tvk = if let Type::Var(vv) = k { vv } else { unreachable!() };
-            let tvv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            let tvk = if let Type::Var(vv) = k {
+                vv
+            } else {
+                unreachable!()
+            };
+            let tvv = if let Type::Var(vv) = v {
+                vv
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "into-map".to_string(),
                 Scheme {
                     bounds: vec![],
                     vars: vec![tvk, tvv],
                     ty: Type::Fn(
-                        vec![Type::Con("Vec".to_string(), vec![Type::Tuple(vec![Type::Var(tvk), Type::Var(tvv)])])],
-                        Box::new(Type::Con("Map".to_string(), vec![Type::Var(tvk), Type::Var(tvv)])),
+                        vec![Type::Con(
+                            "Vec".to_string(),
+                            vec![Type::Tuple(vec![Type::Var(tvk), Type::Var(tvv)])],
+                        )],
+                        Box::new(Type::Con(
+                            "Map".to_string(),
+                            vec![Type::Var(tvk), Type::Var(tvv)],
+                        )),
                     ),
                 },
             );
@@ -1037,7 +1303,11 @@ impl Checker {
         // channel: () → (Tx a, Rx a)
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "channel".to_string(),
                 Scheme {
@@ -1057,7 +1327,11 @@ impl Checker {
         // send: Tx a → a → ()
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "send".to_string(),
                 Scheme {
@@ -1077,7 +1351,11 @@ impl Checker {
         // recv: Rx a → a
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "recv".to_string(),
                 Scheme {
@@ -1107,7 +1385,11 @@ impl Checker {
         // Simplified: ∀a. a → a (maps aren't parameterized in the checker yet)
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "keywordize-keys".to_string(),
                 Scheme {
@@ -1121,7 +1403,11 @@ impl Checker {
         // map?: ∀a. a → Bool
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "map?".to_string(),
                 Scheme {
@@ -1135,7 +1421,11 @@ impl Checker {
         // vec?: ∀a. a → Bool
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "vec?".to_string(),
                 Scheme {
@@ -1149,7 +1439,11 @@ impl Checker {
         // cons: ∀a. a → Vec a → Vec a
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             let vec_a = Type::Con("Vec".to_string(), vec![Type::Var(tva)]);
             self.env.set_global(
                 "cons".to_string(),
@@ -1165,8 +1459,16 @@ impl Checker {
         {
             let k = self.subst.fresh();
             let v = self.subst.fresh();
-            let tvk = if let Type::Var(vv) = k { vv } else { unreachable!() };
-            let tvv = if let Type::Var(vv) = v { vv } else { unreachable!() };
+            let tvk = if let Type::Var(vv) = k {
+                vv
+            } else {
+                unreachable!()
+            };
+            let tvv = if let Type::Var(vv) = v {
+                vv
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "HashMap.new".to_string(),
                 Scheme {
@@ -1174,7 +1476,10 @@ impl Checker {
                     vars: vec![tvk, tvv],
                     ty: Type::Fn(
                         vec![],
-                        Box::new(Type::Con("Map".to_string(), vec![Type::Var(tvk), Type::Var(tvv)])),
+                        Box::new(Type::Con(
+                            "Map".to_string(),
+                            vec![Type::Var(tvk), Type::Var(tvv)],
+                        )),
                     ),
                 },
             );
@@ -1183,7 +1488,11 @@ impl Checker {
         // try-recv: ∀a. Rx a → Option a
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "try-recv".to_string(),
                 Scheme {
@@ -1206,7 +1515,10 @@ impl Checker {
         // pow: Float → Float → Float
         self.env.set_global(
             "pow".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Float, Type::Float], Box::new(Type::Float))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Float, Type::Float],
+                Box::new(Type::Float),
+            )),
         );
 
         // abs: Float → Float
@@ -1218,7 +1530,11 @@ impl Checker {
         // first: ∀a. Vec a → a
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "first".to_string(),
                 Scheme {
@@ -1235,7 +1551,11 @@ impl Checker {
         // last: ∀a. Vec a → a
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "last".to_string(),
                 Scheme {
@@ -1252,7 +1572,11 @@ impl Checker {
         // some?: ∀a. a → Bool
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "some?".to_string(),
                 Scheme {
@@ -1266,7 +1590,11 @@ impl Checker {
         // nil?: ∀a. a → Bool
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "nil?".to_string(),
                 Scheme {
@@ -1280,7 +1608,11 @@ impl Checker {
         // type-of: ∀a. a → Str
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "type-of".to_string(),
                 Scheme {
@@ -1309,13 +1641,19 @@ impl Checker {
         // dom/set-attribute: Int → Str → Str → ()
         self.env.set_global(
             "dom.set-attribute".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Int, Type::Str, Type::Str], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Int, Type::Str, Type::Str],
+                Box::new(Type::Unit),
+            )),
         );
 
         // dom/set-style: Int → Str → Str → ()
         self.env.set_global(
             "dom.set-style".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Int, Type::Str, Type::Str], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Int, Type::Str, Type::Str],
+                Box::new(Type::Unit),
+            )),
         );
 
         // dom/append-child: Int → Int → ()
@@ -1333,7 +1671,10 @@ impl Checker {
         // dom/replace-child: Int → Int → Int → ()
         self.env.set_global(
             "dom.replace-child".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Int, Type::Int, Type::Int], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Int, Type::Int, Type::Int],
+                Box::new(Type::Unit),
+            )),
         );
 
         // dom/set-text: Int → Str → ()
@@ -1357,7 +1698,11 @@ impl Checker {
         // dom/add-listener: ∀a. Int → Str → (a → ()) → Int
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "dom.add-listener".to_string(),
                 Scheme {
@@ -1420,7 +1765,11 @@ impl Checker {
         // dom/request-animation-frame: ∀a. (a → ()) → ()
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "dom.request-animation-frame".to_string(),
                 Scheme {
@@ -1437,7 +1786,11 @@ impl Checker {
         // dom/set-timeout: ∀a. (a → ()) → Int → ()
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "dom.set-timeout".to_string(),
                 Scheme {
@@ -1464,54 +1817,79 @@ impl Checker {
         }
 
         // Register built-in trait declarations
-        self.traits.insert("Add".to_string(), TraitDecl {
-            name: "Add".to_string(),
-            type_params: vec![],
-            methods: vec![TraitMethod {
-                name: "add".to_string(),
-                param_types: vec![Type::Con("Self".to_string(), vec![]), Type::Con("Self".to_string(), vec![])],
-                ret_type: Type::Con("Self".to_string(), vec![]),
-            }],
-        });
-        self.traits.insert("Eq".to_string(), TraitDecl {
-            name: "Eq".to_string(),
-            type_params: vec![],
-            methods: vec![TraitMethod {
-                name: "eq".to_string(),
-                param_types: vec![Type::Con("Self".to_string(), vec![]), Type::Con("Self".to_string(), vec![])],
-                ret_type: Type::Bool,
-            }],
-        });
-        self.traits.insert("Ord".to_string(), TraitDecl {
-            name: "Ord".to_string(),
-            type_params: vec![],
-            methods: vec![TraitMethod {
-                name: "lt".to_string(),
-                param_types: vec![Type::Con("Self".to_string(), vec![]), Type::Con("Self".to_string(), vec![])],
-                ret_type: Type::Bool,
-            }],
-        });
-        self.traits.insert("Display".to_string(), TraitDecl {
-            name: "Display".to_string(),
-            type_params: vec![],
-            methods: vec![TraitMethod {
-                name: "display".to_string(),
-                param_types: vec![Type::Con("Self".to_string(), vec![])],
-                ret_type: Type::Str,
-            }],
-        });
+        self.traits.insert(
+            "Add".to_string(),
+            TraitDecl {
+                name: "Add".to_string(),
+                type_params: vec![],
+                methods: vec![TraitMethod {
+                    name: "add".to_string(),
+                    param_types: vec![
+                        Type::Con("Self".to_string(), vec![]),
+                        Type::Con("Self".to_string(), vec![]),
+                    ],
+                    ret_type: Type::Con("Self".to_string(), vec![]),
+                }],
+            },
+        );
+        self.traits.insert(
+            "Eq".to_string(),
+            TraitDecl {
+                name: "Eq".to_string(),
+                type_params: vec![],
+                methods: vec![TraitMethod {
+                    name: "eq".to_string(),
+                    param_types: vec![
+                        Type::Con("Self".to_string(), vec![]),
+                        Type::Con("Self".to_string(), vec![]),
+                    ],
+                    ret_type: Type::Bool,
+                }],
+            },
+        );
+        self.traits.insert(
+            "Ord".to_string(),
+            TraitDecl {
+                name: "Ord".to_string(),
+                type_params: vec![],
+                methods: vec![TraitMethod {
+                    name: "lt".to_string(),
+                    param_types: vec![
+                        Type::Con("Self".to_string(), vec![]),
+                        Type::Con("Self".to_string(), vec![]),
+                    ],
+                    ret_type: Type::Bool,
+                }],
+            },
+        );
+        self.traits.insert(
+            "Display".to_string(),
+            TraitDecl {
+                name: "Display".to_string(),
+                type_params: vec![],
+                methods: vec![TraitMethod {
+                    name: "display".to_string(),
+                    param_types: vec![Type::Con("Self".to_string(), vec![])],
+                    ret_type: Type::Str,
+                }],
+            },
+        );
 
         // Register primitive trait impls
         let empty = std::collections::HashMap::new();
         for ty in ["Int", "Float"] {
-            self.trait_impls.insert(("Add".to_string(), ty.to_string()), empty.clone());
-            self.trait_impls.insert(("Ord".to_string(), ty.to_string()), empty.clone());
+            self.trait_impls
+                .insert(("Add".to_string(), ty.to_string()), empty.clone());
+            self.trait_impls
+                .insert(("Ord".to_string(), ty.to_string()), empty.clone());
         }
         for ty in ["Int", "Float", "Bool", "String", "Keyword"] {
-            self.trait_impls.insert(("Eq".to_string(), ty.to_string()), empty.clone());
+            self.trait_impls
+                .insert(("Eq".to_string(), ty.to_string()), empty.clone());
         }
         for ty in ["Int", "Float", "Bool", "String", "Keyword"] {
-            self.trait_impls.insert(("Display".to_string(), ty.to_string()), empty.clone());
+            self.trait_impls
+                .insert(("Display".to_string(), ty.to_string()), empty.clone());
         }
     }
 
@@ -1522,13 +1900,20 @@ impl Checker {
         // Signature is approximate — actual inference is done in infer_list
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "unit".to_string(),
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Var(tva), Type::Keyword], Box::new(Type::Var(tva))),
+                    ty: Type::Fn(
+                        vec![Type::Var(tva), Type::Keyword],
+                        Box::new(Type::Var(tva)),
+                    ),
                 },
             );
         }
@@ -1536,7 +1921,11 @@ impl Checker {
         // magnitude: special-cased in infer_list, registered for parity
         {
             let a = self.subst.fresh();
-            let tva = if let Type::Var(v) = a { v } else { unreachable!() };
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
             self.env.set_global(
                 "magnitude".to_string(),
                 Scheme {
@@ -1550,40 +1939,68 @@ impl Checker {
         // scalar: Float → Dim(Scalar)
         self.env.set_global(
             "scalar".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Float], Box::new(Type::Dim(Dimension::SCALAR)))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Float],
+                Box::new(Type::Dim(Dimension::SCALAR)),
+            )),
         );
 
         // Physics constants (namespaced via dot access — registered as qualified names)
         // Speed of light: Velocity
         self.env.set_global(
             "Const.c".to_string(),
-            Scheme::mono(Type::Dim(Dimension { length: 1, time: -1, ..Dimension::SCALAR })),
+            Scheme::mono(Type::Dim(Dimension {
+                length: 1,
+                time: -1,
+                ..Dimension::SCALAR
+            })),
         );
         // Gravitational constant: m³/(kg·s²)
         self.env.set_global(
             "Const.G".to_string(),
-            Scheme::mono(Type::Dim(Dimension { mass: -1, length: 3, time: -2, ..Dimension::SCALAR })),
+            Scheme::mono(Type::Dim(Dimension {
+                mass: -1,
+                length: 3,
+                time: -2,
+                ..Dimension::SCALAR
+            })),
         );
         // Planck's constant: Energy·Time = kg·m²/s
         self.env.set_global(
             "Const.h".to_string(),
-            Scheme::mono(Type::Dim(Dimension { mass: 1, length: 2, time: -1, ..Dimension::SCALAR })),
+            Scheme::mono(Type::Dim(Dimension {
+                mass: 1,
+                length: 2,
+                time: -1,
+                ..Dimension::SCALAR
+            })),
         );
         // Boltzmann constant: Energy/Temperature = kg·m²/(s²·K)
         self.env.set_global(
             "Const.k-B".to_string(),
-            Scheme::mono(Type::Dim(Dimension { mass: 1, length: 2, time: -2, temperature: -1, ..Dimension::SCALAR })),
+            Scheme::mono(Type::Dim(Dimension {
+                mass: 1,
+                length: 2,
+                time: -2,
+                temperature: -1,
+                ..Dimension::SCALAR
+            })),
         );
         // Elementary charge: Charge = A·s
         self.env.set_global(
             "Const.e-charge".to_string(),
-            Scheme::mono(Type::Dim(Dimension { current: 1, time: 1, ..Dimension::SCALAR })),
+            Scheme::mono(Type::Dim(Dimension {
+                current: 1,
+                time: 1,
+                ..Dimension::SCALAR
+            })),
         );
 
         // Register trait impls for Dim
         let empty = std::collections::HashMap::new();
         for trait_name in ["Add", "Ord", "Eq", "Display"] {
-            self.trait_impls.insert((trait_name.to_string(), "Dim".to_string()), empty.clone());
+            self.trait_impls
+                .insert((trait_name.to_string(), "Dim".to_string()), empty.clone());
         }
     }
 
@@ -1591,49 +2008,57 @@ impl Checker {
     fn infer_dim_arithmetic(&mut self, op: &str, lhs: &Type, rhs: &Type, span: Span) -> Type {
         use crate::types::Dimension;
         match op {
-            "+" | "-" => {
-                match (lhs, rhs) {
-                    (Type::Dim(d1), Type::Dim(d2)) => {
-                        if d1 == d2 {
-                            Type::Dim(d1.clone())
+            "+" | "-" => match (lhs, rhs) {
+                (Type::Dim(d1), Type::Dim(d2)) => {
+                    if d1 == d2 {
+                        Type::Dim(d1.clone())
+                    } else {
+                        let result_dim = d1.div(d2);
+                        let hint = if result_dim.name() != "Dim" {
+                            format!(
+                                "\n    = hint: did you mean {}? try [/ a b]",
+                                result_dim.name()
+                            )
                         } else {
-                            let result_dim = d1.div(d2);
-                            let hint = if result_dim.name() != "Dim" {
+                            let mul_dim = d1.mul(d2);
+                            if mul_dim.name() != "Dim" {
                                 format!(
-                                    "\n    = hint: did you mean {}? try [/ a b]",
-                                    result_dim.name()
+                                    "\n    = hint: did you mean {}? try [* a b]",
+                                    mul_dim.name()
                                 )
                             } else {
-                                let mul_dim = d1.mul(d2);
-                                if mul_dim.name() != "Dim" {
-                                    format!(
-                                        "\n    = hint: did you mean {}? try [* a b]",
-                                        mul_dim.name()
-                                    )
-                                } else {
-                                    String::new()
-                                }
-                            };
-                            self.errors.push(
-                                LoonDiagnostic::new(
-                                    ErrorCode::E0208,
-                                    format!(
-                                        "cannot {} {} and {}",
-                                        if op == "+" { "add" } else { "subtract" },
-                                        d1.name(), d2.name()
-                                    ),
-                                )
-                                .with_why(format!(
-                                    "{} ({}) and {} ({}) are incompatible dimensions{}",
-                                    d1.name(), d1, d2.name(), d2, hint
-                                ))
-                                .with_label(span, "dimension mismatch", true),
-                            );
-                            self.subst.fresh()
-                        }
-                    }
-                    (Type::Dim(d), _) => {
+                                String::new()
+                            }
+                        };
                         self.errors.push(
+                            LoonDiagnostic::new(
+                                ErrorCode::E0208,
+                                format!(
+                                    "cannot {} {} and {}",
+                                    if op == "+" { "add" } else { "subtract" },
+                                    d1.name(),
+                                    d2.name()
+                                ),
+                            )
+                            .with_why(format!(
+                                "{} ({}) and {} ({}) are incompatible dimensions{}",
+                                d1.name(),
+                                d1,
+                                d2.name(),
+                                d2,
+                                hint
+                            ))
+                            .with_label(
+                                span,
+                                "dimension mismatch",
+                                true,
+                            ),
+                        );
+                        self.subst.fresh()
+                    }
+                }
+                (Type::Dim(d), _) => {
+                    self.errors.push(
                             LoonDiagnostic::new(
                                 ErrorCode::E0208,
                                 format!("cannot {} {} and non-dimensional type", if op == "+" { "add" } else { "subtract" }, d.name()),
@@ -1642,10 +2067,10 @@ impl Checker {
                             .with_fix("use [magnitude x] to extract the numeric value, or [scalar n] to enter the physics world")
                             .with_label(span, "dimension mismatch", true),
                         );
-                        self.subst.fresh()
-                    }
-                    (_, Type::Dim(d)) => {
-                        self.errors.push(
+                    self.subst.fresh()
+                }
+                (_, Type::Dim(d)) => {
+                    self.errors.push(
                             LoonDiagnostic::new(
                                 ErrorCode::E0208,
                                 format!("cannot {} non-dimensional type and {}", if op == "+" { "add" } else { "subtract" }, d.name()),
@@ -1654,17 +2079,15 @@ impl Checker {
                             .with_fix("use [magnitude x] to extract the numeric value, or [scalar n] to enter the physics world")
                             .with_label(span, "dimension mismatch", true),
                         );
-                        self.subst.fresh()
-                    }
-                    _ => unreachable!(),
+                    self.subst.fresh()
                 }
-            }
+                _ => unreachable!(),
+            },
             "*" => {
                 match (lhs, rhs) {
                     (Type::Dim(d1), Type::Dim(d2)) => Type::Dim(d1.mul(d2)),
-                    (Type::Dim(d), Type::Float | Type::Int) | (Type::Float | Type::Int, Type::Dim(d)) => {
-                        Type::Dim(d.clone())
-                    }
+                    (Type::Dim(d), Type::Float | Type::Int)
+                    | (Type::Float | Type::Int, Type::Dim(d)) => Type::Dim(d.clone()),
                     (Type::Dim(d), Type::Var(_)) | (Type::Var(_), Type::Dim(d)) => {
                         // Polymorphic: Dim * unknown → Dim (assume scalar multiplier)
                         Type::Dim(d.clone())
@@ -1685,36 +2108,42 @@ impl Checker {
                     _ => unreachable!(),
                 }
             }
-            ">" | "<" | ">=" | "<=" => {
-                match (lhs, rhs) {
-                    (Type::Dim(d1), Type::Dim(d2)) => {
-                        if d1 == d2 {
-                            Type::Bool
-                        } else {
-                            self.errors.push(
-                                LoonDiagnostic::new(
-                                    ErrorCode::E0208,
-                                    format!("cannot compare {} and {}", d1.name(), d2.name()),
-                                )
-                                .with_why(format!("{} and {} have incompatible dimensions", d1.name(), d2.name()))
-                                .with_label(span, "dimension mismatch", true),
-                            );
-                            Type::Bool
-                        }
-                    }
-                    (Type::Dim(d), _) | (_, Type::Dim(d)) => {
+            ">" | "<" | ">=" | "<=" => match (lhs, rhs) {
+                (Type::Dim(d1), Type::Dim(d2)) => {
+                    if d1 == d2 {
+                        Type::Bool
+                    } else {
                         self.errors.push(
                             LoonDiagnostic::new(
                                 ErrorCode::E0208,
-                                format!("cannot compare {} with non-dimensional type", d.name()),
+                                format!("cannot compare {} and {}", d1.name(), d2.name()),
                             )
-                            .with_label(span, "dimension mismatch", true),
+                            .with_why(format!(
+                                "{} and {} have incompatible dimensions",
+                                d1.name(),
+                                d2.name()
+                            ))
+                            .with_label(
+                                span,
+                                "dimension mismatch",
+                                true,
+                            ),
                         );
                         Type::Bool
                     }
-                    _ => unreachable!(),
                 }
-            }
+                (Type::Dim(d), _) | (_, Type::Dim(d)) => {
+                    self.errors.push(
+                        LoonDiagnostic::new(
+                            ErrorCode::E0208,
+                            format!("cannot compare {} with non-dimensional type", d.name()),
+                        )
+                        .with_label(span, "dimension mismatch", true),
+                    );
+                    Type::Bool
+                }
+                _ => unreachable!(),
+            },
             _ => unreachable!(),
         }
     }
@@ -1730,8 +2159,7 @@ impl Checker {
         } else {
             ErrorCode::E0200
         };
-        let mut diag = LoonDiagnostic::new(code, &e.message)
-            .with_label(span, &e.message, true);
+        let mut diag = LoonDiagnostic::new(code, &e.message).with_label(span, &e.message, true);
         if code == ErrorCode::E0200 {
             diag = diag
                 .with_why("the types are incompatible")
@@ -1925,10 +2353,7 @@ impl Checker {
         let field_ty = self.subst.fresh();
         let rest = self.subst.fresh_var();
         // Build an open row type that requires the given field
-        let expected_row = Type::Row(
-            vec![(field_name.to_string(), field_ty.clone())],
-            Some(rest),
-        );
+        let expected_row = Type::Row(vec![(field_name.to_string(), field_ty.clone())], Some(rest));
         let expected_record = Type::Record(Box::new(expected_row));
         if let Err(e) = unify(&mut self.subst, rec_ty, &expected_record) {
             self.push_unify_error(e, span);
@@ -2017,7 +2442,6 @@ impl Checker {
                 }
                 _ => {}
             }
-
         }
 
         // Check for Effect.op pattern via DotAccess (e.g. IO.read-file)
@@ -2040,7 +2464,11 @@ impl Checker {
                                         arg_types.len()
                                     ),
                                 )
-                                .with_label(span, "effect operation call", true),
+                                .with_label(
+                                    span,
+                                    "effect operation call",
+                                    true,
+                                ),
                             );
                         } else {
                             for (i, ((_pname, pty), arg_ty)) in
@@ -2066,7 +2494,11 @@ impl Checker {
                                 ErrorCode::E0402,
                                 format!("effect `{effect}` has no operation `{op}`"),
                             )
-                            .with_label(span, "unknown operation", true),
+                            .with_label(
+                                span,
+                                "unknown operation",
+                                true,
+                            ),
                         );
                         for a in &items[1..] {
                             self.infer(a);
@@ -2095,7 +2527,11 @@ impl Checker {
                             ErrorCode::E0200,
                             "unit: first argument must be a number".to_string(),
                         )
-                        .with_label(items[1].span, "expected Float or Int", true),
+                        .with_label(
+                            items[1].span,
+                            "expected Float or Int",
+                            true,
+                        ),
                     );
                 }
                 // Second arg must be a keyword
@@ -2110,14 +2546,50 @@ impl Checker {
                         "A" => Some(Dimension::current()),
                         "K" => Some(Dimension::temperature()),
                         // Derived
-                        "N" => Some(Dimension { mass: 1, length: 1, time: -2, ..D }),
-                        "J" => Some(Dimension { mass: 1, length: 2, time: -2, ..D }),
-                        "W" => Some(Dimension { mass: 1, length: 2, time: -3, ..D }),
-                        "Pa" => Some(Dimension { mass: 1, length: -1, time: -2, ..D }),
+                        "N" => Some(Dimension {
+                            mass: 1,
+                            length: 1,
+                            time: -2,
+                            ..D
+                        }),
+                        "J" => Some(Dimension {
+                            mass: 1,
+                            length: 2,
+                            time: -2,
+                            ..D
+                        }),
+                        "W" => Some(Dimension {
+                            mass: 1,
+                            length: 2,
+                            time: -3,
+                            ..D
+                        }),
+                        "Pa" => Some(Dimension {
+                            mass: 1,
+                            length: -1,
+                            time: -2,
+                            ..D
+                        }),
                         "Hz" => Some(Dimension { time: -1, ..D }),
-                        "C" => Some(Dimension { current: 1, time: 1, ..D }),
-                        "V" => Some(Dimension { mass: 1, length: 2, time: -3, current: -1, ..D }),
-                        "ohm" => Some(Dimension { mass: 1, length: 2, time: -3, current: -2, ..D }),
+                        "C" => Some(Dimension {
+                            current: 1,
+                            time: 1,
+                            ..D
+                        }),
+                        "V" => Some(Dimension {
+                            mass: 1,
+                            length: 2,
+                            time: -3,
+                            current: -1,
+                            ..D
+                        }),
+                        "ohm" => Some(Dimension {
+                            mass: 1,
+                            length: 2,
+                            time: -3,
+                            current: -2,
+                            ..D
+                        }),
                         // Prefixed length
                         "km" | "cm" | "mm" => Some(Dimension::length()),
                         // Prefixed time
@@ -2125,11 +2597,26 @@ impl Checker {
                         // Prefixed mass
                         "g" | "mg" => Some(Dimension::mass()),
                         // Prefixed force
-                        "kN" => Some(Dimension { mass: 1, length: 1, time: -2, ..D }),
+                        "kN" => Some(Dimension {
+                            mass: 1,
+                            length: 1,
+                            time: -2,
+                            ..D
+                        }),
                         // Prefixed pressure
-                        "kPa" | "MPa" | "GPa" => Some(Dimension { mass: 1, length: -1, time: -2, ..D }),
+                        "kPa" | "MPa" | "GPa" => Some(Dimension {
+                            mass: 1,
+                            length: -1,
+                            time: -2,
+                            ..D
+                        }),
                         // Prefixed power
-                        "kW" => Some(Dimension { mass: 1, length: 2, time: -3, ..D }),
+                        "kW" => Some(Dimension {
+                            mass: 1,
+                            length: 2,
+                            time: -3,
+                            ..D
+                        }),
                         // Prefixed current
                         "mA" => Some(Dimension::current()),
                         // Area/Volume helpers
@@ -2145,7 +2632,11 @@ impl Checker {
                                 ErrorCode::E0201,
                                 format!("unknown unit :{unit_name}"),
                             )
-                            .with_label(items[2].span, "unknown unit", true),
+                            .with_label(
+                                items[2].span,
+                                "unknown unit",
+                                true,
+                            ),
                         );
                         return self.subst.fresh();
                     }
@@ -2153,9 +2644,14 @@ impl Checker {
                     self.errors.push(
                         LoonDiagnostic::new(
                             ErrorCode::E0200,
-                            "unit: second argument must be a keyword (e.g. :m, :kg, :s)".to_string(),
+                            "unit: second argument must be a keyword (e.g. :m, :kg, :s)"
+                                .to_string(),
                         )
-                        .with_label(items[2].span, "expected keyword", true),
+                        .with_label(
+                            items[2].span,
+                            "expected keyword",
+                            true,
+                        ),
                     );
                     return self.subst.fresh();
                 }
@@ -2171,7 +2667,11 @@ impl Checker {
                             ErrorCode::E0200,
                             "magnitude: argument must be a dimensional type".to_string(),
                         )
-                        .with_label(items[1].span, "expected dimensional type", true),
+                        .with_label(
+                            items[1].span,
+                            "expected dimensional type",
+                            true,
+                        ),
                     );
                 }
                 return Type::Float;
@@ -2297,10 +2797,7 @@ impl Checker {
             let param_types = self.infer_params(params);
 
             let temp_ret = self.subst.fresh();
-            let temp_fn_ty = Type::Fn(
-                param_types.clone(),
-                Box::new(temp_ret.clone()),
-            );
+            let temp_fn_ty = Type::Fn(param_types.clone(), Box::new(temp_ret.clone()));
             self.env.set(name.clone(), Scheme::mono(temp_fn_ty));
 
             let mut body_ty = Type::Unit;
@@ -2331,7 +2828,11 @@ impl Checker {
                         )
                         .with_why("the function body infers a different type than declared")
                         .with_fix("update the signature or the function body to match")
-                        .with_label(sig_span, "signature declared here", true),
+                        .with_label(
+                            sig_span,
+                            "signature declared here",
+                            true,
+                        ),
                     );
                 }
             }
@@ -2513,21 +3014,80 @@ impl Checker {
             "Current" => Type::Dim(Dimension::current()),
             "Temperature" => Type::Dim(Dimension::temperature()),
             "Scalar" => Type::Dim(D),
-            "Velocity" => Type::Dim(Dimension { length: 1, time: -1, ..D }),
-            "Acceleration" => Type::Dim(Dimension { length: 1, time: -2, ..D }),
-            "Force" => Type::Dim(Dimension { mass: 1, length: 1, time: -2, ..D }),
-            "Pressure" => Type::Dim(Dimension { mass: 1, length: -1, time: -2, ..D }),
-            "Energy" => Type::Dim(Dimension { mass: 1, length: 2, time: -2, ..D }),
-            "Power" => Type::Dim(Dimension { mass: 1, length: 2, time: -3, ..D }),
+            "Velocity" => Type::Dim(Dimension {
+                length: 1,
+                time: -1,
+                ..D
+            }),
+            "Acceleration" => Type::Dim(Dimension {
+                length: 1,
+                time: -2,
+                ..D
+            }),
+            "Force" => Type::Dim(Dimension {
+                mass: 1,
+                length: 1,
+                time: -2,
+                ..D
+            }),
+            "Pressure" => Type::Dim(Dimension {
+                mass: 1,
+                length: -1,
+                time: -2,
+                ..D
+            }),
+            "Energy" => Type::Dim(Dimension {
+                mass: 1,
+                length: 2,
+                time: -2,
+                ..D
+            }),
+            "Power" => Type::Dim(Dimension {
+                mass: 1,
+                length: 2,
+                time: -3,
+                ..D
+            }),
             "Frequency" => Type::Dim(Dimension { time: -1, ..D }),
             "Area" => Type::Dim(Dimension { length: 2, ..D }),
             "Volume" => Type::Dim(Dimension { length: 3, ..D }),
-            "Density" => Type::Dim(Dimension { mass: 1, length: -3, ..D }),
-            "Momentum" => Type::Dim(Dimension { mass: 1, length: 1, time: -1, ..D }),
-            "Charge" => Type::Dim(Dimension { current: 1, time: 1, ..D }),
-            "Voltage" => Type::Dim(Dimension { mass: 1, length: 2, time: -3, current: -1, ..D }),
-            "Resistance" => Type::Dim(Dimension { mass: 1, length: 2, time: -3, current: -2, ..D }),
-            "ThermalConductivity" => Type::Dim(Dimension { mass: 1, length: 1, time: -3, temperature: -1, ..D }),
+            "Density" => Type::Dim(Dimension {
+                mass: 1,
+                length: -3,
+                ..D
+            }),
+            "Momentum" => Type::Dim(Dimension {
+                mass: 1,
+                length: 1,
+                time: -1,
+                ..D
+            }),
+            "Charge" => Type::Dim(Dimension {
+                current: 1,
+                time: 1,
+                ..D
+            }),
+            "Voltage" => Type::Dim(Dimension {
+                mass: 1,
+                length: 2,
+                time: -3,
+                current: -1,
+                ..D
+            }),
+            "Resistance" => Type::Dim(Dimension {
+                mass: 1,
+                length: 2,
+                time: -3,
+                current: -2,
+                ..D
+            }),
+            "ThermalConductivity" => Type::Dim(Dimension {
+                mass: 1,
+                length: 1,
+                time: -3,
+                temperature: -1,
+                ..D
+            }),
             _ => {
                 // Check if it's a known type constructor
                 if let Some(scheme) = self.env.get(name) {
@@ -2656,7 +3216,9 @@ impl Checker {
 
             // Track covered constructors and wildcards
             match &pattern.kind {
-                ExprKind::Symbol(s) if s == "_" => { has_wildcard = true; }
+                ExprKind::Symbol(s) if s == "_" => {
+                    has_wildcard = true;
+                }
                 ExprKind::Symbol(s) if !s.starts_with(char::is_uppercase) => {
                     has_wildcard = true;
                 }
@@ -2721,20 +3283,36 @@ impl Checker {
                 if !has_wildcard {
                     // Error: non-exhaustive match
                     if !caught.is_empty() {
-                        let missing_str = caught.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
+                        let missing_str = caught
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
                         self.errors.push(
                             LoonDiagnostic::new(
                                 ErrorCode::E0206,
-                                format!("non-exhaustive match on {type_name}: missing {missing_str}"),
+                                format!(
+                                    "non-exhaustive match on {type_name}: missing {missing_str}"
+                                ),
                             )
                             .with_why(format!("not all constructors of `{type_name}` are covered"))
-                            .with_fix(format!("add arms for: {missing_str}, or add a wildcard `_` arm"))
-                            .with_label(span, "non-exhaustive match", true),
+                            .with_fix(format!(
+                                "add arms for: {missing_str}, or add a wildcard `_` arm"
+                            ))
+                            .with_label(
+                                span,
+                                "non-exhaustive match",
+                                true,
+                            ),
                         );
                     }
                 } else if !caught.is_empty() {
                     // Warning: transparent wildcard
-                    let caught_str = caught.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
+                    let caught_str = caught
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     self.errors.push(
                         LoonDiagnostic::new(
                             ErrorCode::W0100,
@@ -2764,7 +3342,8 @@ impl Checker {
             match &step.kind {
                 ExprKind::List(items) if !items.is_empty() => {
                     let func_ty = self.infer(&items[0]);
-                    let explicit_args: Vec<Type> = items[1..].iter().map(|a| self.infer(a)).collect();
+                    let explicit_args: Vec<Type> =
+                        items[1..].iter().map(|a| self.infer(a)).collect();
 
                     let arg_tys = if explicit_args.is_empty() {
                         vec![current]
@@ -2848,8 +3427,7 @@ impl Checker {
                             .iter()
                             .map(|f| {
                                 if let ExprKind::Symbol(s) = &f.kind {
-                                    if let Some((_, tv)) =
-                                        type_params.iter().find(|(n, _)| n == s)
+                                    if let Some((_, tv)) = type_params.iter().find(|(n, _)| n == s)
                                     {
                                         Type::Var(*tv)
                                     } else {
@@ -2862,32 +3440,26 @@ impl Checker {
                             .collect();
 
                         let ctor_ty = Type::Fn(field_types, Box::new(result_ty.clone()));
-                        let vars: Vec<TypeVar> =
-                            type_params.iter().map(|(_, v)| *v).collect();
+                        let vars: Vec<TypeVar> = type_params.iter().map(|(_, v)| *v).collect();
                         let scheme = Scheme {
                             bounds: vec![],
                             vars,
                             ty: ctor_ty,
                         };
-                        self.constructors
-                            .insert(ctor_name.clone(), scheme.clone());
+                        self.constructors.insert(ctor_name.clone(), scheme.clone());
                         self.env.set_global(ctor_name.clone(), scheme);
                         self.add_definition(ctor_name, items[0].span, arg.span);
                         ctor_names.push(ctor_name.clone());
                     }
                 }
-                ExprKind::Symbol(ctor_name)
-                    if ctor_name.starts_with(char::is_uppercase) =>
-                {
-                    let vars: Vec<TypeVar> =
-                        type_params.iter().map(|(_, v)| *v).collect();
+                ExprKind::Symbol(ctor_name) if ctor_name.starts_with(char::is_uppercase) => {
+                    let vars: Vec<TypeVar> = type_params.iter().map(|(_, v)| *v).collect();
                     let scheme = Scheme {
                         bounds: vec![],
                         vars,
                         ty: result_ty.clone(),
                     };
-                    self.constructors
-                        .insert(ctor_name.clone(), scheme.clone());
+                    self.constructors.insert(ctor_name.clone(), scheme.clone());
                     self.env.set_global(ctor_name.clone(), scheme);
                     self.add_definition(ctor_name, arg.span, arg.span);
                     ctor_names.push(ctor_name.clone());
@@ -2928,7 +3500,10 @@ impl Checker {
                                         for p in params {
                                             if let ExprKind::Symbol(ref s) = p.kind {
                                                 if s == "self" {
-                                                    param_types.push(Type::Con("Self".to_string(), vec![]));
+                                                    param_types.push(Type::Con(
+                                                        "Self".to_string(),
+                                                        vec![],
+                                                    ));
                                                 } else {
                                                     param_types.push(self.name_to_type(s));
                                                 }
@@ -2946,7 +3521,8 @@ impl Checker {
                                             if i < items.len() {
                                                 if let ExprKind::Symbol(ref ret) = items[i].kind {
                                                     if ret == "Self" {
-                                                        ret_type = Type::Con("Self".to_string(), vec![]);
+                                                        ret_type =
+                                                            Type::Con("Self".to_string(), vec![]);
                                                     } else {
                                                         ret_type = self.name_to_type(ret);
                                                     }
@@ -2970,11 +3546,14 @@ impl Checker {
             }
         }
 
-        self.traits.insert(trait_name.clone(), TraitDecl {
-            name: trait_name,
-            type_params: vec![],
-            methods,
-        });
+        self.traits.insert(
+            trait_name.clone(),
+            TraitDecl {
+                name: trait_name,
+                type_params: vec![],
+                methods,
+            },
+        );
         Type::Unit
     }
 
@@ -3013,7 +3592,8 @@ impl Checker {
                     if let ExprKind::Symbol(ref kw) = items[0].kind {
                         if kw == "fn" {
                             if let ExprKind::Symbol(ref method_name) = items[1].kind {
-                                let trait_method = trait_decl.methods.iter().find(|m| m.name == *method_name);
+                                let trait_method =
+                                    trait_decl.methods.iter().find(|m| m.name == *method_name);
 
                                 if let ExprKind::List(ref params) = items[2].kind {
                                     self.push_scope();
@@ -3022,7 +3602,10 @@ impl Checker {
                                     for p in params {
                                         if let ExprKind::Symbol(ref s) = p.kind {
                                             if s == "self" {
-                                                self.env.set("self".to_string(), Scheme::mono(impl_type.clone()));
+                                                self.env.set(
+                                                    "self".to_string(),
+                                                    Scheme::mono(impl_type.clone()),
+                                                );
                                                 param_types.push(impl_type.clone());
                                             } else {
                                                 let t = self.subst.fresh();
@@ -3038,12 +3621,16 @@ impl Checker {
                                     }
 
                                     if let Some(tm) = trait_method {
-                                        let expected_ret = if tm.ret_type == Type::Con("Self".to_string(), vec![]) {
+                                        let expected_ret = if tm.ret_type
+                                            == Type::Con("Self".to_string(), vec![])
+                                        {
                                             impl_type.clone()
                                         } else {
                                             tm.ret_type.clone()
                                         };
-                                        if let Err(e) = unify(&mut self.subst, &body_ty, &expected_ret) {
+                                        if let Err(e) =
+                                            unify(&mut self.subst, &body_ty, &expected_ret)
+                                        {
                                             self.push_unify_error(e, span);
                                         }
                                     }
@@ -3054,10 +3641,8 @@ impl Checker {
                                     let scheme = generalize(&self.env, &self.subst, &fn_ty);
                                     method_schemes.insert(method_name.clone(), scheme.clone());
 
-                                    self.env.set_global(
-                                        format!("{type_name}.{method_name}"),
-                                        scheme,
-                                    );
+                                    self.env
+                                        .set_global(format!("{type_name}.{method_name}"), scheme);
                                 }
                             }
                         }
@@ -3066,7 +3651,8 @@ impl Checker {
             }
         }
 
-        self.trait_impls.insert((trait_name, type_name), method_schemes);
+        self.trait_impls
+            .insert((trait_name, type_name), method_schemes);
         Type::Unit
     }
 
@@ -3082,7 +3668,11 @@ impl Checker {
         // Skip the : symbol
         let type_args = if args.len() > 1 {
             if let ExprKind::Symbol(ref s) = args[1].kind {
-                if s == ":" { &args[2..] } else { &args[1..] }
+                if s == ":" {
+                    &args[2..]
+                } else {
+                    &args[1..]
+                }
             } else {
                 &args[1..]
             }
@@ -3125,10 +3715,8 @@ impl Checker {
             }
             ExprKind::List(items) if !items.is_empty() => {
                 if let ExprKind::Symbol(ref name) = items[0].kind {
-                    let type_args: Vec<Type> = items[1..]
-                        .iter()
-                        .map(|a| self.parse_type_expr(a))
-                        .collect();
+                    let type_args: Vec<Type> =
+                        items[1..].iter().map(|a| self.parse_type_expr(a)).collect();
                     Type::Con(name.clone(), type_args)
                 } else {
                     self.subst.fresh()
@@ -3177,8 +3765,12 @@ impl Checker {
 
     /// Post-inference pass: check that all trait constraints are satisfied.
     pub fn check_trait_constraints(&mut self) {
-        let constraints: Vec<(TypeVar, Vec<TraitBound>)> =
-            self.subst.constraints.iter().map(|(v, bs)| (*v, bs.clone())).collect();
+        let constraints: Vec<(TypeVar, Vec<TraitBound>)> = self
+            .subst
+            .constraints
+            .iter()
+            .map(|(v, bs)| (*v, bs.clone()))
+            .collect();
 
         for (tv, bounds) in constraints {
             let resolved = self.subst.resolve(&Type::Var(tv));
@@ -3205,8 +3797,14 @@ impl Checker {
                                     bound.trait_name, type_name
                                 ),
                             )
-                            .with_why(format!("type `{type_name}` does not implement `{}`", bound.trait_name))
-                            .with_fix(format!("add an impl block: [impl {} {type_name} ...]", bound.trait_name)),
+                            .with_why(format!(
+                                "type `{type_name}` does not implement `{}`",
+                                bound.trait_name
+                            ))
+                            .with_fix(format!(
+                                "add an impl block: [impl {} {type_name} ...]",
+                                bound.trait_name
+                            )),
                         );
                     }
                 }
@@ -3231,7 +3829,8 @@ impl Checker {
                 t
             }
             ExprKind::List(items) => {
-                let elem_types: Vec<Type> = items.iter().map(|p| self.infer_single_param(p)).collect();
+                let elem_types: Vec<Type> =
+                    items.iter().map(|p| self.infer_single_param(p)).collect();
                 Type::Tuple(elem_types)
             }
             ExprKind::Map(pairs) => {
@@ -3284,8 +3883,11 @@ impl Checker {
     fn infer_use(&mut self, args: &[Expr], span: Span) -> Type {
         if args.is_empty() {
             self.errors.push(
-                LoonDiagnostic::new(ErrorCode::E0500, "use requires a module path")
-                    .with_label(span, "missing module path", true),
+                LoonDiagnostic::new(ErrorCode::E0500, "use requires a module path").with_label(
+                    span,
+                    "missing module path",
+                    true,
+                ),
             );
             return Type::Unit;
         }
@@ -3384,10 +3986,7 @@ impl Checker {
         };
 
         // Type-check the module with a fresh checker sharing our cache
-        let module_dir = file_path
-            .parent()
-            .unwrap_or(&base_dir)
-            .to_path_buf();
+        let module_dir = file_path.parent().unwrap_or(&base_dir).to_path_buf();
         let cache_ref = Rc::clone(&self.module_cache);
         let mut mod_checker = Checker::for_module(&module_dir, cache_ref);
         for expr in &exprs {
@@ -3547,10 +4146,7 @@ impl Checker {
         let expanded = match expander.expand_program(exprs) {
             Ok(e) => e,
             Err(msg) => {
-                self.errors.push(LoonDiagnostic::new(
-                    ErrorCode::E0100,
-                    msg,
-                ));
+                self.errors.push(LoonDiagnostic::new(ErrorCode::E0100, msg));
                 return std::mem::take(&mut self.errors);
             }
         };
@@ -3571,10 +4167,7 @@ impl Checker {
                     re_expanded
                 }
                 Err(msg) => {
-                    self.errors.push(LoonDiagnostic::new(
-                        ErrorCode::E0100,
-                        msg,
-                    ));
+                    self.errors.push(LoonDiagnostic::new(ErrorCode::E0100, msg));
                     expanded
                 }
             }
@@ -3665,7 +4258,9 @@ mod tests {
         let (ty, errors) = infer_type("[fn [x] [+ x 1]]");
         assert!(errors.is_empty());
         let resolved = ty;
-        assert!(matches!(resolved, Type::Fn(params, ret) if params.len() == 1 && *ret == Type::Int));
+        assert!(
+            matches!(resolved, Type::Fn(params, ret) if params.len() == 1 && *ret == Type::Int)
+        );
     }
 
     #[test]
@@ -3678,7 +4273,10 @@ mod tests {
     #[test]
     fn type_error_if_mismatch() {
         let (_, errors) = infer_type("[if 42 1 2]");
-        assert!(!errors.is_empty(), "should have type error for non-bool condition");
+        assert!(
+            !errors.is_empty(),
+            "should have type error for non-bool condition"
+        );
     }
 
     #[test]
@@ -3717,34 +4315,47 @@ mod tests {
         for expr in &exprs {
             checker.infer(expr);
         }
-        assert!(!checker.type_of.is_empty(), "type side-table should be populated");
+        assert!(
+            !checker.type_of.is_empty(),
+            "type side-table should be populated"
+        );
     }
 
     #[test]
     fn trait_decl_type_checks() {
-        let errors = check_errors(r#"
+        let errors = check_errors(
+            r#"
             [trait Display [fn display [self] -> String]]
-        "#);
+        "#,
+        );
         assert!(errors.is_empty(), "errors: {:?}", errors);
     }
 
     #[test]
     fn sig_matching_passes() {
-        let errors = check_errors(r#"
+        let errors = check_errors(
+            r#"
             [sig add Int -> Int -> Int]
             [fn add [x y] [+ x y]]
-        "#);
+        "#,
+        );
         assert!(errors.is_empty(), "errors: {:?}", errors);
     }
 
     #[test]
     fn sig_mismatch_errors() {
-        let errors = check_errors(r#"
+        let errors = check_errors(
+            r#"
             [sig add Int -> String -> Int]
             [fn add [x y] [+ x y]]
-        "#);
+        "#,
+        );
         assert!(!errors.is_empty(), "should have sig mismatch error");
-        assert!(errors[0].message().contains("does not match"), "error: {}", errors[0].message());
+        assert!(
+            errors[0].message().contains("does not match"),
+            "error: {}",
+            errors[0].message()
+        );
     }
 
     #[test]
@@ -3770,7 +4381,8 @@ mod tests {
         assert!(!errors.is_empty(), "should error: no Add impl for Bool");
         assert!(
             errors.iter().any(|e| e.message().contains("Add")),
-            "error should mention Add: {:?}", errors
+            "error should mention Add: {:?}",
+            errors
         );
     }
 
@@ -3783,7 +4395,12 @@ mod tests {
 
     // --- Effect inference tests ---
 
-    fn infer_effects(src: &str) -> (std::collections::HashMap<String, EffectSet>, Vec<LoonDiagnostic>) {
+    fn infer_effects(
+        src: &str,
+    ) -> (
+        std::collections::HashMap<String, EffectSet>,
+        Vec<LoonDiagnostic>,
+    ) {
         let exprs = parse(src).unwrap();
         let mut checker = Checker::new();
         for expr in &exprs {
@@ -3803,57 +4420,79 @@ mod tests {
 
     #[test]
     fn effect_propagation() {
-        let (effects, errors) = infer_effects(r#"
+        let (effects, errors) = infer_effects(
+            r#"
             [fn load [p] [IO.read-file p]]
             [fn main [] [load "x"]]
-        "#);
+        "#,
+        );
         assert!(errors.is_empty(), "errors: {:?}", errors);
         let main_effects = effects.get("main").unwrap();
-        assert!(main_effects.contains("IO"), "main should have IO effect via propagation");
+        assert!(
+            main_effects.contains("IO"),
+            "main should have IO effect via propagation"
+        );
     }
 
     #[test]
     fn effect_handle_subtracts() {
-        let (effects, errors) = infer_effects(r#"
+        let (effects, errors) = infer_effects(
+            r#"
             [fn safe []
               [handle [IO.read-file "x"]
                 [IO.read-file p] [resume "y"]]]
-        "#);
+        "#,
+        );
         assert!(errors.is_empty(), "errors: {:?}", errors);
         let safe_effects = effects.get("safe").unwrap();
-        assert!(!safe_effects.contains("IO"), "handle should subtract IO effect");
+        assert!(
+            !safe_effects.contains("IO"),
+            "handle should subtract IO effect"
+        );
     }
 
     #[test]
     fn effect_annotation_passes() {
-        let errors = check_errors(r#"
+        let errors = check_errors(
+            r#"
             [fn load [path] #{IO} [IO.read-file path]]
-        "#);
+        "#,
+        );
         assert!(errors.is_empty(), "errors: {:?}", errors);
     }
 
     #[test]
     fn effect_annotation_extra_ok() {
-        let errors = check_errors(r#"
+        let errors = check_errors(
+            r#"
             [fn load [path] #{IO Fail} [IO.read-file path]]
-        "#);
+        "#,
+        );
         assert!(errors.is_empty(), "errors: {:?}", errors);
     }
 
     #[test]
     fn effect_annotation_missing_errors() {
-        let errors = check_errors(r#"
+        let errors = check_errors(
+            r#"
             [fn load [path] #{Fail} [IO.read-file path]]
-        "#);
+        "#,
+        );
         assert!(!errors.is_empty(), "should error for undeclared IO effect");
-        assert!(errors[0].message().contains("undeclared effect"), "error: {}", errors[0].message());
+        assert!(
+            errors[0].message().contains("undeclared effect"),
+            "error: {}",
+            errors[0].message()
+        );
     }
 
     #[test]
     fn effect_question_infers_fail() {
-        let (effects, errors) = infer_effects(r#"
+        let (effects, errors) = infer_effects(
+            r#"
             [fn try-it [x] [do x]?]
-        "#);
+        "#,
+        );
         assert!(errors.is_empty(), "errors: {:?}", errors);
         let eff = effects.get("try-it").unwrap();
         assert!(eff.contains("Fail"), "? should infer Fail effect");
@@ -3861,9 +4500,11 @@ mod tests {
 
     #[test]
     fn effect_annotation_pure_passes() {
-        let errors = check_errors(r#"
+        let errors = check_errors(
+            r#"
             [fn pure [x] #{} [+ x 1]]
-        "#);
+        "#,
+        );
         assert!(errors.is_empty(), "errors: {:?}", errors);
     }
 
@@ -3889,10 +4530,12 @@ mod tests {
     #[test]
     fn record_structural_subtyping_via_get() {
         // A function that accesses :x should accept a wider record with extra fields
-        let (ty, errors) = infer_type(r#"
+        let (ty, errors) = infer_type(
+            r#"
             [fn get-x [r] [get r :x]]
             [get-x {:x 42 :y "hello"}]
-        "#);
+        "#,
+        );
         assert!(errors.is_empty(), "errors: {:?}", errors);
         assert_eq!(ty, Type::Int);
     }
@@ -3900,11 +4543,16 @@ mod tests {
     #[test]
     fn record_field_type_mismatch_errors() {
         // Passing a record where :x is a String to a function expecting :x as Int
-        let errors = check_errors(r#"
+        let errors = check_errors(
+            r#"
             [fn add-x [r] [+ [get r :x] 1]]
             [add-x {:x "oops"}]
-        "#);
-        assert!(!errors.is_empty(), "should have type error for field type mismatch");
+        "#,
+        );
+        assert!(
+            !errors.is_empty(),
+            "should have type error for field type mismatch"
+        );
     }
 
     #[test]
@@ -3941,7 +4589,11 @@ mod tests {
         let exprs = parse("[let x 42]\n[+ x 1]").unwrap();
         let mut checker = Checker::new();
         checker.check_program(&exprs);
-        let x_refs: Vec<_> = checker.references.iter().filter(|r| r.name == "x").collect();
+        let x_refs: Vec<_> = checker
+            .references
+            .iter()
+            .filter(|r| r.name == "x")
+            .collect();
         assert!(!x_refs.is_empty(), "should have references to 'x'");
     }
 
@@ -3955,11 +4607,16 @@ mod tests {
         let scheme = checker.env.get("double").unwrap();
         assert!(
             !scheme.bounds.is_empty(),
-            "double's scheme should have bounds, got: {:?}", scheme.bounds
+            "double's scheme should have bounds, got: {:?}",
+            scheme.bounds
         );
         assert!(
-            scheme.bounds.iter().any(|(_, bs)| bs.iter().any(|b| b.trait_name == "Add")),
-            "double should have Add bound, got: {:?}", scheme.bounds
+            scheme
+                .bounds
+                .iter()
+                .any(|(_, bs)| bs.iter().any(|b| b.trait_name == "Add")),
+            "double should have Add bound, got: {:?}",
+            scheme.bounds
         );
     }
 
@@ -3970,16 +4627,22 @@ mod tests {
         checker.check_program(&exprs);
         let scheme = checker.env.get("double").unwrap();
         let display = format!("{}", scheme);
-        assert!(display.contains("Add"), "display should show Add bound: {}", display);
+        assert!(
+            display.contains("Add"),
+            "display should show Add bound: {}",
+            display
+        );
     }
 
     // --- derive Copy ---
 
     #[test]
     fn derive_copy_type_checks() {
-        let errors = check_errors(r#"
+        let errors = check_errors(
+            r#"
             [derive Copy [type Point [Point Int Int]]]
-        "#);
+        "#,
+        );
         assert!(errors.is_empty(), "errors: {:?}", errors);
     }
 
@@ -3998,9 +4661,11 @@ mod tests {
 
     #[test]
     fn catch_errors_type_checks() {
-        let errors = check_errors(r#"
+        let errors = check_errors(
+            r#"
             [catch-errors "[+ 1 2]"]
-        "#);
+        "#,
+        );
         assert!(errors.is_empty(), "errors: {:?}", errors);
     }
 
@@ -4020,11 +4685,8 @@ mod tests {
         let mut interp_env = crate::interp::Env::new();
         crate::interp::builtins::register_builtins(&mut interp_env);
         crate::interp::dom_builtins::register_dom_builtins(&mut interp_env);
-        let interp_names: std::collections::HashSet<String> = interp_env
-            .globals()
-            .keys()
-            .cloned()
-            .collect();
+        let interp_names: std::collections::HashSet<String> =
+            interp_env.globals().keys().cloned().collect();
 
         let missing: Vec<&String> = interp_names
             .iter()
@@ -4052,11 +4714,26 @@ mod tests {
              [let c Red]\n\
              [match c Red \"red\" _ \"other\"]",
         );
-        let warnings: Vec<_> = errors.iter().filter(|e| e.code == ErrorCode::W0100).collect();
+        let warnings: Vec<_> = errors
+            .iter()
+            .filter(|e| e.code == ErrorCode::W0100)
+            .collect();
         assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].what.contains("Green"), "should list Green: {}", warnings[0].what);
-        assert!(warnings[0].what.contains("Blue"), "should list Blue: {}", warnings[0].what);
-        assert!(warnings[0].what.contains("2 constructors"), "should say 2: {}", warnings[0].what);
+        assert!(
+            warnings[0].what.contains("Green"),
+            "should list Green: {}",
+            warnings[0].what
+        );
+        assert!(
+            warnings[0].what.contains("Blue"),
+            "should list Blue: {}",
+            warnings[0].what
+        );
+        assert!(
+            warnings[0].what.contains("2 constructors"),
+            "should say 2: {}",
+            warnings[0].what
+        );
     }
 
     #[test]
@@ -4066,8 +4743,15 @@ mod tests {
              [let c Red]\n\
              [match c Red \"red\" Green \"green\" Blue \"blue\" _ \"unreachable\"]",
         );
-        let warnings: Vec<_> = errors.iter().filter(|e| e.code == ErrorCode::W0100).collect();
-        assert!(warnings.is_empty(), "all constructors covered, _ catches nothing: {:?}", warnings);
+        let warnings: Vec<_> = errors
+            .iter()
+            .filter(|e| e.code == ErrorCode::W0100)
+            .collect();
+        assert!(
+            warnings.is_empty(),
+            "all constructors covered, _ catches nothing: {:?}",
+            warnings
+        );
     }
 
     #[test]
@@ -4077,19 +4761,32 @@ mod tests {
              [let d North]\n\
              [match d other \"fallback\"]",
         );
-        let warnings: Vec<_> = errors.iter().filter(|e| e.code == ErrorCode::W0100).collect();
-        assert_eq!(warnings.len(), 1, "lowercase var should trigger warning: {:?}", errors);
+        let warnings: Vec<_> = errors
+            .iter()
+            .filter(|e| e.code == ErrorCode::W0100)
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            1,
+            "lowercase var should trigger warning: {:?}",
+            errors
+        );
         assert!(warnings[0].what.contains("North"), "{}", warnings[0].what);
         assert!(warnings[0].what.contains("South"), "{}", warnings[0].what);
     }
 
     #[test]
     fn no_warning_for_non_adt_match() {
-        let errors = check_errors(
-            "[match 1 0 \"zero\" _ \"other\"]",
+        let errors = check_errors("[match 1 0 \"zero\" _ \"other\"]");
+        let warnings: Vec<_> = errors
+            .iter()
+            .filter(|e| e.code == ErrorCode::W0100)
+            .collect();
+        assert!(
+            warnings.is_empty(),
+            "int match should not warn: {:?}",
+            warnings
         );
-        let warnings: Vec<_> = errors.iter().filter(|e| e.code == ErrorCode::W0100).collect();
-        assert!(warnings.is_empty(), "int match should not warn: {:?}", warnings);
     }
 
     #[test]
@@ -4106,88 +4803,111 @@ mod tests {
 
     #[test]
     fn user_effect_declaration_no_error() {
-        let errors = check_errors(r#"
+        let errors = check_errors(
+            r#"
             [effect Fs [read-file [String] String]]
-        "#);
+        "#,
+        );
         assert!(errors.is_empty(), "errors: {:?}", errors);
     }
 
     #[test]
     fn user_effect_infer_propagates() {
-        let (effects, errors) = infer_effects(r#"
+        let (effects, errors) = infer_effects(
+            r#"
             [effect Fs [read-file [String] String]]
             [fn load [p] [Fs.read-file p]]
-        "#);
+        "#,
+        );
         assert!(errors.is_empty(), "errors: {:?}", errors);
         let load_eff = effects.get("load").unwrap();
-        assert!(load_eff.contains("Fs"), "load should infer Fs effect, got {:?}", load_eff);
+        assert!(
+            load_eff.contains("Fs"),
+            "load should infer Fs effect, got {:?}",
+            load_eff
+        );
     }
 
     #[test]
     fn user_effect_return_type_flows() {
-        let (_ty, errors) = infer_type(r#"
+        let (_ty, errors) = infer_type(
+            r#"
             [effect Fs [read-file [String] String]]
             [fn load [p] [Fs.read-file p]]
-        "#);
+        "#,
+        );
         assert!(errors.is_empty(), "errors: {:?}", errors);
         // load's return type should be String — verify via handle expression
-        let (ty2, errors2) = infer_type(r#"
+        let (ty2, errors2) = infer_type(
+            r#"
             [effect Fs [read-file [String] String]]
             [handle [Fs.read-file "a"]
                 [Fs.read-file p] [resume "hi"]]
-        "#);
+        "#,
+        );
         assert!(errors2.is_empty(), "errors: {:?}", errors2);
         assert_eq!(ty2, Type::Str, "handle should return String");
     }
 
     #[test]
     fn user_effect_arg_type_mismatch() {
-        let errors = check_errors(r#"
+        let errors = check_errors(
+            r#"
             [effect Fs [read-file [String] String]]
             [Fs.read-file 42]
-        "#);
+        "#,
+        );
         assert!(!errors.is_empty(), "should have type error for Int arg");
         assert!(
             errors.iter().any(|e| e.code == ErrorCode::E0200),
-            "should be a type mismatch error, got: {:?}", errors
+            "should be a type mismatch error, got: {:?}",
+            errors
         );
     }
 
     #[test]
     fn user_effect_arity_mismatch() {
-        let errors = check_errors(r#"
+        let errors = check_errors(
+            r#"
             [effect Fs [read-file [String] String]]
             [Fs.read-file "a" "b"]
-        "#);
+        "#,
+        );
         assert!(!errors.is_empty(), "should have arity error");
         assert!(
             errors.iter().any(|e| e.code == ErrorCode::E0202),
-            "should be arity mismatch, got: {:?}", errors
+            "should be arity mismatch, got: {:?}",
+            errors
         );
     }
 
     #[test]
     fn user_effect_unknown_op() {
-        let errors = check_errors(r#"
+        let errors = check_errors(
+            r#"
             [effect Fs [read-file [String] String]]
             [Fs.write-file "a"]
-        "#);
+        "#,
+        );
         assert!(!errors.is_empty(), "should have unknown op error");
         assert!(
             errors.iter().any(|e| e.code == ErrorCode::E0402),
-            "should be E0402 unknown op, got: {:?}", errors
+            "should be E0402 unknown op, got: {:?}",
+            errors
         );
     }
 
     #[test]
     fn user_effect_multi_ops() {
-        let errors = check_errors(r#"
+        let errors = check_errors(
+            r#"
             [effect Fs
                 [read-file [String] String]
                 [write-file [String String] Unit]]
             [Fs.read-file "test.txt"]
             [Fs.write-file "out.txt" "data"]
-        "#);
+        "#,
+        );
         assert!(errors.is_empty(), "errors: {:?}", errors);
     }
 
@@ -4233,7 +4953,14 @@ mod tests {
     fn dim_divide_velocity() {
         let (ty, errors) = infer_type("[/ [unit 10.0 :m] [unit 2.0 :s]]");
         assert!(errors.is_empty(), "errors: {:?}", errors);
-        assert_eq!(ty, Type::Dim(Dimension { length: 1, time: -1, ..Dimension::SCALAR }));
+        assert_eq!(
+            ty,
+            Type::Dim(Dimension {
+                length: 1,
+                time: -1,
+                ..Dimension::SCALAR
+            })
+        );
     }
 
     #[test]
@@ -4242,7 +4969,15 @@ mod tests {
         let (ty, errors) = infer_type("[* 3.0kg [/ 10.0m [* 2.0s 2.0s]]]");
         assert!(errors.is_empty(), "errors: {:?}", errors);
         // mass(1) * (length(1) / time(2)) = mass(1)*length(1)*time(-2) = Force
-        assert_eq!(ty, Type::Dim(Dimension { mass: 1, length: 1, time: -2, ..Dimension::SCALAR }));
+        assert_eq!(
+            ty,
+            Type::Dim(Dimension {
+                mass: 1,
+                length: 1,
+                time: -2,
+                ..Dimension::SCALAR
+            })
+        );
     }
 
     #[test]
@@ -4292,16 +5027,21 @@ mod tests {
     #[test]
     fn dim_comparison_different_error() {
         let errors = check_errors("[> [unit 10.0 :m] [unit 5.0 :s]]");
-        assert!(!errors.is_empty(), "should error on comparing Length and Time");
+        assert!(
+            !errors.is_empty(),
+            "should error on comparing Length and Time"
+        );
         assert!(errors.iter().any(|e| e.code == ErrorCode::E0208));
     }
 
     #[test]
     fn dim_polymorphism_double() {
-        let (ty, errors) = infer_type(r#"
+        let (ty, errors) = infer_type(
+            r#"
             [fn double [x] [* 2.0 x]]
             [double [unit 5.0 :m]]
-        "#);
+        "#,
+        );
         assert!(errors.is_empty(), "errors: {:?}", errors);
         assert_eq!(ty, Type::Dim(Dimension::length()));
     }
@@ -4317,17 +5057,27 @@ mod tests {
     fn dim_derived_unit_newton() {
         let (ty, errors) = infer_type("[unit 10.0 :N]");
         assert!(errors.is_empty(), "errors: {:?}", errors);
-        assert_eq!(ty, Type::Dim(Dimension { mass: 1, length: 1, time: -2, ..Dimension::SCALAR }));
+        assert_eq!(
+            ty,
+            Type::Dim(Dimension {
+                mass: 1,
+                length: 1,
+                time: -2,
+                ..Dimension::SCALAR
+            })
+        );
     }
 
     #[test]
     fn dim_physics_effect_gravity() {
-        let errors = check_errors(r#"
+        let errors = check_errors(
+            r#"
             [fn get-g []
               [Physics.gravity]]
             [handle [get-g]
               [Physics.gravity] [resume [unit 9.81 :m]]]
-        "#);
+        "#,
+        );
         // Note: resume provides Length, but Physics.gravity expects Acceleration.
         // Since the handle mechanism doesn't yet unify resume types vs declared return types,
         // this should still pass. The key is that Physics.gravity returns Acceleration type.
@@ -4336,12 +5086,22 @@ mod tests {
 
     #[test]
     fn dim_physics_effect_returns_typed() {
-        let (ty, errors) = infer_type(r#"
+        let (ty, errors) = infer_type(
+            r#"
             [Physics.yield-strength]
-        "#);
+        "#,
+        );
         assert!(errors.is_empty(), "errors: {:?}", errors);
         // Should be Pressure type
-        assert_eq!(ty, Type::Dim(Dimension { mass: 1, length: -1, time: -2, ..Dimension::SCALAR }));
+        assert_eq!(
+            ty,
+            Type::Dim(Dimension {
+                mass: 1,
+                length: -1,
+                time: -2,
+                ..Dimension::SCALAR
+            })
+        );
     }
 
     #[test]
@@ -4354,15 +5114,39 @@ mod tests {
     fn dim_display_named() {
         assert_eq!(Dimension::length().to_string(), "Length");
         assert_eq!(Dimension::SCALAR.to_string(), "Scalar");
-        assert_eq!(Dimension { length: 1, time: -1, ..Dimension::SCALAR }.to_string(), "Velocity");
-        assert_eq!(Dimension { mass: 1, length: 1, time: -2, ..Dimension::SCALAR }.to_string(), "Force");
+        assert_eq!(
+            Dimension {
+                length: 1,
+                time: -1,
+                ..Dimension::SCALAR
+            }
+            .to_string(),
+            "Velocity"
+        );
+        assert_eq!(
+            Dimension {
+                mass: 1,
+                length: 1,
+                time: -2,
+                ..Dimension::SCALAR
+            }
+            .to_string(),
+            "Force"
+        );
     }
 
     #[test]
     fn dim_const_c_velocity_type() {
         let (ty, errors) = infer_type("Const.c");
         assert!(errors.is_empty(), "errors: {:?}", errors);
-        assert_eq!(ty, Type::Dim(Dimension { length: 1, time: -1, ..Dimension::SCALAR }));
+        assert_eq!(
+            ty,
+            Type::Dim(Dimension {
+                length: 1,
+                time: -1,
+                ..Dimension::SCALAR
+            })
+        );
     }
 
     #[test]

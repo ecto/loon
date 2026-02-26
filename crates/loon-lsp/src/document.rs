@@ -40,7 +40,14 @@ impl CheckerState {
             .into_iter()
             .map(|(name, scheme)| {
                 let resolved_ty = checker.resolve(&scheme.ty);
-                (name, Scheme { bounds: scheme.bounds.clone(), vars: scheme.vars, ty: resolved_ty })
+                (
+                    name,
+                    Scheme {
+                        bounds: scheme.bounds.clone(),
+                        vars: scheme.vars,
+                        ty: resolved_ty,
+                    },
+                )
             })
             .collect();
 
@@ -110,12 +117,11 @@ impl DocumentState {
         self.diagnostics.extend(type_errors);
 
         // Ownership check
-        let mut ownership =
-            loon_lang::check::ownership::OwnershipChecker::with_type_info(
-                &checker.type_of,
-                &checker.subst,
-            )
-            .with_derived_copy_types(&checker.derived_copy_types);
+        let mut ownership = loon_lang::check::ownership::OwnershipChecker::with_type_info(
+            &checker.type_of,
+            &checker.subst,
+        )
+        .with_derived_copy_types(&checker.derived_copy_types);
         let expanded = &checker.expanded_program;
         let ownership_errors = ownership.check_program(expanded);
         self.diagnostics.extend(ownership_errors);
@@ -135,7 +141,11 @@ mod tests {
     #[test]
     fn parse_and_check_valid() {
         let state = DocumentState::new("[fn add [x y] [+ x y]]", 1);
-        assert!(state.diagnostics.is_empty(), "unexpected diagnostics: {:?}", state.diagnostics);
+        assert!(
+            state.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            state.diagnostics
+        );
         assert!(state.checker.is_some());
         assert!(!state.exprs.is_empty());
     }

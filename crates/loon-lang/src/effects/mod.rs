@@ -130,7 +130,11 @@ impl EffectRegistry {
                 typed_op("stress", &["geometry", "material", "load"], "Pressure"),
                 typed_op("deflection", &["geometry", "material", "load"], "Length"),
                 typed_op("natural-freq", &["geometry", "material"], "Frequency"),
-                typed_op("thermal-field", &["geometry", "material", "sources"], "Temperature"),
+                typed_op(
+                    "thermal-field",
+                    &["geometry", "material", "sources"],
+                    "Temperature",
+                ),
             ],
         });
         reg

@@ -46,7 +46,11 @@ impl Manifest {
     /// Load a pkg.oo (or pkg.loon) from a directory, returning None if not found.
     pub fn load(dir: &Path) -> Result<Option<Self>, String> {
         let manifest_path = dir.join("pkg.oo");
-        let manifest_path = if manifest_path.exists() { manifest_path } else { dir.join("pkg.loon") };
+        let manifest_path = if manifest_path.exists() {
+            manifest_path
+        } else {
+            dir.join("pkg.loon")
+        };
         if !manifest_path.exists() {
             return Ok(None);
         }
@@ -57,7 +61,8 @@ impl Manifest {
 
     /// Parse manifest source text.
     pub fn parse(source: &str, base_dir: &Path) -> Result<Self, String> {
-        let exprs = parser::parse(source).map_err(|e| format!("pkg.oo parse error: {}", e.message))?;
+        let exprs =
+            parser::parse(source).map_err(|e| format!("pkg.oo parse error: {}", e.message))?;
 
         if exprs.len() != 1 {
             return Err("pkg.oo must contain exactly one map expression".into());
@@ -105,8 +110,7 @@ impl Manifest {
                 "indices" => {
                     if let ExprKind::Map(idx_pairs) = &val.kind {
                         for (ik, iv) in idx_pairs {
-                            if let (ExprKind::Str(name), ExprKind::Str(url)) =
-                                (&ik.kind, &iv.kind)
+                            if let (ExprKind::Str(name), ExprKind::Str(url)) = (&ik.kind, &iv.kind)
                             {
                                 indices.insert(name.clone(), url.clone());
                             }
@@ -130,11 +134,7 @@ impl Manifest {
     }
 }
 
-fn parse_dep(
-    source: &str,
-    val: &crate::ast::Expr,
-    base_dir: &Path,
-) -> Result<Dependency, String> {
+fn parse_dep(source: &str, val: &crate::ast::Expr, base_dir: &Path) -> Result<Dependency, String> {
     match &val.kind {
         // String shorthand: "^1.2" — pure dep, version constraint only
         ExprKind::Str(s) => {
@@ -186,11 +186,7 @@ fn parse_dep(
                     "path" => {
                         if let ExprKind::Str(s) = &v.kind {
                             let p = PathBuf::from(s);
-                            let resolved = if p.is_absolute() {
-                                p
-                            } else {
-                                base_dir.join(p)
-                            };
+                            let resolved = if p.is_absolute() { p } else { base_dir.join(p) };
                             dep.path = Some(resolved);
                         }
                     }
@@ -284,7 +280,10 @@ mod tests {
         let m = Manifest::parse(source, Path::new("/project")).unwrap();
         let dep = m.deps.get("my-lib").unwrap();
         assert!(dep.is_path_dep());
-        assert_eq!(dep.path.as_ref().unwrap(), &PathBuf::from("/project/../my-lib"));
+        assert_eq!(
+            dep.path.as_ref().unwrap(),
+            &PathBuf::from("/project/../my-lib")
+        );
     }
 
     #[test]

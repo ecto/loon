@@ -85,7 +85,11 @@ impl ModuleCache {
             path = path.join(part);
         }
         let oo = path.with_extension("oo");
-        if oo.exists() { oo } else { path.with_extension("loon") }
+        if oo.exists() {
+            oo
+        } else {
+            path.with_extension("loon")
+        }
     }
 
     /// Check if a module path corresponds to a package dependency.
@@ -127,13 +131,16 @@ impl ModuleCache {
                     // Verify cache integrity: re-hash and compare against lockfile
                     #[cfg(feature = "pkg-fetch")]
                     {
-                        let actual_hash = crate::pkg::fetch::normalize_and_hash(&cached)
-                            .map_err(|e| format!("cache integrity check for '{}': {e}", module_path))?;
+                        let actual_hash =
+                            crate::pkg::fetch::normalize_and_hash(&cached).map_err(|e| {
+                                format!("cache integrity check for '{}': {e}", module_path)
+                            })?;
                         if actual_hash != locked.hash {
                             return Err(format!(
                                 "cache integrity check failed for '{}': expected hash {}, got {}. \
                                  Run `loon cache clean && loon cache warm` to re-fetch.",
-                                module_path, &locked.hash[..12.min(locked.hash.len())],
+                                module_path,
+                                &locked.hash[..12.min(locked.hash.len())],
                                 &actual_hash[..12.min(actual_hash.len())]
                             ));
                         }
@@ -221,9 +228,7 @@ impl ModuleCache {
         // Check cache
         if let Some(state) = self.modules.get(&canonical) {
             return match state {
-                ModuleState::Loading => {
-                    Err(format!("circular dependency: {module_path}"))
-                }
+                ModuleState::Loading => Err(format!("circular dependency: {module_path}")),
                 ModuleState::Loaded(exports) => Ok(exports.clone()),
             };
         }
@@ -232,8 +237,12 @@ impl ModuleCache {
         self.modules.insert(canonical.clone(), ModuleState::Loading);
 
         // Read and parse
-        let source = std::fs::read_to_string(&file_path)
-            .map_err(|e| format!("cannot read module '{module_path}' at {}: {e}", file_path.display()))?;
+        let source = std::fs::read_to_string(&file_path).map_err(|e| {
+            format!(
+                "cannot read module '{module_path}' at {}: {e}",
+                file_path.display()
+            )
+        })?;
 
         let exprs = crate::parser::parse(&source)
             .map_err(|e| format!("parse error in module '{module_path}': {}", e.message))?;
@@ -258,8 +267,13 @@ impl ModuleCache {
                     if !items.is_empty() {
                         if let crate::ast::ExprKind::Symbol(s) = &items[0].kind {
                             if s == "use" {
-                                crate::interp::eval_use_with_cache(&items[1..], &mut env, module_dir, self)
-                                    .map_err(|e| format!("in module '{module_path}': {e}"))?;
+                                crate::interp::eval_use_with_cache(
+                                    &items[1..],
+                                    &mut env,
+                                    module_dir,
+                                    self,
+                                )
+                                .map_err(|e| format!("in module '{module_path}': {e}"))?;
                                 continue;
                             }
                         }

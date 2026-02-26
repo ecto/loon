@@ -122,41 +122,43 @@ impl<'a> Parser<'a> {
             Token::Int(s) => {
                 let suffix = extract_suffix(&s);
                 let num_str = &s[..s.len() - suffix.len()];
-                let n: i64 = num_str
-                    .parse()
-                    .map_err(|e| ParseError {
-                        message: format!("invalid integer: {e}"),
-                        span,
-                    })?;
+                let n: i64 = num_str.parse().map_err(|e| ParseError {
+                    message: format!("invalid integer: {e}"),
+                    span,
+                })?;
                 if suffix.is_empty() || matches!(suffix.as_str(), "i32" | "i64" | "u32" | "u64") {
                     Ok(Expr::new(ExprKind::Int(n), span))
                 } else {
                     // Desugar: 10m → [unit 10 :m]
-                    Ok(Expr::new(ExprKind::List(vec![
-                        Expr::new(ExprKind::Symbol("unit".to_string()), span),
-                        Expr::new(ExprKind::Int(n), span),
-                        Expr::new(ExprKind::Keyword(suffix), span),
-                    ]), span))
+                    Ok(Expr::new(
+                        ExprKind::List(vec![
+                            Expr::new(ExprKind::Symbol("unit".to_string()), span),
+                            Expr::new(ExprKind::Int(n), span),
+                            Expr::new(ExprKind::Keyword(suffix), span),
+                        ]),
+                        span,
+                    ))
                 }
             }
             Token::Float(s) => {
                 let suffix = extract_suffix(&s);
                 let num_str = &s[..s.len() - suffix.len()];
-                let n: f64 = num_str
-                    .parse()
-                    .map_err(|e| ParseError {
-                        message: format!("invalid float: {e}"),
-                        span,
-                    })?;
+                let n: f64 = num_str.parse().map_err(|e| ParseError {
+                    message: format!("invalid float: {e}"),
+                    span,
+                })?;
                 if suffix.is_empty() || matches!(suffix.as_str(), "f32" | "f64") {
                     Ok(Expr::new(ExprKind::Float(n), span))
                 } else {
                     // Desugar: 5.0m → [unit 5.0 :m]
-                    Ok(Expr::new(ExprKind::List(vec![
-                        Expr::new(ExprKind::Symbol("unit".to_string()), span),
-                        Expr::new(ExprKind::Float(n), span),
-                        Expr::new(ExprKind::Keyword(suffix), span),
-                    ]), span))
+                    Ok(Expr::new(
+                        ExprKind::List(vec![
+                            Expr::new(ExprKind::Symbol("unit".to_string()), span),
+                            Expr::new(ExprKind::Float(n), span),
+                            Expr::new(ExprKind::Keyword(suffix), span),
+                        ]),
+                        span,
+                    ))
                 }
             }
             Token::True => Ok(Expr::new(ExprKind::Bool(true), span)),
@@ -173,7 +175,8 @@ impl<'a> Parser<'a> {
                     let parts: Vec<&str> = s.split('.').collect();
                     let mut expr = Expr::new(ExprKind::Symbol(parts[0].to_string()), span);
                     for part in &parts[1..] {
-                        expr = Expr::new(ExprKind::DotAccess(Box::new(expr), part.to_string()), span);
+                        expr =
+                            Expr::new(ExprKind::DotAccess(Box::new(expr), part.to_string()), span);
                     }
                     Ok(expr)
                 } else {
@@ -302,7 +305,10 @@ impl<'a> Parser<'a> {
             Token::TildeSplice => {
                 let inner = self.parse_expr()?;
                 let full_span = span.merge(inner.span);
-                Ok(Expr::new(ExprKind::UnquoteSplice(Box::new(inner)), full_span))
+                Ok(Expr::new(
+                    ExprKind::UnquoteSplice(Box::new(inner)),
+                    full_span,
+                ))
             }
 
             // Unquote: ~expr
@@ -378,7 +384,8 @@ fn desugar_fmt(template: &str, span: Span, _source: &str) -> Result<Expr, ParseE
                     parts.push(inner_exprs.into_iter().next().unwrap());
                 } else {
                     return Err(ParseError {
-                        message: "fmt interpolation must contain exactly one expression".to_string(),
+                        message: "fmt interpolation must contain exactly one expression"
+                            .to_string(),
                         span,
                     });
                 }
@@ -476,7 +483,10 @@ mod tests {
         let src = r#"[fn main [] [println "hello, world!"]]"#;
         let exprs = parse(src).unwrap();
         assert_eq!(exprs.len(), 1);
-        assert_eq!(exprs[0].to_string(), r#"[fn main [] [println "hello, world!"]]"#);
+        assert_eq!(
+            exprs[0].to_string(),
+            r#"[fn main [] [println "hello, world!"]]"#
+        );
     }
 
     #[test]

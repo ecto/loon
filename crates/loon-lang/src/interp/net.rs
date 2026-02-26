@@ -8,8 +8,8 @@ use super::{err, InterpError, PerformedEffect};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 type IResult = Result<Value, InterpError>;
 
@@ -88,17 +88,31 @@ fn net_get(args: &[Value]) -> IResult {
         Ok(response) => {
             let status = response.status();
             let body = response.into_string().unwrap_or_default();
-            Ok(Value::Map(vec![
-                (Value::Keyword("status".to_string()), Value::Int(status as i64)),
-                (Value::Keyword("body".to_string()), Value::Str(body)),
-            ].into_iter().collect()))
+            Ok(Value::Map(
+                vec![
+                    (
+                        Value::Keyword("status".to_string()),
+                        Value::Int(status as i64),
+                    ),
+                    (Value::Keyword("body".to_string()), Value::Str(body)),
+                ]
+                .into_iter()
+                .collect(),
+            ))
         }
         Err(ureq::Error::Status(code, response)) => {
             let body = response.into_string().unwrap_or_default();
-            Ok(Value::Map(vec![
-                (Value::Keyword("status".to_string()), Value::Int(code as i64)),
-                (Value::Keyword("body".to_string()), Value::Str(body)),
-            ].into_iter().collect()))
+            Ok(Value::Map(
+                vec![
+                    (
+                        Value::Keyword("status".to_string()),
+                        Value::Int(code as i64),
+                    ),
+                    (Value::Keyword("body".to_string()), Value::Str(body)),
+                ]
+                .into_iter()
+                .collect(),
+            ))
         }
         Err(e) => Err(err(format!("Net.get: {e}"))),
     }
@@ -113,7 +127,11 @@ fn net_post(args: &[Value]) -> IResult {
 
     let options = match args.get(1) {
         Some(Value::Map(m)) => m.clone(),
-        _ => return Err(err("Net.post requires an options map {:headers Map :body String}")),
+        _ => {
+            return Err(err(
+                "Net.post requires an options map {:headers Map :body String}",
+            ))
+        }
     };
 
     let body = get_map_str(&options, "body").unwrap_or_default();
@@ -137,17 +155,31 @@ fn net_post(args: &[Value]) -> IResult {
         Ok(response) => {
             let status = response.status();
             let resp_body = response.into_string().unwrap_or_default();
-            Ok(Value::Map(vec![
-                (Value::Keyword("status".to_string()), Value::Int(status as i64)),
-                (Value::Keyword("body".to_string()), Value::Str(resp_body)),
-            ].into_iter().collect()))
+            Ok(Value::Map(
+                vec![
+                    (
+                        Value::Keyword("status".to_string()),
+                        Value::Int(status as i64),
+                    ),
+                    (Value::Keyword("body".to_string()), Value::Str(resp_body)),
+                ]
+                .into_iter()
+                .collect(),
+            ))
         }
         Err(ureq::Error::Status(code, response)) => {
             let resp_body = response.into_string().unwrap_or_default();
-            Ok(Value::Map(vec![
-                (Value::Keyword("status".to_string()), Value::Int(code as i64)),
-                (Value::Keyword("body".to_string()), Value::Str(resp_body)),
-            ].into_iter().collect()))
+            Ok(Value::Map(
+                vec![
+                    (
+                        Value::Keyword("status".to_string()),
+                        Value::Int(code as i64),
+                    ),
+                    (Value::Keyword("body".to_string()), Value::Str(resp_body)),
+                ]
+                .into_iter()
+                .collect(),
+            ))
         }
         Err(e) => Err(err(format!("Net.post: {e}"))),
     }
@@ -183,16 +215,24 @@ fn http_serve(args: &[Value]) -> IResult {
                     connections().lock().unwrap().insert(conn_id, stream);
 
                     // Build request map
-                    let req_map = Value::Map(vec![
-                        (Value::Keyword("id".to_string()), Value::Int(conn_id as i64)),
-                        (Value::Keyword("method".to_string()), Value::Str(req.method)),
-                        (Value::Keyword("path".to_string()), Value::Str(req.path)),
-                        (Value::Keyword("headers".to_string()), Value::Map(
-                            req.headers.into_iter()
-                                .map(|(k, v)| (Value::Str(k), Value::Str(v)))
-                                .collect()
-                        )),
-                    ].into_iter().collect());
+                    let req_map = Value::Map(
+                        vec![
+                            (Value::Keyword("id".to_string()), Value::Int(conn_id as i64)),
+                            (Value::Keyword("method".to_string()), Value::Str(req.method)),
+                            (Value::Keyword("path".to_string()), Value::Str(req.path)),
+                            (
+                                Value::Keyword("headers".to_string()),
+                                Value::Map(
+                                    req.headers
+                                        .into_iter()
+                                        .map(|(k, v)| (Value::Str(k), Value::Str(v)))
+                                        .collect(),
+                                ),
+                            ),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    );
 
                     // Send to channel (ignore errors — channel may be gone)
                     let _ = shared_send(tx_id, req_map);
@@ -298,7 +338,8 @@ fn serve_file(args: &[Value]) -> IResult {
                 .unwrap()
                 .remove(&conn_id)
                 .ok_or_else(|| err(format!("Net.serve-file: connection {conn_id} not found")))?;
-            let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found";
+            let resp =
+                "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found";
             let _ = stream.write_all(resp.as_bytes());
             let _ = stream.flush();
             return Ok(Value::Unit);
@@ -435,26 +476,42 @@ fn parse_request(stream: &TcpStream) -> Result<HttpRequest, ()> {
         }
     }
 
-    Ok(HttpRequest { method, path, headers })
+    Ok(HttpRequest {
+        method,
+        path,
+        headers,
+    })
 }
 
 // --- Map helpers ---
 
 fn get_map_int(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<u16> {
     m.get(&Value::Keyword(key.to_string())).and_then(|v| {
-        if let Value::Int(n) = v { Some(*n as u16) } else { None }
+        if let Value::Int(n) = v {
+            Some(*n as u16)
+        } else {
+            None
+        }
     })
 }
 
 fn get_map_str(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<String> {
     m.get(&Value::Keyword(key.to_string())).and_then(|v| {
-        if let Value::Str(s) = v { Some(s.clone()) } else { None }
+        if let Value::Str(s) = v {
+            Some(s.clone())
+        } else {
+            None
+        }
     })
 }
 
 fn get_map_map(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<imbl::HashMap<Value, Value>> {
     m.get(&Value::Keyword(key.to_string())).and_then(|v| {
-        if let Value::Map(inner) = v { Some(inner.clone()) } else { None }
+        if let Value::Map(inner) = v {
+            Some(inner.clone())
+        } else {
+            None
+        }
     })
 }
 
@@ -463,6 +520,10 @@ fn get_str_from_pairs(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<Stri
     m.get(&Value::Keyword(key.to_string()))
         .or_else(|| m.get(&Value::Str(key.to_string())))
         .and_then(|v| {
-            if let Value::Str(s) = v { Some(s.clone()) } else { None }
+            if let Value::Str(s) = v {
+                Some(s.clone())
+            } else {
+                None
+            }
         })
 }

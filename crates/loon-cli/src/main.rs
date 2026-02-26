@@ -225,7 +225,10 @@ fn run_file_wasm(path: &PathBuf) {
     let mut linker = wasmtime::Linker::new(&engine);
     wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |s: &mut WasiCtx| s).unwrap_or_else(
         |e| {
-            eprintln!("{}: failed to link WASI: {e}", "wasmtime error".red().bold());
+            eprintln!(
+                "{}: failed to link WASI: {e}",
+                "wasmtime error".red().bold()
+            );
             std::process::exit(1);
         },
     );
@@ -257,10 +260,7 @@ fn run_file_wasm(path: &PathBuf) {
             std::process::exit(1);
         }
     } else {
-        eprintln!(
-            "{}: no _start or main export found",
-            "error".red().bold()
-        );
+        eprintln!("{}: no _start or main export found", "error".red().bold());
         std::process::exit(1);
     }
 }
@@ -312,18 +312,21 @@ fn build_file(path: &PathBuf, release: bool) {
         Ok(exprs) => match loon_lang::codegen::compile(&exprs) {
             Ok(wasm) => {
                 let original_size = wasm.len();
-                let output = if release {
-                    optimize_wasm(&wasm)
-                } else {
-                    wasm
-                };
+                let output = if release { optimize_wasm(&wasm) } else { wasm };
 
-                let out_dir = path.parent().unwrap_or(std::path::Path::new(".")).join("target");
+                let out_dir = path
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join("target");
                 let _ = std::fs::create_dir_all(&out_dir);
                 let stem = path.file_stem().unwrap_or_default().to_string_lossy();
                 let out_path = out_dir.join(format!("{stem}.wasm"));
                 std::fs::write(&out_path, &output).unwrap_or_else(|e| {
-                    eprintln!("{} writing {}: {e}", "error".red().bold(), out_path.display());
+                    eprintln!(
+                        "{} writing {}: {e}",
+                        "error".red().bold(),
+                        out_path.display()
+                    );
                     std::process::exit(1);
                 });
 
@@ -589,11 +592,7 @@ fn test_file(path: &PathBuf) {
 
             println!();
             if failed == 0 {
-                println!(
-                    "  {} {} passed",
-                    "✓".green().bold(),
-                    passed
-                );
+                println!("  {} {} passed", "✓".green().bold(), passed);
             } else {
                 println!(
                     "  {} passed, {} failed",
@@ -722,8 +721,8 @@ fn collect_loon_files(dir: &PathBuf) -> Vec<PathBuf> {
 /// Try to parse, type-check, and eval a snippet. Returns true on success.
 /// Prints diagnostics or the result value.
 fn run_code_live(code: &str) -> bool {
-    use loon_lang::check::Checker;
     use loon_lang::check::ownership::OwnershipChecker;
+    use loon_lang::check::Checker;
 
     let exprs = match loon_lang::parser::parse(code) {
         Ok(e) => e,
@@ -838,11 +837,7 @@ fn explain_error(code: &str) {
 
     while idx < total {
         let step = &tutorial.steps[idx];
-        println!(
-            "  {} {}/{total}",
-            "Step".dimmed(),
-            (idx + 1),
-        );
+        println!("  {} {}/{total}", "Step".dimmed(), (idx + 1),);
         println!();
 
         match step {
@@ -1052,12 +1047,7 @@ fn pkg_verify() {
             match loon_lang::pkg::fetch::normalize_and_hash(&cached) {
                 Ok(actual) => {
                     if actual == pkg.hash {
-                        println!(
-                            "  {} {} ({})",
-                            "✓".green(),
-                            pkg.source,
-                            short_hash.dimmed()
-                        );
+                        println!("  {} {} ({})", "✓".green(), pkg.source, short_hash.dimmed());
                         ok_count += 1;
                     } else {
                         let actual_short = &actual[..12.min(actual.len())];
@@ -1072,11 +1062,7 @@ fn pkg_verify() {
                     }
                 }
                 Err(e) => {
-                    println!(
-                        "  {} {} — error hashing: {e}",
-                        "✗".red().bold(),
-                        pkg.source
-                    );
+                    println!("  {} {} — error hashing: {e}", "✗".red().bold(), pkg.source);
                     fail_count += 1;
                 }
             }
@@ -1093,10 +1079,7 @@ fn pkg_verify() {
 
     println!();
     if fail_count == 0 && missing_count == 0 {
-        println!(
-            "  {} {ok_count} package(s) verified",
-            "✓".green().bold()
-        );
+        println!("  {} {ok_count} package(s) verified", "✓".green().bold());
     } else {
         if fail_count > 0 {
             println!(
@@ -1136,10 +1119,7 @@ fn pkg_publish() {
 
     // Validate required fields
     if manifest.name.is_empty() {
-        eprintln!(
-            "{}: pkg.oo must have a :name field",
-            "error".red().bold()
-        );
+        eprintln!("{}: pkg.oo must have a :name field", "error".red().bold());
         std::process::exit(1);
     }
     if manifest.version.is_empty() {
@@ -1152,7 +1132,11 @@ fn pkg_publish() {
 
     // Check that src/lib.oo (or src/lib.loon) exists
     let lib_oo = cwd.join("src").join("lib.oo");
-    let lib_path = if lib_oo.exists() { lib_oo } else { cwd.join("src").join("lib.loon") };
+    let lib_path = if lib_oo.exists() {
+        lib_oo
+    } else {
+        cwd.join("src").join("lib.loon")
+    };
     if !lib_path.exists() {
         eprintln!(
             "{}: src/lib.oo not found (required for publishing)",
@@ -1202,23 +1186,14 @@ fn pkg_publish() {
         manifest.name,
         manifest.version
     );
-    println!("  {}: {}", "Entry".bold(), lib_path.strip_prefix(&cwd).unwrap_or(&lib_path).display());
     println!(
         "  {}: {}",
-        "Hash".bold(),
-        &hash[..32.min(hash.len())]
+        "Entry".bold(),
+        lib_path.strip_prefix(&cwd).unwrap_or(&lib_path).display()
     );
-    println!(
-        "  {}: {} ({} files)",
-        "Size".bold(),
-        size_str,
-        file_count
-    );
-    println!(
-        "  {}: {}",
-        "Archive".bold(),
-        archive_path.display()
-    );
+    println!("  {}: {}", "Hash".bold(), &hash[..32.min(hash.len())]);
+    println!("  {}: {} ({} files)", "Size".bold(), size_str, file_count);
+    println!("  {}: {}", "Archive".bold(), archive_path.display());
     println!();
     println!(
         "  Ready to publish. {}",
@@ -1283,7 +1258,11 @@ fn pkg_add(source: &str, version: Option<&str>, grant: Option<&str>) {
         std::process::exit(1);
     });
     let pkg_oo = cwd.join("pkg.oo");
-    let pkg_path = if pkg_oo.exists() { pkg_oo } else { cwd.join("pkg.loon") };
+    let pkg_path = if pkg_oo.exists() {
+        pkg_oo
+    } else {
+        cwd.join("pkg.loon")
+    };
     if !pkg_path.exists() {
         eprintln!(
             "{}: no pkg.oo found (run {} first)",
@@ -1326,10 +1305,7 @@ fn pkg_add(source: &str, version: Option<&str>, grant: Option<&str>) {
     } else {
         // No :deps section — add one before the final `}`
         if let Some(last_brace) = content.rfind('}') {
-            let entry = format!(
-                "\n  :deps {{\n    \"{}\" {}\n  }}",
-                source, dep_value
-            );
+            let entry = format!("\n  :deps {{\n    \"{}\" {}\n  }}", source, dep_value);
             content.insert_str(last_brace, &entry);
         }
     }
@@ -1363,11 +1339,13 @@ fn pkg_add(source: &str, version: Option<&str>, grant: Option<&str>) {
                                 .map(|v| v.minimum())
                                 .unwrap_or_else(|| loon_lang::pkg::Version::new(0, 0, 0));
 
-                            let url = dep
-                                .git
-                                .clone()
-                                .or_else(|| dep.url.clone())
-                                .unwrap_or_else(|| loon_lang::pkg::fetch::git_url_from_source(source));
+                            let url =
+                                dep.git
+                                    .clone()
+                                    .or_else(|| dep.url.clone())
+                                    .unwrap_or_else(|| {
+                                        loon_lang::pkg::fetch::git_url_from_source(source)
+                                    });
 
                             lockfile.upsert(loon_lang::pkg::lockfile::LockedPackage {
                                 source: source.to_string(),
@@ -1390,10 +1368,7 @@ fn pkg_add(source: &str, version: Option<&str>, grant: Option<&str>) {
                         }
                         Err(e) => {
                             println!();
-                            eprintln!(
-                                "  {} fetching {source}: {e}",
-                                "warning".yellow().bold()
-                            );
+                            eprintln!("  {} fetching {source}: {e}", "warning".yellow().bold());
                             eprintln!(
                                 "  {} dependency added but not fetched — run {} to retry",
                                 "note:".dimmed(),
@@ -1449,7 +1424,11 @@ fn pkg_remove(source: &str) {
         std::process::exit(1);
     });
     let pkg_oo = cwd.join("pkg.oo");
-    let pkg_path = if pkg_oo.exists() { pkg_oo } else { cwd.join("pkg.loon") };
+    let pkg_path = if pkg_oo.exists() {
+        pkg_oo
+    } else {
+        cwd.join("pkg.loon")
+    };
     if !pkg_path.exists() {
         eprintln!("{}: no pkg.oo found", "error".red().bold());
         std::process::exit(1);
@@ -1590,7 +1569,10 @@ fn pkg_update(source: Option<&str>) {
         if let Err(e) = lockfile.write(&cwd) {
             eprintln!("{}: writing lock.oo: {e}", "error".red().bold());
         } else {
-            println!("\n  {} lock.oo ({updated} package(s))", "Updated".green().bold());
+            println!(
+                "\n  {} lock.oo ({updated} package(s))",
+                "Updated".green().bold()
+            );
         }
     } else {
         println!("  Nothing to update");
@@ -1713,8 +1695,7 @@ fn pkg_audit(capabilities: bool) {
         .flatten();
 
     if let Some(ref lf) = lockfile {
-        let violations =
-            loon_lang::pkg::capability::check_transitive_grants(lf, &manifest);
+        let violations = loon_lang::pkg::capability::check_transitive_grants(lf, &manifest);
         if violations.is_empty() {
             println!(
                 "    {} All transitive dependencies have required grants",
@@ -1852,7 +1833,11 @@ fn pkg_cache_clean() {
     let cache_dir = loon_lang::pkg::fetch::cache_dir();
     if cache_dir.exists() {
         match std::fs::remove_dir_all(&cache_dir) {
-            Ok(_) => println!("  {} cache at {}", "Cleaned".green().bold(), cache_dir.display()),
+            Ok(_) => println!(
+                "  {} cache at {}",
+                "Cleaned".green().bold(),
+                cache_dir.display()
+            ),
             Err(e) => eprintln!("{}: {e}", "error".red().bold()),
         }
     } else {
@@ -1883,7 +1868,10 @@ fn pkg_cache_warm() {
         return;
     }
 
-    println!("  {} dependencies (including transitive)...", "Resolving".cyan().bold());
+    println!(
+        "  {} dependencies (including transitive)...",
+        "Resolving".cyan().bold()
+    );
 
     // Use the resolver to discover and fetch all transitive deps
     match loon_lang::pkg::resolve::resolve(&manifest, &cwd) {
@@ -1913,7 +1901,11 @@ fn pkg_cache_warm() {
                         deps: pkg.deps.clone(),
                     });
                     count += 1;
-                    println!("  {} {source} ({})", "OK".green(), &hash[..12.min(hash.len())]);
+                    println!(
+                        "  {} {source} ({})",
+                        "OK".green(),
+                        &hash[..12.min(hash.len())]
+                    );
                 } else if pkg.cached_path.is_some() {
                     println!("  {} {source} (path dep)", "OK".green());
                 }
@@ -1923,7 +1915,10 @@ fn pkg_cache_warm() {
                 if let Err(e) = lockfile.write(&cwd) {
                     eprintln!("{}: writing lock.oo: {e}", "error".red().bold());
                 } else {
-                    println!("\n  {} lock.oo ({count} package(s))", "Updated".green().bold());
+                    println!(
+                        "\n  {} lock.oo ({count} package(s))",
+                        "Updated".green().bold()
+                    );
                 }
             } else {
                 println!("\n  All dependencies cached");
@@ -1956,15 +1951,16 @@ fn pkg_search(query: &str) {
                 .last()
                 .map(|v| v.version.as_str())
                 .unwrap_or("?");
-            let license = entry
-                .license
-                .as_deref()
-                .unwrap_or("");
+            let license = entry.license.as_deref().unwrap_or("");
             println!(
                 "  {} {} {} — {}",
                 entry.source.bold(),
                 format!("v{ver}").dimmed(),
-                if license.is_empty() { String::new() } else { format!("({})", license).dimmed().to_string() },
+                if license.is_empty() {
+                    String::new()
+                } else {
+                    format!("({})", license).dimmed().to_string()
+                },
                 entry.description
             );
         }
@@ -1986,7 +1982,11 @@ mod tests {
         let source = r#"[fn main [] 42]"#;
         let exprs = loon_lang::parser::parse(source).expect("parse failed");
         let wasm = loon_lang::codegen::compile(&exprs).expect("compile failed");
-        assert!(wasm.len() >= 8, "WASM output too small: {} bytes", wasm.len());
+        assert!(
+            wasm.len() >= 8,
+            "WASM output too small: {} bytes",
+            wasm.len()
+        );
         assert_eq!(&wasm[..4], b"\0asm", "WASM magic number missing");
         // Version 1
         assert_eq!(&wasm[4..8], &[1, 0, 0, 0], "unexpected WASM version");
@@ -2000,7 +2000,10 @@ mod tests {
         let optimized = optimize_wasm(&wasm);
         assert!(optimized.len() >= 8);
         assert_eq!(&optimized[..4], b"\0asm");
-        assert!(optimized.len() <= wasm.len(), "optimized should not be larger");
+        assert!(
+            optimized.len() <= wasm.len(),
+            "optimized should not be larger"
+        );
     }
 
     #[test]

@@ -148,7 +148,10 @@ pub fn node_at_offset(exprs: &[Expr], offset: usize) -> Option<&Expr> {
         }
         // Try to find a deeper match in children
         match &expr.kind {
-            ExprKind::List(items) | ExprKind::Vec(items) | ExprKind::Set(items) | ExprKind::Tuple(items) => {
+            ExprKind::List(items)
+            | ExprKind::Vec(items)
+            | ExprKind::Set(items)
+            | ExprKind::Tuple(items) => {
                 for item in items {
                     if let Some(deeper) = walk(item, offset) {
                         return Some(deeper);

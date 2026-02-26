@@ -285,12 +285,13 @@ mod tests {
     #[test]
     fn mvs_picks_minimum() {
         let mut resolver = Resolver::new();
-        resolver
-            .constraints
-            .insert("pkg".to_string(), vec![
+        resolver.constraints.insert(
+            "pkg".to_string(),
+            vec![
                 VersionConstraint::parse("^1.0").unwrap(),
                 VersionConstraint::parse("^1.2").unwrap(),
-            ]);
+            ],
+        );
         let v = resolver.pick_version("pkg").unwrap();
         assert_eq!(v, Version::new(1, 2, 0));
     }
@@ -298,12 +299,13 @@ mod tests {
     #[test]
     fn mvs_detects_conflict() {
         let mut resolver = Resolver::new();
-        resolver
-            .constraints
-            .insert("pkg".to_string(), vec![
+        resolver.constraints.insert(
+            "pkg".to_string(),
+            vec![
                 VersionConstraint::parse("^1.0").unwrap(),
                 VersionConstraint::parse("^2.0").unwrap(),
-            ]);
+            ],
+        );
         assert!(resolver.pick_version("pkg").is_err());
     }
 

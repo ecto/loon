@@ -14,12 +14,14 @@ thread_local! {
 fn call_js_bridge(op: &str, args: &[Value]) -> Result<Value, loon_lang::interp::InterpError> {
     JS_BRIDGE.with(|b| {
         let guard = b.borrow();
-        let bridge = guard.as_ref().ok_or_else(|| loon_lang::interp::InterpError {
-            message: "JS bridge not initialized".to_string(),
-            span: None,
-            stack: vec![],
-            performed_effect: None,
-        })?;
+        let bridge = guard
+            .as_ref()
+            .ok_or_else(|| loon_lang::interp::InterpError {
+                message: "JS bridge not initialized".to_string(),
+                span: None,
+                stack: vec![],
+                performed_effect: None,
+            })?;
 
         let js_op = JsValue::from_str(op);
         let js_args = js_sys::Array::new();
@@ -59,9 +61,8 @@ pub fn init_dom_bridge(bridge: &js_sys::Function) {
     });
 
     // Set up the Loon-side bridge that delegates to our thread-local JS function
-    let dom_fn: dom_builtins::DomBridgeFn = Arc::new(|op: &str, args: &[Value]| {
-        call_js_bridge(op, args)
-    });
+    let dom_fn: dom_builtins::DomBridgeFn =
+        Arc::new(|op: &str, args: &[Value]| call_js_bridge(op, args));
 
     dom_builtins::set_dom_bridge(dom_fn);
 }
@@ -79,7 +80,10 @@ pub fn eval_ui(source: &str) -> Result<(), String> {
 #[wasm_bindgen]
 pub fn eval_with_output(source: &str) -> Result<String, String> {
     let perf = web_sys::window().and_then(|w: web_sys::Window| w.performance());
-    let now = || perf.as_ref().map_or_else(js_sys::Date::now, |p: &web_sys::Performance| p.now());
+    let now = || {
+        perf.as_ref()
+            .map_or_else(js_sys::Date::now, |p: &web_sys::Performance| p.now())
+    };
 
     let t0 = now();
     let exprs = loon_lang::parser::parse(source).map_err(|e| format!("{e}"))?;
@@ -89,9 +93,8 @@ pub fn eval_with_output(source: &str) -> Result<String, String> {
     let _errors = checker.check_program(&exprs);
     let t2 = now();
 
-    let (result, output) = loon_lang::interp::builtins::capture_output(|| {
-        loon_lang::interp::eval_program(&exprs)
-    });
+    let (result, output) =
+        loon_lang::interp::builtins::capture_output(|| loon_lang::interp::eval_program(&exprs));
     let t3 = now();
 
     let result = result.map_err(|e| e.message)?;
@@ -114,7 +117,12 @@ pub fn eval_with_output(source: &str) -> Result<String, String> {
     let parse_ms = t1 - t0;
     let check_ms = t2 - t1;
     let eval_ms = t3 - t2;
-    Ok(format!("{body}\n\u{2014}\nparse: {} | check: {} | eval: {}", fmt(parse_ms), fmt(check_ms), fmt(eval_ms)))
+    Ok(format!(
+        "{body}\n\u{2014}\nparse: {} | check: {} | eval: {}",
+        fmt(parse_ms),
+        fmt(check_ms),
+        fmt(eval_ms)
+    ))
 }
 
 /// Type-check Loon source and return diagnostics.
@@ -148,7 +156,9 @@ pub fn infer_type(source: &str) -> Result<String, String> {
         return Err(msgs.join("\n"));
     }
 
-    let scheme = checker.env.get(&name)
+    let scheme = checker
+        .env
+        .get(&name)
         .ok_or_else(|| format!("binding '{name}' not found in type environment"))?;
 
     Ok(loon_lang::types::pretty_scheme(scheme, &checker.subst))
@@ -169,7 +179,12 @@ fn find_last_binding(exprs: &[loon_lang::ast::Expr]) -> Option<String> {
                         }
                         "let" if items.len() >= 3 => {
                             // Handle [let mut name val] and [let name val]
-                            let binding_idx = if matches!(&items[1].kind, ExprKind::Symbol(s) if s == "mut") { 2 } else { 1 };
+                            let binding_idx = if matches!(&items[1].kind, ExprKind::Symbol(s) if s == "mut")
+                            {
+                                2
+                            } else {
+                                1
+                            };
                             if binding_idx < items.len() {
                                 if let ExprKind::Symbol(name) = &items[binding_idx].kind {
                                     if name != "_" {
@@ -219,17 +234,22 @@ pub fn reset_runtime() {
 #[wasm_bindgen]
 pub fn eval_ui_checked(source: &str) -> String {
     let perf = web_sys::window().and_then(|w: web_sys::Window| w.performance());
-    let now = || perf.as_ref().map_or_else(js_sys::Date::now, |p: &web_sys::Performance| p.now());
+    let now = || {
+        perf.as_ref()
+            .map_or_else(js_sys::Date::now, |p: &web_sys::Performance| p.now())
+    };
 
     loon_lang::interp::set_source_text(source);
 
     let t0 = now();
     let exprs = match loon_lang::parser::parse(source) {
         Ok(e) => e,
-        Err(e) => return format!(
-            r#"{{"ok":false,"error":{{"message":"{}","span":null,"stack":[]}}}}"#,
-            escape_json(&format!("{e}"))
-        ),
+        Err(e) => {
+            return format!(
+                r#"{{"ok":false,"error":{{"message":"{}","span":null,"stack":[]}}}}"#,
+                escape_json(&format!("{e}"))
+            )
+        }
     };
     let t1 = now();
 
@@ -237,7 +257,12 @@ pub fn eval_ui_checked(source: &str) -> String {
     let result = loon_lang::interp::eval_program(&exprs);
     let t3 = now();
 
-    console_warn(&format!("[loon-perf] parse: {:.0}ms, eval: {:.0}ms, total: {:.0}ms", t1-t0, t3-t2, t3-t0));
+    console_warn(&format!(
+        "[loon-perf] parse: {:.0}ms, eval: {:.0}ms, total: {:.0}ms",
+        t1 - t0,
+        t3 - t2,
+        t3 - t0
+    ));
 
     match result {
         Ok(_) => r#"{"ok":true}"#.to_string(),
@@ -246,14 +271,18 @@ pub fn eval_ui_checked(source: &str) -> String {
                 Some(sp) => format!("[{},{}]", sp.start, sp.end),
                 None => "null".to_string(),
             };
-            let stack_json: Vec<String> = e.stack.iter().map(|f| {
-                format!(
-                    r#"{{"fn":"{}","span":[{},{}]}}"#,
-                    escape_json(&f.fn_name),
-                    f.call_site.start,
-                    f.call_site.end,
-                )
-            }).collect();
+            let stack_json: Vec<String> = e
+                .stack
+                .iter()
+                .map(|f| {
+                    format!(
+                        r#"{{"fn":"{}","span":[{},{}]}}"#,
+                        escape_json(&f.fn_name),
+                        f.call_site.start,
+                        f.call_site.end,
+                    )
+                })
+                .collect();
             format!(
                 r#"{{"ok":false,"error":{{"message":"{}","span":{},"stack":[{}]}}}}"#,
                 escape_json(&e.message),
@@ -274,15 +303,18 @@ pub fn enable_effect_log(enabled: bool) {
 #[wasm_bindgen]
 pub fn get_effect_log() -> String {
     let log = loon_lang::interp::get_effect_log();
-    let entries: Vec<String> = log.iter().map(|e| {
-        format!(
-            r#"{{"effect":"{}","operation":"{}","span":[{},{}]}}"#,
-            escape_json(&e.effect),
-            escape_json(&e.operation),
-            e.span.start,
-            e.span.end,
-        )
-    }).collect();
+    let entries: Vec<String> = log
+        .iter()
+        .map(|e| {
+            format!(
+                r#"{{"effect":"{}","operation":"{}","span":[{},{}]}}"#,
+                escape_json(&e.effect),
+                escape_json(&e.operation),
+                e.span.start,
+                e.span.end,
+            )
+        })
+        .collect();
     format!("[{}]", entries.join(","))
 }
 

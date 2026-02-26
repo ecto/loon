@@ -34,7 +34,11 @@ impl Lockfile {
     /// Load lock.oo (or lock.loon) from a directory, returning None if not found.
     pub fn load(dir: &Path) -> Result<Option<Self>, String> {
         let lock_path = dir.join("lock.oo");
-        let lock_path = if lock_path.exists() { lock_path } else { dir.join("lock.loon") };
+        let lock_path = if lock_path.exists() {
+            lock_path
+        } else {
+            dir.join("lock.loon")
+        };
         if !lock_path.exists() {
             return Ok(None);
         }
@@ -45,8 +49,8 @@ impl Lockfile {
 
     /// Parse a lock.loon source string.
     fn parse(source: &str) -> Result<Self, String> {
-        let exprs = parser::parse(source)
-            .map_err(|e| format!("lock.oo parse error: {}", e.message))?;
+        let exprs =
+            parser::parse(source).map_err(|e| format!("lock.oo parse error: {}", e.message))?;
 
         if exprs.len() != 1 {
             return Err("lock.oo must contain exactly one map expression".into());

@@ -81,14 +81,8 @@ fn closures() {
 
 #[test]
 fn persistent_vector() {
-    assert_eq!(
-        run("[len #[1 2 3]]"),
-        Value::Int(3)
-    );
-    assert_eq!(
-        run("[nth #[10 20 30] 1]"),
-        Value::Int(20)
-    );
+    assert_eq!(run("[len #[1 2 3]]"), Value::Int(3));
+    assert_eq!(run("[nth #[10 20 30] 1]"), Value::Int(20));
 }
 
 #[test]
@@ -109,10 +103,7 @@ fn string_operations() {
         run(r#"[str "hello" ", " "world"]"#),
         Value::Str("hello, world".to_string())
     );
-    assert_eq!(
-        run(r#"[len "hello"]"#),
-        Value::Int(5)
-    );
+    assert_eq!(run(r#"[len "hello"]"#), Value::Int(5));
 }
 
 #[test]
@@ -125,14 +116,8 @@ fn map_data_structure() {
 
 #[test]
 fn set_operations() {
-    assert_eq!(
-        run("[contains? #{1 2 3} 2]"),
-        Value::Bool(true)
-    );
-    assert_eq!(
-        run("[contains? #{1 2 3} 4]"),
-        Value::Bool(false)
-    );
+    assert_eq!(run("[contains? #{1 2 3} 2]"), Value::Bool(true));
+    assert_eq!(run("[contains? #{1 2 3} 4]"), Value::Bool(false));
 }
 
 #[test]
@@ -220,7 +205,12 @@ fn range_and_map() {
 fn conj() {
     assert_eq!(
         run("[conj #[1 2 3] 4]"),
-        v(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)])
+        v(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4)
+        ])
     );
 }
 
@@ -393,7 +383,12 @@ fn vec_builtins() {
     // flatten
     assert_eq!(
         run("[flatten #[#[1 2] #[3 4]]]"),
-        v(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)])
+        v(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4)
+        ])
     );
     // chunk
     assert_eq!(
@@ -468,10 +463,7 @@ fn map_builtins() {
 
 #[test]
 fn question_ok() {
-    assert_eq!(
-        run("[Ok 42]?"),
-        Value::Int(42)
-    );
+    assert_eq!(run("[Ok 42]?"), Value::Int(42));
 }
 
 #[test]
@@ -559,10 +551,13 @@ fn channel_fifo_order() {
 
 #[test]
 fn channel_recv_empty_errors() {
-    let exprs = parse(r#"
+    let exprs = parse(
+        r#"
         [let [tx rx] [channel]]
         [recv rx]
-    "#).expect("parse failed");
+    "#,
+    )
+    .expect("parse failed");
     let result = eval_program(&exprs);
     assert!(result.is_err(), "recv on empty should error");
 }
@@ -575,7 +570,10 @@ fn process_args_mock() {
             [handle [Process.args]
               [Process.args] [resume #["loon" "test"]]]
         "#),
-        v(vec![Value::Str("loon".to_string()), Value::Str("test".to_string())])
+        v(vec![
+            Value::Str("loon".to_string()),
+            Value::Str("test".to_string())
+        ])
     );
 }
 
@@ -617,10 +615,7 @@ fn resumable_with_value() {
 
 #[test]
 fn try_success() {
-    assert_eq!(
-        run(r#"[try [+ 1 2] [fn [_] 0]]"#),
-        Value::Int(3)
-    );
+    assert_eq!(run(r#"[try [+ 1 2] [fn [_] 0]]"#), Value::Int(3));
 }
 
 #[test]
@@ -648,10 +643,7 @@ fn stdlib_number_parsing_error() {
 
 #[test]
 fn stdlib_string_ops() {
-    assert_eq!(
-        run(r#"[char-at "hello" 1]"#),
-        Value::Str("e".to_string())
-    );
+    assert_eq!(run(r#"[char-at "hello" 1]"#), Value::Str("e".to_string()));
     assert_eq!(
         run(r#"[substring "hello world" 0 5]"#),
         Value::Str("hello".to_string())
@@ -664,14 +656,8 @@ fn stdlib_string_ops() {
         run(r#"[contains? "hello world" "xyz"]"#),
         Value::Bool(false)
     );
-    assert_eq!(
-        run(r#"[index-of "hello world" "world"]"#),
-        Value::Int(6)
-    );
-    assert_eq!(
-        run(r#"[index-of "hello world" "xyz"]"#),
-        Value::Int(-1)
-    );
+    assert_eq!(run(r#"[index-of "hello world" "world"]"#), Value::Int(6));
+    assert_eq!(run(r#"[index-of "hello world" "xyz"]"#), Value::Int(-1));
 }
 
 #[test]
@@ -679,7 +665,10 @@ fn stdlib_group_by() {
     assert_eq!(
         run(r#"[group-by [fn [x] [% x 2]] #[1 2 3 4 5]]"#),
         m(vec![
-            (Value::Int(1), v(vec![Value::Int(1), Value::Int(3), Value::Int(5)])),
+            (
+                Value::Int(1),
+                v(vec![Value::Int(1), Value::Int(3), Value::Int(5)])
+            ),
             (Value::Int(0), v(vec![Value::Int(2), Value::Int(4)])),
         ])
     );
@@ -690,9 +679,12 @@ fn stdlib_flat_map() {
     assert_eq!(
         run(r#"[flat-map [fn [x] #[x [* x 2]]] #[1 2 3]]"#),
         v(vec![
-            Value::Int(1), Value::Int(2),
-            Value::Int(2), Value::Int(4),
-            Value::Int(3), Value::Int(6),
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(2),
+            Value::Int(4),
+            Value::Int(3),
+            Value::Int(6),
         ])
     );
 }
@@ -765,10 +757,7 @@ fn async_spawn_await() {
 #[test]
 fn async_sleep_noop() {
     // Async.sleep is a no-op mock that returns Unit
-    assert_eq!(
-        run("[Async.sleep 100]"),
-        Value::Unit
-    );
+    assert_eq!(run("[Async.sleep 100]"), Value::Unit);
 }
 
 #[test]
@@ -840,7 +829,11 @@ fn module_use() {
 fn catch_errors_valid_code_returns_empty() {
     let result = run(r#"[catch-errors "[+ 1 2]"]"#);
     match result {
-        Value::Vec(v) => assert!(v.is_empty(), "valid code should return empty vec, got: {:?}", v),
+        Value::Vec(v) => assert!(
+            v.is_empty(),
+            "valid code should return empty vec, got: {:?}",
+            v
+        ),
         other => panic!("expected Vec, got: {:?}", other),
     }
 }
@@ -853,8 +846,14 @@ fn catch_errors_invalid_code_returns_errors() {
             assert!(!v.is_empty(), "invalid code should return errors");
             // Each error should be a map with :what key
             if let Value::Map(pairs) = &v[0] {
-                let has_what = pairs.iter().any(|(k, _)| *k == Value::Keyword("what".to_string()));
-                assert!(has_what, "error map should have :what key, got: {:?}", pairs);
+                let has_what = pairs
+                    .iter()
+                    .any(|(k, _)| *k == Value::Keyword("what".to_string()));
+                assert!(
+                    has_what,
+                    "error map should have :what key, got: {:?}",
+                    pairs
+                );
             } else {
                 panic!("expected Map in error vec, got: {:?}", v[0]);
             }
@@ -894,7 +893,7 @@ fn derive_copy_evaluates_type() {
 
 #[test]
 fn grant_enforcement_blocks_ungranted_effect() {
-    use loon_lang::interp::{set_effect_grants, set_current_module, eval, Env};
+    use loon_lang::interp::{eval, set_current_module, set_effect_grants, Env};
     use loon_lang::pkg::capability::EffectGrants;
 
     // Set up grants: module "dep-a" is granted nothing
@@ -912,12 +911,15 @@ fn grant_enforcement_blocks_ungranted_effect() {
 
     assert!(result.is_err(), "should block ungranted effect");
     let msg = result.unwrap_err().message;
-    assert!(msg.contains("not granted"), "error should mention grants: {msg}");
+    assert!(
+        msg.contains("not granted"),
+        "error should mention grants: {msg}"
+    );
 }
 
 #[test]
 fn grant_enforcement_allows_granted_effect() {
-    use loon_lang::interp::{set_effect_grants, set_current_module, eval, Env};
+    use loon_lang::interp::{eval, set_current_module, set_effect_grants, Env};
     use loon_lang::pkg::capability::EffectGrants;
     use std::collections::HashSet;
 
@@ -939,12 +941,16 @@ fn grant_enforcement_allows_granted_effect() {
     // Restore
     set_current_module(None);
 
-    assert!(result.is_ok(), "granted effect should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "granted effect should succeed: {:?}",
+        result.err()
+    );
 }
 
 #[test]
 fn grant_enforcement_root_is_unrestricted() {
-    use loon_lang::interp::{set_effect_grants, set_current_module, eval, Env};
+    use loon_lang::interp::{eval, set_current_module, set_effect_grants, Env};
     use loon_lang::pkg::capability::EffectGrants;
 
     // Set up empty grants but root module (None)
@@ -956,7 +962,11 @@ fn grant_enforcement_root_is_unrestricted() {
     loon_lang::interp::register_builtins_pub(&mut env);
     let result = eval(&exprs[0], &mut env);
 
-    assert!(result.is_ok(), "root module should be unrestricted: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "root module should be unrestricted: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -989,10 +999,7 @@ fn keyword_builtin() {
         run(r#"[keyword "hello"]"#),
         Value::Keyword("hello".to_string())
     );
-    assert_eq!(
-        run(r#"[name [keyword "x"]]"#),
-        Value::Str("x".to_string())
-    );
+    assert_eq!(run(r#"[name [keyword "x"]]"#), Value::Str("x".to_string()));
 }
 
 #[test]
@@ -1036,22 +1043,38 @@ fn all_source_files_parse() {
     // Catch parse errors in web/, samples/, and docs/ at build time.
     // Every .oo and .loon file in the repo must parse without errors.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap().parent().unwrap();
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
     let mut failures = Vec::new();
     for dir in &["web", "samples"] {
         let base = root.join(dir);
-        if !base.exists() { continue; }
+        if !base.exists() {
+            continue;
+        }
         for entry in walkdir(&base) {
             let path = entry.path();
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if ext != "oo" && ext != "loon" { continue; }
+            if ext != "oo" && ext != "loon" {
+                continue;
+            }
             let src = std::fs::read_to_string(&path).unwrap();
             if let Err(e) = parse(&src) {
-                failures.push(format!("{}:{}: {}", path.display(), e.span.start, e.message));
+                failures.push(format!(
+                    "{}:{}: {}",
+                    path.display(),
+                    e.span.start,
+                    e.message
+                ));
             }
         }
     }
-    assert!(failures.is_empty(), "parse errors in source files:\n  {}", failures.join("\n  "));
+    assert!(
+        failures.is_empty(),
+        "parse errors in source files:\n  {}",
+        failures.join("\n  ")
+    );
 }
 
 fn walkdir(dir: &std::path::Path) -> Vec<std::fs::DirEntry> {

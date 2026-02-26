@@ -35,9 +35,7 @@ impl Default for EffectGrants {
 }
 
 /// Build an EffectGrants map from a manifest's deps.
-pub fn grants_from_manifest(
-    deps: &HashMap<String, super::manifest::Dependency>,
-) -> EffectGrants {
+pub fn grants_from_manifest(deps: &HashMap<String, super::manifest::Dependency>) -> EffectGrants {
     let mut grants = EffectGrants::new();
     for (source, dep) in deps {
         if !dep.grant.is_empty() {
