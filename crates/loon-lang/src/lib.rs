@@ -2,6 +2,7 @@ pub mod ast;
 pub mod check;
 pub mod codegen;
 pub mod effects;
+pub mod eir;
 pub mod errors;
 pub mod fmt;
 pub mod intern;
