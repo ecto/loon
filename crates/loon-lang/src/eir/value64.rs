@@ -61,7 +61,7 @@ impl Val {
     pub fn int(n: i64) -> Self {
         // 48-bit signed range: -2^47 .. 2^47-1
         debug_assert!(
-            n >= -(1i64 << 47) && n < (1i64 << 47),
+            (-(1i64 << 47)..(1i64 << 47)).contains(&n),
             "int {n} overflows 48-bit inline range — box it"
         );
         Val(BASE | TAG_INT | ((n as u64) & PAYLOAD))

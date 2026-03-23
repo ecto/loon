@@ -188,7 +188,12 @@ fn run_file(path: &PathBuf) {
     match loon_lang::eir::vm::eval_eir(&source) {
         Ok(_result) => {}
         Err(e) => {
-            eprintln!("{}: {e}", "error".red().bold());
+            let filename = path.display().to_string();
+            if let Some(span) = e.span {
+                loon_lang::errors::report_error(&filename, &source, &e.to_string(), span);
+            } else {
+                eprintln!("{}: {e}", "error".red().bold());
+            }
             std::process::exit(1);
         }
     }

@@ -39,7 +39,7 @@ const IMM_TRUE: u64 = 1;
 #[allow(dead_code)]
 const IMM_FALSE: u64 = 2;
 
-const VAL_UNIT: u64 = BASE | TAG_IMM | 0;
+const VAL_UNIT: u64 = BASE | TAG_IMM;
 const VAL_TRUE: u64 = BASE | TAG_IMM | 1;
 const VAL_FALSE: u64 = BASE | TAG_IMM | 2;
 

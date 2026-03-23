@@ -12,19 +12,6 @@ use std::rc::Rc;
 
 // ─── Heap objects ──────────────────────────────────────────────────────────
 
-/// Type tags for heap-allocated objects.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HeapTag {
-    Str = 0,
-    Vec = 1,
-    Map = 2,
-    Set = 3,
-    Tuple = 4,
-    Adt = 5,
-    Closure = 6,
-}
-
 /// A heap-allocated object. Stored in the VM's object table.
 #[derive(Debug, Clone)]
 enum Obj {
@@ -37,23 +24,43 @@ enum Obj {
     Closure(FuncId, Vec<Val>), // func + captured values
 }
 
+impl Obj {
+    /// Rough estimate of the byte size of this heap object (for stats, not GC).
+    fn estimated_bytes(&self) -> u64 {
+        match self {
+            Obj::Str(s) => (24 + s.len()) as u64,
+            Obj::Vec(v) | Obj::Set(v) | Obj::Tuple(v) => (24 + v.len() * 8) as u64,
+            Obj::Map(pairs) => (24 + pairs.len() * 16) as u64,
+            Obj::Adt(_, fields) => (24 + 2 + fields.len() * 8) as u64,
+            Obj::Closure(_, caps) => (24 + 4 + caps.len() * 8) as u64,
+        }
+    }
+}
+
 // ─── Call frame ────────────────────────────────────────────────────────────
 
+/// Saved call frame — pushed when entering a function, popped on return.
 struct Frame {
     func: FuncId,
     block: BlockId,
-    ip: usize,          // instruction pointer within block
-    regs: Vec<Val>,     // register file
-    ret_reg: u32,       // where to put result in caller's regs
-    captures: Vec<Val>, // closure captures for this frame
+    /// Instruction pointer within the current block.
+    ip: usize,
+    /// Register file for the suspended frame.
+    regs: Vec<Val>,
+    /// Register in the caller's frame to write the return value into.
+    ret_reg: u32,
+    /// Closure captures for the suspended frame.
+    captures: Vec<Val>,
 }
 
 // ─── VM ────────────────────────────────────────────────────────────────────
 
 /// Dynamic effect handler entry.
 struct DynHandler {
-    effect: String,
-    op: String,
+    /// String pool index for the effect name.
+    effect: StringId,
+    /// String pool index for the operation name.
+    op: StringId,
     closure: Val,
 }
 
@@ -75,6 +82,21 @@ pub struct Vm {
     handlers: Vec<DynHandler>,
     /// Pre-allocated identity closure for `resume`.
     resume_closure: Val,
+    /// Span of the instruction currently being executed (for error reporting).
+    current_span: Span,
+    /// Heap statistics tracked during execution.
+    heap_stats: HeapStats,
+}
+
+/// Heap allocation statistics collected during VM execution.
+#[derive(Debug, Clone, Default)]
+pub struct HeapStats {
+    /// Total number of heap allocations performed.
+    pub total_allocs: u64,
+    /// Estimated total bytes allocated (rough, based on object kind).
+    pub total_bytes: u64,
+    /// Peak number of live objects (snapshot of heap length high-water mark).
+    pub peak_objects: usize,
 }
 
 /// Result of running the VM.
@@ -82,6 +104,8 @@ pub struct Vm {
 pub struct VmResult {
     pub value: Val,
     pub output: Vec<String>,
+    /// Heap statistics from the execution.
+    pub heap_stats: HeapStats,
 }
 
 impl Vm {
@@ -99,6 +123,8 @@ impl Vm {
             string_cache: HashMap::new(),
             handlers: Vec::new(),
             resume_closure: Val::UNIT, // set in run()
+            current_span: Span::ZERO,
+            heap_stats: HeapStats::default(),
         }
     }
 
@@ -132,11 +158,13 @@ impl Vm {
         Ok(VmResult {
             value: val,
             output: std::mem::take(&mut self.output),
+            heap_stats: self.heap_stats.clone(),
         })
     }
 
     /// Call a function and run it to completion, returning its result.
     /// Used by higher-order builtins (map, filter, each).
+    #[allow(dead_code)]
     fn run_call(&mut self, func_id: FuncId, args: &[Val]) -> Result<Val, VmError> {
         self.run_call_with_captures(func_id, args, Vec::new())
     }
@@ -156,8 +184,14 @@ impl Vm {
     // ── Heap ───────────────────────────────────────────────────────────
 
     fn alloc(&mut self, obj: Obj) -> Val {
+        // Track heap statistics.
+        self.heap_stats.total_allocs += 1;
+        self.heap_stats.total_bytes += obj.estimated_bytes();
         let idx = self.heap.len();
         self.heap.push(obj);
+        if self.heap.len() > self.heap_stats.peak_objects {
+            self.heap_stats.peak_objects = self.heap.len();
+        }
         Val::ptr(idx)
     }
 
@@ -287,6 +321,7 @@ impl Vm {
             if self.ip < ops_len {
                 // Clone the op to avoid borrowing module across exec_op
                 let op = module.funcs[func_idx].blocks[block_idx].ops[self.ip].clone();
+                self.current_span = op.span();
                 self.ip += 1;
                 self.exec_op(&op)?;
                 continue;
@@ -396,7 +431,9 @@ impl Vm {
                         self.block = BlockId(0);
                         self.ip = 0;
                     } else {
-                        return Err(VmError::NotCallable);
+                        return Err(
+                            VmError::new(VmErrorKind::NotCallable).with_span(self.current_span)
+                        );
                     }
                 }
 
@@ -411,7 +448,7 @@ impl Vm {
                 }
 
                 End::Trap => {
-                    return Err(VmError::Trap);
+                    return Err(VmError::new(VmErrorKind::Trap).with_span(self.current_span));
                 }
             }
         }
@@ -424,7 +461,7 @@ impl Vm {
             Op::Lit(dst, lit, _) => {
                 let val = match lit {
                     Lit::Int(n) => {
-                        if *n >= -(1i64 << 47) && *n < (1i64 << 47) {
+                        if (-(1i64 << 47)..(1i64 << 47)).contains(n) {
                             Val::int(*n)
                         } else {
                             // Box large ints
@@ -485,23 +522,17 @@ impl Vm {
             Op::Call(dst, func_id, args, _) => {
                 let vals = self.read_regs(args);
                 let ret_reg = dst.0;
-                self.ip = self.ip; // save current position
                 self.call_func(*func_id, &vals, ret_reg)?;
             }
 
-            Op::Invoke(dst, callee, args, _) => {
+            Op::Invoke(dst, callee, args, span) => {
                 let func_val = self.r(*callee);
                 let vals = self.read_regs(args);
-                if let Some(obj) = self.get_obj(func_val).cloned() {
-                    match obj {
-                        Obj::Closure(fid, caps) => {
-                            let ret_reg = dst.0;
-                            self.call_func_with_captures(fid, &vals, ret_reg, caps)?;
-                        }
-                        _ => return Err(VmError::NotCallable),
-                    }
+                if let Some(Obj::Closure(fid, caps)) = self.get_obj(func_val).cloned() {
+                    let ret_reg = dst.0;
+                    self.call_func_with_captures(fid, &vals, ret_reg, caps)?;
                 } else {
-                    return Err(VmError::NotCallable);
+                    return Err(VmError::new(VmErrorKind::NotCallable).with_span(*span));
                 }
             }
 
@@ -557,7 +588,7 @@ impl Vm {
                         let key_str = &self.module.strings[sid.0 as usize];
                         pairs
                             .iter()
-                            .find(|(k, _)| self.get_str(*k).map_or(false, |s| s == key_str))
+                            .find(|(k, _)| self.get_str(*k) == Some(key_str))
                             .map(|(_, v)| *v)
                             .unwrap_or(Val::UNIT)
                     }
@@ -590,16 +621,13 @@ impl Vm {
                         self.w(*dst, Val::UNIT);
                     }
                 } else {
-                    // Dynamic: check handler stack, then builtin
-                    let effect = self.module.strings[eff_sid.0 as usize].clone();
-                    let op_name = self.module.strings[op_sid.0 as usize].clone();
-
-                    // Search handler stack (most recent first)
+                    // Dynamic: check handler stack, then builtin.
+                    // Compare by StringId (integer equality) — no string cloning.
                     let handler = self
                         .handlers
                         .iter()
                         .rev()
-                        .find(|h| h.effect == effect && h.op == op_name)
+                        .find(|h| h.effect == *eff_sid && h.op == *op_sid)
                         .map(|h| h.closure);
 
                     if let Some(hval) = handler {
@@ -613,6 +641,8 @@ impl Vm {
                             self.w(*dst, Val::UNIT);
                         }
                     } else {
+                        let effect = self.module.strings[eff_sid.0 as usize].clone();
+                        let op_name = self.module.strings[op_sid.0 as usize].clone();
                         let result = self.builtin_effect(&effect, &op_name, &vals);
                         self.w(*dst, result);
                     }
@@ -627,11 +657,9 @@ impl Vm {
 
             Op::PushHandler(handler_reg, eff_sid, op_sid, _) => {
                 let closure = self.r(*handler_reg);
-                let effect = self.module.strings[eff_sid.0 as usize].clone();
-                let op = self.module.strings[op_sid.0 as usize].clone();
                 self.handlers.push(DynHandler {
-                    effect,
-                    op,
+                    effect: *eff_sid,
+                    op: *op_sid,
                     closure,
                 });
             }
@@ -647,7 +675,7 @@ impl Vm {
 
     /// Create an int; if it overflows 48 bits, promote to float.
     fn safe_int(&self, n: i64) -> Val {
-        if n >= -(1i64 << 47) && n < (1i64 << 47) {
+        if (-(1i64 << 47)..(1i64 << 47)).contains(&n) {
             Val::int(n)
         } else {
             Val::float(n as f64)
@@ -1398,13 +1426,13 @@ impl Vm {
                             keyed.push((key, *item));
                         }
                         // Check for :desc flag
-                        let desc = args.get(1).map_or(false, |v| {
+                        let desc = args.get(1).is_some_and(|v| {
                             v.is_sym()
                                 && self
                                     .module
                                     .strings
                                     .get(v.as_sym() as usize)
-                                    .map_or(false, |s| s == "desc")
+                                    .is_some_and(|s| s == "desc")
                         });
                         keyed.sort_by(|(a, _), (b, _)| {
                             let ord = if a.is_int() && b.is_int() {
@@ -1656,10 +1684,7 @@ impl Vm {
                             .strings
                             .iter()
                             .position(|x| *x == s)
-                            .unwrap_or_else(|| {
-                                // Can't mutate module through Rc, so return sym(0)
-                                0
-                            }) as u32,
+                            .unwrap_or(0) as u32,
                     )),
                     _ => Ok(Val::UNIT),
                 }
@@ -1700,7 +1725,10 @@ impl Vm {
                 } else {
                     let actual_s = self.val_to_string(actual);
                     let expected_s = self.val_to_string(expected);
-                    Err(VmError::AssertFailed(actual_s, expected_s))
+                    Err(
+                        VmError::new(VmErrorKind::AssertFailed(actual_s, expected_s))
+                            .with_span(self.current_span),
+                    )
                 }
             }
             Built::Concat => {
@@ -1832,21 +1860,54 @@ impl Vm {
 
 // ─── Error type ────────────────────────────────────────────────────────────
 
+/// Runtime error from the EIR VM, with optional source location.
 #[derive(Debug)]
-pub enum VmError {
+pub struct VmError {
+    /// What went wrong.
+    pub kind: VmErrorKind,
+    /// Source span of the instruction that failed (if available).
+    pub span: Option<Span>,
+    /// Human-readable context, e.g. function name.
+    pub context: Option<String>,
+}
+
+/// The category of VM runtime error.
+#[derive(Debug)]
+pub enum VmErrorKind {
+    /// Tried to call a value that is not a closure or function.
     NotCallable,
+    /// Hit an unreachable `End::Trap` (non-exhaustive match, etc.).
     Trap,
+    /// Call stack exceeded the limit.
     StackOverflow,
+    /// `assert-eq` failed with mismatched values.
     AssertFailed(String, String),
+}
+
+impl VmError {
+    fn new(kind: VmErrorKind) -> Self {
+        Self {
+            kind,
+            span: None,
+            context: None,
+        }
+    }
+
+    fn with_span(mut self, span: Span) -> Self {
+        if span != Span::ZERO {
+            self.span = Some(span);
+        }
+        self
+    }
 }
 
 impl std::fmt::Display for VmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            VmError::NotCallable => write!(f, "value is not callable"),
-            VmError::Trap => write!(f, "unreachable code"),
-            VmError::StackOverflow => write!(f, "stack overflow"),
-            VmError::AssertFailed(actual, expected) => {
+        match &self.kind {
+            VmErrorKind::NotCallable => write!(f, "value is not callable"),
+            VmErrorKind::Trap => write!(f, "unreachable code"),
+            VmErrorKind::StackOverflow => write!(f, "stack overflow"),
+            VmErrorKind::AssertFailed(actual, expected) => {
                 write!(f, "assertion failed: {actual} != {expected}")
             }
         }
@@ -1856,13 +1917,17 @@ impl std::fmt::Display for VmError {
 // ─── Public API ────────────────────────────────────────────────────────────
 
 /// Run a Loon program through the EIR pipeline: parse → check → lower → VM.
-pub fn eval_eir(src: &str) -> Result<VmResult, String> {
-    let exprs = crate::parser::parse(src).map_err(|e| e.to_string())?;
+pub fn eval_eir(src: &str) -> Result<VmResult, VmError> {
+    let exprs = crate::parser::parse(src).map_err(|e| VmError {
+        kind: VmErrorKind::Trap,
+        span: Some(e.span),
+        context: Some(format!("parse error: {}", e.message)),
+    })?;
     let mut checker = crate::check::Checker::new();
     let _errors = checker.check_program(&exprs);
     let module = crate::eir::lower::lower(&checker);
     let mut vm = Vm::new(module);
-    vm.run().map_err(|e| e.to_string())
+    vm.run()
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────

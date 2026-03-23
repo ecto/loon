@@ -11,7 +11,9 @@
 
 use std::collections::HashMap;
 
-use super::{BinOp, BlockId, Built, FuncId, Lit, Op, Reg, UnOp};
+#[cfg(test)]
+use super::Lit;
+use super::{BinOp, Built, Op, Reg, UnOp};
 use crate::eir::value64::Val;
 
 // ─── Observed type tags ─────────────────────────────────────────────────────

@@ -86,9 +86,12 @@ pub struct Capture {
     pub mode: CaptureMode,
 }
 
+/// How a value is captured by a closure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureMode {
+    /// Value is copied (cheap, for primitives and shared references).
     Copy,
+    /// Value is moved (ownership transferred into the closure).
     Move,
 }
 
@@ -113,12 +116,15 @@ pub enum Ty {
 
 // ─── Block ─────────────────────────────────────────────────────────────────
 
+/// A basic block: a straight-line sequence of `Op`s ending with a terminator.
 #[derive(Debug)]
 pub struct Block {
     pub id: BlockId,
     /// Phi-like parameters — values passed in by predecessor branches.
     pub params: Vec<Reg>,
+    /// Instructions executed in order.
     pub ops: Vec<Op>,
+    /// How this block transfers control.
     pub end: End,
 }
 
@@ -243,16 +249,20 @@ pub enum End {
 
 // ─── Primitives ────────────────────────────────────────────────────────────
 
+/// A literal constant embedded in the IR.
 #[derive(Debug, Clone)]
 pub enum Lit {
     Int(i64),
     Float(f64),
     Bool(bool),
+    /// String literal, stored in the module's string pool.
     Str(StringId),
+    /// Keyword literal (e.g. `:foo`), stored in the string pool.
     Keyword(StringId),
     Unit,
 }
 
+/// Binary operator tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Add,
@@ -271,12 +281,14 @@ pub enum BinOp {
     Concat,
 }
 
+/// Unary operator tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOp {
     Neg,
     Not,
 }
 
+/// Field selector for record/tuple/map access.
 #[derive(Debug, Clone)]
 pub enum Selector {
     /// Tuple or ADT field by position.
@@ -287,6 +299,7 @@ pub enum Selector {
     Name(StringId),
 }
 
+/// Built-in runtime operation tag (intrinsics implemented in the VM).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Built {
     Println,

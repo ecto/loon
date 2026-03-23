@@ -14,7 +14,6 @@ use crate::ast::{Expr, ExprKind};
 use crate::check::Checker;
 use crate::eir::*;
 use crate::syntax::Span;
-use crate::types::EffectSet;
 use std::collections::HashMap;
 
 /// Lower a checked program into an EIR Module.
@@ -82,8 +81,11 @@ impl<'a> Lower<'a> {
             return id;
         }
         let id = StringId(self.module.strings.len() as u32);
-        self.module.strings.push(s.to_string());
-        self.string_map.insert(s.to_string(), id);
+        // Use the global intern table for deduplication so the backing
+        // Rc<str> is shared across the entire process.
+        let sym = crate::intern::intern(s);
+        self.module.strings.push(sym.as_str().to_string());
+        self.string_map.insert(sym.as_str().to_string(), id);
         id
     }
 
@@ -229,16 +231,7 @@ impl<'a> Lower<'a> {
                     if let ExprKind::Symbol(name) = &items[0].kind {
                         if name.starts_with(char::is_uppercase) {
                             // Count fields (skip fn definitions and keyword fields)
-                            let mut arity: u16 = 0;
-                            for item in &items[1..] {
-                                match &item.kind {
-                                    ExprKind::List(_) => break, // method definition
-                                    ExprKind::Keyword(_) => {
-                                        arity += 1;
-                                    }
-                                    _ => arity += 1,
-                                }
-                            }
+                            // (arity is computed below via field_count)
                             // Keyword fields come in pairs (:name Type), so halve
                             // Actually, the parser leaves them as separate items
                             // Let's count properly: skip type annotations
@@ -788,7 +781,7 @@ impl<'a> Lower<'a> {
         self.scopes = vec![HashMap::new()];
         // All params accessible by position
         for i in 0..max_arity {
-            let r = Reg(i as u32);
+            let _r = Reg(i as u32);
             self.next_reg = self.next_reg.max(i as u32 + 1);
         }
         self.module.funcs[func_id.0 as usize].params = vec![Ty::Any; max_arity];

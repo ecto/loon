@@ -24,7 +24,6 @@
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::I64;
 use cranelift_codegen::ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName};
-use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -33,7 +32,7 @@ use cranelift_module::{Linkage, Module};
 
 use super::backend::{Backend, Error};
 use super::value64::Val;
-use super::{BinOp, BlockId, End, FuncId as EirFuncId, Lit, Op, Reg, UnOp};
+use super::{BinOp, End, Lit, Op, Reg, UnOp};
 
 use std::collections::HashMap;
 
@@ -46,7 +45,7 @@ const TAG_INT: u64 = 0x0001_0000_0000_0000;
 const TAG_IMM: u64 = 0x0007_0000_0000_0000;
 const PAYLOAD: u64 = 0x0000_FFFF_FFFF_FFFF;
 
-const VAL_UNIT: u64 = BASE | TAG_IMM | 0;
+const VAL_UNIT: u64 = BASE | TAG_IMM;
 const VAL_TRUE: u64 = BASE | TAG_IMM | 1;
 const VAL_FALSE: u64 = BASE | TAG_IMM | 2;
 
@@ -137,8 +136,8 @@ impl Backend for NativeBackend {
 
 /// A compiled native module, ready to execute.
 pub struct NativeModule {
-    /// The JIT module holding compiled code.
-    jit: JITModule,
+    /// The JIT module holding compiled code (kept alive for the lifetime of compiled code).
+    _jit: JITModule,
     /// Entry function pointer.
     entry_fn: *const u8,
 }
@@ -312,7 +311,10 @@ impl NativeModule {
         let entry_cl_id = func_map.funcs[&eir_module.entry.0];
         let entry_fn = jit.get_finalized_function(entry_cl_id);
 
-        Ok(NativeModule { jit, entry_fn })
+        Ok(NativeModule {
+            _jit: jit,
+            entry_fn,
+        })
     }
 
     /// Execute the compiled module's entry function.
@@ -372,7 +374,7 @@ fn compile_function(
     // Declare Cranelift variables for each EIR register.
     let mut vars: Vec<Variable> = Vec::new();
     for i in 0..=(max_reg + 16) {
-        let var = Variable::from_u32(i as u32);
+        let var = Variable::from_u32(i);
         builder.declare_var(var, I64);
         vars.push(var);
     }
@@ -402,10 +404,12 @@ fn compile_function(
 
     // Initialize unset variables to VAL_UNIT to prevent use-before-def.
     let unit_const = builder.ins().iconst(I64, VAL_UNIT as i64);
-    for i in param_count..(max_reg as usize + 17) {
-        if i >= eir_func.blocks[0].params.len() {
-            builder.def_var(vars[i], unit_const);
-        }
+    for var in vars
+        .iter()
+        .skip(param_count)
+        .take(max_reg as usize + 17 - param_count)
+    {
+        builder.def_var(*var, unit_const);
     }
 
     // Compile each block.
@@ -414,7 +418,7 @@ fn compile_function(
             builder.switch_to_block(cl_blocks[block_idx]);
             // Pass block params from predecessor.
             let block_param_count = eir_block.params.len();
-            for i in 0..block_param_count {
+            for _i in 0..block_param_count {
                 builder.append_block_param(cl_blocks[block_idx], I64);
             }
             // Bind block params to EIR registers.
@@ -463,7 +467,7 @@ fn compile_op(
     builder: &mut FunctionBuilder,
     vars: &[Variable],
     op: &Op,
-    eir_module: &super::Module,
+    _eir_module: &super::Module,
     func_map: &FuncMap,
     jit: &mut JITModule,
     rt_println_id: cranelift_module::FuncId,
@@ -839,7 +843,7 @@ fn compile_terminator(
     vars: &[Variable],
     end: &End,
     cl_blocks: &[cranelift_codegen::ir::Block],
-    eir_func: &super::Func,
+    _eir_func: &super::Func,
     func_map: &FuncMap,
     jit: &mut JITModule,
 ) -> Result<(), Error> {
