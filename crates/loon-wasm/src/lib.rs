@@ -43,6 +43,11 @@ fn call_js_bridge(op: &str, args: &[Value]) -> Result<Value, loon_lang::interp::
 }
 
 /// Evaluate a Loon program and return the result as a string.
+// TODO: migrate to `loon_lang::eir::vm::eval_eir` once the EIR VM supports
+// the DOM bridge (init_dom_bridge / eval_ui / invoke_callback). The WASM crate
+// still uses the legacy tree-walking interpreter because the DOM bridge depends
+// on `Value` and `InterpError`, which differ from the EIR's NaN-boxed `Val` /
+// `VmResult`. A conversion layer or EIR-native DOM bridge is needed first.
 #[wasm_bindgen]
 pub fn eval_program(source: &str) -> Result<String, String> {
     let exprs = loon_lang::parser::parse(source).map_err(|e| format!("{e}"))?;

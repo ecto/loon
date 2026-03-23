@@ -1,3 +1,7 @@
+// NOTE: The tree-walking interpreter and SICP machine in this module are
+// superseded by the EIR register VM (`crate::eir::vm`) for the default
+// runtime. This module is retained for the `--legacy` CLI flag and for
+// the WASM/DOM bridge which has not yet been ported to the EIR VM.
 pub mod builtins;
 pub mod dom_builtins;
 mod env;

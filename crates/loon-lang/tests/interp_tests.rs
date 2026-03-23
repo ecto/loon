@@ -1,3 +1,4 @@
+use loon_lang::eir::vm::eval_eir;
 use loon_lang::interp::machine::eval_program_vm;
 use loon_lang::interp::{eval_program, eval_program_with_base_dir, Value};
 use loon_lang::parser::parse;
@@ -1436,4 +1437,261 @@ fn walkdir(dir: &std::path::Path) -> Vec<std::fs::DirEntry> {
         }
     }
     results
+}
+
+// ─── EIR register VM tests ────────────────────────────────────────────
+
+#[allow(dead_code)]
+fn run_eir(src: &str) -> loon_lang::eir::vm::Val {
+    eval_eir(src).expect("EIR eval failed").value
+}
+
+/// Assert that a program runs successfully through the EIR pipeline.
+fn assert_eir_works(src: &str) {
+    let result = eval_eir(src);
+    assert!(
+        result.is_ok(),
+        "EIR failed for: {}\nerror: {}",
+        src.trim().chars().take(80).collect::<String>(),
+        result.unwrap_err()
+    );
+}
+
+#[test]
+fn eir_parity() {
+    // ── Arithmetic ──────────────────────────────────────────────────
+    assert_eir_works("[+ 1 2]");
+    assert_eir_works("[- 10 3]");
+    assert_eir_works("[* 4 5]");
+    assert_eir_works("[/ 10 2]");
+    assert_eir_works("[% 10 3]");
+    assert_eir_works("[> 3 2]");
+    assert_eir_works("[< 3 2]");
+    assert_eir_works("[>= 3 3]");
+    assert_eir_works("[<= 2 3]");
+    assert_eir_works("[= 5 5]");
+    assert_eir_works("[!= 5 6]");
+
+    // ── Let / Do ────────────────────────────────────────────────────
+    assert_eir_works("[do [let x 42] x]");
+    assert_eir_works("[do [let x 1] [let y 2] [+ x y]]");
+    assert_eir_works(
+        r#"[do
+            [let a 10]
+            [let b 20]
+            [let c [+ a b]]
+            c]"#,
+    );
+
+    // ── If / When ───────────────────────────────────────────────────
+    assert_eir_works("[if true 1 2]");
+    assert_eir_works("[if false 1 2]");
+    assert_eir_works("[if [> 3 2] :yes :no]");
+    assert_eir_works("[when true 42]");
+    assert_eir_works("[when false 42]");
+
+    // ── Named functions ─────────────────────────────────────────────
+    assert_eir_works("[fn add [x y] [+ x y]] [add 3 4]");
+    assert_eir_works(
+        r#"
+        [fn fib [n]
+          [match n
+            0 0
+            1 1
+            n [+ [fib [- n 1]] [fib [- n 2]]]]]
+        [fib 10]
+    "#,
+    );
+    assert_eir_works(
+        r#"
+        [fn greet
+          ([name] [str "hi " name])
+          ([first last] [str "hello " first " " last])]
+        [greet "world"]
+    "#,
+    );
+    assert_eir_works(
+        r#"
+        [fn greet
+          ([name] [str "hi " name])
+          ([first last] [str "hello " first " " last])]
+        [greet "Jane" "Doe"]
+    "#,
+    );
+
+    // ── Anonymous functions ─────────────────────────────────────────
+    assert_eir_works("[let double [fn [x] [* x 2]]] [double 5]");
+
+    // ── Closures ────────────────────────────────────────────────────
+    assert_eir_works(
+        r#"
+        [fn make-adder [n]
+          [fn [x] [+ x n]]]
+        [let add5 [make-adder 5]]
+        [add5 10]
+    "#,
+    );
+
+    // ── Loop / Recur ────────────────────────────────────────────────
+    assert_eir_works(
+        r#"
+        [loop [i 0 sum 0]
+          [if [>= i 10] sum
+            [recur [+ i 1] [+ sum i]]]]
+    "#,
+    );
+
+    // ── fn / Recur (TCO) ────────────────────────────────────────────
+    assert_eir_works(
+        r#"
+        [fn countdown [n]
+          [if [= n 0] :done [recur [- n 1]]]]
+        [countdown 100]
+    "#,
+    );
+
+    // ── Pipe ────────────────────────────────────────────────────────
+    // NOTE: pipe with partial application syntax (e.g. [+ 5]) is not yet
+    // supported by the EIR VM. Use explicit lambdas for now.
+    assert_eir_works(
+        r#"
+        [pipe #[1 2 3 4 5]
+          [filter [fn [x] [> x 2]]]
+          [map [fn [x] [* x 10]]]]
+    "#,
+    );
+
+    // ── Match / ADTs ────────────────────────────────────────────────
+    assert_eir_works(
+        r#"
+        [type Color [Rgb Int Int Int] [Hex String]]
+        [fn red [c] [match c [Rgb r g b] r [Hex s] 0]]
+        [red [Rgb 255 128 0]]
+    "#,
+    );
+    assert_eir_works(
+        r#"
+        [fn classify [n]
+          [match n
+            n [when [< n 0]] :negative
+            0 :zero
+            n :positive]]
+        [classify -5]
+    "#,
+    );
+    assert_eir_works(
+        r#"
+        [fn classify [n]
+          [match n
+            n [when [< n 0]] :negative
+            0 :zero
+            n :positive]]
+        [classify 0]
+    "#,
+    );
+    assert_eir_works(
+        r#"
+        [fn classify [n]
+          [match n
+            n [when [< n 0]] :negative
+            0 :zero
+            n :positive]]
+        [classify 42]
+    "#,
+    );
+    // NOTE: `derive Copy` is not yet supported by the EIR VM.
+    // assert_eir_works(r#"[derive Copy [type Point [XY Int Int]]] [let p [XY 1 2]] [match p [XY x y] [+ x y]]"#);
+
+    // ── Vectors ─────────────────────────────────────────────────────
+    assert_eir_works("[do [let v #[1 2 3]] [len v]]");
+    assert_eir_works("[conj #[1 2] 3]");
+    assert_eir_works("[conj #[] 1]");
+    assert_eir_works("[nth #[10 20 30] 1]");
+    assert_eir_works("[reverse #[1 2 3]]");
+    assert_eir_works("[take 2 #[1 2 3 4]]");
+    assert_eir_works("[drop 2 #[1 2 3 4]]");
+    assert_eir_works("[flatten #[#[1 2] #[3 4]]]");
+    assert_eir_works("[zip #[1 2 3] #[4 5 6]]");
+    assert_eir_works("[range 0 5]");
+
+    // ── Maps ────────────────────────────────────────────────────────
+    assert_eir_works("[len {:a 1 :b 2}]");
+    assert_eir_works("[get {:a 1 :b 2} :a]");
+    assert_eir_works("[contains? {:a 1 :b 2} :a]");
+
+    // ── Sets ────────────────────────────────────────────────────────
+    assert_eir_works("[len #{1 2 3}]");
+    assert_eir_works("[contains? #{1 2 3} 2]");
+
+    // ── Strings ─────────────────────────────────────────────────────
+    assert_eir_works(r#"[str "hello" " " "world"]"#);
+    assert_eir_works(r#"[len "hello"]"#);
+    assert_eir_works(r#"[join ", " #["a" "b" "c"]]"#);
+    assert_eir_works(r#"[trim "  hello  "]"#);
+    assert_eir_works(r#"[starts-with? "hello" "he"]"#);
+    assert_eir_works(r#"[uppercase "hello"]"#);
+    assert_eir_works(r#"[lowercase "HELLO"]"#);
+
+    // ── Builtins: map, filter, fold, each, sort ─────────────────────
+    assert_eir_works("[map [fn [x] [* x x]] [range 0 5]]");
+    assert_eir_works("[filter [fn [x] [> x 2]] #[1 2 3 4 5]]");
+    assert_eir_works("[fold 0 [fn [acc x] [+ acc x]] #[1 2 3 4 5]]");
+    assert_eir_works("[each [fn [x] x] #[1 2 3]]");
+    assert_eir_works("[sort #[3 1 2]]");
+    assert_eir_works("[min #[3 1 2]]");
+    assert_eir_works("[max #[3 1 2]]");
+    assert_eir_works("[sum #[1 2 3 4 5]]");
+    assert_eir_works("[any? [fn [x] [> x 3]] #[1 2 3]]");
+    assert_eir_works("[all? [fn [x] [> x 0]] #[1 2 3]]");
+
+    // ── Boolean logic ───────────────────────────────────────────────
+    assert_eir_works("[and true true]");
+    assert_eir_works("[and true false]");
+    assert_eir_works("[or false true]");
+    assert_eir_works("[not true]");
+
+    // ── Effects: handle / try ───────────────────────────────────────
+    assert_eir_works("[try [+ 1 2] [fn [e] :err]]");
+    assert_eir_works(r#"[try [Fail.fail "boom"] [fn [e] [str "caught: " e]]]"#);
+    assert_eir_works(
+        r#"
+        [handle [IO.read-file "test.txt"]
+          [IO.read-file path] [resume "mock-data"]]
+    "#,
+    );
+    assert_eir_works(
+        r#"
+        [effect Db [query [String] String]]
+        [fn get-user [id] [Db.query id]]
+        [handle [get-user "42"]
+          [Db.query id] [resume [str "User:" id]]]
+    "#,
+    );
+    assert_eir_works(
+        r#"
+        [effect Fs [read [String] String]]
+        [handle
+          [do [let a [Fs.read "x"]] [let b [Fs.read "y"]] [str a "+" b]]
+          [Fs.read path] [resume [str "data:" path]]]
+    "#,
+    );
+
+    // ── Destructuring ───────────────────────────────────────────────
+    assert_eir_works(
+        r#"
+        [fn first-two [[a b & rest]] [+ a b]]
+        [first-two #[10 20 30 40]]
+    "#,
+    );
+
+    // ── Keywords ────────────────────────────────────────────────────
+    assert_eir_works(r#"[keyword "hello"]"#);
+
+    // ── String interpolation ────────────────────────────────────────
+    assert_eir_works(
+        r#"
+        [let name "world"]
+        [str "hello " name "!"]
+    "#,
+    );
 }

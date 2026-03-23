@@ -1,5 +1,9 @@
 //! SICP-style effect machine for Loon.
 //!
+//! **DEPRECATED**: This interpreter is superseded by the EIR register VM
+//! (`crate::eir::vm`). It is kept for the `--legacy` CLI flag and as a
+//! reference / fallback. New features should target the EIR pipeline.
+//!
 //! Three ideas from SICP:
 //! 1. **Analyze** (4.1.7) — transform AST to Proc IR once, execute many times
 //! 2. **Eval/Apply** (4.1.1) — two fundamental operations, everything else is a continuation

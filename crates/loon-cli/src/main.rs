@@ -28,12 +28,9 @@ enum Command {
         /// Run via WASM compilation + wasmtime instead of interpreter
         #[arg(long)]
         wasm: bool,
-        /// Use the legacy tree-walking interpreter instead of the effect machine
+        /// Use the legacy tree-walking interpreter instead of the EIR VM
         #[arg(long)]
         legacy: bool,
-        /// Use the EIR register VM (NaN-boxed values, block-based IR)
-        #[arg(long)]
-        eir: bool,
     },
     /// Start the REPL
     Repl,
@@ -125,14 +122,11 @@ fn main() {
             ref file,
             wasm,
             legacy,
-            eir,
         } => {
             if wasm {
                 run_file_wasm(file);
             } else if legacy {
                 run_file_legacy(file);
-            } else if eir {
-                run_file_eir(file);
             } else {
                 run_file(file);
             }
@@ -177,35 +171,6 @@ fn start_lsp() {
 }
 
 fn run_file(path: &PathBuf) {
-    let source = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("{} reading {}: {e}", "error".red().bold(), path.display());
-            std::process::exit(1);
-        }
-    };
-
-    let filename = path.to_string_lossy().to_string();
-    let base_dir = path.parent().unwrap_or(std::path::Path::new("."));
-    match loon_lang::parser::parse(&source) {
-        Ok(exprs) => {
-            match loon_lang::interp::machine::eval_program_vm_with_base_dir(&exprs, Some(base_dir))
-            {
-                Ok(_) => {}
-                Err(e) => {
-                    eprintln!("{}: {e}", "error".red().bold());
-                    std::process::exit(1);
-                }
-            }
-        }
-        Err(e) => {
-            loon_lang::errors::report_error(&filename, &source, &e.message, e.span);
-            std::process::exit(1);
-        }
-    }
-}
-
-fn run_file_eir(path: &PathBuf) {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {

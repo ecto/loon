@@ -5,7 +5,7 @@
 //! Tail calls reuse the current frame. No continuation stack — just a
 //! call stack of `(FuncId, BlockId, ip, registers)`.
 
-use crate::eir::value64::Val;
+pub use crate::eir::value64::Val;
 use crate::eir::*;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -78,6 +78,7 @@ pub struct Vm {
 }
 
 /// Result of running the VM.
+#[derive(Debug)]
 pub struct VmResult {
     pub value: Val,
     pub output: Vec<String>,
