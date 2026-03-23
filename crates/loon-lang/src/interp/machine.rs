@@ -662,6 +662,9 @@ pub struct Machine {
     kont: Vec<Kont>,
     env: Env,
     call_stack: Vec<StackFrame>,
+    /// Cache: Rc<[Expr]> pointer → analyzed Procs. Avoids re-analyzing function
+    /// bodies on every call (the SICP 4.1.7 analyze-once principle).
+    body_cache: HashMap<usize, Rc<[Proc]>>,
 }
 
 impl Machine {
@@ -671,7 +674,21 @@ impl Machine {
             kont: Vec::new(),
             env,
             call_stack: Vec::new(),
+            body_cache: HashMap::new(),
         }
+    }
+
+    /// Analyze a function body, caching by Rc pointer for the SICP
+    /// analyze-once guarantee.
+    fn analyze_body(&mut self, body: &Rc<[Expr]>) -> Vec<Proc> {
+        let key = Rc::as_ptr(body) as *const () as usize;
+        if let Some(cached) = self.body_cache.get(&key) {
+            return cached.iter().cloned().collect();
+        }
+        let procs: Vec<Proc> = body.iter().map(analyze).collect();
+        self.body_cache
+            .insert(key, procs.clone().into_boxed_slice().into());
+        procs
     }
 
     /// Run a single Proc to completion.
@@ -1050,8 +1067,8 @@ impl Machine {
                             body: body.clone(),
                         });
 
-                        // Eval body as sequence
-                        let body_procs: Vec<Proc> = body.iter().map(analyze).collect();
+                        // Eval body as sequence (cached analysis)
+                        let body_procs = self.analyze_body(body);
                         self.eval_seq(body_procs);
                         return Ok(());
                     }
@@ -1574,7 +1591,7 @@ impl Machine {
                             self.env.set(name.clone(), Value::Vec(rest_vals));
                         }
                     }
-                    let body_procs: Vec<Proc> = body.iter().map(analyze).collect();
+                    let body_procs = self.analyze_body(&body);
                     self.eval_seq(body_procs);
                     Ok(())
                 }
