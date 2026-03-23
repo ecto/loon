@@ -545,11 +545,20 @@ impl Vm {
 
     // ── Binary operations ──────────────────────────────────────────────
 
+    /// Create an int; if it overflows 48 bits, promote to float.
+    fn safe_int(&self, n: i64) -> Val {
+        if n >= -(1i64 << 47) && n < (1i64 << 47) {
+            Val::int(n)
+        } else {
+            Val::float(n as f64)
+        }
+    }
+
     fn exec_binop(&mut self, op: BinOp, a: Val, b: Val) -> Val {
         match op {
             BinOp::Add => {
                 if a.is_int() && b.is_int() {
-                    Val::int(a.as_int().wrapping_add(b.as_int()))
+                    self.safe_int(a.as_int().wrapping_add(b.as_int()))
                 } else if a.is_float() || b.is_float() {
                     let af = if a.is_float() {
                         a.as_float()
@@ -568,7 +577,7 @@ impl Vm {
             }
             BinOp::Sub => {
                 if a.is_int() && b.is_int() {
-                    Val::int(a.as_int().wrapping_sub(b.as_int()))
+                    self.safe_int(a.as_int().wrapping_sub(b.as_int()))
                 } else {
                     let af = if a.is_float() {
                         a.as_float()
@@ -585,7 +594,7 @@ impl Vm {
             }
             BinOp::Mul => {
                 if a.is_int() && b.is_int() {
-                    Val::int(a.as_int().wrapping_mul(b.as_int()))
+                    self.safe_int(a.as_int().wrapping_mul(b.as_int()))
                 } else {
                     let af = if a.is_float() {
                         a.as_float()
@@ -926,8 +935,255 @@ impl Vm {
                     _ => Ok(Val::UNIT),
                 }
             }
-            _ => {
-                // Unimplemented builtins return Unit
+            Built::Cons => {
+                let val = args.first().copied().unwrap_or(Val::UNIT);
+                let coll = args.get(1).copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll).cloned() {
+                    Some(Obj::Vec(mut items)) => {
+                        items.insert(0, val);
+                        Ok(self.alloc(Obj::Vec(items)))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Merge => {
+                let a = args.first().copied().unwrap_or(Val::UNIT);
+                let b = args.get(1).copied().unwrap_or(Val::UNIT);
+                match (self.get_obj(a).cloned(), self.get_obj(b).cloned()) {
+                    (Some(Obj::Map(mut ma)), Some(Obj::Map(mb))) => {
+                        ma.extend(mb);
+                        Ok(self.alloc(Obj::Map(ma)))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Take => {
+                let n = args.first().copied().unwrap_or(Val::int(0));
+                let coll = args.get(1).copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll).cloned() {
+                    Some(Obj::Vec(items)) if n.is_int() => {
+                        let taken: Vec<Val> = items.into_iter().take(n.as_int() as usize).collect();
+                        Ok(self.alloc(Obj::Vec(taken)))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Drop => {
+                let n = args.first().copied().unwrap_or(Val::int(0));
+                let coll = args.get(1).copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll).cloned() {
+                    Some(Obj::Vec(items)) if n.is_int() => {
+                        let dropped: Vec<Val> =
+                            items.into_iter().skip(n.as_int() as usize).collect();
+                        Ok(self.alloc(Obj::Vec(dropped)))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Split => {
+                let sep = args.first().copied().unwrap_or(Val::UNIT);
+                let s = args.get(1).copied().unwrap_or(Val::UNIT);
+                match (
+                    self.get_str(sep).map(|s| s.to_string()),
+                    self.get_str(s).map(|s| s.to_string()),
+                ) {
+                    (Some(sep), Some(s)) => {
+                        let parts: Vec<Val> = s
+                            .split(&sep)
+                            .map(|p| self.alloc(Obj::Str(p.to_string())))
+                            .collect();
+                        Ok(self.alloc(Obj::Vec(parts)))
+                    }
+                    _ => Ok(self.alloc(Obj::Vec(Vec::new()))),
+                }
+            }
+            Built::StartsWith => {
+                let s = args.first().copied().unwrap_or(Val::UNIT);
+                let prefix = args.get(1).copied().unwrap_or(Val::UNIT);
+                match (
+                    self.get_str(s).map(|s| s.to_string()),
+                    self.get_str(prefix).map(|s| s.to_string()),
+                ) {
+                    (Some(s), Some(p)) => Ok(Val::bool(s.starts_with(&p))),
+                    _ => Ok(Val::bool(false)),
+                }
+            }
+            Built::EndsWith => {
+                let s = args.first().copied().unwrap_or(Val::UNIT);
+                let suffix = args.get(1).copied().unwrap_or(Val::UNIT);
+                match (
+                    self.get_str(s).map(|s| s.to_string()),
+                    self.get_str(suffix).map(|s| s.to_string()),
+                ) {
+                    (Some(s), Some(p)) => Ok(Val::bool(s.ends_with(&p))),
+                    _ => Ok(Val::bool(false)),
+                }
+            }
+            Built::Replace => {
+                let from = args.first().copied().unwrap_or(Val::UNIT);
+                let to = args.get(1).copied().unwrap_or(Val::UNIT);
+                let s = args.get(2).copied().unwrap_or(Val::UNIT);
+                match (
+                    self.get_str(from).map(|s| s.to_string()),
+                    self.get_str(to).map(|s| s.to_string()),
+                    self.get_str(s).map(|s| s.to_string()),
+                ) {
+                    (Some(f), Some(t), Some(s)) => Ok(self.alloc(Obj::Str(s.replace(&f, &t)))),
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Uppercase => {
+                let s = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_str(s).map(|s| s.to_string()) {
+                    Some(s) => Ok(self.alloc(Obj::Str(s.to_uppercase()))),
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Lowercase => {
+                let s = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_str(s).map(|s| s.to_string()) {
+                    Some(s) => Ok(self.alloc(Obj::Str(s.to_lowercase()))),
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Not => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                Ok(Val::bool(!v.is_truthy()))
+            }
+            Built::Keys => {
+                let m = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_obj(m).cloned() {
+                    Some(Obj::Map(pairs)) => {
+                        let keys: Vec<Val> = pairs.into_iter().map(|(k, _)| k).collect();
+                        Ok(self.alloc(Obj::Vec(keys)))
+                    }
+                    _ => Ok(self.alloc(Obj::Vec(Vec::new()))),
+                }
+            }
+            Built::Vals => {
+                let m = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_obj(m).cloned() {
+                    Some(Obj::Map(pairs)) => {
+                        let vals: Vec<Val> = pairs.into_iter().map(|(_, v)| v).collect();
+                        Ok(self.alloc(Obj::Vec(vals)))
+                    }
+                    _ => Ok(self.alloc(Obj::Vec(Vec::new()))),
+                }
+            }
+            Built::Join => {
+                let sep = args.first().copied().unwrap_or(Val::UNIT);
+                let coll = args.get(1).copied().unwrap_or(Val::UNIT);
+                let sep_str = self.val_to_string(sep);
+                match self.get_obj(coll).cloned() {
+                    Some(Obj::Vec(items)) => {
+                        let parts: Vec<String> =
+                            items.iter().map(|v| self.val_to_string(*v)).collect();
+                        Ok(self.alloc(Obj::Str(parts.join(&sep_str))))
+                    }
+                    _ => Ok(self.alloc(Obj::Str(String::new()))),
+                }
+            }
+            Built::Trim => {
+                let s = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_str(s).map(|s| s.to_string()) {
+                    Some(s) => Ok(self.alloc(Obj::Str(s.trim().to_string()))),
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Flatten => {
+                let coll = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll).cloned() {
+                    Some(Obj::Vec(items)) => {
+                        let mut flat = Vec::new();
+                        for item in items {
+                            if let Some(Obj::Vec(inner)) = self.get_obj(item).cloned() {
+                                flat.extend(inner);
+                            } else {
+                                flat.push(item);
+                            }
+                        }
+                        Ok(self.alloc(Obj::Vec(flat)))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Zip => {
+                let a = args.first().copied().unwrap_or(Val::UNIT);
+                let b = args.get(1).copied().unwrap_or(Val::UNIT);
+                match (self.get_obj(a).cloned(), self.get_obj(b).cloned()) {
+                    (Some(Obj::Vec(va)), Some(Obj::Vec(vb))) => {
+                        let zipped: Vec<Val> = va
+                            .into_iter()
+                            .zip(vb)
+                            .map(|(x, y)| self.alloc(Obj::Tuple(vec![x, y])))
+                            .collect();
+                        Ok(self.alloc(Obj::Vec(zipped)))
+                    }
+                    _ => Ok(self.alloc(Obj::Vec(Vec::new()))),
+                }
+            }
+            Built::Any => {
+                let func = args.first().copied().unwrap_or(Val::UNIT);
+                let coll = args.get(1).copied().unwrap_or(Val::UNIT);
+                match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
+                    (Some(Obj::Closure(fid, _)), Some(Obj::Vec(items))) => {
+                        for item in &items {
+                            let result = self.run_call(fid, &[*item])?;
+                            if result.is_truthy() {
+                                return Ok(Val::TRUE);
+                            }
+                        }
+                        Ok(Val::FALSE)
+                    }
+                    _ => Ok(Val::FALSE),
+                }
+            }
+            Built::All => {
+                let func = args.first().copied().unwrap_or(Val::UNIT);
+                let coll = args.get(1).copied().unwrap_or(Val::UNIT);
+                match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
+                    (Some(Obj::Closure(fid, _)), Some(Obj::Vec(items))) => {
+                        for item in &items {
+                            let result = self.run_call(fid, &[*item])?;
+                            if !result.is_truthy() {
+                                return Ok(Val::FALSE);
+                            }
+                        }
+                        Ok(Val::TRUE)
+                    }
+                    _ => Ok(Val::TRUE),
+                }
+            }
+            Built::Int => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                if v.is_int() {
+                    Ok(v)
+                } else if v.is_float() {
+                    Ok(self.safe_int(v.as_float() as i64))
+                } else {
+                    Ok(Val::UNIT)
+                }
+            }
+            Built::Float => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                if v.is_float() {
+                    Ok(v)
+                } else if v.is_int() {
+                    Ok(Val::float(v.as_int() as f64))
+                } else {
+                    Ok(Val::UNIT)
+                }
+            }
+            Built::FlatMap
+            | Built::GroupBy
+            | Built::Collect
+            | Built::IntoMap
+            | Built::Chunk
+            | Built::IndexOf
+            | Built::CharAt
+            | Built::Substring
+            | Built::Slice => {
+                // TODO: implement these
                 Ok(Val::UNIT)
             }
         }

@@ -492,7 +492,12 @@ impl<'a> Lower<'a> {
                 return r;
             }
 
-            // Get params
+            // Multi-arity: [fn name (params1 body1) (params2 body2) ...]
+            if matches!(args[1].kind, ExprKind::Tuple(_)) {
+                return self.lower_multi_arity_fn(&name, &args[1..], span);
+            }
+
+            // Single-arity: get params
             let param_names = extract_param_names(&args[1]);
 
             // Skip effect annotation
@@ -589,6 +594,138 @@ impl<'a> Lower<'a> {
             self.emit(Op::Close(r, func_id, Vec::new(), span));
             r
         }
+    }
+
+    /// Multi-arity: [fn name (params1 body1) (params2 body2) ...]
+    /// Compiled as a single function that checks arg count and dispatches.
+    fn lower_multi_arity_fn(&mut self, name: &str, clauses: &[Expr], span: Span) -> Reg {
+        // For simplicity, use the max arity and dispatch on arg count.
+        // Extract all clauses.
+        let mut parsed: Vec<(Vec<String>, Vec<&Expr>)> = Vec::new();
+        for clause in clauses {
+            if let ExprKind::Tuple(items) = &clause.kind {
+                if items.len() >= 2 {
+                    let params = extract_param_names(&items[0]);
+                    let body: Vec<&Expr> = items[1..].iter().collect();
+                    parsed.push((params, body));
+                }
+            }
+        }
+        if parsed.is_empty() {
+            let r = self.reg();
+            self.emit(Op::Lit(r, Lit::Unit, span));
+            return r;
+        }
+
+        let max_arity = parsed.iter().map(|(p, _)| p.len()).max().unwrap_or(0);
+
+        // Save state
+        let saved_func = self.cur_func;
+        let saved_block = self.cur_block;
+        let saved_next_reg = self.next_reg;
+        let saved_scopes = std::mem::take(&mut self.scopes);
+
+        let func_id = self.begin_func(Some(name), span);
+        self.func_map.insert(name.to_string(), func_id);
+
+        self.scopes = vec![HashMap::new()];
+        // All params accessible by position
+        for i in 0..max_arity {
+            let r = Reg(i as u32);
+            self.next_reg = self.next_reg.max(i as u32 + 1);
+        }
+        self.module.funcs[func_id.0 as usize].params = vec![Ty::Any; max_arity];
+        let param_regs: Vec<Reg> = (0..max_arity).map(|i| Reg(i as u32)).collect();
+        self.module.funcs[func_id.0 as usize].blocks[0].params = param_regs;
+
+        // For now, just use the first matching clause based on a simple heuristic.
+        // A full impl would check a special "argc" register.
+        // Since Loon dispatches on arity, we lower each clause as an if-else chain.
+        // Use the LAST clause as default (usually the most-args variant).
+        // For 2 clauses (common case), just pick based on whether arg[1] is Unit.
+        if parsed.len() == 1 {
+            let (params, body) = &parsed[0];
+            for (i, pname) in params.iter().enumerate() {
+                self.bind(pname, Reg(i as u32));
+            }
+            let mut last = None;
+            for expr in body {
+                last = Some(self.lower_expr(expr));
+            }
+            let ret = last.unwrap_or_else(|| {
+                let r = self.reg();
+                self.emit(Op::Lit(r, Lit::Unit, span));
+                r
+            });
+            self.seal(End::Ret(ret));
+        } else {
+            // Multi-clause: dispatch on arity (ascending order).
+            // Each clause gets a body block. Arity checks are a linear chain.
+            let mut sorted = parsed.clone();
+            sorted.sort_by_key(|(p, _)| p.len());
+
+            let merge_block = self.new_block();
+            let mut body_blocks = Vec::new();
+            for _ in &sorted {
+                body_blocks.push(self.new_block());
+            }
+
+            // Emit arity dispatch chain in entry block (block 0)
+            for i in 0..sorted.len() {
+                if i < sorted.len() - 1 {
+                    let arity = sorted[i].0.len();
+                    let check_reg = Reg(arity as u32);
+                    let is_unit = self.reg();
+                    let unit_val = self.reg();
+                    self.emit(Op::Lit(unit_val, Lit::Unit, span));
+                    self.emit(Op::Bin(is_unit, BinOp::Eq, check_reg, unit_val, span));
+                    let next_check = self.new_block();
+                    self.seal(End::Br(is_unit, body_blocks[i], next_check));
+                    self.switch_to(next_check);
+                } else {
+                    // Last clause: unconditional
+                    self.seal(End::Jmp(body_blocks[i], Vec::new()));
+                }
+            }
+
+            // Lower each clause body in its own block
+            for (i, (params, body)) in sorted.iter().enumerate() {
+                self.switch_to(body_blocks[i]);
+                self.push_scope();
+                for (j, pname) in params.iter().enumerate() {
+                    self.bind(pname, Reg(j as u32));
+                }
+                let mut last = None;
+                for expr in body {
+                    last = Some(self.lower_expr(expr));
+                }
+                let ret = last.unwrap_or_else(|| {
+                    let r = self.reg();
+                    self.emit(Op::Lit(r, Lit::Unit, span));
+                    r
+                });
+                self.pop_scope();
+                self.seal(End::Jmp(merge_block, vec![ret]));
+            }
+
+            self.switch_to(merge_block);
+            let result = self.reg();
+            self.module.funcs[func_id.0 as usize].blocks[merge_block.0 as usize]
+                .params
+                .push(result);
+            self.seal(End::Ret(result));
+        }
+
+        // Restore state
+        self.cur_func = saved_func;
+        self.cur_block = saved_block;
+        self.next_reg = saved_next_reg;
+        self.scopes = saved_scopes;
+
+        let r = self.reg();
+        self.emit(Op::Close(r, func_id, Vec::new(), span));
+        self.bind(name, r);
+        r
     }
 
     fn lower_let(&mut self, args: &[Expr], span: Span) -> Reg {
@@ -1264,7 +1401,7 @@ impl<'a> Lower<'a> {
                     ">=" => Some(BinOp::Ge),
                     "and" => Some(BinOp::And),
                     "or" => Some(BinOp::Or),
-                    "str" => Some(BinOp::Concat),
+                    // "str" is handled as Built::Str (variadic), not BinOp
                     _ => None,
                 } {
                     let a = self.lower_expr(&arg_exprs[0]);
@@ -1289,38 +1426,7 @@ impl<'a> Lower<'a> {
             }
 
             // Check for known builtins
-            if let Some(built) = match name.as_str() {
-                "println" => Some(Built::Println),
-                "print" => Some(Built::Print),
-                "str" => Some(Built::Str),
-                "len" => Some(Built::Len),
-                "get" => Some(Built::Get),
-                "conj" => Some(Built::Conj),
-                "assoc" => Some(Built::Assoc),
-                "range" => Some(Built::Range),
-                "map" => Some(Built::Map),
-                "filter" => Some(Built::Filter),
-                "reduce" => Some(Built::Reduce),
-                "each" => Some(Built::Each),
-                "keys" => Some(Built::Keys),
-                "vals" => Some(Built::Vals),
-                "nth" => Some(Built::Nth),
-                "contains?" => Some(Built::Contains),
-                "join" => Some(Built::Join),
-                "trim" => Some(Built::Trim),
-                "sort" => Some(Built::Sort),
-                "reverse" => Some(Built::Reverse),
-                "flatten" => Some(Built::Flatten),
-                "zip" => Some(Built::Zip),
-                "any?" => Some(Built::Any),
-                "all?" => Some(Built::All),
-                "sum" => Some(Built::Sum),
-                "min" => Some(Built::Min),
-                "max" => Some(Built::Max),
-                "int" => Some(Built::Int),
-                "float" => Some(Built::Float),
-                _ => None,
-            } {
+            if let Some(built) = self.resolve_builtin(name) {
                 let args: Vec<Reg> = arg_exprs.iter().map(|e| self.lower_expr(e)).collect();
                 let r = self.reg();
                 self.emit(Op::Builtin(r, built, args, span));
@@ -1391,22 +1497,29 @@ impl Lower<'_> {
             "len" => Some(Built::Len),
             "get" => Some(Built::Get),
             "conj" => Some(Built::Conj),
+            "cons" => Some(Built::Cons),
             "assoc" => Some(Built::Assoc),
+            "merge" => Some(Built::Merge),
             "range" => Some(Built::Range),
             "map" => Some(Built::Map),
             "filter" => Some(Built::Filter),
             "reduce" => Some(Built::Reduce),
             "each" => Some(Built::Each),
+            "flat-map" => Some(Built::FlatMap),
             "keys" => Some(Built::Keys),
             "vals" => Some(Built::Vals),
             "nth" => Some(Built::Nth),
+            "take" => Some(Built::Take),
+            "drop" => Some(Built::Drop),
             "contains?" => Some(Built::Contains),
             "join" => Some(Built::Join),
             "trim" => Some(Built::Trim),
+            "split" => Some(Built::Split),
             "sort" => Some(Built::Sort),
             "reverse" => Some(Built::Reverse),
             "flatten" => Some(Built::Flatten),
             "zip" => Some(Built::Zip),
+            "chunk" => Some(Built::Chunk),
             "any?" => Some(Built::Any),
             "all?" => Some(Built::All),
             "sum" => Some(Built::Sum),
@@ -1414,6 +1527,18 @@ impl Lower<'_> {
             "max" => Some(Built::Max),
             "int" => Some(Built::Int),
             "float" => Some(Built::Float),
+            "into-map" => Some(Built::IntoMap),
+            "group-by" => Some(Built::GroupBy),
+            "collect" => Some(Built::Collect),
+            "starts-with?" => Some(Built::StartsWith),
+            "ends-with?" => Some(Built::EndsWith),
+            "replace" => Some(Built::Replace),
+            "uppercase" => Some(Built::Uppercase),
+            "lowercase" => Some(Built::Lowercase),
+            "index-of" => Some(Built::IndexOf),
+            "char-at" => Some(Built::CharAt),
+            "substring" => Some(Built::Substring),
+            "not" => Some(Built::Not),
             _ => None,
         }
     }
