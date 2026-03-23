@@ -6,6 +6,7 @@
 pub mod backend;
 pub mod lower;
 pub mod value64;
+pub mod vm;
 
 use crate::syntax::Span;
 

@@ -31,6 +31,9 @@ enum Command {
         /// Use the legacy tree-walking interpreter instead of the effect machine
         #[arg(long)]
         legacy: bool,
+        /// Use the EIR register VM (NaN-boxed values, block-based IR)
+        #[arg(long)]
+        eir: bool,
     },
     /// Start the REPL
     Repl,
@@ -122,11 +125,14 @@ fn main() {
             ref file,
             wasm,
             legacy,
+            eir,
         } => {
             if wasm {
                 run_file_wasm(file);
             } else if legacy {
                 run_file_legacy(file);
+            } else if eir {
+                run_file_eir(file);
             } else {
                 run_file(file);
             }
@@ -194,6 +200,24 @@ fn run_file(path: &PathBuf) {
         }
         Err(e) => {
             loon_lang::errors::report_error(&filename, &source, &e.message, e.span);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_file_eir(path: &PathBuf) {
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{} reading {}: {e}", "error".red().bold(), path.display());
+            std::process::exit(1);
+        }
+    };
+
+    match loon_lang::eir::vm::eval_eir(&source) {
+        Ok(_result) => {}
+        Err(e) => {
+            eprintln!("{}: {e}", "error".red().bold());
             std::process::exit(1);
         }
     }

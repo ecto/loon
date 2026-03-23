@@ -45,6 +45,8 @@ struct Lower<'a> {
     evidence_scope: HashMap<String, Reg>,
     /// Function name → FuncId (for direct calls).
     func_map: HashMap<String, FuncId>,
+    /// Current loop header block (for recur → Jmp back to loop).
+    recur_target: Option<BlockId>,
 }
 
 impl<'a> Lower<'a> {
@@ -65,6 +67,7 @@ impl<'a> Lower<'a> {
             ctor_map: HashMap::new(),
             evidence_scope: HashMap::new(),
             func_map: HashMap::new(),
+            recur_target: None,
         }
     }
 
@@ -175,6 +178,13 @@ impl<'a> Lower<'a> {
         let mut last = None;
         for expr in &exprs {
             last = Some(self.lower_expr(expr));
+        }
+
+        // If there's a `main` function, call it
+        if let Some(main_reg) = self.lookup("main") {
+            let call_result = self.reg();
+            self.emit(Op::Invoke(call_result, main_reg, Vec::new(), Span::ZERO));
+            last = Some(call_result);
         }
 
         // Return the last value
@@ -923,6 +933,10 @@ impl<'a> Lower<'a> {
         let func = &mut self.module.funcs[self.cur_func.unwrap()];
         func.blocks[loop_block.0 as usize].params = param_regs;
 
+        // Set recur target so [recur ...] jumps back to loop_block
+        let saved_recur = self.recur_target;
+        self.recur_target = Some(loop_block);
+
         // Lower body
         let body = &args[1..];
         let mut last = None;
@@ -935,6 +949,7 @@ impl<'a> Lower<'a> {
             r
         });
         self.pop_scope();
+        self.recur_target = saved_recur;
 
         // If body completes without recur, exit the loop
         self.seal(End::Jmp(exit_block, vec![body_val]));
@@ -948,7 +963,14 @@ impl<'a> Lower<'a> {
 
     fn lower_recur(&mut self, args: &[Expr], span: Span) -> Reg {
         let vals: Vec<Reg> = args.iter().map(|e| self.lower_expr(e)).collect();
-        self.seal(End::Recur(vals));
+
+        if let Some(target) = self.recur_target {
+            // Loop recur: jump back to loop header
+            self.seal(End::Jmp(target, vals));
+        } else {
+            // Function recur: self-call to block 0
+            self.seal(End::Recur(vals));
+        }
 
         // Recur never returns — create a dead block for subsequent code
         let dead = self.new_block();

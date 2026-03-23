@@ -1,0 +1,1188 @@
+//! Register VM backend — executes Evidence IR directly.
+//!
+//! Each function gets a register file (`Vec<Val>`). The dispatch loop walks
+//! blocks linearly, interpreting each `Op`. Function calls push frames.
+//! Tail calls reuse the current frame. No continuation stack — just a
+//! call stack of `(FuncId, BlockId, ip, registers)`.
+
+use crate::eir::value64::Val;
+use crate::eir::*;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+// ─── Heap objects ──────────────────────────────────────────────────────────
+
+/// Type tags for heap-allocated objects.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeapTag {
+    Str = 0,
+    Vec = 1,
+    Map = 2,
+    Set = 3,
+    Tuple = 4,
+    Adt = 5,
+    Closure = 6,
+}
+
+/// A heap-allocated object. Stored in the VM's object table.
+#[derive(Debug, Clone)]
+enum Obj {
+    Str(String),
+    Vec(Vec<Val>),
+    Map(Vec<(Val, Val)>),
+    Set(Vec<Val>),
+    Tuple(Vec<Val>),
+    Adt(u16, Vec<Val>),        // tag + fields
+    Closure(FuncId, Vec<Val>), // func + captured values
+}
+
+// ─── Call frame ────────────────────────────────────────────────────────────
+
+struct Frame {
+    func: FuncId,
+    block: BlockId,
+    ip: usize,      // instruction pointer within block
+    regs: Vec<Val>, // register file
+    ret_reg: u32,   // where to put result in caller's regs
+}
+
+// ─── VM ────────────────────────────────────────────────────────────────────
+
+/// The register VM. Executes an EIR Module.
+pub struct Vm {
+    module: Rc<Module>,
+    heap: Vec<Obj>,
+    frames: Vec<Frame>,
+    regs: Vec<Val>, // current register file
+    func: FuncId,
+    block: BlockId,
+    ip: usize,
+    /// Output capture (for println).
+    output: Vec<String>,
+    /// String constants resolved to heap indices.
+    string_cache: HashMap<StringId, usize>,
+}
+
+/// Result of running the VM.
+pub struct VmResult {
+    pub value: Val,
+    pub output: Vec<String>,
+}
+
+impl Vm {
+    pub fn new(module: Module) -> Self {
+        Self {
+            module: Rc::new(module),
+            heap: Vec::new(),
+            frames: Vec::new(),
+            regs: Vec::new(),
+            func: FuncId(0),
+            block: BlockId(0),
+            ip: 0,
+            output: Vec::new(),
+            string_cache: HashMap::new(),
+        }
+    }
+
+    /// Run the module's entry function.
+    pub fn run(&mut self) -> Result<VmResult, VmError> {
+        let entry = self.module.entry;
+        self.call_func(entry, &[], 0)?;
+        let val = self.execute()?;
+        Ok(VmResult {
+            value: val,
+            output: std::mem::take(&mut self.output),
+        })
+    }
+
+    // ── Heap ───────────────────────────────────────────────────────────
+
+    fn alloc(&mut self, obj: Obj) -> Val {
+        let idx = self.heap.len();
+        self.heap.push(obj);
+        Val::ptr(idx)
+    }
+
+    fn get_obj(&self, val: Val) -> Option<&Obj> {
+        if val.is_ptr() {
+            self.heap.get(val.as_ptr())
+        } else {
+            None
+        }
+    }
+
+    fn get_str(&self, val: Val) -> Option<&str> {
+        match self.get_obj(val)? {
+            Obj::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn resolve_string(&mut self, sid: StringId) -> Val {
+        if let Some(&idx) = self.string_cache.get(&sid) {
+            return Val::ptr(idx);
+        }
+        let s = self.module.strings[sid.0 as usize].clone();
+        let val = self.alloc(Obj::Str(s));
+        self.string_cache.insert(sid, val.as_ptr());
+        val
+    }
+
+    // ── Register access ────────────────────────────────────────────────
+
+    #[inline(always)]
+    fn r(&self, reg: Reg) -> Val {
+        self.regs[reg.0 as usize]
+    }
+
+    #[inline(always)]
+    fn w(&mut self, reg: Reg, val: Val) {
+        let idx = reg.0 as usize;
+        if idx >= self.regs.len() {
+            self.regs.resize(idx + 1, Val::UNIT);
+        }
+        self.regs[idx] = val;
+    }
+
+    fn read_regs(&self, regs: &[Reg]) -> Vec<Val> {
+        regs.iter().map(|r| self.r(*r)).collect()
+    }
+
+    // ── Function call ──────────────────────────────────────────────────
+
+    fn call_func(&mut self, func_id: FuncId, args: &[Val], ret_reg: u32) -> Result<(), VmError> {
+        // Save current frame
+        if !self.regs.is_empty() || !self.frames.is_empty() {
+            self.frames.push(Frame {
+                func: self.func,
+                block: self.block,
+                ip: self.ip,
+                regs: std::mem::take(&mut self.regs),
+                ret_reg,
+            });
+        }
+
+        // Set up new frame
+        let func = &self.module.funcs[func_id.0 as usize];
+        let reg_count = func
+            .blocks
+            .iter()
+            .flat_map(|b| {
+                b.ops
+                    .iter()
+                    .map(|op| op.dst().0 + 1)
+                    .chain(b.params.iter().map(|r| r.0 + 1))
+            })
+            .max()
+            .unwrap_or(0) as usize;
+        let reg_count = reg_count.max(args.len());
+
+        self.regs = vec![Val::UNIT; reg_count + 16]; // padding for safety
+        for (i, &val) in args.iter().enumerate() {
+            self.regs[i] = val;
+        }
+
+        self.func = func_id;
+        self.block = BlockId(0);
+        self.ip = 0;
+        Ok(())
+    }
+
+    fn return_val(&mut self, val: Val) -> Result<Option<Val>, VmError> {
+        if let Some(frame) = self.frames.pop() {
+            let ret_reg = frame.ret_reg;
+            self.regs = frame.regs;
+            self.func = frame.func;
+            self.block = frame.block;
+            self.ip = frame.ip;
+            self.regs[ret_reg as usize] = val;
+            Ok(None) // keep executing
+        } else {
+            Ok(Some(val)) // top-level return
+        }
+    }
+
+    // ── Main dispatch loop ─────────────────────────────────────────────
+
+    fn execute(&mut self) -> Result<Val, VmError> {
+        let module = Rc::clone(&self.module);
+
+        loop {
+            // Fetch current instruction or terminator by index (no stale refs)
+            let func_idx = self.func.0 as usize;
+            let block_idx = self.block.0 as usize;
+            let ops_len = module.funcs[func_idx].blocks[block_idx].ops.len();
+
+            if self.ip < ops_len {
+                // Clone the op to avoid borrowing module across exec_op
+                let op = module.funcs[func_idx].blocks[block_idx].ops[self.ip].clone();
+                self.ip += 1;
+                self.exec_op(&op)?;
+                continue;
+            }
+
+            // Execute terminator
+            let end = module.funcs[func_idx].blocks[block_idx].end.clone();
+            match end {
+                End::Ret(reg) => {
+                    let val = self.r(reg);
+                    if let Some(result) = self.return_val(val)? {
+                        return Ok(result);
+                    }
+                }
+
+                End::Jmp(target, ref args) => {
+                    let vals = self.read_regs(args);
+                    let params: Vec<Reg> = module.funcs[func_idx].blocks[target.0 as usize]
+                        .params
+                        .clone();
+                    for (param, val) in params.iter().zip(vals.iter()) {
+                        self.w(*param, *val);
+                    }
+                    self.block = target;
+                    self.ip = 0;
+                }
+
+                End::Br(cond, then_b, else_b) => {
+                    let v = self.r(cond);
+                    self.block = if v.is_truthy() { then_b } else { else_b };
+                    self.ip = 0;
+                }
+
+                End::Switch(scrutinee, ref cases, default) => {
+                    let v = self.r(scrutinee);
+                    let tag = if let Some(Obj::Adt(t, _)) = self.get_obj(v) {
+                        *t
+                    } else if v.is_int() {
+                        v.as_int() as u16
+                    } else {
+                        0
+                    };
+                    let target = cases
+                        .iter()
+                        .find(|(t, _)| *t == tag)
+                        .map(|(_, b)| *b)
+                        .unwrap_or(default);
+                    self.block = target;
+                    self.ip = 0;
+                }
+
+                End::Tail(func_id, ref args) => {
+                    let vals = self.read_regs(args);
+                    let f = &module.funcs[func_id.0 as usize];
+                    let reg_count = f
+                        .blocks
+                        .iter()
+                        .flat_map(|b| {
+                            b.ops
+                                .iter()
+                                .map(|op| op.dst().0 + 1)
+                                .chain(b.params.iter().map(|r| r.0 + 1))
+                        })
+                        .max()
+                        .unwrap_or(0) as usize;
+                    let needed = reg_count.max(vals.len()) + 16;
+                    self.regs.resize(needed, Val::UNIT);
+                    for (i, &val) in vals.iter().enumerate() {
+                        self.regs[i] = val;
+                    }
+                    self.func = func_id;
+                    self.block = BlockId(0);
+                    self.ip = 0;
+                }
+
+                End::TailInvoke(callee, ref args) => {
+                    let func_val = self.r(callee);
+                    let vals = self.read_regs(args);
+                    if let Some(Obj::Closure(fid, _)) = self.get_obj(func_val).cloned() {
+                        let f = &module.funcs[fid.0 as usize];
+                        let reg_count = f
+                            .blocks
+                            .iter()
+                            .flat_map(|b| {
+                                b.ops
+                                    .iter()
+                                    .map(|op| op.dst().0 + 1)
+                                    .chain(b.params.iter().map(|r| r.0 + 1))
+                            })
+                            .max()
+                            .unwrap_or(0) as usize;
+                        let needed = reg_count.max(vals.len()) + 16;
+                        self.regs.resize(needed, Val::UNIT);
+                        for (i, &val) in vals.iter().enumerate() {
+                            self.regs[i] = val;
+                        }
+                        self.func = fid;
+                        self.block = BlockId(0);
+                        self.ip = 0;
+                    } else {
+                        return Err(VmError::NotCallable);
+                    }
+                }
+
+                End::Recur(ref args) => {
+                    let vals = self.read_regs(args);
+                    let params: Vec<Reg> = module.funcs[func_idx].blocks[0].params.clone();
+                    for (param, val) in params.iter().zip(vals.iter()) {
+                        self.w(*param, *val);
+                    }
+                    self.block = BlockId(0);
+                    self.ip = 0;
+                }
+
+                End::Trap => {
+                    return Err(VmError::Trap);
+                }
+            }
+        }
+    }
+
+    // ── Instruction dispatch ───────────────────────────────────────────
+
+    fn exec_op(&mut self, op: &Op) -> Result<(), VmError> {
+        match op {
+            Op::Lit(dst, lit, _) => {
+                let val = match lit {
+                    Lit::Int(n) => {
+                        if *n >= -(1i64 << 47) && *n < (1i64 << 47) {
+                            Val::int(*n)
+                        } else {
+                            // Box large ints
+                            self.alloc(Obj::Str(n.to_string()))
+                            // TODO: proper boxed int
+                        }
+                    }
+                    Lit::Float(f) => Val::float(*f),
+                    Lit::Bool(b) => Val::bool(*b),
+                    Lit::Str(sid) => self.resolve_string(*sid),
+                    Lit::Keyword(sid) => {
+                        // Keywords as interned symbols
+                        Val::sym(sid.0)
+                    }
+                    Lit::Unit => Val::UNIT,
+                };
+                self.w(*dst, val);
+            }
+
+            Op::Mov(dst, src, _) => {
+                let v = self.r(*src);
+                self.w(*dst, v);
+            }
+
+            Op::Upval(dst, _idx, _) => {
+                // TODO: closure upvalue access
+                self.w(*dst, Val::UNIT);
+            }
+
+            Op::Bin(dst, binop, a, b, _) => {
+                let av = self.r(*a);
+                let bv = self.r(*b);
+                let result = self.exec_binop(*binop, av, bv);
+                self.w(*dst, result);
+            }
+
+            Op::Un(dst, unop, a, _) => {
+                let av = self.r(*a);
+                let result = match unop {
+                    UnOp::Neg => {
+                        if av.is_int() {
+                            Val::int(-av.as_int())
+                        } else if av.is_float() {
+                            Val::float(-av.as_float())
+                        } else {
+                            Val::UNIT
+                        }
+                    }
+                    UnOp::Not => Val::bool(!av.is_truthy()),
+                };
+                self.w(*dst, result);
+            }
+
+            Op::Call(dst, func_id, args, _) => {
+                let vals = self.read_regs(args);
+                let ret_reg = dst.0;
+                self.ip = self.ip; // save current position
+                self.call_func(*func_id, &vals, ret_reg)?;
+            }
+
+            Op::Invoke(dst, callee, args, _) => {
+                let func_val = self.r(*callee);
+                let vals = self.read_regs(args);
+                if let Some(obj) = self.get_obj(func_val).cloned() {
+                    match obj {
+                        Obj::Closure(fid, _captures) => {
+                            let ret_reg = dst.0;
+                            self.call_func(fid, &vals, ret_reg)?;
+                        }
+                        _ => return Err(VmError::NotCallable),
+                    }
+                } else {
+                    return Err(VmError::NotCallable);
+                }
+            }
+
+            Op::Close(dst, func_id, captures, _) => {
+                let cap_vals = self.read_regs(captures);
+                let val = self.alloc(Obj::Closure(*func_id, cap_vals));
+                self.w(*dst, val);
+            }
+
+            Op::Vec(dst, elems, _) => {
+                let vals = self.read_regs(elems);
+                let val = self.alloc(Obj::Vec(vals));
+                self.w(*dst, val);
+            }
+
+            Op::Map(dst, pairs, _) => {
+                let kv: Vec<(Val, Val)> = pairs
+                    .iter()
+                    .map(|(k, v)| (self.r(*k), self.r(*v)))
+                    .collect();
+                let val = self.alloc(Obj::Map(kv));
+                self.w(*dst, val);
+            }
+
+            Op::Set(dst, elems, _) => {
+                let vals = self.read_regs(elems);
+                let val = self.alloc(Obj::Set(vals));
+                self.w(*dst, val);
+            }
+
+            Op::Tup(dst, elems, _) => {
+                let vals = self.read_regs(elems);
+                let val = self.alloc(Obj::Tuple(vals));
+                self.w(*dst, val);
+            }
+
+            Op::Adt(dst, tag, fields, _) => {
+                let vals = self.read_regs(fields);
+                let val = self.alloc(Obj::Adt(*tag, vals));
+                self.w(*dst, val);
+            }
+
+            Op::Field(dst, obj, selector, _) => {
+                let oval = self.r(*obj);
+                let result = match (self.get_obj(oval), selector) {
+                    (Some(Obj::Adt(_, fields)), Selector::Index(i)) => {
+                        fields.get(*i as usize).copied().unwrap_or(Val::UNIT)
+                    }
+                    (Some(Obj::Tuple(fields)), Selector::Index(i)) => {
+                        fields.get(*i as usize).copied().unwrap_or(Val::UNIT)
+                    }
+                    (Some(Obj::Map(pairs)), Selector::Name(sid)) => {
+                        let key_str = &self.module.strings[sid.0 as usize];
+                        pairs
+                            .iter()
+                            .find(|(k, _)| self.get_str(*k).map_or(false, |s| s == key_str))
+                            .map(|(_, v)| *v)
+                            .unwrap_or(Val::UNIT)
+                    }
+                    _ => Val::UNIT,
+                };
+                self.w(*dst, result);
+            }
+
+            Op::Tag(dst, obj, _) => {
+                let oval = self.r(*obj);
+                let tag = match self.get_obj(oval) {
+                    Some(Obj::Adt(t, _)) => *t as i64,
+                    _ => -1,
+                };
+                self.w(*dst, Val::int(tag));
+            }
+
+            Op::Perform(dst, eff_sid, op_sid, args, evidence, _span) => {
+                let vals = self.read_regs(args);
+                if let Some(ev_reg) = evidence {
+                    // Evidence-passed: direct call to handler
+                    let handler = self.r(*ev_reg);
+                    if let Some(Obj::Closure(fid, _)) = self.get_obj(handler).cloned() {
+                        // Call handler with (resume, ...args)
+                        // For simple handlers, resume is identity
+                        let mut call_args = vec![Val::UNIT]; // resume placeholder
+                        call_args.extend_from_slice(&vals);
+                        let ret_reg = dst.0;
+                        self.call_func(fid, &call_args, ret_reg)?;
+                    } else {
+                        self.w(*dst, Val::UNIT);
+                    }
+                } else {
+                    // Dynamic: try builtin handler
+                    let effect = self.module.strings[eff_sid.0 as usize].clone();
+                    let op_name = self.module.strings[op_sid.0 as usize].clone();
+                    let result = self.builtin_effect(&effect, &op_name, &vals);
+                    self.w(*dst, result);
+                }
+            }
+
+            Op::Builtin(dst, built, args, _) => {
+                let vals = self.read_regs(args);
+                let result = self.exec_builtin(*built, &vals)?;
+                self.w(*dst, result);
+            }
+        }
+        Ok(())
+    }
+
+    // ── Binary operations ──────────────────────────────────────────────
+
+    fn exec_binop(&mut self, op: BinOp, a: Val, b: Val) -> Val {
+        match op {
+            BinOp::Add => {
+                if a.is_int() && b.is_int() {
+                    Val::int(a.as_int().wrapping_add(b.as_int()))
+                } else if a.is_float() || b.is_float() {
+                    let af = if a.is_float() {
+                        a.as_float()
+                    } else {
+                        a.as_int() as f64
+                    };
+                    let bf = if b.is_float() {
+                        b.as_float()
+                    } else {
+                        b.as_int() as f64
+                    };
+                    Val::float(af + bf)
+                } else {
+                    Val::UNIT
+                }
+            }
+            BinOp::Sub => {
+                if a.is_int() && b.is_int() {
+                    Val::int(a.as_int().wrapping_sub(b.as_int()))
+                } else {
+                    let af = if a.is_float() {
+                        a.as_float()
+                    } else {
+                        a.as_int() as f64
+                    };
+                    let bf = if b.is_float() {
+                        b.as_float()
+                    } else {
+                        b.as_int() as f64
+                    };
+                    Val::float(af - bf)
+                }
+            }
+            BinOp::Mul => {
+                if a.is_int() && b.is_int() {
+                    Val::int(a.as_int().wrapping_mul(b.as_int()))
+                } else {
+                    let af = if a.is_float() {
+                        a.as_float()
+                    } else {
+                        a.as_int() as f64
+                    };
+                    let bf = if b.is_float() {
+                        b.as_float()
+                    } else {
+                        b.as_int() as f64
+                    };
+                    Val::float(af * bf)
+                }
+            }
+            BinOp::Div => {
+                if a.is_int() && b.is_int() {
+                    let bv = b.as_int();
+                    if bv == 0 {
+                        Val::UNIT
+                    } else {
+                        Val::int(a.as_int() / bv)
+                    }
+                } else {
+                    let af = if a.is_float() {
+                        a.as_float()
+                    } else {
+                        a.as_int() as f64
+                    };
+                    let bf = if b.is_float() {
+                        b.as_float()
+                    } else {
+                        b.as_int() as f64
+                    };
+                    Val::float(af / bf)
+                }
+            }
+            BinOp::Rem => {
+                if a.is_int() && b.is_int() {
+                    let bv = b.as_int();
+                    if bv == 0 {
+                        Val::UNIT
+                    } else {
+                        Val::int(a.as_int() % bv)
+                    }
+                } else {
+                    Val::UNIT
+                }
+            }
+            BinOp::Eq => Val::bool(a == b),
+            BinOp::Ne => Val::bool(a != b),
+            BinOp::Lt => {
+                if a.is_int() && b.is_int() {
+                    Val::bool(a.as_int() < b.as_int())
+                } else {
+                    let af = if a.is_float() {
+                        a.as_float()
+                    } else {
+                        a.as_int() as f64
+                    };
+                    let bf = if b.is_float() {
+                        b.as_float()
+                    } else {
+                        b.as_int() as f64
+                    };
+                    Val::bool(af < bf)
+                }
+            }
+            BinOp::Gt => {
+                if a.is_int() && b.is_int() {
+                    Val::bool(a.as_int() > b.as_int())
+                } else {
+                    let af = if a.is_float() {
+                        a.as_float()
+                    } else {
+                        a.as_int() as f64
+                    };
+                    let bf = if b.is_float() {
+                        b.as_float()
+                    } else {
+                        b.as_int() as f64
+                    };
+                    Val::bool(af > bf)
+                }
+            }
+            BinOp::Le => {
+                if a.is_int() && b.is_int() {
+                    Val::bool(a.as_int() <= b.as_int())
+                } else {
+                    let af = if a.is_float() {
+                        a.as_float()
+                    } else {
+                        a.as_int() as f64
+                    };
+                    let bf = if b.is_float() {
+                        b.as_float()
+                    } else {
+                        b.as_int() as f64
+                    };
+                    Val::bool(af <= bf)
+                }
+            }
+            BinOp::Ge => {
+                if a.is_int() && b.is_int() {
+                    Val::bool(a.as_int() >= b.as_int())
+                } else {
+                    let af = if a.is_float() {
+                        a.as_float()
+                    } else {
+                        a.as_int() as f64
+                    };
+                    let bf = if b.is_float() {
+                        b.as_float()
+                    } else {
+                        b.as_int() as f64
+                    };
+                    Val::bool(af >= bf)
+                }
+            }
+            BinOp::And => Val::bool(a.is_truthy() && b.is_truthy()),
+            BinOp::Or => Val::bool(a.is_truthy() || b.is_truthy()),
+            BinOp::Concat => {
+                let sa = self.val_to_string(a);
+                let sb = self.val_to_string(b);
+                self.alloc_str_owned(format!("{sa}{sb}"))
+            }
+        }
+    }
+
+    // ── Builtins ───────────────────────────────────────────────────────
+
+    fn exec_builtin(&mut self, built: Built, args: &[Val]) -> Result<Val, VmError> {
+        match built {
+            Built::Println => {
+                let s: Vec<String> = args.iter().map(|v| self.val_to_string(*v)).collect();
+                let line = s.join(" ");
+                println!("{line}");
+                self.output.push(line);
+                Ok(Val::UNIT)
+            }
+            Built::Print => {
+                let s: Vec<String> = args.iter().map(|v| self.val_to_string(*v)).collect();
+                print!("{}", s.join(" "));
+                Ok(Val::UNIT)
+            }
+            Built::Str => {
+                let s: Vec<String> = args.iter().map(|v| self.val_to_string(*v)).collect();
+                Ok(self.alloc_str_owned(s.join("")))
+            }
+            Built::Len => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                let len = match self.get_obj(v) {
+                    Some(Obj::Vec(items)) => items.len() as i64,
+                    Some(Obj::Map(pairs)) => pairs.len() as i64,
+                    Some(Obj::Set(items)) => items.len() as i64,
+                    Some(Obj::Str(s)) => s.len() as i64,
+                    Some(Obj::Tuple(items)) => items.len() as i64,
+                    _ => 0,
+                };
+                Ok(Val::int(len))
+            }
+            Built::Get => {
+                let coll = args.first().copied().unwrap_or(Val::UNIT);
+                let key = args.get(1).copied().unwrap_or(Val::UNIT);
+                let default = args.get(2).copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll) {
+                    Some(Obj::Map(pairs)) => {
+                        for (k, v) in pairs {
+                            if *k == key {
+                                return Ok(*v);
+                            }
+                            // String key comparison
+                            if let (Some(ks), Some(kk)) = (self.get_str(*k), self.get_str(key)) {
+                                if ks == kk {
+                                    return Ok(*v);
+                                }
+                            }
+                        }
+                        Ok(default)
+                    }
+                    Some(Obj::Vec(items)) => {
+                        if key.is_int() {
+                            Ok(items.get(key.as_int() as usize).copied().unwrap_or(default))
+                        } else {
+                            Ok(default)
+                        }
+                    }
+                    _ => Ok(default),
+                }
+            }
+            Built::Conj => {
+                let coll = args.first().copied().unwrap_or(Val::UNIT);
+                let val = args.get(1).copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll).cloned() {
+                    Some(Obj::Vec(mut items)) => {
+                        items.push(val);
+                        Ok(self.alloc(Obj::Vec(items)))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Assoc => {
+                let coll = args.first().copied().unwrap_or(Val::UNIT);
+                let key = args.get(1).copied().unwrap_or(Val::UNIT);
+                let val = args.get(2).copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll).cloned() {
+                    Some(Obj::Map(mut pairs)) => {
+                        pairs.push((key, val));
+                        Ok(self.alloc(Obj::Map(pairs)))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Range => {
+                let start = args.first().copied().unwrap_or(Val::int(0));
+                let end = args.get(1).copied().unwrap_or(Val::int(0));
+                if start.is_int() && end.is_int() {
+                    let items: Vec<Val> = (start.as_int()..end.as_int()).map(Val::int).collect();
+                    Ok(self.alloc(Obj::Vec(items)))
+                } else {
+                    Ok(self.alloc(Obj::Vec(Vec::new())))
+                }
+            }
+            Built::Map | Built::Filter | Built::Each | Built::Reduce => {
+                // Higher-order builtins need callback invocation
+                // For now, implement Map and Filter
+                let func = args.first().copied().unwrap_or(Val::UNIT);
+                let coll = args
+                    .get(1)
+                    .copied()
+                    .unwrap_or(args.first().copied().unwrap_or(Val::UNIT));
+
+                // thread-last: [map f coll] or [filter f coll]
+                let (func, coll) = if args.len() == 2 {
+                    (args[0], args[1])
+                } else {
+                    return Ok(Val::UNIT);
+                };
+
+                match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
+                    (Some(Obj::Closure(fid, _)), Some(Obj::Vec(items))) => {
+                        let mut results = Vec::new();
+                        for item in &items {
+                            // Save state, call function, restore
+                            self.frames.push(Frame {
+                                func: self.func,
+                                block: self.block,
+                                ip: self.ip,
+                                regs: self.regs.clone(),
+                                ret_reg: 0,
+                            });
+                            self.call_func(fid, &[*item], 0)?;
+                            let result = self.execute()?;
+
+                            match built {
+                                Built::Map => results.push(result),
+                                Built::Filter => {
+                                    if result.is_truthy() {
+                                        results.push(*item);
+                                    }
+                                }
+                                Built::Each => {} // discard result
+                                _ => {}
+                            }
+                        }
+                        Ok(self.alloc(Obj::Vec(results)))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Nth => {
+                let coll = args.first().copied().unwrap_or(Val::UNIT);
+                let idx = args.get(1).copied().unwrap_or(Val::int(0));
+                match self.get_obj(coll) {
+                    Some(Obj::Vec(items)) if idx.is_int() => Ok(items
+                        .get(idx.as_int() as usize)
+                        .copied()
+                        .unwrap_or(Val::UNIT)),
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Contains => {
+                let coll = args.first().copied().unwrap_or(Val::UNIT);
+                let val = args.get(1).copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll) {
+                    Some(Obj::Vec(items)) => Ok(Val::bool(items.contains(&val))),
+                    Some(Obj::Set(items)) => Ok(Val::bool(items.contains(&val))),
+                    Some(Obj::Map(pairs)) => Ok(Val::bool(pairs.iter().any(|(k, _)| *k == val))),
+                    _ => Ok(Val::bool(false)),
+                }
+            }
+            Built::Sort => {
+                let coll = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll).cloned() {
+                    Some(Obj::Vec(mut items)) => {
+                        items.sort_by(|a, b| {
+                            if a.is_int() && b.is_int() {
+                                a.as_int().cmp(&b.as_int())
+                            } else {
+                                std::cmp::Ordering::Equal
+                            }
+                        });
+                        Ok(self.alloc(Obj::Vec(items)))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Reverse => {
+                let coll = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll).cloned() {
+                    Some(Obj::Vec(mut items)) => {
+                        items.reverse();
+                        Ok(self.alloc(Obj::Vec(items)))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Sum => {
+                let coll = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll) {
+                    Some(Obj::Vec(items)) => {
+                        let sum: i64 = items
+                            .iter()
+                            .filter(|v| v.is_int())
+                            .map(|v| v.as_int())
+                            .sum();
+                        Ok(Val::int(sum))
+                    }
+                    _ => Ok(Val::int(0)),
+                }
+            }
+            Built::Min => {
+                let coll = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll) {
+                    Some(Obj::Vec(items)) => {
+                        let min = items
+                            .iter()
+                            .filter(|v| v.is_int())
+                            .map(|v| v.as_int())
+                            .min();
+                        Ok(min.map(Val::int).unwrap_or(Val::UNIT))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Max => {
+                let coll = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll) {
+                    Some(Obj::Vec(items)) => {
+                        let max = items
+                            .iter()
+                            .filter(|v| v.is_int())
+                            .map(|v| v.as_int())
+                            .max();
+                        Ok(max.map(Val::int).unwrap_or(Val::UNIT))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            _ => {
+                // Unimplemented builtins return Unit
+                Ok(Val::UNIT)
+            }
+        }
+    }
+
+    // ── Effect builtins ────────────────────────────────────────────────
+
+    fn builtin_effect(&mut self, effect: &str, op: &str, args: &[Val]) -> Val {
+        match (effect, op) {
+            ("IO", "println") => {
+                let s: Vec<String> = args.iter().map(|v| self.val_to_string(*v)).collect();
+                let line = s.join(" ");
+                println!("{line}");
+                self.output.push(line);
+                Val::UNIT
+            }
+            _ => Val::UNIT,
+        }
+    }
+
+    // ── Value display ──────────────────────────────────────────────────
+
+    fn val_to_string(&self, val: Val) -> String {
+        if val.is_float() {
+            let f = val.as_float();
+            if f == (f as i64) as f64 && f.abs() < 1e15 {
+                format!("{}", f as i64)
+            } else {
+                format!("{f}")
+            }
+        } else if val.is_int() {
+            format!("{}", val.as_int())
+        } else if val.is_bool() {
+            if val.as_bool() {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        } else if val.is_unit() {
+            "()".to_string()
+        } else if val.is_sym() {
+            let idx = val.as_sym() as usize;
+            if idx < self.module.strings.len() {
+                format!(":{}", self.module.strings[idx])
+            } else {
+                format!(":<sym:{idx}>")
+            }
+        } else if val.is_ptr() {
+            match self.get_obj(val) {
+                Some(Obj::Str(s)) => s.clone(),
+                Some(Obj::Vec(items)) => {
+                    let inner: Vec<String> = items.iter().map(|v| self.val_to_string(*v)).collect();
+                    format!("#[{}]", inner.join(" "))
+                }
+                Some(Obj::Map(pairs)) => {
+                    let inner: Vec<String> = pairs
+                        .iter()
+                        .map(|(k, v)| {
+                            format!("{} {}", self.val_to_string(*k), self.val_to_string(*v))
+                        })
+                        .collect();
+                    format!("{{{}}}", inner.join(" "))
+                }
+                Some(Obj::Adt(tag, fields)) => {
+                    let name = self
+                        .module
+                        .ctors
+                        .iter()
+                        .find(|c| c.tag == *tag)
+                        .map(|c| c.name.as_str())
+                        .unwrap_or("?");
+                    if fields.is_empty() {
+                        name.to_string()
+                    } else {
+                        let inner: Vec<String> =
+                            fields.iter().map(|v| self.val_to_string(*v)).collect();
+                        format!("[{name} {}]", inner.join(" "))
+                    }
+                }
+                Some(Obj::Closure(fid, _)) => {
+                    let name = self
+                        .module
+                        .funcs
+                        .get(fid.0 as usize)
+                        .and_then(|f| f.name.as_deref())
+                        .unwrap_or("anon");
+                    format!("<fn:{name}>")
+                }
+                _ => format!("<obj:{}>", val.as_ptr()),
+            }
+        } else {
+            format!("<val:0x{:016x}>", val.bits())
+        }
+    }
+
+    fn alloc_str_owned(&mut self, s: String) -> Val {
+        self.alloc(Obj::Str(s))
+    }
+}
+
+// ─── Error type ────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub enum VmError {
+    NotCallable,
+    Trap,
+    StackOverflow,
+}
+
+impl std::fmt::Display for VmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VmError::NotCallable => write!(f, "value is not callable"),
+            VmError::Trap => write!(f, "unreachable code"),
+            VmError::StackOverflow => write!(f, "stack overflow"),
+        }
+    }
+}
+
+// ─── Public API ────────────────────────────────────────────────────────────
+
+/// Run a Loon program through the EIR pipeline: parse → check → lower → VM.
+pub fn eval_eir(src: &str) -> Result<VmResult, String> {
+    let exprs = crate::parser::parse(src).map_err(|e| e.to_string())?;
+    let mut checker = crate::check::Checker::new();
+    let _errors = checker.check_program(&exprs);
+    let module = crate::eir::lower::lower(&checker);
+    let mut vm = Vm::new(module);
+    vm.run().map_err(|e| e.to_string())
+}
+
+// ─── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(src: &str) -> Val {
+        eval_eir(src).expect("vm error").value
+    }
+
+    fn run_output(src: &str) -> Vec<String> {
+        eval_eir(src).expect("vm error").output
+    }
+
+    #[test]
+    fn vm_int_literal() {
+        let v = run("42");
+        assert!(v.is_int());
+        assert_eq!(v.as_int(), 42);
+    }
+
+    #[test]
+    fn vm_arithmetic() {
+        let v = run("[+ 1 2]");
+        assert!(v.is_int());
+        assert_eq!(v.as_int(), 3);
+
+        let v = run("[* 4 5]");
+        assert_eq!(v.as_int(), 20);
+
+        let v = run("[- 10 3]");
+        assert_eq!(v.as_int(), 7);
+    }
+
+    #[test]
+    fn vm_comparison() {
+        assert!(run("[> 3 2]").as_bool());
+        assert!(!run("[< 3 2]").as_bool());
+        assert!(run("[= 1 1]").as_bool());
+    }
+
+    #[test]
+    fn vm_if() {
+        let v = run("[if true 1 2]");
+        assert_eq!(v.as_int(), 1);
+        let v = run("[if false 1 2]");
+        assert_eq!(v.as_int(), 2);
+    }
+
+    #[test]
+    fn vm_let() {
+        let v = run("[do [let x 42] x]");
+        assert_eq!(v.as_int(), 42);
+    }
+
+    #[test]
+    fn vm_function() {
+        let v = run("[fn add [x y] [+ x y]] [add 3 4]");
+        assert_eq!(v.as_int(), 7);
+    }
+
+    #[test]
+    fn vm_println() {
+        let out = run_output(r#"[println "hello"]"#);
+        assert_eq!(out, vec!["hello"]);
+    }
+
+    #[test]
+    fn vm_loop_recur() {
+        let v = run(r#"
+            [loop [i 0 sum 0]
+              [if [>= i 10] sum
+                [recur [+ i 1] [+ sum i]]]]
+        "#);
+        assert_eq!(v.as_int(), 45);
+    }
+
+    #[test]
+    fn vm_adt() {
+        let v = run(r#"
+            [type Shape [Circle Int] Point]
+            [Circle 5]
+        "#);
+        assert!(v.is_ptr()); // ADT is a heap object
+    }
+
+    #[test]
+    fn vm_vec() {
+        let v = run("[len #[1 2 3]]");
+        assert_eq!(v.as_int(), 3);
+    }
+
+    #[test]
+    fn vm_range() {
+        let v = run("[len [range 0 5]]");
+        assert_eq!(v.as_int(), 5);
+    }
+
+    #[test]
+    fn vm_nested_calls() {
+        let v = run("[+ [+ 1 2] [+ 3 4]]");
+        assert_eq!(v.as_int(), 10);
+    }
+
+    #[test]
+    fn vm_bool_logic() {
+        assert!(run("[and true true]").as_bool());
+        assert!(!run("[and true false]").as_bool());
+        assert!(run("[or false true]").as_bool());
+        assert!(!run("[not true]").as_bool());
+    }
+
+    #[test]
+    fn vm_float() {
+        let v = run("[+ 1.5 2.5]");
+        assert!(v.is_float());
+        assert_eq!(v.as_float(), 4.0);
+    }
+
+    #[test]
+    fn vm_evidence_effect() {
+        // Evidence-passing for effects needs closure calling to work fully.
+        // For now, verify that non-handled effects use builtin handlers.
+        let out = run_output(r#"[IO.println "hello from eir"]"#);
+        assert_eq!(out, vec!["hello from eir"]);
+    }
+}
