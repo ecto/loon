@@ -2,6 +2,7 @@ pub mod builtins;
 pub mod dom_builtins;
 mod env;
 pub mod html_bridge;
+pub mod machine;
 pub mod net;
 mod value;
 
@@ -94,7 +95,7 @@ pub fn err_at(msg: impl Into<String>, span: Span) -> InterpError {
 }
 
 /// Try to handle an effect with a built-in handler (for IO at the top level).
-fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
+pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
     match (performed.effect.as_str(), performed.operation.as_str()) {
         ("IO", "println") => {
             let parts: Vec<String> = performed.args.iter().map(|v| v.display_str()).collect();
@@ -494,7 +495,7 @@ fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
     }
 }
 
-fn perform_effect(effect: &str, op: &str, args: Vec<Value>) -> InterpError {
+pub(crate) fn perform_effect(effect: &str, op: &str, args: Vec<Value>) -> InterpError {
     InterpError {
         message: format!(
             "unhandled effect: {effect}.{op} — add a [handle ...] block to handle this effect"
@@ -699,7 +700,7 @@ pub fn eval_program_with_base_dir(exprs: &[Expr], base_dir: Option<&Path>) -> IR
     Ok(last)
 }
 
-fn sync_global_env(env: &Env) {
+pub(crate) fn sync_global_env(env: &Env) {
     GLOBAL_ENV.with(|g| {
         *g.borrow_mut() = Some(env.global_rc().clone());
     });
@@ -714,7 +715,7 @@ pub(crate) fn get_global_env() -> Option<Env> {
 }
 
 /// Access a field on a value: ADT named fields, Map keyword, JSON object, Tuple index.
-fn access_field(val: &Value, field: &str, span: Span) -> IResult {
+pub(crate) fn access_field(val: &Value, field: &str, span: Span) -> IResult {
     // ADT named field access
     if let Value::Adt(tag, fields) = val {
         let found = ADT_FIELDS.with(|f| {
@@ -1241,7 +1242,7 @@ fn eval_match(args: &[Expr], env: &mut Env) -> IResult {
     Err(err(format!("no match arm matched value: {scrutinee}")))
 }
 
-fn pattern_matches(
+pub(crate) fn pattern_matches(
     pattern: &Expr,
     value: &Value,
     bindings: &mut HashMap<String, Value>,
@@ -1342,7 +1343,7 @@ fn eval_set(args: &[Expr], env: &mut Env) -> IResult {
     Ok(value)
 }
 
-fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
+pub(crate) fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
     // [type Name T? Variant1 Variant2 ...]
     if args.is_empty() {
         return Err(err("type requires a name"));
@@ -1565,7 +1566,7 @@ fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
 }
 
 /// Evaluate [impl TraitName TypeName [fn method [self ...] body] ...]
-fn eval_impl_def(args: &[Expr], env: &mut Env) -> IResult {
+pub(crate) fn eval_impl_def(args: &[Expr], env: &mut Env) -> IResult {
     if args.len() < 2 {
         return Err(err("impl requires trait name and type name"));
     }
@@ -2127,7 +2128,7 @@ fn eval_tail_try(args: &[Expr], env: &mut Env) -> TResult {
     }
 }
 
-fn eval_test_def(args: &[Expr], env: &mut Env) -> IResult {
+pub(crate) fn eval_test_def(args: &[Expr], env: &mut Env) -> IResult {
     // [test name [params] body...] — register as a named test function
     // Also supports [test fn name ...] for backward compat
     if args.len() >= 2 {
@@ -2143,7 +2144,7 @@ fn eval_test_def(args: &[Expr], env: &mut Env) -> IResult {
     Ok(Value::Unit)
 }
 
-fn extract_params(expr: &Expr) -> Result<Vec<value::Param>, InterpError> {
+pub(crate) fn extract_params(expr: &Expr) -> Result<Vec<value::Param>, InterpError> {
     match &expr.kind {
         ExprKind::List(items) => {
             let mut params = Vec::new();
@@ -2171,7 +2172,7 @@ fn extract_params(expr: &Expr) -> Result<Vec<value::Param>, InterpError> {
     }
 }
 
-fn extract_param(expr: &Expr) -> Result<value::Param, InterpError> {
+pub(crate) fn extract_param(expr: &Expr) -> Result<value::Param, InterpError> {
     match &expr.kind {
         ExprKind::Symbol(s) => Ok(value::Param::Simple(s.clone())),
         ExprKind::List(items) => {
@@ -2200,7 +2201,11 @@ fn extract_param(expr: &Expr) -> Result<value::Param, InterpError> {
     }
 }
 
-fn bind_param(param: &value::Param, val: &Value, env: &mut Env) -> Result<(), InterpError> {
+pub(crate) fn bind_param(
+    param: &value::Param,
+    val: &Value,
+    env: &mut Env,
+) -> Result<(), InterpError> {
     match param {
         value::Param::Simple(name) => {
             if name != "_" {
@@ -2455,7 +2460,7 @@ pub fn eval_use_with_cache(
     Ok(Value::Unit)
 }
 
-fn eval_catch_errors(source: &str) -> Value {
+pub(crate) fn eval_catch_errors(source: &str) -> Value {
     let exprs = match crate::parser::parse(source) {
         Ok(exprs) => exprs,
         Err(e) => {
@@ -2550,7 +2555,7 @@ fn eval_catch_errors(source: &str) -> Value {
     Value::Vec(error_maps)
 }
 
-fn register_builtins(env: &mut Env) {
+pub(crate) fn register_builtins(env: &mut Env) {
     builtins::register_builtins(env);
     if dom_builtins::has_dom_bridge() {
         dom_builtins::register_dom_builtins(env);
