@@ -164,39 +164,27 @@ impl<'a> Lower<'a> {
             }
         }
 
-        // Second pass: pre-register all top-level function names for forward refs.
-        // This enables mutual recursion (is-even calling is-odd and vice versa).
-        // We reserve FuncIds starting after __main (FuncId 0).
-        {
-            let mut next_id = 1u32; // 0 = __main
-            for expr in &self.checker.expanded_program {
-                if let ExprKind::List(items) = &expr.kind {
-                    if items.len() >= 3 {
-                        let kw = items.first().and_then(|e| {
-                            if let ExprKind::Symbol(s) = &e.kind {
-                                Some(s.as_str())
-                            } else {
-                                None
+        // Second pass: pre-create ALL top-level named functions as stubs.
+        // This assigns real FuncIds (via begin_func) before any body is lowered,
+        // enabling mutual recursion without ID mismatch from anonymous lambdas.
+        for expr in &self.checker.expanded_program.clone() {
+            if let ExprKind::List(items) = &expr.kind {
+                if items.len() >= 3 {
+                    if let Some(ExprKind::Symbol(kw)) = items.first().map(|e| &e.kind) {
+                        if kw == "fn" {
+                            if let ExprKind::Symbol(name) = &items[1].kind {
+                                let fid = self.begin_func(Some(name), expr.span);
+                                self.func_map.insert(name.clone(), fid);
                             }
-                        });
-                        match kw {
-                            Some("fn") => {
-                                if let ExprKind::Symbol(name) = &items[1].kind {
-                                    self.func_map.insert(name.clone(), FuncId(next_id));
-                                    next_id += 1;
-                                }
-                            }
-                            Some("pub") if items.len() >= 4 => {
-                                if let ExprKind::Symbol(inner) = &items[1].kind {
-                                    if inner == "fn" {
-                                        if let ExprKind::Symbol(name) = &items[2].kind {
-                                            self.func_map.insert(name.clone(), FuncId(next_id));
-                                            next_id += 1;
-                                        }
+                        } else if kw == "pub" && items.len() >= 4 {
+                            if let Some(ExprKind::Symbol(inner)) = items.get(1).map(|e| &e.kind) {
+                                if inner == "fn" {
+                                    if let ExprKind::Symbol(name) = &items[2].kind {
+                                        let fid = self.begin_func(Some(name), expr.span);
+                                        self.func_map.insert(name.clone(), fid);
                                     }
                                 }
                             }
-                            _ => {}
                         }
                     }
                 }
@@ -552,9 +540,25 @@ impl<'a> Lower<'a> {
             let saved_next_reg = self.next_reg;
             let saved_scopes = std::mem::take(&mut self.scopes);
 
-            // Create the function + register name for self-recursion
-            let func_id = self.begin_func(Some(&name), span);
-            self.func_map.insert(name.clone(), func_id);
+            // Use pre-created function stub (from forward ref pass) or create new
+            let func_id = if let Some(&existing) = self.func_map.get(&name) {
+                // Reuse pre-created stub — just set cur_func and reset state
+                self.cur_func = Some(existing.0 as usize);
+                self.next_reg = 0;
+                // Create entry block if the stub doesn't have one
+                let func = &self.module.funcs[existing.0 as usize];
+                if func.blocks.is_empty() {
+                    let entry = self.new_block();
+                    self.switch_to(entry);
+                } else {
+                    self.switch_to(BlockId(0));
+                }
+                existing
+            } else {
+                let fid = self.begin_func(Some(&name), span);
+                self.func_map.insert(name.clone(), fid);
+                fid
+            };
 
             // Set up param registers in scope
             self.scopes = vec![HashMap::new()];
@@ -1640,6 +1644,14 @@ impl Lower<'_> {
             "char-at" => Some(Built::CharAt),
             "substring" => Some(Built::Substring),
             "not" => Some(Built::Not),
+            "empty?" => Some(Built::Empty),
+            "fold" => Some(Built::Fold),
+            "update" => Some(Built::Update),
+            "entries" => Some(Built::Entries),
+            "sort-by" => Some(Built::SortBy),
+            "unit" => Some(Built::Unit),
+            "magnitude" => Some(Built::Magnitude),
+            "or" => Some(Built::Or),
             _ => None,
         }
     }

@@ -334,4 +334,12 @@ pub enum Built {
     CharAt,
     Substring,
     Not,
+    Empty,
+    Fold,
+    Update,
+    Entries,
+    SortBy,
+    Unit,
+    Magnitude,
+    Or,
 }

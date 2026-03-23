@@ -1244,6 +1244,135 @@ impl Vm {
                     Ok(Val::UNIT)
                 }
             }
+            Built::Empty => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                let empty = match self.get_obj(v) {
+                    Some(Obj::Vec(items)) => items.is_empty(),
+                    Some(Obj::Map(pairs)) => pairs.is_empty(),
+                    Some(Obj::Set(items)) => items.is_empty(),
+                    Some(Obj::Str(s)) => s.is_empty(),
+                    _ => true,
+                };
+                Ok(Val::bool(empty))
+            }
+            Built::Or => {
+                // [or a b] — return first truthy, or last
+                let a = args.first().copied().unwrap_or(Val::UNIT);
+                let b = args.get(1).copied().unwrap_or(Val::UNIT);
+                Ok(if a.is_truthy() { a } else { b })
+            }
+            Built::Fold => {
+                // [fold init f coll] or [fold init f coll]
+                let init = args.first().copied().unwrap_or(Val::UNIT);
+                let func = args.get(1).copied().unwrap_or(Val::UNIT);
+                let coll = args.get(2).copied().unwrap_or(Val::UNIT);
+                match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
+                    (Some(Obj::Closure(fid, _)), Some(Obj::Vec(items))) => {
+                        let mut acc = init;
+                        for item in &items {
+                            acc = self.run_call(fid, &[acc, *item])?;
+                        }
+                        Ok(acc)
+                    }
+                    _ => Ok(init),
+                }
+            }
+            Built::Update => {
+                // [update map key f] — apply f to map[key], store result
+                let map_val = args.first().copied().unwrap_or(Val::UNIT);
+                let key = args.get(1).copied().unwrap_or(Val::UNIT);
+                let func = args.get(2).copied().unwrap_or(Val::UNIT);
+                match (self.get_obj(map_val).cloned(), self.get_obj(func).cloned()) {
+                    (Some(Obj::Map(mut pairs)), Some(Obj::Closure(fid, _))) => {
+                        // Find existing value or UNIT
+                        let old_val = pairs
+                            .iter()
+                            .find(|(k, _)| {
+                                *k == key || {
+                                    let ks = self.get_str(*k).map(|s| s.to_string());
+                                    let kk = self.get_str(key).map(|s| s.to_string());
+                                    ks.is_some() && ks == kk
+                                }
+                            })
+                            .map(|(_, v)| *v)
+                            .unwrap_or(Val::UNIT);
+                        let new_val = self.run_call(fid, &[old_val])?;
+                        // Remove old entry if exists, add new
+                        pairs.retain(|(k, _)| {
+                            *k != key && {
+                                let ks = self.get_str(*k).map(|s| s.to_string());
+                                let kk = self.get_str(key).map(|s| s.to_string());
+                                ks.is_none() || ks != kk
+                            }
+                        });
+                        pairs.push((key, new_val));
+                        Ok(self.alloc(Obj::Map(pairs)))
+                    }
+                    _ => Ok(map_val),
+                }
+            }
+            Built::Entries => {
+                // [entries map] → vector of [key value] tuples
+                let m = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_obj(m).cloned() {
+                    Some(Obj::Map(pairs)) => {
+                        let entries: Vec<Val> = pairs
+                            .into_iter()
+                            .map(|(k, v)| self.alloc(Obj::Tuple(vec![k, v])))
+                            .collect();
+                        Ok(self.alloc(Obj::Vec(entries)))
+                    }
+                    _ => Ok(self.alloc(Obj::Vec(Vec::new()))),
+                }
+            }
+            Built::SortBy => {
+                // [sort-by f coll] or [sort-by f :desc coll]
+                let func = args.first().copied().unwrap_or(Val::UNIT);
+                let coll = args.last().copied().unwrap_or(Val::UNIT);
+                match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
+                    (Some(Obj::Closure(fid, _)), Some(Obj::Vec(items))) => {
+                        // Compute sort keys
+                        let mut keyed: Vec<(Val, Val)> = Vec::new();
+                        for item in &items {
+                            let key = self.run_call(fid, &[*item])?;
+                            keyed.push((key, *item));
+                        }
+                        // Check for :desc flag
+                        let desc = args.get(1).map_or(false, |v| {
+                            v.is_sym()
+                                && self
+                                    .module
+                                    .strings
+                                    .get(v.as_sym() as usize)
+                                    .map_or(false, |s| s == "desc")
+                        });
+                        keyed.sort_by(|(a, _), (b, _)| {
+                            let ord = if a.is_int() && b.is_int() {
+                                a.as_int().cmp(&b.as_int())
+                            } else {
+                                std::cmp::Ordering::Equal
+                            };
+                            if desc {
+                                ord.reverse()
+                            } else {
+                                ord
+                            }
+                        });
+                        let sorted: Vec<Val> = keyed.into_iter().map(|(_, v)| v).collect();
+                        Ok(self.alloc(Obj::Vec(sorted)))
+                    }
+                    _ => Ok(coll),
+                }
+            }
+            Built::Unit => {
+                // [unit value :dimension] — at runtime, just return the value
+                // (dimensions are compile-time only)
+                Ok(args.first().copied().unwrap_or(Val::UNIT))
+            }
+            Built::Magnitude => {
+                // [magnitude dimensioned-value] — extract the numeric value
+                Ok(args.first().copied().unwrap_or(Val::UNIT))
+            }
             Built::FlatMap
             | Built::GroupBy
             | Built::Collect
@@ -1270,6 +1399,20 @@ impl Vm {
                 self.output.push(line);
                 Val::UNIT
             }
+            ("IO", "read-file") => {
+                if let Some(path) = args.first() {
+                    let path_str = self.val_to_string(*path);
+                    match std::fs::read_to_string(&path_str) {
+                        Ok(contents) => self.alloc(Obj::Str(contents)),
+                        Err(_) => Val::UNIT,
+                    }
+                } else {
+                    Val::UNIT
+                }
+            }
+            ("Const", "c") => Val::float(299_792_458.0),
+            ("Physics", "yield-strength") => Val::float(250.0),
+            ("Physics", "gravity") => Val::float(9.80665),
             _ => Val::UNIT,
         }
     }
