@@ -594,11 +594,11 @@ enum Kont {
         remaining: Vec<Proc>,
         span: Span,
     },
-    /// Collect key-value pairs for a map.
+    /// Collect key-value pairs for a map (alternating key, value, key, value...).
     CollectMap {
-        evaluated: Vec<(Value, Value)>,
-        current_key: Option<Value>,
-        remaining: Vec<(Proc, Proc)>,
+        pairs: Vec<(Value, Value)>,
+        pending_key: Option<Value>,
+        remaining: Vec<Proc>,
         span: Span,
     },
     /// Collect effect args then perform.
@@ -928,18 +928,20 @@ impl Machine {
                 if pairs.is_empty() {
                     self.focus = Focus::Return(Value::Map(imbl::HashMap::new()));
                 } else {
-                    let mut remaining = pairs;
-                    let (first_k, first_v) = remaining.remove(0);
+                    // Flatten pairs into alternating key, value, key, value...
+                    let mut flat: Vec<Proc> = Vec::with_capacity(pairs.len() * 2);
+                    for (k, v) in pairs {
+                        flat.push(k);
+                        flat.push(v);
+                    }
+                    let first = flat.remove(0);
                     self.kont.push(Kont::CollectMap {
-                        evaluated: Vec::new(),
-                        current_key: None,
-                        remaining: std::iter::once((Proc::Noop, first_v))
-                            .chain(remaining)
-                            .collect(),
+                        pairs: Vec::new(),
+                        pending_key: None,
+                        remaining: flat,
                         span,
                     });
-                    // Evaluate first key
-                    self.focus = Focus::Eval(first_k);
+                    self.focus = Focus::Eval(first);
                 }
             }
 
@@ -1222,44 +1224,41 @@ impl Machine {
             }
 
             Kont::CollectMap {
-                mut evaluated,
-                current_key,
+                mut pairs,
+                pending_key,
                 mut remaining,
                 span,
             } => {
-                if current_key.is_none() {
-                    // We just evaluated a key
-                    if let Some((_, v_proc)) = remaining.first() {
-                        let v_proc = v_proc.clone();
-                        let mut remaining_after = remaining;
-                        remaining_after.remove(0);
-                        self.kont.push(Kont::CollectMap {
-                            evaluated,
-                            current_key: Some(val),
-                            remaining: remaining_after,
-                            span,
-                        });
-                        self.focus = Focus::Eval(v_proc);
-                    } else {
-                        // Shouldn't happen
-                        self.focus = Focus::Return(Value::Map(imbl::HashMap::new()));
-                    }
-                } else {
-                    // We just evaluated a value
-                    evaluated.push((current_key.unwrap(), val));
+                if pending_key.is_none() {
+                    // We just evaluated a key — next evaluate its value
                     if remaining.is_empty() {
-                        let map: imbl::HashMap<Value, Value> = evaluated.into_iter().collect();
+                        let map: imbl::HashMap<Value, Value> = pairs.into_iter().collect();
                         self.focus = Focus::Return(Value::Map(map));
                     } else {
-                        let (k_proc, _) = remaining.remove(0);
-                        // Re-push remaining minus the key we're about to eval
+                        let next_v = remaining.remove(0);
                         self.kont.push(Kont::CollectMap {
-                            evaluated,
-                            current_key: None,
+                            pairs,
+                            pending_key: Some(val),
                             remaining,
                             span,
                         });
-                        self.focus = Focus::Eval(k_proc);
+                        self.focus = Focus::Eval(next_v);
+                    }
+                } else {
+                    // We just evaluated a value — store the pair
+                    pairs.push((pending_key.unwrap(), val));
+                    if remaining.is_empty() {
+                        let map: imbl::HashMap<Value, Value> = pairs.into_iter().collect();
+                        self.focus = Focus::Return(Value::Map(map));
+                    } else {
+                        let next_k = remaining.remove(0);
+                        self.kont.push(Kont::CollectMap {
+                            pairs,
+                            pending_key: None,
+                            remaining,
+                            span,
+                        });
+                        self.focus = Focus::Eval(next_k);
                     }
                 }
             }

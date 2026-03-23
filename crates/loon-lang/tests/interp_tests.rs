@@ -1,9 +1,15 @@
+use loon_lang::interp::machine::eval_program_vm;
 use loon_lang::interp::{eval_program, eval_program_with_base_dir, Value};
 use loon_lang::parser::parse;
 
 fn run(src: &str) -> Value {
     let exprs = parse(src).expect("parse failed");
     eval_program(&exprs).expect("eval failed")
+}
+
+fn run_vm(src: &str) -> Value {
+    let exprs = parse(src).expect("parse failed");
+    eval_program_vm(&exprs).expect("vm eval failed")
 }
 
 /// Helper: build a Value::Vec from a std Vec
@@ -1075,6 +1081,364 @@ fn all_source_files_parse() {
         "parse errors in source files:\n  {}",
         failures.join("\n  ")
     );
+}
+
+// ─── VM (effect machine) tests ─────────────────────────────────────────
+
+/// Run the same source through both interpreters and assert identical results.
+fn assert_vm_matches(src: &str) {
+    let expected = run(src);
+    let actual = run_vm(src);
+    assert_eq!(
+        expected,
+        actual,
+        "VM mismatch for: {}",
+        src.trim().chars().take(80).collect::<String>()
+    );
+}
+
+#[test]
+fn vm_arithmetic() {
+    assert_vm_matches("[+ 1 2]");
+    assert_vm_matches("[- 10 3]");
+    assert_vm_matches("[* 4 5]");
+    assert_vm_matches("[> 3 2]");
+    assert_vm_matches("[< 3 2]");
+}
+
+#[test]
+fn vm_let_and_do() {
+    assert_vm_matches("[do [let x 42] x]");
+    assert_vm_matches("[do [let x 1] [let y 2] [+ x y]]");
+}
+
+#[test]
+fn vm_functions() {
+    assert_vm_matches("[fn add [x y] [+ x y]] [add 3 4]");
+    assert_vm_matches(
+        r#"
+        [fn fib [n]
+          [match n
+            0 0
+            1 1
+            n [+ [fib [- n 1]] [fib [- n 2]]]]]
+        [fib 10]
+    "#,
+    );
+}
+
+#[test]
+fn vm_closures() {
+    assert_vm_matches(
+        r#"
+        [fn make-adder [n]
+          [fn [x] [+ x n]]]
+        [let add5 [make-adder 5]]
+        [add5 10]
+    "#,
+    );
+}
+
+#[test]
+fn vm_if_expression() {
+    assert_vm_matches("[if true 1 2]");
+    assert_vm_matches("[if false 1 2]");
+}
+
+#[test]
+fn vm_persistent_vector() {
+    assert_vm_matches(r#"[do [let v #[1 2 3]] [len v]]"#);
+}
+
+#[test]
+fn vm_map_filter_pipe() {
+    assert_vm_matches(
+        r#"
+        [pipe #[1 2 3 4 5]
+          [filter [fn [x] [> x 2]]]
+          [map [fn [x] [* x 10]]]]
+    "#,
+    );
+}
+
+#[test]
+fn vm_strings() {
+    assert_vm_matches(r#"[str "hello" " " "world"]"#);
+    assert_vm_matches(r#"[len "hello"]"#);
+}
+
+#[test]
+fn vm_adt_pattern_matching() {
+    assert_vm_matches(
+        r#"
+        [type Color [Rgb Int Int Int] [Hex String]]
+        [fn red [c] [match c [Rgb r g b] r [Hex s] 0]]
+        [red [Rgb 255 128 0]]
+    "#,
+    );
+}
+
+#[test]
+fn vm_match_with_guard() {
+    assert_vm_matches(
+        r#"
+        [fn classify [n]
+          [match n
+            n [when [< n 0]] :negative
+            0 :zero
+            n :positive]]
+        [classify -5]
+    "#,
+    );
+    assert_vm_matches(
+        r#"
+        [fn classify [n]
+          [match n
+            n [when [< n 0]] :negative
+            0 :zero
+            n :positive]]
+        [classify 0]
+    "#,
+    );
+    assert_vm_matches(
+        r#"
+        [fn classify [n]
+          [match n
+            n [when [< n 0]] :negative
+            0 :zero
+            n :positive]]
+        [classify 5]
+    "#,
+    );
+}
+
+#[test]
+fn vm_multi_arity() {
+    assert_vm_matches(
+        r#"
+        [fn greet
+          ([name] [str "hi " name])
+          ([first last] [str "hello " first " " last])]
+        [greet "world"]
+    "#,
+    );
+    assert_vm_matches(
+        r#"
+        [fn greet
+          ([name] [str "hi " name])
+          ([first last] [str "hello " first " " last])]
+        [greet "Jane" "Doe"]
+    "#,
+    );
+}
+
+#[test]
+fn vm_conj() {
+    assert_vm_matches("[conj #[1 2] 3]");
+    assert_vm_matches("[conj #[] 1]");
+}
+
+#[test]
+fn vm_range_and_map() {
+    assert_vm_matches("[range 0 5]");
+    assert_vm_matches("[map [fn [x] [* x x]] [range 0 5]]");
+}
+
+#[test]
+fn vm_loop_recur() {
+    assert_vm_matches(
+        r#"
+        [loop [i 0 sum 0]
+          [if [>= i 10] sum
+            [recur [+ i 1] [+ sum i]]]]
+    "#,
+    );
+}
+
+#[test]
+fn vm_fn_recur() {
+    assert_vm_matches(
+        r#"
+        [fn countdown [n]
+          [if [= n 0] :done [recur [- n 1]]]]
+        [countdown 100]
+    "#,
+    );
+}
+
+#[test]
+fn vm_set_operations() {
+    assert_vm_matches("[len #{1 2 3}]");
+    assert_vm_matches("[contains? #{1 2 3} 2]");
+}
+
+#[test]
+fn vm_destructuring() {
+    assert_vm_matches(
+        r#"
+        [fn first-two [[a b & rest]] [+ a b]]
+        [first-two #[10 20 30 40]]
+    "#,
+    );
+}
+
+#[test]
+fn vm_pipe_thread_last() {
+    assert_vm_matches(
+        r#"
+        [pipe 10
+          [+ 5]
+          [* 2]]
+    "#,
+    );
+}
+
+#[test]
+fn vm_vec_builtins() {
+    assert_vm_matches("[nth #[10 20 30] 1]");
+    assert_vm_matches("[reverse #[1 2 3]]");
+    assert_vm_matches("[take 2 #[1 2 3 4]]");
+    assert_vm_matches("[drop 2 #[1 2 3 4]]");
+    assert_vm_matches("[flatten #[#[1 2] #[3 4]]]");
+    assert_vm_matches("[zip #[1 2 3] #[4 5 6]]");
+    assert_vm_matches("[any? [fn [x] [> x 3]] #[1 2 3]]");
+    assert_vm_matches("[all? [fn [x] [> x 0]] #[1 2 3]]");
+    assert_vm_matches("[sum #[1 2 3 4 5]]");
+}
+
+#[test]
+fn vm_string_builtins() {
+    assert_vm_matches(r#"[join ", " #["a" "b" "c"]]"#);
+    assert_vm_matches(r#"[trim "  hello  "]"#);
+    assert_vm_matches(r#"[starts-with? "hello" "he"]"#);
+    assert_vm_matches(r#"[uppercase "hello"]"#);
+    assert_vm_matches(r#"[lowercase "HELLO"]"#);
+}
+
+#[test]
+fn vm_map_builtins() {
+    assert_eq!(run_vm("[len {:a 1 :b 2}]"), Value::Int(2));
+    assert_eq!(run_vm("[get {:a 1 :b 2} :a]"), Value::Int(1));
+    assert_eq!(run_vm("[get [assoc {:a 1} :b 2] :b]"), Value::Int(2));
+    assert_eq!(run_vm("[contains? {:a 1 :b 2} :a]"), Value::Bool(true));
+}
+
+#[test]
+fn vm_try_success() {
+    assert_vm_matches("[try [+ 1 2] [fn [e] :err]]");
+}
+
+#[test]
+fn vm_try_failure() {
+    assert_vm_matches(r#"[try [Fail.fail "boom"] [fn [e] [str "caught: " e]]]"#);
+}
+
+#[test]
+fn vm_effect_handle_resume() {
+    assert_vm_matches(
+        r#"
+        [handle [IO.read-file "test.txt"]
+          [IO.read-file path] [resume "mock-data"]]
+    "#,
+    );
+}
+
+#[test]
+fn vm_user_defined_effect() {
+    assert_vm_matches(
+        r#"
+        [effect Db [query [String] String]]
+        [fn get-user [id] [Db.query id]]
+        [handle [get-user "42"]
+          [Db.query id] [resume [str "User:" id]]]
+    "#,
+    );
+}
+
+#[test]
+fn vm_resumable_sequential_effects() {
+    assert_vm_matches(
+        r#"
+        [effect Fs [read [String] String]]
+        [handle
+          [do [let a [Fs.read "x"]] [let b [Fs.read "y"]] [str a "+" b]]
+          [Fs.read path] [resume [str "data:" path]]]
+    "#,
+    );
+}
+
+#[test]
+fn vm_fmt_interpolation() {
+    assert_vm_matches(
+        r#"
+        [let name "world"]
+        [str "hello " name "!"]
+    "#,
+    );
+}
+
+#[test]
+fn vm_question_ok() {
+    // x? desugaring: use explicit match form (x? tokenization is parser-dependent)
+    assert_eq!(
+        run_vm("[do [let x [Ok 42]] [match x [Ok v] v [Err e] e]]"),
+        Value::Int(42)
+    );
+}
+
+#[test]
+fn vm_boolean_logic() {
+    assert_vm_matches("[and true true]");
+    assert_vm_matches("[and true false]");
+    assert_vm_matches("[or false true]");
+    assert_vm_matches("[not true]");
+}
+
+#[test]
+fn vm_division_and_modulo() {
+    assert_vm_matches("[/ 10 3]");
+    assert_vm_matches("[% 10 3]");
+}
+
+#[test]
+fn vm_stdlib_sort() {
+    assert_vm_matches("[sort #[3 1 2]]");
+}
+
+#[test]
+fn vm_stdlib_min_max_sum() {
+    assert_vm_matches("[min #[3 1 2]]");
+    assert_vm_matches("[max #[3 1 2]]");
+    assert_vm_matches("[sum #[1 2 3 4 5]]");
+}
+
+#[test]
+fn vm_derive_copy() {
+    assert_vm_matches(
+        r#"
+        [derive Copy [type Point [XY Int Int]]]
+        [let p [XY 1 2]]
+        [match p [XY x y] [+ x y]]
+    "#,
+    );
+}
+
+#[test]
+fn vm_dot_access_map() {
+    assert_eq!(
+        run_vm(
+            r#"
+            [let m {"name" "Alice" "age" 30}]
+            m.name
+        "#
+        ),
+        Value::Str("Alice".to_string())
+    );
+}
+
+#[test]
+fn vm_keyword_builtin() {
+    assert_vm_matches(r#"[keyword "hello"]"#);
 }
 
 fn walkdir(dir: &std::path::Path) -> Vec<std::fs::DirEntry> {
