@@ -5,6 +5,9 @@
 
 pub mod backend;
 pub mod lower;
+#[cfg(feature = "native")]
+pub mod native;
+pub mod trace;
 pub mod value64;
 pub mod vm;
 pub mod wasm;

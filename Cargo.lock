@@ -550,6 +550,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ca20d576e5070044d0a72a9effc2deacf4d6aa650403189d8ea50126483944d"
 
 [[package]]
+name = "cranelift-jit"
+version = "0.116.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e65c42755a719b09662b00c700daaf76cc35d5ace1f5c002ad404b591ff1978"
+dependencies = [
+ "anyhow",
+ "cranelift-codegen",
+ "cranelift-control",
+ "cranelift-entity",
+ "cranelift-module",
+ "cranelift-native",
+ "libc",
+ "log",
+ "region",
+ "target-lexicon",
+ "wasmtime-jit-icache-coherence",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "cranelift-module"
+version = "0.116.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d55612bebcf16ff7306c8a6f5bdb6d45662b8aa1ee058ecce8807ad87db719b"
+dependencies = [
+ "anyhow",
+ "cranelift-codegen",
+ "cranelift-control",
+]
+
+[[package]]
 name = "cranelift-native"
 version = "0.116.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1469,6 +1500,11 @@ version = "0.5.0"
 dependencies = [
  "blake3",
  "codespan-reporting",
+ "cranelift-codegen",
+ "cranelift-frontend",
+ "cranelift-jit",
+ "cranelift-module",
+ "cranelift-native",
  "dirs-next",
  "flate2",
  "imbl",
@@ -1914,6 +1950,18 @@ name = "regex-syntax"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a96887878f22d7bad8a3b6dc5b7440e0ada9a245242924394987b21cf2210a4c"
+
+[[package]]
+name = "region"
+version = "3.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6b6ebd13bc009aef9cd476c1310d49ac354d36e240cf1bd753290f3dc7199a7"
+dependencies = [
+ "bitflags 1.3.2",
+ "libc",
+ "mach2",
+ "windows-sys 0.52.0",
+]
 
 [[package]]
 name = "ring"

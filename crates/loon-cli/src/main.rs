@@ -31,6 +31,9 @@ enum Command {
         /// Use the legacy tree-walking interpreter instead of the EIR VM
         #[arg(long)]
         legacy: bool,
+        /// Compile to native code via Cranelift and run
+        #[arg(long)]
+        native: bool,
     },
     /// Start the REPL
     Repl,
@@ -122,8 +125,11 @@ fn main() {
             ref file,
             wasm,
             legacy,
+            native,
         } => {
-            if wasm {
+            if native {
+                run_file_native(file);
+            } else if wasm {
                 run_file_wasm(file);
             } else if legacy {
                 run_file_legacy(file);
@@ -180,6 +186,24 @@ fn run_file(path: &PathBuf) {
     };
 
     match loon_lang::eir::vm::eval_eir(&source) {
+        Ok(_result) => {}
+        Err(e) => {
+            eprintln!("{}: {e}", "error".red().bold());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_file_native(path: &PathBuf) {
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{} reading {}: {e}", "error".red().bold(), path.display());
+            std::process::exit(1);
+        }
+    };
+
+    match loon_lang::eir::native::eval_native(&source) {
         Ok(_result) => {}
         Err(e) => {
             eprintln!("{}: {e}", "error".red().bold());
