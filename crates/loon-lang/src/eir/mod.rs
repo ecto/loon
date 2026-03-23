@@ -4,6 +4,7 @@
 //! Every backend (Register VM, WASM, Cranelift) lowers from this IR.
 
 pub mod backend;
+pub mod lower;
 pub mod value64;
 
 use crate::syntax::Span;
