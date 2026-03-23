@@ -783,8 +783,20 @@ impl Vm {
                     Val::bool(af >= bf)
                 }
             }
-            BinOp::And => Val::bool(a.is_truthy() && b.is_truthy()),
-            BinOp::Or => Val::bool(a.is_truthy() || b.is_truthy()),
+            BinOp::And => {
+                if a.is_truthy() {
+                    b
+                } else {
+                    a
+                }
+            }
+            BinOp::Or => {
+                if a.is_truthy() {
+                    a
+                } else {
+                    b
+                }
+            }
             BinOp::Concat => {
                 let sa = self.val_to_string(a);
                 let sb = self.val_to_string(b);
