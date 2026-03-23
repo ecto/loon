@@ -619,6 +619,12 @@ enum Kont {
         effect: String,
         clauses: Vec<HandlerClause>,
     },
+    /// After handler body completes — splice captured continuation back.
+    AfterHandler {
+        captured: Vec<Kont>,
+        handler_effect: String,
+        handler_clauses: Vec<HandlerClause>,
+    },
     /// Loop iteration boundary.
     LoopBody { names: Vec<String>, body: Vec<Proc> },
     /// Collect recur args (for subsequent iterations).
@@ -1291,6 +1297,28 @@ impl Machine {
                 self.focus = Focus::Return(val);
             }
 
+            Kont::AfterHandler {
+                captured,
+                handler_effect,
+                handler_clauses,
+            } => {
+                // Handler body completed with resume value.
+                // Pop the handler scope, splice captured continuation back,
+                // re-install the handler for subsequent effects, and resume.
+                self.env.pop_scope();
+
+                // Re-install handler (for subsequent effects from the same body)
+                self.kont.push(Kont::Handler {
+                    effect: handler_effect,
+                    clauses: handler_clauses,
+                });
+                // Splice captured continuation back — execution resumes
+                // from where the effect was performed
+                self.kont.extend(captured);
+                // The resume value becomes the result of the effect call
+                self.focus = Focus::Return(val);
+            }
+
             Kont::LoopBody { .. } => {
                 // Body completed without recur — exit loop
                 self.env.pop_scope();
@@ -1446,29 +1474,35 @@ impl Machine {
 
         if let Some(pos) = handler_pos {
             // Capture the continuation between here and the handler
-            let _captured: Vec<Kont> = self.kont.drain(pos + 1..).collect();
+            let captured: Vec<Kont> = self.kont.drain(pos + 1..).collect();
             let handler = self.kont.pop().unwrap();
 
-            if let Kont::Handler { clauses, .. } = handler {
+            if let Kont::Handler {
+                effect: handler_effect,
+                clauses,
+            } = handler
+            {
                 // Find matching op
                 for clause in &clauses {
                     if clause.op == op {
-                        // Create resume function that splices the continuation back
+                        // resume is just an identity function — the real magic happens
+                        // in AfterHandler which splices the captured continuation back
                         let resume_fn = Value::Builtin(
                             "resume".to_string(),
-                            std::sync::Arc::new(move |_name, args| {
-                                // This is called within the handler body.
-                                // The actual continuation splicing is handled by the machine
-                                // when it sees this special value returned.
-                                if let Some(val) = args.first() {
-                                    Ok(val.clone())
-                                } else {
-                                    Ok(Value::Unit)
-                                }
+                            std::sync::Arc::new(|_name, args| {
+                                Ok(args.first().cloned().unwrap_or(Value::Unit))
                             }),
                         );
 
-                        // Bind handler params and resume
+                        // Push AfterHandler — when handler body completes, this
+                        // splices the captured continuation and resumes execution
+                        self.kont.push(Kont::AfterHandler {
+                            captured,
+                            handler_effect: handler_effect.clone(),
+                            handler_clauses: clauses.clone(),
+                        });
+
+                        // Bind handler params and resume, eval handler body
                         self.env.push_scope();
                         for (i, param) in clause.params.iter().enumerate() {
                             let val = args.get(i).cloned().unwrap_or(Value::Unit);
@@ -1481,8 +1515,6 @@ impl Machine {
                     }
                 }
             }
-            // No matching op — restore and fall through to builtin
-            // (shouldn't happen with well-typed programs)
         }
 
         // No handler — try builtin
