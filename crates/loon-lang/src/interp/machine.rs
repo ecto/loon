@@ -121,8 +121,8 @@ pub fn analyze(expr: &Expr) -> Proc {
         ExprKind::Int(n) => Proc::Const(Value::Int(*n), expr.span),
         ExprKind::Float(n) => Proc::Const(Value::Float(*n), expr.span),
         ExprKind::Bool(b) => Proc::Const(Value::Bool(*b), expr.span),
-        ExprKind::Str(s) => Proc::Const(Value::Str(s.clone()), expr.span),
-        ExprKind::Keyword(k) => Proc::Const(Value::Keyword(k.clone()), expr.span),
+        ExprKind::Str(s) => Proc::Const(Value::Str(s.as_str().into()), expr.span),
+        ExprKind::Keyword(k) => Proc::Const(Value::Keyword(k.as_str().into()), expr.span),
         ExprKind::Symbol(s) => Proc::Lookup(s.clone(), expr.span),
 
         ExprKind::DotAccess(inner, field) => {
@@ -570,8 +570,8 @@ enum Kont {
     If { then_: Proc, else_: Option<Proc> },
     /// Received binding value — bind it.
     Bind(Param),
-    /// Sequential evaluation — evaluate remaining, return last.
-    Seq(Vec<Proc>),
+    /// Sequential evaluation — Rc-shared procs with index (no cloning).
+    Seq { procs: Rc<[Proc]>, index: usize },
     /// Pattern match — received scrutinee.
     Match(Vec<MatchArm>),
     /// Restore env after function return.
@@ -610,9 +610,12 @@ enum Kont {
         span: Span,
     },
     /// Function body boundary — supports fn/recur.
+    /// Stores pre-analyzed body procs to avoid re-analysis on recur.
     FnBody {
         params: Vec<Param>,
-        body: Rc<[Expr]>,
+        #[allow(dead_code)]
+        body_raw: Rc<[Expr]>,
+        body_procs: Rc<[Proc]>,
     },
     /// Effect handler boundary.
     Handler {
@@ -625,8 +628,11 @@ enum Kont {
         handler_effect: String,
         handler_clauses: Vec<HandlerClause>,
     },
-    /// Loop iteration boundary.
-    LoopBody { names: Vec<String>, body: Vec<Proc> },
+    /// Loop iteration boundary — Rc-shared body (no cloning on recur).
+    LoopBody {
+        names: Vec<String>,
+        body: Rc<[Proc]>,
+    },
     /// Collect recur args (for subsequent iterations).
     CollectRecur {
         evaluated: Vec<Value>,
@@ -638,7 +644,7 @@ enum Kont {
         names: Vec<String>,
         evaluated: Vec<Value>,
         remaining: Vec<Proc>,
-        body: Vec<Proc>,
+        body: Rc<[Proc]>,
     },
     /// Set! — received value.
     SetVar(String),
@@ -679,15 +685,14 @@ impl Machine {
     }
 
     /// Analyze a function body, caching by Rc pointer for the SICP
-    /// analyze-once guarantee.
-    fn analyze_body(&mut self, body: &Rc<[Expr]>) -> Vec<Proc> {
+    /// analyze-once guarantee. Returns Rc — no cloning on subsequent calls.
+    fn analyze_body(&mut self, body: &Rc<[Expr]>) -> Rc<[Proc]> {
         let key = Rc::as_ptr(body) as *const () as usize;
         if let Some(cached) = self.body_cache.get(&key) {
-            return cached.iter().cloned().collect();
+            return Rc::clone(cached);
         }
-        let procs: Vec<Proc> = body.iter().map(analyze).collect();
-        self.body_cache
-            .insert(key, procs.clone().into_boxed_slice().into());
+        let procs: Rc<[Proc]> = body.iter().map(analyze).collect::<Vec<_>>().into();
+        self.body_cache.insert(key, Rc::clone(&procs));
         procs
     }
 
@@ -736,16 +741,8 @@ impl Machine {
             }
 
             Proc::Seq(procs) => {
-                if procs.is_empty() {
-                    self.focus = Focus::Return(Value::Unit);
-                } else {
-                    let mut procs = procs;
-                    let first = procs.remove(0);
-                    if !procs.is_empty() {
-                        self.kont.push(Kont::Seq(procs));
-                    }
-                    self.focus = Focus::Eval(first);
-                }
+                let rc: Rc<[Proc]> = procs.into();
+                self.eval_seq(rc);
             }
 
             Proc::Lambda {
@@ -827,23 +824,22 @@ impl Machine {
             Proc::Loop { bindings, body } => {
                 let names: Vec<String> = bindings.iter().map(|(n, _)| n.clone()).collect();
                 let init_procs: Vec<Proc> = bindings.into_iter().map(|(_, p)| p).collect();
+                let body_rc: Rc<[Proc]> = body.into();
                 if init_procs.is_empty() {
-                    // No bindings — push loop body and evaluate directly
                     self.kont.push(Kont::LoopBody {
                         names: Vec::new(),
-                        body: body.clone(),
+                        body: Rc::clone(&body_rc),
                     });
                     self.env.push_scope();
-                    self.eval_seq(body);
+                    self.eval_seq(body_rc);
                 } else {
-                    // Collect initial values via InitLoop (NOT CollectRecur)
                     let mut remaining = init_procs;
                     let first = remaining.remove(0);
                     self.kont.push(Kont::InitLoop {
                         names,
                         evaluated: Vec::new(),
                         remaining,
-                        body,
+                        body: body_rc,
                     });
                     self.focus = Focus::Eval(first);
                 }
@@ -1061,14 +1057,16 @@ impl Machine {
                             }
                         }
 
-                        // Push FnBody for recur support
+                        // Analyze body once, share via Rc
+                        let body_procs = self.analyze_body(body);
+
+                        // Push FnBody with pre-analyzed procs for recur
                         self.kont.push(Kont::FnBody {
                             params: params.clone(),
-                            body: body.clone(),
+                            body_raw: body.clone(),
+                            body_procs: Rc::clone(&body_procs),
                         });
 
-                        // Eval body as sequence (cached analysis)
-                        let body_procs = self.analyze_body(body);
                         self.eval_seq(body_procs);
                         return Ok(());
                     }
@@ -1160,13 +1158,16 @@ impl Machine {
                 self.focus = Focus::Return(val);
             }
 
-            Kont::Seq(mut remaining) => {
-                if remaining.is_empty() {
+            Kont::Seq { procs, index } => {
+                if index >= procs.len() {
                     self.focus = Focus::Return(val);
                 } else {
-                    let next = remaining.remove(0);
-                    if !remaining.is_empty() {
-                        self.kont.push(Kont::Seq(remaining));
+                    let next = procs[index].clone();
+                    if index + 1 < procs.len() {
+                        self.kont.push(Kont::Seq {
+                            procs,
+                            index: index + 1,
+                        });
                     }
                     // Discard val (intermediate result in sequence)
                     self.focus = Focus::Eval(next);
@@ -1421,16 +1422,17 @@ impl Machine {
 
     // ── Helpers ────────────────────────────────────────────────────────
 
-    fn eval_seq(&mut self, procs: Vec<Proc>) {
+    fn eval_seq(&mut self, procs: Rc<[Proc]>) {
         if procs.is_empty() {
             self.focus = Focus::Return(Value::Unit);
+        } else if procs.len() > 1 {
+            self.kont.push(Kont::Seq {
+                procs: Rc::clone(&procs),
+                index: 1,
+            });
+            self.focus = Focus::Eval(procs[0].clone());
         } else {
-            let mut procs = procs;
-            let first = procs.remove(0);
-            if !procs.is_empty() {
-                self.kont.push(Kont::Seq(procs));
-            }
-            self.focus = Focus::Eval(first);
+            self.focus = Focus::Eval(procs[0].clone());
         }
     }
 
@@ -1555,24 +1557,30 @@ impl Machine {
             .rposition(|k| matches!(k, Kont::LoopBody { .. } | Kont::FnBody { .. }));
 
         if let Some(pos) = recur_pos {
-            let target = self.kont[pos].clone();
+            // Truncate everything above the boundary, then pop the boundary itself
+            self.kont.truncate(pos + 1);
+            let target = self.kont.pop().unwrap();
+
             match target {
                 Kont::LoopBody { names, body } => {
-                    // Discard everything between here and the loop boundary
-                    self.kont.truncate(pos + 1);
-                    // Pop old scope, push new one with updated bindings
                     self.env.pop_scope();
                     self.env.push_scope();
                     for (name, val) in names.iter().zip(args.iter()) {
                         self.env.set(name.clone(), val.clone());
                     }
+                    // Re-push the LoopBody (Rc body — cheap clone)
+                    self.kont.push(Kont::LoopBody {
+                        names,
+                        body: Rc::clone(&body),
+                    });
                     self.eval_seq(body);
                     Ok(())
                 }
-                Kont::FnBody { params, body } => {
-                    // fn/recur: rebind params, re-evaluate body
-                    self.kont.truncate(pos + 1);
-                    // Pop old scope, push new one with rebound params
+                Kont::FnBody {
+                    params,
+                    body_raw: _,
+                    body_procs,
+                } => {
                     self.env.pop_scope();
                     self.env.push_scope();
                     let has_rest = params.last().is_some_and(|p| matches!(p, Param::Rest(_)));
@@ -1591,7 +1599,12 @@ impl Machine {
                             self.env.set(name.clone(), Value::Vec(rest_vals));
                         }
                     }
-                    let body_procs = self.analyze_body(&body);
+                    // Re-push FnBody with pre-analyzed procs (Rc — no clone)
+                    self.kont.push(Kont::FnBody {
+                        params,
+                        body_raw: Rc::from(&[] as &[Expr]),
+                        body_procs: Rc::clone(&body_procs),
+                    });
                     self.eval_seq(body_procs);
                     Ok(())
                 }

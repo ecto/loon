@@ -107,7 +107,7 @@ fn map_filter_pipe() {
 fn string_operations() {
     assert_eq!(
         run(r#"[str "hello" ", " "world"]"#),
-        Value::Str("hello, world".to_string())
+        Value::Str("hello, world".into())
     );
     assert_eq!(run(r#"[len "hello"]"#), Value::Int(5));
 }
@@ -116,7 +116,7 @@ fn string_operations() {
 fn map_data_structure() {
     assert_eq!(
         run(r#"[get {:name "loon" :version "0.1"} :name]"#),
-        Value::Str("loon".to_string())
+        Value::Str("loon".into())
     );
 }
 
@@ -135,7 +135,7 @@ fn multi_arity() {
               ([greeting name] [str greeting ", " name])]
             [greet "world"]
         "#),
-        Value::Str("hello, world".to_string())
+        Value::Str("hello, world".into())
     );
     assert_eq!(
         run(r#"
@@ -144,7 +144,7 @@ fn multi_arity() {
               ([greeting name] [str greeting ", " name])]
             [greet "hey" "world"]
         "#),
-        Value::Str("hey, world".to_string())
+        Value::Str("hey, world".into())
     );
 }
 
@@ -178,7 +178,7 @@ fn match_with_guard() {
                 _ "negative"]]
             [classify 5]
         "#),
-        Value::Str("positive".to_string())
+        Value::Str("positive".into())
     );
     assert_eq!(
         run(r#"
@@ -189,7 +189,7 @@ fn match_with_guard() {
                 _ "negative"]]
             [classify -3]
         "#),
-        Value::Str("negative".to_string())
+        Value::Str("negative".into())
     );
 }
 
@@ -238,7 +238,7 @@ fn effect_handle_resume() {
             [handle [load "test.txt"]
               [IO.read-file path] [resume "mock data"]]
         "#),
-        Value::Str("mock data".to_string())
+        Value::Str("mock data".into())
     );
 }
 
@@ -251,7 +251,7 @@ fn effect_handle_no_resume() {
             [handle [risky]
               [Fail.fail msg] [str "caught: " msg]]
         "#),
-        Value::Str("caught: boom".to_string())
+        Value::Str("caught: boom".into())
     );
 }
 
@@ -265,7 +265,7 @@ fn user_defined_effect_handled() {
                 [Fs.read-file path] [resume "mocked content"]]]
             [main]
         "#),
-        Value::Str("mocked content".to_string())
+        Value::Str("mocked content".into())
     );
 }
 
@@ -284,7 +284,7 @@ fn user_defined_effect_multi_ops() {
               [Fs.read-file p] [resume "file-data"]
               [Fs.list-dir p] [resume "dir-listing"]]
         "#),
-        Value::Str("file-data | dir-listing".to_string())
+        Value::Str("file-data | dir-listing".into())
     );
 }
 
@@ -347,12 +347,9 @@ fn division_and_modulo() {
 fn string_builtins() {
     assert_eq!(
         run(r#"[join ", " #["a" "b" "c"]]"#),
-        Value::Str("a, b, c".to_string())
+        Value::Str("a, b, c".into())
     );
-    assert_eq!(
-        run(r#"[trim "  hello  "]"#),
-        Value::Str("hello".to_string())
-    );
+    assert_eq!(run(r#"[trim "  hello  "]"#), Value::Str("hello".into()));
     assert_eq!(
         run(r#"[starts-with? "hello world" "hello"]"#),
         Value::Bool(true)
@@ -363,16 +360,10 @@ fn string_builtins() {
     );
     assert_eq!(
         run(r#"[replace "hello world" "world" "loon"]"#),
-        Value::Str("hello loon".to_string())
+        Value::Str("hello loon".into())
     );
-    assert_eq!(
-        run(r#"[uppercase "hello"]"#),
-        Value::Str("HELLO".to_string())
-    );
-    assert_eq!(
-        run(r#"[lowercase "HELLO"]"#),
-        Value::Str("hello".to_string())
-    );
+    assert_eq!(run(r#"[uppercase "hello"]"#), Value::Str("HELLO".into()));
+    assert_eq!(run(r#"[lowercase "HELLO"]"#), Value::Str("hello".into()));
 }
 
 #[test]
@@ -452,10 +443,7 @@ fn map_builtins() {
     let keys_result = run("[sort [keys {:a 1 :b 2}]]");
     assert_eq!(
         keys_result,
-        v(vec![
-            Value::Keyword("a".to_string()),
-            Value::Keyword("b".to_string()),
-        ])
+        v(vec![Value::Keyword("a".into()), Value::Keyword("b".into()),])
     );
     // values — check length and membership instead of order
     let vals_result = run("[sort [values {:a 1 :b 2}]]");
@@ -463,7 +451,7 @@ fn map_builtins() {
     // remove
     assert_eq!(
         run("[remove {:a 1 :b 2} :b]"),
-        m(vec![(Value::Keyword("a".to_string()), Value::Int(1))])
+        m(vec![(Value::Keyword("a".into()), Value::Int(1))])
     );
 }
 
@@ -479,7 +467,7 @@ fn question_err_caught() {
             [handle [Err "oops"]?
               [Fail.fail msg] [str "caught: " msg]]
         "#),
-        Value::Str("caught: oops".to_string())
+        Value::Str("caught: oops".into())
     );
 }
 
@@ -512,7 +500,7 @@ fn io_read_file_mock_handler_still_works() {
             [handle [IO.read-file "test.txt"]
               [IO.read-file path] [resume "mock data"]]
         "#),
-        Value::Str("mock data".to_string())
+        Value::Str("mock data".into())
     );
 }
 
@@ -525,7 +513,7 @@ fn question_in_defn_propagates_fail() {
             [handle [try-it [Err "bad"]]
               [Fail.fail msg] [str "got: " msg]]
         "#),
-        Value::Str("got: bad".to_string())
+        Value::Str("got: bad".into())
     );
 }
 
@@ -576,10 +564,7 @@ fn process_args_mock() {
             [handle [Process.args]
               [Process.args] [resume #["loon" "test"]]]
         "#),
-        v(vec![
-            Value::Str("loon".to_string()),
-            Value::Str("test".to_string())
-        ])
+        v(vec![Value::Str("loon".into()), Value::Str("test".into())])
     );
 }
 
@@ -591,7 +576,7 @@ fn process_env_mock() {
             [handle [Process.env "HOME"]
               [Process.env k] [resume [Some "/home"]]]
         "#),
-        Value::Adt("Some".to_string(), vec![Value::Str("/home".to_string())])
+        Value::Adt("Some".to_string(), vec![Value::Str("/home".into())])
     );
 }
 
@@ -628,7 +613,7 @@ fn try_success() {
 fn try_failure() {
     assert_eq!(
         run(r#"[try [Err "oops"]? [fn [msg] [str "caught: " msg]]]"#),
-        Value::Str("caught: oops".to_string())
+        Value::Str("caught: oops".into())
     );
 }
 
@@ -649,10 +634,10 @@ fn stdlib_number_parsing_error() {
 
 #[test]
 fn stdlib_string_ops() {
-    assert_eq!(run(r#"[char-at "hello" 1]"#), Value::Str("e".to_string()));
+    assert_eq!(run(r#"[char-at "hello" 1]"#), Value::Str("e".into()));
     assert_eq!(
         run(r#"[substring "hello world" 0 5]"#),
-        Value::Str("hello".to_string())
+        Value::Str("hello".into())
     );
     assert_eq!(
         run(r#"[contains? "hello world" "world"]"#),
@@ -712,8 +697,8 @@ fn stdlib_min_max_sum() {
 
 #[test]
 fn stdlib_to_string() {
-    assert_eq!(run(r#"[str 42]"#), Value::Str("42".to_string()));
-    assert_eq!(run(r#"[str true]"#), Value::Str("true".to_string()));
+    assert_eq!(run(r#"[str 42]"#), Value::Str("42".into()));
+    assert_eq!(run(r#"[str true]"#), Value::Str("true".into()));
 }
 
 #[test]
@@ -731,19 +716,19 @@ fn stdlib_into_map() {
 fn fmt_interpolation() {
     assert_eq!(
         run(r#"[let name "world"] [fmt "hello {name}"]"#),
-        Value::Str("hello world".to_string())
+        Value::Str("hello world".into())
     );
     assert_eq!(
         run(r#"[fmt "2 + 2 = {[+ 2 2]}"]"#),
-        Value::Str("2 + 2 = 4".to_string())
+        Value::Str("2 + 2 = 4".into())
     );
     assert_eq!(
         run(r#"[fmt "no interpolation"]"#),
-        Value::Str("no interpolation".to_string())
+        Value::Str("no interpolation".into())
     );
     assert_eq!(
         run(r#"[fmt "escaped {{braces}}"]"#),
-        Value::Str("escaped {braces}".to_string())
+        Value::Str("escaped {braces}".into())
     );
 }
 
@@ -774,7 +759,7 @@ fn async_spawn_await_string() {
             [let f [Async.spawn [fn [] [str "hello" " " "async"]]]]
             [Async.await f]
         "#),
-        Value::Str("hello async".to_string())
+        Value::Str("hello async".into())
     );
 }
 
@@ -854,7 +839,7 @@ fn catch_errors_invalid_code_returns_errors() {
             if let Value::Map(pairs) = &v[0] {
                 let has_what = pairs
                     .iter()
-                    .any(|(k, _)| *k == Value::Keyword("what".to_string()));
+                    .any(|(k, _)| *k == Value::Keyword("what".into()));
                 assert!(
                     has_what,
                     "error map should have :what key, got: {:?}",
@@ -983,7 +968,7 @@ fn dot_access_string_keyed_map() {
             [let m {"name" "cam"}]
             m.name
         "#),
-        Value::Str("cam".to_string())
+        Value::Str("cam".into())
     );
 }
 
@@ -995,17 +980,14 @@ fn newline_inside_interpolation() {
             [let items #["a" "b"]]
             [str "list:\n{[join \"\n\" items]}"]
         "#),
-        Value::Str("list:\na\nb".to_string())
+        Value::Str("list:\na\nb".into())
     );
 }
 
 #[test]
 fn keyword_builtin() {
-    assert_eq!(
-        run(r#"[keyword "hello"]"#),
-        Value::Keyword("hello".to_string())
-    );
-    assert_eq!(run(r#"[name [keyword "x"]]"#), Value::Str("x".to_string()));
+    assert_eq!(run(r#"[keyword "hello"]"#), Value::Keyword("hello".into()));
+    assert_eq!(run(r#"[name [keyword "x"]]"#), Value::Str("x".into()));
 }
 
 #[test]
@@ -1040,7 +1022,7 @@ fn json_dot_access() {
             [let m [IO.parse-json "\{\"name\":\"cam\"\}"]]
             m.name
         "#),
-        Value::Str("cam".to_string())
+        Value::Str("cam".into())
     );
 }
 
@@ -1432,7 +1414,7 @@ fn vm_dot_access_map() {
             m.name
         "#
         ),
-        Value::Str("Alice".to_string())
+        Value::Str("Alice".into())
     );
 }
 

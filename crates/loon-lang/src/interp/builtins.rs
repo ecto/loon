@@ -252,7 +252,7 @@ pub fn register_builtins(env: &mut Env) {
 
     builtin!(env, "str", |_, args: &[Value]| {
         let s: String = args.iter().map(|v| v.display_str()).collect();
-        Ok(Value::Str(s))
+        Ok(Value::Str(s.into()))
     });
 
     builtin!(env, "println", |_, args: &[Value]| {
@@ -301,7 +301,7 @@ pub fn register_builtins(env: &mut Env) {
             (Value::Str(s), Value::Str(delims)) => {
                 let words: imbl::Vector<Value> = s
                     .split(|c: char| delims.contains(c))
-                    .map(|w| Value::Str(w.to_string()))
+                    .map(|w| Value::Str(w.into()))
                     .collect();
                 Ok(Value::Vec(words))
             }
@@ -313,7 +313,7 @@ pub fn register_builtins(env: &mut Env) {
         match (&args[0], &args[1]) {
             (Value::Str(sep), Value::Vec(v)) | (Value::Vec(v), Value::Str(sep)) => {
                 let parts: Vec<String> = v.iter().map(|x| x.display_str()).collect();
-                Ok(Value::Str(parts.join(sep)))
+                Ok(Value::Str(parts.join(sep).into()))
             }
             _ => Err(err("join requires a separator and vector")),
         }
@@ -321,21 +321,21 @@ pub fn register_builtins(env: &mut Env) {
 
     builtin!(env, "trim", |_, args: &[Value]| {
         match &args[0] {
-            Value::Str(s) => Ok(Value::Str(s.trim().to_string())),
+            Value::Str(s) => Ok(Value::Str(s.trim().into())),
             _ => Err(err("trim requires a string")),
         }
     });
 
     builtin!(env, "starts-with?", |_, args: &[Value]| {
         match (&args[0], &args[1]) {
-            (Value::Str(s), Value::Str(prefix)) => Ok(Value::Bool(s.starts_with(prefix.as_str()))),
+            (Value::Str(s), Value::Str(prefix)) => Ok(Value::Bool(s.starts_with(&**prefix))),
             _ => Err(err("starts-with? requires two strings")),
         }
     });
 
     builtin!(env, "ends-with?", |_, args: &[Value]| {
         match (&args[0], &args[1]) {
-            (Value::Str(s), Value::Str(suffix)) => Ok(Value::Bool(s.ends_with(suffix.as_str()))),
+            (Value::Str(s), Value::Str(suffix)) => Ok(Value::Bool(s.ends_with(&**suffix))),
             _ => Err(err("ends-with? requires two strings")),
         }
     });
@@ -343,7 +343,7 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "replace", |_, args: &[Value]| {
         match (&args[0], &args[1], &args[2]) {
             (Value::Str(s), Value::Str(from), Value::Str(to)) => {
-                Ok(Value::Str(s.replace(from.as_str(), to)))
+                Ok(Value::Str(s.replace(&**from, &**to).into()))
             }
             _ => Err(err("replace requires three strings")),
         }
@@ -351,14 +351,14 @@ pub fn register_builtins(env: &mut Env) {
 
     builtin!(env, "uppercase", |_, args: &[Value]| {
         match &args[0] {
-            Value::Str(s) => Ok(Value::Str(s.to_uppercase())),
+            Value::Str(s) => Ok(Value::Str(s.to_uppercase().into())),
             _ => Err(err("uppercase requires a string")),
         }
     });
 
     builtin!(env, "lowercase", |_, args: &[Value]| {
         match &args[0] {
-            Value::Str(s) => Ok(Value::Str(s.to_lowercase())),
+            Value::Str(s) => Ok(Value::Str(s.to_lowercase().into())),
             _ => Err(err("lowercase requires a string")),
         }
     });
@@ -602,10 +602,10 @@ pub fn register_builtins(env: &mut Env) {
             (Value::Json(j), key) => {
                 let result = match (j.as_ref(), key) {
                     (serde_json::Value::Object(obj), Value::Str(k)) => {
-                        obj.get(k.as_str()).map(Value::from_json)
+                        obj.get(&**k).map(Value::from_json)
                     }
                     (serde_json::Value::Object(obj), Value::Keyword(k)) => {
-                        obj.get(k.as_str()).map(Value::from_json)
+                        obj.get(&**k).map(Value::from_json)
                     }
                     (serde_json::Value::Array(arr), Value::Int(i)) => {
                         arr.get(*i as usize).map(Value::from_json)
@@ -656,18 +656,18 @@ pub fn register_builtins(env: &mut Env) {
             Value::Map(m) => Ok(Value::Bool(m.contains_key(&args[1]))),
             Value::Vec(v) => Ok(Value::Bool(v.iter().any(|i| i == &args[1]))),
             Value::Str(s) => match &args[1] {
-                Value::Str(needle) => Ok(Value::Bool(s.contains(needle.as_str()))),
+                Value::Str(needle) => Ok(Value::Bool(s.contains(&**needle))),
                 _ => Err(err("contains? on string requires a string needle")),
             },
             Value::Json(j) => match (j.as_ref(), &args[1]) {
-                (serde_json::Value::Array(a), Value::Str(s)) => Ok(Value::Bool(
-                    a.iter().any(|v| v.as_str() == Some(s.as_str())),
-                )),
+                (serde_json::Value::Array(a), Value::Str(s)) => {
+                    Ok(Value::Bool(a.iter().any(|v| v.as_str() == Some(&**s))))
+                }
                 (serde_json::Value::Array(a), Value::Int(n)) => {
                     Ok(Value::Bool(a.iter().any(|v| v.as_i64() == Some(*n))))
                 }
                 (serde_json::Value::Object(o), Value::Str(s)) => {
-                    Ok(Value::Bool(o.contains_key(s.as_str())))
+                    Ok(Value::Bool(o.contains_key(&**s)))
                 }
                 _ => Err(err("contains? on JSON requires array/object")),
             },
@@ -709,13 +709,13 @@ pub fn register_builtins(env: &mut Env) {
 
         match args {
             [func, order, Value::Vec(v)] if func.is_callable() => {
-                let desc = matches!(order, Value::Keyword(k) if k == "desc");
+                let desc = matches!(order, Value::Keyword(k) if &**k == "desc");
                 do_sort(func, desc, v)
             }
             [func, Value::Vec(v)] if func.is_callable() => do_sort(func, false, v),
             [func, order] => {
                 let func_clone = func.clone();
-                let desc = matches!(order, Value::Keyword(k) if k == "desc");
+                let desc = matches!(order, Value::Keyword(k) if &**k == "desc");
                 Ok(Value::Builtin(
                     "sort-by-partial".to_string(),
                     Arc::new(move |_, inner_args: &[Value]| {
@@ -843,11 +843,11 @@ pub fn register_builtins(env: &mut Env) {
             }
             Ok(Value::Vec(new))
         } else if let Value::Str(s) = &args[0] {
-            let mut new = s.clone();
+            let mut new = s.to_string();
             for a in &args[1..] {
                 new.push_str(&a.display_str());
             }
-            Ok(Value::Str(new))
+            Ok(Value::Str(new.into()))
         } else {
             Err(err("push! requires a mutable collection"))
         }
@@ -924,7 +924,7 @@ pub fn register_builtins(env: &mut Env) {
                 let rev: imbl::Vector<Value> = v.iter().rev().cloned().collect();
                 Ok(Value::Vec(rev))
             }
-            Value::Str(s) => Ok(Value::Str(s.chars().rev().collect())),
+            Value::Str(s) => Ok(Value::Str(s.chars().rev().collect::<String>().into())),
             _ => Err(err("reverse requires a vector or string")),
         }
     });
@@ -1112,7 +1112,7 @@ pub fn register_builtins(env: &mut Env) {
                 if s.is_ascii() {
                     let bytes = s.as_bytes();
                     if idx < bytes.len() {
-                        Ok(Value::Str(String::from(bytes[idx] as char)))
+                        Ok(Value::Str(String::from(bytes[idx] as char).into()))
                     } else {
                         Err(err(format!(
                             "char-at: index {} out of bounds (len {})",
@@ -1123,7 +1123,7 @@ pub fn register_builtins(env: &mut Env) {
                 } else {
                     s.chars()
                         .nth(idx)
-                        .map(|c| Value::Str(c.to_string()))
+                        .map(|c| Value::Str(c.to_string().into()))
                         .ok_or_else(|| {
                             err(format!(
                                 "char-at: index {} out of bounds (len {})",
@@ -1151,7 +1151,7 @@ pub fn register_builtins(env: &mut Env) {
                             s.len()
                         )));
                     }
-                    Ok(Value::Str(s[start..end].to_string()))
+                    Ok(Value::Str(s[start..end].into()))
                 } else {
                     let chars: Vec<char> = s.chars().collect();
                     if start > chars.len() || end > chars.len() || start > end {
@@ -1162,7 +1162,9 @@ pub fn register_builtins(env: &mut Env) {
                             chars.len()
                         )));
                     }
-                    Ok(Value::Str(chars[start..end].iter().collect()))
+                    Ok(Value::Str(
+                        chars[start..end].iter().collect::<String>().into(),
+                    ))
                 }
             }
             _ => Err(err("substring requires a string, start, and end")),
@@ -1171,7 +1173,7 @@ pub fn register_builtins(env: &mut Env) {
 
     builtin!(env, "index-of", |_, args: &[Value]| {
         match (&args[0], &args[1]) {
-            (Value::Str(haystack), Value::Str(needle)) => match haystack.find(needle.as_str()) {
+            (Value::Str(haystack), Value::Str(needle)) => match haystack.find(&**needle) {
                 Some(pos) => Ok(Value::Int(pos as i64)),
                 None => Ok(Value::Int(-1)),
             },
@@ -1393,7 +1395,7 @@ pub fn register_builtins(env: &mut Env) {
             Value::Unit => "Unit",
             _ => "Unknown",
         };
-        Ok(Value::Str(t.to_string()))
+        Ok(Value::Str(t.into()))
     });
 
     // --- Conversion ---
@@ -1516,7 +1518,7 @@ pub fn register_builtins(env: &mut Env) {
             _ => return Err(err("unit: first argument must be a number")),
         };
         let unit_name = match &args[1] {
-            Value::Keyword(k) => k.as_str(),
+            Value::Keyword(k) => &**k,
             _ => return Err(err("unit: second argument must be a keyword")),
         };
         let scale = match unit_name {

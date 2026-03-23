@@ -67,8 +67,8 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Bool(bool),
-    Str(String),
-    Keyword(String),
+    Str(Rc<str>),
+    Keyword(Rc<str>),
     Vec(imbl::Vector<Value>),
     Set(imbl::HashSet<Value>),
     Map(imbl::HashMap<Value, Value>),
@@ -86,6 +86,12 @@ pub enum Value {
     Json(JsonRef),
     Unit,
 }
+
+/// SAFETY: Value contains Rc<str> and (via LoonFn) Rc<[Expr]>, neither of which
+/// is Send/Sync. This is safe because the interpreter is single-threaded in WASM,
+/// and thread spawns use deep_clone to create independent copies.
+unsafe impl Send for Value {}
+unsafe impl Sync for Value {}
 
 impl Eq for Value {}
 
@@ -163,7 +169,7 @@ impl Value {
     /// Display without quotes for strings (used in println, str concat)
     pub fn display_str(&self) -> String {
         match self {
-            Value::Str(s) => s.clone(),
+            Value::Str(s) => s.to_string(),
             Value::Json(j) => match j.as_ref() {
                 serde_json::Value::String(s) => s.clone(),
                 other => other.to_string(),
@@ -184,7 +190,7 @@ impl Value {
                     Value::Float(n.as_f64().unwrap_or(0.0))
                 }
             }
-            serde_json::Value::String(s) => Value::Str(s.clone()),
+            serde_json::Value::String(s) => Value::Str(s.as_str().into()),
             serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
                 Value::Json(Arc::new(j.clone()))
             }
@@ -203,7 +209,7 @@ impl Value {
                     Value::Float(n.as_f64().unwrap_or(0.0))
                 }
             }
-            serde_json::Value::String(s) => Value::Str(s.clone()),
+            serde_json::Value::String(s) => Value::Str(s.as_str().into()),
             _ => Value::Json(j),
         }
     }

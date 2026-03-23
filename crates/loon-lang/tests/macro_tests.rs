@@ -352,5 +352,5 @@ fn effects_still_work() {
           [fn [msg] [str "caught: " msg]]]
     "#,
     );
-    assert_eq!(result, interp::Value::Str("caught: oops".to_string()));
+    assert_eq!(result, interp::Value::Str("caught: oops".into()));
 }

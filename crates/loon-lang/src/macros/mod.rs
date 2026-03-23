@@ -715,10 +715,10 @@ fn ast_value_to_expr(val: &interp::Value, span: Span) -> Result<Expr, String> {
     match val {
         interp::Value::Map(m) => {
             // Look up :kind
-            let kind = m.get(&interp::Value::Keyword("kind".to_string()));
+            let kind = m.get(&interp::Value::Keyword("kind".into()));
 
             match kind {
-                Some(interp::Value::Keyword(k)) => match k.as_str() {
+                Some(interp::Value::Keyword(k)) => match &**k {
                     "symbol" => {
                         let name = get_str_field(m, "name")?;
                         Ok(Expr::new(ExprKind::Symbol(name), span))
@@ -758,9 +758,9 @@ fn ast_value_to_expr(val: &interp::Value, span: Span) -> Result<Expr, String> {
         }
         // Allow direct value returns for simple cases
         interp::Value::Int(n) => Ok(Expr::new(ExprKind::Int(*n), span)),
-        interp::Value::Str(s) => Ok(Expr::new(ExprKind::Str(s.clone()), span)),
+        interp::Value::Str(s) => Ok(Expr::new(ExprKind::Str(s.to_string()), span)),
         interp::Value::Bool(b) => Ok(Expr::new(ExprKind::Bool(*b), span)),
-        interp::Value::Keyword(k) => Ok(Expr::new(ExprKind::Keyword(k.clone()), span)),
+        interp::Value::Keyword(k) => Ok(Expr::new(ExprKind::Keyword(k.to_string()), span)),
         other => Err(format!(
             "procedural macro returned unexpected value: {other}"
         )),
@@ -773,9 +773,9 @@ fn get_str_field(
     m: &imbl::HashMap<interp::Value, interp::Value>,
     field: &str,
 ) -> Result<String, String> {
-    m.get(&interp::Value::Keyword(field.to_string()))
+    m.get(&interp::Value::Keyword(field.into()))
         .and_then(|v| match v {
-            interp::Value::Str(s) => Some(s.clone()),
+            interp::Value::Str(s) => Some(s.to_string()),
             _ => None,
         })
         .ok_or_else(|| format!("AST node missing string field :{field}"))
@@ -785,7 +785,7 @@ fn get_int_field(
     m: &imbl::HashMap<interp::Value, interp::Value>,
     field: &str,
 ) -> Result<i64, String> {
-    m.get(&interp::Value::Keyword(field.to_string()))
+    m.get(&interp::Value::Keyword(field.into()))
         .and_then(|v| match v {
             interp::Value::Int(n) => Some(*n),
             _ => None,
@@ -797,7 +797,7 @@ fn get_bool_field(
     m: &imbl::HashMap<interp::Value, interp::Value>,
     field: &str,
 ) -> Result<bool, String> {
-    m.get(&interp::Value::Keyword(field.to_string()))
+    m.get(&interp::Value::Keyword(field.into()))
         .and_then(|v| match v {
             interp::Value::Bool(b) => Some(*b),
             _ => None,
@@ -809,9 +809,9 @@ fn get_keyword_field(
     m: &imbl::HashMap<interp::Value, interp::Value>,
     field: &str,
 ) -> Result<String, String> {
-    m.get(&interp::Value::Keyword(field.to_string()))
+    m.get(&interp::Value::Keyword(field.into()))
         .and_then(|v| match v {
-            interp::Value::Keyword(k) => Some(k.clone()),
+            interp::Value::Keyword(k) => Some(k.to_string()),
             _ => None,
         })
         .ok_or_else(|| format!("AST node missing keyword field :{field}"))
@@ -821,7 +821,7 @@ fn get_vec_field(
     m: &imbl::HashMap<interp::Value, interp::Value>,
     field: &str,
 ) -> Result<imbl::Vector<interp::Value>, String> {
-    m.get(&interp::Value::Keyword(field.to_string()))
+    m.get(&interp::Value::Keyword(field.into()))
         .and_then(|v| match v {
             interp::Value::Vec(items) => Some(items.clone()),
             _ => None,

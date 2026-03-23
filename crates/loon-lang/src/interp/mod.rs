@@ -104,12 +104,12 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
         }
         ("IO", "read-file") => {
             if let Some(Value::Str(path)) = performed.args.first() {
-                match std::fs::read_to_string(path) {
-                    Ok(contents) => Some(Ok(Value::Str(contents))),
+                match std::fs::read_to_string(&**path) {
+                    Ok(contents) => Some(Ok(Value::Str(contents.into()))),
                     Err(e) => Some(Err(perform_effect(
                         "Fail",
                         "fail",
-                        vec![Value::Str(e.to_string())],
+                        vec![Value::Str(e.to_string().into())],
                     ))),
                 }
             } else {
@@ -120,12 +120,12 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
             if let (Some(Value::Str(path)), Some(contents)) =
                 (performed.args.first(), performed.args.get(1))
             {
-                match std::fs::write(path, contents.display_str()) {
+                match std::fs::write(&**path, contents.display_str()) {
                     Ok(()) => Some(Ok(Value::Unit)),
                     Err(e) => Some(Err(perform_effect(
                         "Fail",
                         "fail",
-                        vec![Value::Str(e.to_string())],
+                        vec![Value::Str(e.to_string().into())],
                     ))),
                 }
             } else {
@@ -134,12 +134,12 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
         }
         ("IO", "parse-json") => {
             if let Some(Value::Str(text)) = performed.args.first() {
-                match serde_json::from_str::<serde_json::Value>(text) {
+                match serde_json::from_str::<serde_json::Value>(&**text) {
                     Ok(val) => Some(Ok(json_to_value(val))),
                     Err(e) => Some(Err(perform_effect(
                         "Fail",
                         "fail",
-                        vec![Value::Str(e.to_string())],
+                        vec![Value::Str(e.to_string().into())],
                     ))),
                 }
             } else {
@@ -147,13 +147,17 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
             }
         }
         ("Process", "args") => {
-            let args: imbl::Vector<Value> = std::env::args().map(Value::Str).collect();
+            let args: imbl::Vector<Value> =
+                std::env::args().map(|a| Value::Str(a.into())).collect();
             Some(Ok(Value::Vec(args)))
         }
         ("Process", "env") => {
             if let Some(Value::Str(key)) = performed.args.first() {
-                match std::env::var(key) {
-                    Ok(val) => Some(Ok(Value::Adt("Some".to_string(), vec![Value::Str(val)]))),
+                match std::env::var(&**key) {
+                    Ok(val) => Some(Ok(Value::Adt(
+                        "Some".to_string(),
+                        vec![Value::Str(val.into())],
+                    ))),
                     Err(_) => Some(Ok(Value::Adt("None".to_string(), vec![]))),
                 }
             } else {
@@ -275,11 +279,13 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
         }
         ("IO", "list-dir") => {
             if let Some(Value::Str(path)) = performed.args.first() {
-                match std::fs::read_dir(path) {
+                match std::fs::read_dir(&**path) {
                     Ok(entries) => {
                         let names: imbl::Vector<Value> = entries
                             .filter_map(|e| e.ok())
-                            .map(|e| Value::Str(e.file_name().to_string_lossy().into_owned()))
+                            .map(|e| {
+                                Value::Str(e.file_name().to_string_lossy().into_owned().into())
+                            })
                             .collect();
                         Some(Ok(Value::Vec(names)))
                     }
@@ -292,7 +298,7 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
         }
         ("IO", "mtime") => {
             if let Some(Value::Str(path)) = performed.args.first() {
-                match std::fs::metadata(path).and_then(|m| m.modified()) {
+                match std::fs::metadata(&**path).and_then(|m| m.modified()) {
                     Ok(time) => {
                         let millis = time
                             .duration_since(std::time::UNIX_EPOCH)
@@ -303,7 +309,7 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
                     Err(e) => Some(Err(perform_effect(
                         "Fail",
                         "fail",
-                        vec![Value::Str(e.to_string())],
+                        vec![Value::Str(e.to_string().into())],
                     ))),
                 }
             } else {
@@ -329,12 +335,12 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
             if let (Some(Value::Str(src)), Some(Value::Str(dst))) =
                 (performed.args.first(), performed.args.get(1))
             {
-                match std::fs::copy(src, dst) {
+                match std::fs::copy(&**src, &**dst) {
                     Ok(_) => Some(Ok(Value::Unit)),
                     Err(e) => Some(Err(perform_effect(
                         "Fail",
                         "fail",
-                        vec![Value::Str(e.to_string())],
+                        vec![Value::Str(e.to_string().into())],
                     ))),
                 }
             } else {
@@ -343,12 +349,12 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
         }
         ("IO", "mkdir") => {
             if let Some(Value::Str(path)) = performed.args.first() {
-                match std::fs::create_dir_all(path) {
+                match std::fs::create_dir_all(&**path) {
                     Ok(()) => Some(Ok(Value::Unit)),
                     Err(e) => Some(Err(perform_effect(
                         "Fail",
                         "fail",
-                        vec![Value::Str(e.to_string())],
+                        vec![Value::Str(e.to_string().into())],
                     ))),
                 }
             } else {
@@ -366,30 +372,30 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
                             line.pop();
                         }
                     }
-                    Some(Ok(Value::Str(line)))
+                    Some(Ok(Value::Str(line.into())))
                 }
                 Err(e) => Some(Err(perform_effect(
                     "Fail",
                     "fail",
-                    vec![Value::Str(e.to_string())],
+                    vec![Value::Str(e.to_string().into())],
                 ))),
             }
         }
         ("IO", "file-exists?") => {
             if let Some(Value::Str(path)) = performed.args.first() {
-                Some(Ok(Value::Bool(std::path::Path::new(path).exists())))
+                Some(Ok(Value::Bool(std::path::Path::new(&**path).exists())))
             } else {
                 Some(Err(err("IO.file-exists? requires a string path")))
             }
         }
         ("IO", "delete-file") => {
             if let Some(Value::Str(path)) = performed.args.first() {
-                match std::fs::remove_file(path) {
+                match std::fs::remove_file(&**path) {
                     Ok(()) => Some(Ok(Value::Unit)),
                     Err(e) => Some(Err(perform_effect(
                         "Fail",
                         "fail",
-                        vec![Value::Str(e.to_string())],
+                        vec![Value::Str(e.to_string().into())],
                     ))),
                 }
             } else {
@@ -404,12 +410,12 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
             Some(Ok(Value::Int(secs)))
         }
         #[cfg(feature = "pkg-fetch")]
-        ("IO", "uuid") => Some(Ok(Value::Str(uuid::Uuid::new_v4().to_string()))),
+        ("IO", "uuid") => Some(Ok(Value::Str(uuid::Uuid::new_v4().to_string().into()))),
         #[cfg(feature = "pkg-fetch")]
         ("IO", "blake3") => {
             if let Some(Value::Str(text)) = performed.args.first() {
                 let hash = blake3::hash(text.as_bytes());
-                Some(Ok(Value::Str(hash.to_hex().to_string())))
+                Some(Ok(Value::Str(hash.to_hex().to_string().into())))
             } else {
                 Some(Err(err("IO.blake3 requires a string argument")))
             }
@@ -418,7 +424,7 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
             if let Some(val) = performed.args.first() {
                 let json = value_to_json(val);
                 match serde_json::to_string(&json) {
-                    Ok(s) => Some(Ok(Value::Str(s))),
+                    Ok(s) => Some(Ok(Value::Str(s.into()))),
                     Err(e) => Some(Err(err(format!("IO.to-json: {e}")))),
                 }
             } else {
@@ -427,11 +433,11 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
         }
         ("Process", "exec") => {
             let cmd_str = match performed.args.first() {
-                Some(Value::Str(s)) => s.clone(),
+                Some(Value::Str(s)) => s.to_string(),
                 _ => return Some(Err(err("Process.exec requires a command string"))),
             };
             let input = performed.args.get(1).and_then(|v| match v {
-                Value::Str(s) => Some(s.clone()),
+                Value::Str(s) => Some(s.to_string()),
                 _ => None,
             });
             let parts: Vec<&str> = cmd_str.split_whitespace().collect();
@@ -458,19 +464,23 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
                             let result = Value::Map(
                                 [
                                     (
-                                        Value::Keyword("exit-code".to_string()),
+                                        Value::Keyword("exit-code".into()),
                                         Value::Int(output.status.code().unwrap_or(-1) as i64),
                                     ),
                                     (
-                                        Value::Keyword("stdout".to_string()),
+                                        Value::Keyword("stdout".into()),
                                         Value::Str(
-                                            String::from_utf8_lossy(&output.stdout).to_string(),
+                                            String::from_utf8_lossy(&output.stdout)
+                                                .into_owned()
+                                                .into(),
                                         ),
                                     ),
                                     (
-                                        Value::Keyword("stderr".to_string()),
+                                        Value::Keyword("stderr".into()),
                                         Value::Str(
-                                            String::from_utf8_lossy(&output.stderr).to_string(),
+                                            String::from_utf8_lossy(&output.stderr)
+                                                .into_owned()
+                                                .into(),
                                         ),
                                     ),
                                 ]
@@ -518,8 +528,8 @@ fn value_to_json(val: &Value) -> serde_json::Value {
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
         Value::Bool(b) => serde_json::Value::Bool(*b),
-        Value::Str(s) => serde_json::Value::String(s.clone()),
-        Value::Keyword(k) => serde_json::Value::String(k.clone()),
+        Value::Str(s) => serde_json::Value::String(s.to_string()),
+        Value::Keyword(k) => serde_json::Value::String(k.to_string()),
         Value::Vec(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
         Value::Set(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
         Value::Tuple(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
@@ -527,8 +537,8 @@ fn value_to_json(val: &Value) -> serde_json::Value {
             let mut map = serde_json::Map::new();
             for (k, v) in pairs {
                 let key = match k {
-                    Value::Str(s) => s.clone(),
-                    Value::Keyword(k) => k.clone(),
+                    Value::Str(s) => s.to_string(),
+                    Value::Keyword(k) => k.to_string(),
                     other => other.display_str(),
                 };
                 map.insert(key, value_to_json(v));
@@ -574,11 +584,11 @@ fn json_to_value(j: serde_json::Value) -> Value {
                 Value::Float(n.as_f64().unwrap_or(0.0))
             }
         }
-        serde_json::Value::String(s) => Value::Str(s),
+        serde_json::Value::String(s) => Value::Str(s.into()),
         serde_json::Value::Array(arr) => Value::Vec(arr.into_iter().map(json_to_value).collect()),
         serde_json::Value::Object(obj) => Value::Map(
             obj.into_iter()
-                .map(|(k, v)| (Value::Keyword(k), json_to_value(v)))
+                .map(|(k, v)| (Value::Keyword(k.into()), json_to_value(v)))
                 .collect(),
         ),
     }
@@ -733,12 +743,12 @@ pub(crate) fn access_field(val: &Value, field: &str, span: Span) -> IResult {
     }
     // Map keyword field access: map.field → (get map :field)
     if let Value::Map(m) = val {
-        let key = Value::Keyword(field.to_string());
+        let key = Value::Keyword(field.into());
         if let Some(v) = m.get(&key) {
             return Ok(v.clone());
         }
         // Fallback: string key (IO.parse-json returns string-keyed maps)
-        let str_key = Value::Str(field.to_string());
+        let str_key = Value::Str(field.into());
         if let Some(v) = m.get(&str_key) {
             return Ok(v.clone());
         }
@@ -776,8 +786,8 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
         ExprKind::Int(n) => Ok(Value::Int(*n)),
         ExprKind::Float(n) => Ok(Value::Float(*n)),
         ExprKind::Bool(b) => Ok(Value::Bool(*b)),
-        ExprKind::Str(s) => Ok(Value::Str(s.clone())),
-        ExprKind::Keyword(k) => Ok(Value::Keyword(k.clone())),
+        ExprKind::Str(s) => Ok(Value::Str(s.as_str().into())),
+        ExprKind::Keyword(k) => Ok(Value::Keyword(k.as_str().into())),
         ExprKind::Symbol(s) => {
             if let Some(v) = env.get(s) {
                 return Ok(v);
@@ -859,7 +869,7 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                         if items.len() >= 2 {
                             let src_val = eval(&items[1], env)?;
                             let src = match &src_val {
-                                Value::Str(s) => s.clone(),
+                                Value::Str(s) => s.to_string(),
                                 _ => return Err(err("catch-errors requires a string argument")),
                             };
                             return Ok(eval_catch_errors(&src));
@@ -1258,9 +1268,9 @@ pub(crate) fn pattern_matches(
         // Literal bool
         ExprKind::Bool(b) => Ok(value == &Value::Bool(*b)),
         // Literal string
-        ExprKind::Str(s) => Ok(value == &Value::Str(s.clone())),
+        ExprKind::Str(s) => Ok(value == &Value::Str(s.as_str().into())),
         // Keyword
-        ExprKind::Keyword(k) => Ok(value == &Value::Keyword(k.clone())),
+        ExprKind::Keyword(k) => Ok(value == &Value::Keyword(k.as_str().into())),
         // Variable binding or constructor name
         ExprKind::Symbol(s) => {
             // Check if it's a nullary ADT constructor
@@ -1439,7 +1449,7 @@ pub(crate) fn eval_type_def(args: &[Expr], env: &mut Env) -> IResult {
                                         let mut ordered =
                                             Vec::with_capacity(field_names_for_ctor.len());
                                         for fname in &field_names_for_ctor {
-                                            let key = Value::Keyword(fname.clone());
+                                            let key = Value::Keyword(fname.as_str().into());
                                             let val = m.get(&key).cloned().unwrap_or(Value::Unit);
                                             ordered.push(val);
                                         }
@@ -2237,7 +2247,7 @@ pub(crate) fn bind_param(
                 _ => return Err(err("map destructuring requires a map")),
             };
             for (name, default_expr) in entries {
-                let key = Value::Keyword(name.clone());
+                let key = Value::Keyword(name.as_str().into());
                 let bound = match m.get(&key) {
                     Some(val) => val.clone(),
                     None => match default_expr {
@@ -2465,21 +2475,18 @@ pub(crate) fn eval_catch_errors(source: &str) -> Value {
         Ok(exprs) => exprs,
         Err(e) => {
             let error_map: imbl::HashMap<Value, Value> = [
+                (Value::Keyword("code".into()), Value::Str("E0000".into())),
+                (Value::Keyword("what".into()), Value::Str(e.message.into())),
                 (
-                    Value::Keyword("code".to_string()),
-                    Value::Str("E0000".to_string()),
-                ),
-                (Value::Keyword("what".to_string()), Value::Str(e.message)),
-                (
-                    Value::Keyword("why".to_string()),
-                    Value::Str("parse error".to_string()),
+                    Value::Keyword("why".into()),
+                    Value::Str("parse error".into()),
                 ),
                 (
-                    Value::Keyword("fix".to_string()),
-                    Value::Str("check syntax".to_string()),
+                    Value::Keyword("fix".into()),
+                    Value::Str("check syntax".into()),
                 ),
                 (
-                    Value::Keyword("spans".to_string()),
+                    Value::Keyword("spans".into()),
                     Value::Vec(imbl::Vector::new()),
                 ),
             ]
@@ -2509,16 +2516,13 @@ pub(crate) fn eval_catch_errors(source: &str) -> Value {
                     Value::Map(
                         [
                             (
-                                Value::Keyword("start".to_string()),
+                                Value::Keyword("start".into()),
                                 Value::Int(l.span.start as i64),
                             ),
+                            (Value::Keyword("end".into()), Value::Int(l.span.end as i64)),
                             (
-                                Value::Keyword("end".to_string()),
-                                Value::Int(l.span.end as i64),
-                            ),
-                            (
-                                Value::Keyword("label".to_string()),
-                                Value::Str(l.label.clone()),
+                                Value::Keyword("label".into()),
+                                Value::Str(l.label.as_str().into()),
                             ),
                         ]
                         .into_iter()
@@ -2529,22 +2533,22 @@ pub(crate) fn eval_catch_errors(source: &str) -> Value {
             Value::Map(
                 [
                     (
-                        Value::Keyword("code".to_string()),
-                        Value::Str(format!("{}", diag.code)),
+                        Value::Keyword("code".into()),
+                        Value::Str(format!("{}", diag.code).into()),
                     ),
                     (
-                        Value::Keyword("what".to_string()),
-                        Value::Str(diag.what.clone()),
+                        Value::Keyword("what".into()),
+                        Value::Str(diag.what.as_str().into()),
                     ),
                     (
-                        Value::Keyword("why".to_string()),
-                        Value::Str(diag.why.clone()),
+                        Value::Keyword("why".into()),
+                        Value::Str(diag.why.as_str().into()),
                     ),
                     (
-                        Value::Keyword("fix".to_string()),
-                        Value::Str(diag.fix.clone()),
+                        Value::Keyword("fix".into()),
+                        Value::Str(diag.fix.as_str().into()),
                     ),
-                    (Value::Keyword("spans".to_string()), Value::Vec(spans)),
+                    (Value::Keyword("spans".into()), Value::Vec(spans)),
                 ]
                 .into_iter()
                 .collect(),

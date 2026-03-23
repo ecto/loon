@@ -90,11 +90,8 @@ fn net_get(args: &[Value]) -> IResult {
             let body = response.into_string().unwrap_or_default();
             Ok(Value::Map(
                 vec![
-                    (
-                        Value::Keyword("status".to_string()),
-                        Value::Int(status as i64),
-                    ),
-                    (Value::Keyword("body".to_string()), Value::Str(body)),
+                    (Value::Keyword("status".into()), Value::Int(status as i64)),
+                    (Value::Keyword("body".into()), Value::Str(body.into())),
                 ]
                 .into_iter()
                 .collect(),
@@ -104,11 +101,8 @@ fn net_get(args: &[Value]) -> IResult {
             let body = response.into_string().unwrap_or_default();
             Ok(Value::Map(
                 vec![
-                    (
-                        Value::Keyword("status".to_string()),
-                        Value::Int(code as i64),
-                    ),
-                    (Value::Keyword("body".to_string()), Value::Str(body)),
+                    (Value::Keyword("status".into()), Value::Int(code as i64)),
+                    (Value::Keyword("body".into()), Value::Str(body.into())),
                 ]
                 .into_iter()
                 .collect(),
@@ -157,11 +151,8 @@ fn net_post(args: &[Value]) -> IResult {
             let resp_body = response.into_string().unwrap_or_default();
             Ok(Value::Map(
                 vec![
-                    (
-                        Value::Keyword("status".to_string()),
-                        Value::Int(status as i64),
-                    ),
-                    (Value::Keyword("body".to_string()), Value::Str(resp_body)),
+                    (Value::Keyword("status".into()), Value::Int(status as i64)),
+                    (Value::Keyword("body".into()), Value::Str(resp_body.into())),
                 ]
                 .into_iter()
                 .collect(),
@@ -171,11 +162,8 @@ fn net_post(args: &[Value]) -> IResult {
             let resp_body = response.into_string().unwrap_or_default();
             Ok(Value::Map(
                 vec![
-                    (
-                        Value::Keyword("status".to_string()),
-                        Value::Int(code as i64),
-                    ),
-                    (Value::Keyword("body".to_string()), Value::Str(resp_body)),
+                    (Value::Keyword("status".into()), Value::Int(code as i64)),
+                    (Value::Keyword("body".into()), Value::Str(resp_body.into())),
                 ]
                 .into_iter()
                 .collect(),
@@ -217,15 +205,18 @@ fn http_serve(args: &[Value]) -> IResult {
                     // Build request map
                     let req_map = Value::Map(
                         vec![
-                            (Value::Keyword("id".to_string()), Value::Int(conn_id as i64)),
-                            (Value::Keyword("method".to_string()), Value::Str(req.method)),
-                            (Value::Keyword("path".to_string()), Value::Str(req.path)),
+                            (Value::Keyword("id".into()), Value::Int(conn_id as i64)),
                             (
-                                Value::Keyword("headers".to_string()),
+                                Value::Keyword("method".into()),
+                                Value::Str(req.method.into()),
+                            ),
+                            (Value::Keyword("path".into()), Value::Str(req.path.into())),
+                            (
+                                Value::Keyword("headers".into()),
                                 Value::Map(
                                     req.headers
                                         .into_iter()
-                                        .map(|(k, v)| (Value::Str(k), Value::Str(v)))
+                                        .map(|(k, v)| (Value::Str(k.into()), Value::Str(v.into())))
                                         .collect(),
                                 ),
                             ),
@@ -296,7 +287,7 @@ fn http_respond(args: &[Value]) -> IResult {
             Value::Keyword(s) => s.clone(),
             _ => continue,
         };
-        if key == "content-type" {
+        if &*key == "content-type" {
             continue; // already set
         }
         if let Value::Str(val) = v {
@@ -325,11 +316,11 @@ fn serve_file(args: &[Value]) -> IResult {
         _ => return Err(err("Net.serve-file requires a file path")),
     };
     let content_type = match args.get(2) {
-        Some(Value::Str(s)) => s.clone(),
+        Some(Value::Str(s)) => s.to_string(),
         _ => "application/octet-stream".to_string(),
     };
 
-    let body = match std::fs::read(&file_path) {
+    let body = match std::fs::read(&*file_path) {
         Ok(bytes) => bytes,
         Err(_) => {
             // File not found — send 404
@@ -486,7 +477,7 @@ fn parse_request(stream: &TcpStream) -> Result<HttpRequest, ()> {
 // --- Map helpers ---
 
 fn get_map_int(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<u16> {
-    m.get(&Value::Keyword(key.to_string())).and_then(|v| {
+    m.get(&Value::Keyword(key.into())).and_then(|v| {
         if let Value::Int(n) = v {
             Some(*n as u16)
         } else {
@@ -496,9 +487,9 @@ fn get_map_int(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<u16> {
 }
 
 fn get_map_str(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<String> {
-    m.get(&Value::Keyword(key.to_string())).and_then(|v| {
+    m.get(&Value::Keyword(key.into())).and_then(|v| {
         if let Value::Str(s) = v {
-            Some(s.clone())
+            Some(s.to_string())
         } else {
             None
         }
@@ -506,7 +497,7 @@ fn get_map_str(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<String> {
 }
 
 fn get_map_map(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<imbl::HashMap<Value, Value>> {
-    m.get(&Value::Keyword(key.to_string())).and_then(|v| {
+    m.get(&Value::Keyword(key.into())).and_then(|v| {
         if let Value::Map(inner) = v {
             Some(inner.clone())
         } else {
@@ -517,11 +508,11 @@ fn get_map_map(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<imbl::HashM
 
 fn get_str_from_pairs(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<String> {
     // Try keyword key first, then string key
-    m.get(&Value::Keyword(key.to_string()))
-        .or_else(|| m.get(&Value::Str(key.to_string())))
+    m.get(&Value::Keyword(key.into()))
+        .or_else(|| m.get(&Value::Str(key.into())))
         .and_then(|v| {
             if let Value::Str(s) = v {
-                Some(s.clone())
+                Some(s.to_string())
             } else {
                 None
             }

@@ -205,16 +205,16 @@ fn html_bridge_op(inner: &mut HtmlBridgeInner, op: &str, args: &[Value]) -> IRes
             Ok(Value::Int(0))
         }
         "removeListener" => Ok(Value::Unit),
-        "getValue" => Ok(Value::Str(String::new())),
+        "getValue" => Ok(Value::Str("".into())),
         "setValue" => Ok(Value::Unit),
-        "evalLoon" => Ok(Value::Str(String::new())),
+        "evalLoon" => Ok(Value::Str("".into())),
         "setTitle" => {
             let title = arg_str(args, 0, "setTitle")?;
             inner.title = Some(title);
             Ok(Value::Unit)
         }
         "pushState" => Ok(Value::Unit),
-        "location" => Ok(Value::Str(inner.location.clone())),
+        "location" => Ok(Value::Str(inner.location.as_str().into())),
         "requestAnimationFrame" => Ok(Value::Unit),
         "setTimeout" => Ok(Value::Unit),
         _ => {
@@ -226,8 +226,8 @@ fn html_bridge_op(inner: &mut HtmlBridgeInner, op: &str, args: &[Value]) -> IRes
 
 fn arg_str(args: &[Value], idx: usize, op: &str) -> Result<String, InterpError> {
     match args.get(idx) {
-        Some(Value::Str(s)) => Ok(s.clone()),
-        Some(Value::Keyword(k)) => Ok(k.clone()),
+        Some(Value::Str(s)) => Ok(s.to_string()),
+        Some(Value::Keyword(k)) => Ok(k.to_string()),
         Some(v) => Ok(v.display_str()),
         None => Err(err(format!("{op}: missing argument {idx}"))),
     }

@@ -378,9 +378,9 @@ fn value_to_js(val: &Value) -> JsValue {
         Value::Map(pairs) => {
             let obj = js_sys::Object::new();
             for (k, v) in pairs {
-                let key = match k {
-                    Value::Str(s) => s.clone(),
-                    Value::Keyword(k) => k.clone(),
+                let key: String = match k {
+                    Value::Str(s) => s.to_string(),
+                    Value::Keyword(k) => k.to_string(),
                     other => format!("{other}"),
                 };
                 js_sys::Reflect::set(&obj, &JsValue::from_str(&key), &value_to_js(v)).ok();
@@ -405,7 +405,7 @@ fn js_to_value(js: &JsValue) -> Value {
             Value::Float(n)
         }
     } else if let Some(s) = js.as_string() {
-        Value::Str(s)
+        Value::Str(s.into())
     } else {
         Value::Unit
     }

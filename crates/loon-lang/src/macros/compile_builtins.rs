@@ -34,8 +34,8 @@ fn register_io_builtins(env: &mut interp::Env) {
             "IO.read-file".to_string(),
             Arc::new(|_name, args| {
                 if let Some(Value::Str(path)) = args.first() {
-                    match std::fs::read_to_string(path) {
-                        Ok(contents) => Ok(Value::Str(contents)),
+                    match std::fs::read_to_string(&**path) {
+                        Ok(contents) => Ok(Value::Str(contents.into())),
                         Err(e) => Err(interp::err(format!("IO.read-file: {e}"))),
                     }
                 } else {
@@ -51,7 +51,7 @@ fn register_io_builtins(env: &mut interp::Env) {
             "IO.file-exists?".to_string(),
             Arc::new(|_name, args| {
                 if let Some(Value::Str(path)) = args.first() {
-                    Ok(Value::Bool(std::path::Path::new(path).exists()))
+                    Ok(Value::Bool(std::path::Path::new(&**path).exists()))
                 } else {
                     Err(interp::err("IO.file-exists? requires a string path"))
                 }
@@ -65,7 +65,7 @@ fn register_io_builtins(env: &mut interp::Env) {
             "IO.write-file".to_string(),
             Arc::new(|_name, args| {
                 if let (Some(Value::Str(path)), Some(contents)) = (args.first(), args.get(1)) {
-                    match std::fs::write(path, contents.display_str()) {
+                    match std::fs::write(&**path, contents.display_str()) {
                         Ok(()) => Ok(Value::Unit),
                         Err(e) => Err(interp::err(format!("IO.write-file: {e}"))),
                     }
@@ -86,8 +86,8 @@ fn register_env_builtins(env: &mut interp::Env) {
             "Env.get".to_string(),
             Arc::new(|_name, args| {
                 if let Some(Value::Str(key)) = args.first() {
-                    match std::env::var(key) {
-                        Ok(val) => Ok(Value::Adt("Some".to_string(), vec![Value::Str(val)])),
+                    match std::env::var(&**key) {
+                        Ok(val) => Ok(Value::Adt("Some".to_string(), vec![Value::Str(val.into())])),
                         Err(_) => Ok(Value::Adt("None".to_string(), vec![])),
                     }
                 } else {
