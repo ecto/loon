@@ -89,11 +89,21 @@ impl Vm {
     pub fn run(&mut self) -> Result<VmResult, VmError> {
         let entry = self.module.entry;
         self.call_func(entry, &[], 0)?;
-        let val = self.execute()?;
+        let val = self.execute(0)?;
         Ok(VmResult {
             value: val,
             output: std::mem::take(&mut self.output),
         })
+    }
+
+    /// Call a function and run it to completion, returning its result.
+    /// Used by higher-order builtins (map, filter, each).
+    fn run_call(&mut self, func_id: FuncId, args: &[Val]) -> Result<Val, VmError> {
+        let depth = self.frames.len();
+        self.call_func(func_id, args, 0)?;
+        // depth + 1 because call_func just pushed a frame.
+        // execute returns when frames drop below depth + 1 (i.e., when this call returns).
+        self.execute(depth + 1)
     }
 
     // ── Heap ───────────────────────────────────────────────────────────
@@ -205,7 +215,7 @@ impl Vm {
 
     // ── Main dispatch loop ─────────────────────────────────────────────
 
-    fn execute(&mut self) -> Result<Val, VmError> {
+    fn execute(&mut self, min_depth: usize) -> Result<Val, VmError> {
         let module = Rc::clone(&self.module);
 
         loop {
@@ -227,8 +237,16 @@ impl Vm {
             match end {
                 End::Ret(reg) => {
                     let val = self.r(reg);
-                    if let Some(result) = self.return_val(val)? {
-                        return Ok(result);
+                    if self.frames.is_empty() {
+                        return Ok(val);
+                    }
+                    self.return_val(val)?;
+                    // After restoring the caller's frame, check if we should
+                    // return to run_call (higher-order builtin callback).
+                    // Use strict < to avoid early return when a nested call
+                    // within the entry function completes.
+                    if self.frames.len() < min_depth {
+                        return Ok(val);
                     }
                 }
 
@@ -791,15 +809,7 @@ impl Vm {
                 }
             }
             Built::Map | Built::Filter | Built::Each | Built::Reduce => {
-                // Higher-order builtins need callback invocation
-                // For now, implement Map and Filter
-                let func = args.first().copied().unwrap_or(Val::UNIT);
-                let coll = args
-                    .get(1)
-                    .copied()
-                    .unwrap_or(args.first().copied().unwrap_or(Val::UNIT));
-
-                // thread-last: [map f coll] or [filter f coll]
+                // Higher-order builtins: call the function for each element
                 let (func, coll) = if args.len() == 2 {
                     (args[0], args[1])
                 } else {
@@ -810,17 +820,7 @@ impl Vm {
                     (Some(Obj::Closure(fid, _)), Some(Obj::Vec(items))) => {
                         let mut results = Vec::new();
                         for item in &items {
-                            // Save state, call function, restore
-                            self.frames.push(Frame {
-                                func: self.func,
-                                block: self.block,
-                                ip: self.ip,
-                                regs: self.regs.clone(),
-                                ret_reg: 0,
-                            });
-                            self.call_func(fid, &[*item], 0)?;
-                            let result = self.execute()?;
-
+                            let result = self.run_call(fid, &[*item])?;
                             match built {
                                 Built::Map => results.push(result),
                                 Built::Filter => {
@@ -828,7 +828,7 @@ impl Vm {
                                         results.push(*item);
                                     }
                                 }
-                                Built::Each => {} // discard result
+                                Built::Each => {} // side-effect only
                                 _ => {}
                             }
                         }

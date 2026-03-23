@@ -164,11 +164,6 @@ impl<'a> Lower<'a> {
             }
         }
 
-        // Second pass: collect all function names for forward references
-        for expr in &self.checker.expanded_program {
-            self.collect_func_name(expr);
-        }
-
         // Create the entry function (__main)
         let main_id = self.begin_func(Some("__main"), Span::ZERO);
         self.module.entry = main_id;
@@ -254,30 +249,6 @@ impl<'a> Lower<'a> {
                     tag += 1;
                 }
                 _ => {} // type params etc
-            }
-        }
-    }
-
-    fn collect_func_name(&mut self, expr: &Expr) {
-        if let ExprKind::List(items) = &expr.kind {
-            if items.len() >= 3 {
-                if let ExprKind::Symbol(kw) = &items[0].kind {
-                    if kw == "fn" {
-                        if let ExprKind::Symbol(name) = &items[1].kind {
-                            let id = FuncId(self.module.funcs.len() as u32 + 1); // +1 for __main
-                            self.func_map.insert(name.clone(), id);
-                        }
-                    } else if kw == "pub" && items.len() >= 4 {
-                        if let ExprKind::Symbol(inner_kw) = &items[1].kind {
-                            if inner_kw == "fn" {
-                                if let ExprKind::Symbol(name) = &items[2].kind {
-                                    let id = FuncId(self.module.funcs.len() as u32 + 1);
-                                    self.func_map.insert(name.clone(), id);
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -404,23 +375,23 @@ impl<'a> Lower<'a> {
         if let Some(r) = self.lookup(name) {
             return r;
         }
+        // Check if it's a known function (enables cross-function references)
+        if let Some(&fid) = self.func_map.get(name) {
+            let r = self.reg();
+            self.emit(Op::Close(r, fid, Vec::new(), span));
+            return r;
+        }
         // Check if it's an ADT constructor
         if let Some(&(tag, arity)) = self.ctor_map.get(name) {
             if arity == 0 {
-                // Nullary constructor — return the value directly
                 let r = self.reg();
                 self.emit(Op::Adt(r, tag, Vec::new(), span));
                 return r;
             }
-            // Constructor with args — will be called, return as a reference
-            // For now, treat as a lookup that will be resolved by the VM
         }
-        // Emit as a builtin/global lookup. For the initial lowering, we
-        // store the name as a string literal that the VM can resolve.
+        // Fallback: emit as a string literal (will be resolved by the VM)
         let r = self.reg();
         let sid = self.intern(name);
-        // Use Lit::Str as a symbol reference — the VM will resolve this
-        // TODO: proper global variable references
         self.emit(Op::Lit(r, Lit::Str(sid), span));
         r
     }
@@ -537,8 +508,9 @@ impl<'a> Lower<'a> {
             let saved_next_reg = self.next_reg;
             let saved_scopes = std::mem::take(&mut self.scopes);
 
-            // Create the function
+            // Create the function + register name for self-recursion
             let func_id = self.begin_func(Some(&name), span);
+            self.func_map.insert(name.clone(), func_id);
 
             // Set up param registers in scope
             self.scopes = vec![HashMap::new()];
@@ -548,6 +520,11 @@ impl<'a> Lower<'a> {
                 self.bind(pname, r);
             }
             self.module.funcs[func_id.0 as usize].params = vec![Ty::Any; param_names.len()];
+
+            // Set block0 params for fn/recur support
+            let param_regs: Vec<Reg> = (0..param_names.len()).map(|i| Reg(i as u32)).collect();
+            let func_mut = &mut self.module.funcs[func_id.0 as usize];
+            func_mut.blocks[0].params = param_regs;
 
             // Lower body
             let mut last = None;
@@ -568,8 +545,6 @@ impl<'a> Lower<'a> {
             self.scopes = saved_scopes;
 
             // Bind function name in current scope
-            // The VM will resolve FuncId references
-            self.func_map.insert(name.clone(), func_id);
             let r = self.reg();
             self.emit(Op::Close(r, func_id, Vec::new(), span));
             self.bind(&name, r);
@@ -744,86 +719,224 @@ impl<'a> Lower<'a> {
         let scrutinee = self.lower_expr(&args[0]);
         let merge_block = self.new_block();
 
-        // Parse arms: pattern body [pattern body ...]
-        let arms = &args[1..];
+        // Parse arms into (pattern, guard, body) triples
+        struct Arm<'a> {
+            pattern: &'a Expr,
+            guard: Option<&'a Expr>,
+            body: &'a Expr,
+        }
+        let raw = &args[1..];
+        let mut parsed_arms: Vec<Arm> = Vec::new();
         let mut i = 0;
-        let mut arm_results = Vec::new();
-
-        while i < arms.len() {
-            let pattern = &arms[i];
-            let body_expr = if i + 1 < arms.len() {
-                &arms[i + 1]
-            } else {
+        while i < raw.len() {
+            if i + 1 >= raw.len() {
                 break;
-            };
-
+            }
             // Check for guard: pattern [when guard] body
-            let (body, _guard) = if i + 2 < arms.len() {
-                if let ExprKind::List(guard_form) = &arms[i + 1].kind {
-                    if !guard_form.is_empty() {
-                        if let ExprKind::Symbol(s) = &guard_form[0].kind {
-                            if s == "when" {
+            if i + 2 < raw.len() {
+                if let ExprKind::List(gf) = &raw[i + 1].kind {
+                    if !gf.is_empty() {
+                        if let ExprKind::Symbol(s) = &gf[0].kind {
+                            if s == "when" && gf.len() > 1 {
+                                parsed_arms.push(Arm {
+                                    pattern: &raw[i],
+                                    guard: Some(&gf[1]),
+                                    body: &raw[i + 2],
+                                });
                                 i += 3;
-                                (&arms[i - 1], Some(&guard_form[1]))
-                            } else {
-                                i += 2;
-                                (body_expr, None)
+                                continue;
                             }
-                        } else {
-                            i += 2;
-                            (body_expr, None)
                         }
-                    } else {
-                        i += 2;
-                        (body_expr, None)
                     }
-                } else {
-                    i += 2;
-                    (body_expr, None)
                 }
-            } else {
-                i += 2;
-                (body_expr, None)
-            };
-
-            // For each arm, create a block
-            let arm_block = self.new_block();
-            self.switch_to(arm_block);
-
-            // Bind pattern variables
-            self.push_scope();
-            self.bind_pattern(pattern, scrutinee);
-
-            let val = self.lower_expr(body);
-            self.pop_scope();
-            self.seal(End::Jmp(merge_block, vec![val]));
-
-            arm_results.push(arm_block);
+            }
+            parsed_arms.push(Arm {
+                pattern: &raw[i],
+                guard: None,
+                body: &raw[i + 1],
+            });
+            i += 2;
         }
 
-        // For now, use a simple linear chain of branches
-        // TODO: proper decision tree compilation
-        if arm_results.is_empty() {
+        if parsed_arms.is_empty() {
             let r = self.reg();
             self.emit(Op::Lit(r, Lit::Unit, span));
             return r;
         }
 
-        // Jump to first arm (simplified — real impl would do tag dispatch)
-        // For now, we just jump to the first arm unconditionally
-        // This is semantically wrong but gets the IR structure right
-        // The VM backend will handle match semantics
-        let first_arm = arm_results[0];
-        // We need to go back and seal the block that was current before match
-        // Actually, we already sealed it by switching away. Let's just use Jmp.
-        // The current block before the arms was already used for evaluating scrutinee.
-        // We need to go back and add the branch to the first arm.
-        // This is getting complex — for now, emit as a Builtin match operation
+        // Linear scan: for each arm, generate a test + body block.
+        // test_i: if pattern matches → body_i, else → test_{i+1}
+        let mut test_blocks = Vec::new();
+        let mut body_blocks = Vec::new();
+        for _ in &parsed_arms {
+            test_blocks.push(self.new_block());
+            body_blocks.push(self.new_block());
+        }
+        // Default: jump to merge with Unit
+        let default_block = self.new_block();
+
+        // Jump to first test
+        self.seal(End::Jmp(test_blocks[0], Vec::new()));
+
+        for (idx, arm) in parsed_arms.iter().enumerate() {
+            let test_b = test_blocks[idx];
+            let body_b = body_blocks[idx];
+            let next = if idx + 1 < test_blocks.len() {
+                test_blocks[idx + 1]
+            } else {
+                default_block
+            };
+
+            // Test block: check if pattern matches
+            self.switch_to(test_b);
+            let matches = self.compile_pattern_test(arm.pattern, scrutinee, span);
+
+            if let Some(cond) = matches {
+                // Check guard if present
+                if let Some(guard_expr) = arm.guard {
+                    // pattern matches → check guard
+                    let guard_block = self.new_block();
+                    self.seal(End::Br(cond, guard_block, next));
+                    self.switch_to(guard_block);
+                    self.push_scope();
+                    self.bind_pattern(arm.pattern, scrutinee);
+                    let guard_val = self.lower_expr(guard_expr);
+                    self.pop_scope();
+                    self.seal(End::Br(guard_val, body_b, next));
+                } else {
+                    self.seal(End::Br(cond, body_b, next));
+                }
+            } else {
+                // Always matches (variable/wildcard pattern)
+                self.seal(End::Jmp(body_b, Vec::new()));
+            }
+
+            // Body block: bind pattern vars, evaluate body, jump to merge
+            self.switch_to(body_b);
+            self.push_scope();
+            self.bind_pattern(arm.pattern, scrutinee);
+            let val = self.lower_expr(arm.body);
+            self.pop_scope();
+            self.seal(End::Jmp(merge_block, vec![val]));
+        }
+
+        // Default block
+        self.switch_to(default_block);
+        let unit = self.reg();
+        self.emit(Op::Lit(unit, Lit::Unit, span));
+        self.seal(End::Jmp(merge_block, vec![unit]));
+
+        // Merge block
         self.switch_to(merge_block);
         let result = self.reg();
         let func = &mut self.module.funcs[self.cur_func.unwrap()];
         func.blocks[merge_block.0 as usize].params.push(result);
         result
+    }
+
+    /// Compile a pattern test — returns Some(cond_reg) if the pattern
+    /// needs a runtime check, None if it always matches.
+    fn compile_pattern_test(&mut self, pattern: &Expr, scrutinee: Reg, span: Span) -> Option<Reg> {
+        match &pattern.kind {
+            // Wildcard — always matches
+            ExprKind::Symbol(s) if s == "_" => None,
+
+            // Variable — always matches (binds in body)
+            ExprKind::Symbol(s) if !s.starts_with(char::is_uppercase) => {
+                // Check if it's a literal keyword like :done
+                if s.starts_with(':') {
+                    let sid = self.intern(s);
+                    let lit = self.reg();
+                    self.emit(Op::Lit(lit, Lit::Keyword(sid), span));
+                    let cond = self.reg();
+                    self.emit(Op::Bin(cond, BinOp::Eq, scrutinee, lit, span));
+                    Some(cond)
+                } else {
+                    None // variable binding — always matches
+                }
+            }
+
+            // Nullary constructor (e.g., Point, None)
+            ExprKind::Symbol(s) if s.starts_with(char::is_uppercase) => {
+                if let Some(&(tag, _)) = self.ctor_map.get(s.as_str()) {
+                    let stag = self.reg();
+                    self.emit(Op::Tag(stag, scrutinee, span));
+                    let expected = self.reg();
+                    self.emit(Op::Lit(expected, Lit::Int(tag as i64), span));
+                    let cond = self.reg();
+                    self.emit(Op::Bin(cond, BinOp::Eq, stag, expected, span));
+                    Some(cond)
+                } else {
+                    None
+                }
+            }
+
+            // Int literal
+            ExprKind::Int(n) => {
+                let lit = self.reg();
+                self.emit(Op::Lit(lit, Lit::Int(*n), span));
+                let cond = self.reg();
+                self.emit(Op::Bin(cond, BinOp::Eq, scrutinee, lit, span));
+                Some(cond)
+            }
+
+            // Float literal
+            ExprKind::Float(f) => {
+                let lit = self.reg();
+                self.emit(Op::Lit(lit, Lit::Float(*f), span));
+                let cond = self.reg();
+                self.emit(Op::Bin(cond, BinOp::Eq, scrutinee, lit, span));
+                Some(cond)
+            }
+
+            // Bool literal
+            ExprKind::Bool(b) => {
+                let lit = self.reg();
+                self.emit(Op::Lit(lit, Lit::Bool(*b), span));
+                let cond = self.reg();
+                self.emit(Op::Bin(cond, BinOp::Eq, scrutinee, lit, span));
+                Some(cond)
+            }
+
+            // String literal
+            ExprKind::Str(s) => {
+                let sid = self.intern(s);
+                let lit = self.reg();
+                self.emit(Op::Lit(lit, Lit::Str(sid), span));
+                let cond = self.reg();
+                self.emit(Op::Bin(cond, BinOp::Eq, scrutinee, lit, span));
+                Some(cond)
+            }
+
+            // Keyword literal
+            ExprKind::Keyword(k) => {
+                let sid = self.intern(k);
+                let lit = self.reg();
+                self.emit(Op::Lit(lit, Lit::Keyword(sid), span));
+                let cond = self.reg();
+                self.emit(Op::Bin(cond, BinOp::Eq, scrutinee, lit, span));
+                Some(cond)
+            }
+
+            // Constructor pattern [Ctor field1 field2 ...]
+            ExprKind::List(items) if !items.is_empty() => {
+                if let ExprKind::Symbol(ctor) = &items[0].kind {
+                    if let Some(&(tag, _)) = self.ctor_map.get(ctor.as_str()) {
+                        let stag = self.reg();
+                        self.emit(Op::Tag(stag, scrutinee, span));
+                        let expected = self.reg();
+                        self.emit(Op::Lit(expected, Lit::Int(tag as i64), span));
+                        let cond = self.reg();
+                        self.emit(Op::Bin(cond, BinOp::Eq, stag, expected, span));
+                        return Some(cond);
+                    }
+                }
+                // Expression-based guard (e.g., [> x 0])
+                None
+            }
+
+            _ => None,
+        }
     }
 
     fn bind_pattern(&mut self, pattern: &Expr, scrutinee: Reg) {
@@ -870,21 +983,52 @@ impl<'a> Lower<'a> {
         let mut current = self.lower_expr(&args[0]);
 
         for step in &args[1..] {
+            // Build a synthetic call expression: [step_fn step_args... current_val]
+            // and lower it through lower_call which handles builtins.
+            // We already have `current` as a Reg, so we pass it directly.
             match &step.kind {
                 ExprKind::List(items) if !items.is_empty() => {
-                    let func = self.lower_expr(&items[0]);
-                    let mut call_args: Vec<Reg> =
+                    // Check if head is a known builtin or function
+                    let head = &items[0];
+                    let explicit_args: Vec<Reg> =
                         items[1..].iter().map(|e| self.lower_expr(e)).collect();
+
+                    // Try builtin recognition (thread-last: append current as last arg)
+                    if let ExprKind::Symbol(name) = &head.kind {
+                        if let Some(built) = self.resolve_builtin(name) {
+                            let mut all_args = explicit_args;
+                            all_args.push(current);
+                            let r = self.reg();
+                            self.emit(Op::Builtin(r, built, all_args, step.span));
+                            current = r;
+                            continue;
+                        }
+                    }
+
+                    // General case: indirect call
+                    let func = self.lower_expr(head);
+                    let mut call_args = explicit_args;
                     call_args.push(current);
                     let r = self.reg();
                     self.emit(Op::Invoke(r, func, call_args, step.span));
                     current = r;
                 }
-                ExprKind::Symbol(_) => {
-                    let func = self.lower_expr(step);
-                    let r = self.reg();
-                    self.emit(Op::Invoke(r, func, vec![current], step.span));
-                    current = r;
+                ExprKind::Symbol(name) => {
+                    // Single symbol step: [pipe x f] → [f x]
+                    if let Some(built) = self.resolve_builtin(name) {
+                        let r = self.reg();
+                        self.emit(Op::Builtin(r, built, vec![current], step.span));
+                        current = r;
+                    } else if let Some(&fid) = self.func_map.get(name.as_str()) {
+                        let r = self.reg();
+                        self.emit(Op::Call(r, fid, vec![current], step.span));
+                        current = r;
+                    } else {
+                        let func = self.lower_expr(step);
+                        let r = self.reg();
+                        self.emit(Op::Invoke(r, func, vec![current], step.span));
+                        current = r;
+                    }
                 }
                 _ => {}
             }
@@ -1237,6 +1381,43 @@ impl<'a> Lower<'a> {
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
+
+impl Lower<'_> {
+    fn resolve_builtin(&self, name: &str) -> Option<Built> {
+        match name {
+            "println" => Some(Built::Println),
+            "print" => Some(Built::Print),
+            "str" => Some(Built::Str),
+            "len" => Some(Built::Len),
+            "get" => Some(Built::Get),
+            "conj" => Some(Built::Conj),
+            "assoc" => Some(Built::Assoc),
+            "range" => Some(Built::Range),
+            "map" => Some(Built::Map),
+            "filter" => Some(Built::Filter),
+            "reduce" => Some(Built::Reduce),
+            "each" => Some(Built::Each),
+            "keys" => Some(Built::Keys),
+            "vals" => Some(Built::Vals),
+            "nth" => Some(Built::Nth),
+            "contains?" => Some(Built::Contains),
+            "join" => Some(Built::Join),
+            "trim" => Some(Built::Trim),
+            "sort" => Some(Built::Sort),
+            "reverse" => Some(Built::Reverse),
+            "flatten" => Some(Built::Flatten),
+            "zip" => Some(Built::Zip),
+            "any?" => Some(Built::Any),
+            "all?" => Some(Built::All),
+            "sum" => Some(Built::Sum),
+            "min" => Some(Built::Min),
+            "max" => Some(Built::Max),
+            "int" => Some(Built::Int),
+            "float" => Some(Built::Float),
+            _ => None,
+        }
+    }
+}
 
 fn extract_param_names(expr: &Expr) -> Vec<String> {
     match &expr.kind {
