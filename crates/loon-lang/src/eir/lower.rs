@@ -600,6 +600,7 @@ impl<'a> Lower<'a> {
         } else {
             // Anonymous lambda: [fn [params] body...]
             let param_names = extract_param_names(&args[0]);
+            let destructuring = extract_destructuring(&args[0]);
             let body = &args[1..];
 
             let saved_func = self.cur_func;
@@ -616,6 +617,18 @@ impl<'a> Lower<'a> {
                 self.bind(pname, r);
             }
             self.module.funcs[func_id.0 as usize].params = vec![Ty::Any; param_names.len()];
+
+            // Emit field extraction for destructured params
+            for destr in &destructuring {
+                let base = Reg(destr.param_idx as u32);
+                for (j, field_name) in destr.fields.iter().enumerate() {
+                    if field_name != "_" {
+                        let field_reg = self.reg();
+                        self.emit(Op::Field(field_reg, base, Selector::Index(j as u16), span));
+                        self.bind(field_name, field_reg);
+                    }
+                }
+            }
 
             let mut last = None;
             for expr in body {
@@ -1657,19 +1670,55 @@ impl Lower<'_> {
     }
 }
 
+/// Destructuring info: (param_index, field_names).
+struct Destr {
+    param_idx: usize,
+    fields: Vec<String>,
+}
+
 fn extract_param_names(expr: &Expr) -> Vec<String> {
     match &expr.kind {
         ExprKind::List(items) => items
             .iter()
-            .filter_map(|e| {
-                if let ExprKind::Symbol(s) = &e.kind {
-                    Some(s.clone())
+            .enumerate()
+            .map(|(i, e)| match &e.kind {
+                ExprKind::Symbol(s) => s.clone(),
+                ExprKind::List(_) => format!("__destr_{i}"),
+                _ => format!("__param_{i}"),
+            })
+            .collect(),
+        ExprKind::Symbol(s) => vec![s.clone()],
+        _ => Vec::new(),
+    }
+}
+
+/// Extract destructuring info from a param list expression.
+fn extract_destructuring(expr: &Expr) -> Vec<Destr> {
+    match &expr.kind {
+        ExprKind::List(items) => items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| {
+                if let ExprKind::List(inner) = &e.kind {
+                    let fields: Vec<String> = inner
+                        .iter()
+                        .filter_map(|f| {
+                            if let ExprKind::Symbol(s) = &f.kind {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    Some(Destr {
+                        param_idx: i,
+                        fields,
+                    })
                 } else {
                     None
                 }
             })
             .collect(),
-        ExprKind::Symbol(s) => vec![s.clone()],
         _ => Vec::new(),
     }
 }

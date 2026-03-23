@@ -1063,8 +1063,9 @@ impl Vm {
                 }
             }
             Built::Split => {
-                let sep = args.first().copied().unwrap_or(Val::UNIT);
-                let s = args.get(1).copied().unwrap_or(Val::UNIT);
+                // [split text separator] — matches Loon convention
+                let s = args.first().copied().unwrap_or(Val::UNIT);
+                let sep = args.get(1).copied().unwrap_or(Val::UNIT);
                 match (
                     self.get_str(sep).map(|s| s.to_string()),
                     self.get_str(s).map(|s| s.to_string()),
