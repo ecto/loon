@@ -42,9 +42,10 @@ enum Obj {
 struct Frame {
     func: FuncId,
     block: BlockId,
-    ip: usize,      // instruction pointer within block
-    regs: Vec<Val>, // register file
-    ret_reg: u32,   // where to put result in caller's regs
+    ip: usize,          // instruction pointer within block
+    regs: Vec<Val>,     // register file
+    ret_reg: u32,       // where to put result in caller's regs
+    captures: Vec<Val>, // closure captures for this frame
 }
 
 // ─── VM ────────────────────────────────────────────────────────────────────
@@ -61,7 +62,8 @@ pub struct Vm {
     module: Rc<Module>,
     heap: Vec<Obj>,
     frames: Vec<Frame>,
-    regs: Vec<Val>, // current register file
+    regs: Vec<Val>,     // current register file
+    captures: Vec<Val>, // current closure captures
     func: FuncId,
     block: BlockId,
     ip: usize,
@@ -88,6 +90,7 @@ impl Vm {
             heap: Vec::new(),
             frames: Vec::new(),
             regs: Vec::new(),
+            captures: Vec::new(),
             func: FuncId(0),
             block: BlockId(0),
             ip: 0,
@@ -134,10 +137,18 @@ impl Vm {
     /// Call a function and run it to completion, returning its result.
     /// Used by higher-order builtins (map, filter, each).
     fn run_call(&mut self, func_id: FuncId, args: &[Val]) -> Result<Val, VmError> {
+        self.run_call_with_captures(func_id, args, Vec::new())
+    }
+
+    /// Call a closure (function + captures) and run it to completion.
+    fn run_call_with_captures(
+        &mut self,
+        func_id: FuncId,
+        args: &[Val],
+        caps: Vec<Val>,
+    ) -> Result<Val, VmError> {
         let depth = self.frames.len();
-        self.call_func(func_id, args, 0)?;
-        // depth + 1 because call_func just pushed a frame.
-        // execute returns when frames drop below depth + 1 (i.e., when this call returns).
+        self.call_func_with_captures(func_id, args, 0, caps)?;
         self.execute(depth + 1)
     }
 
@@ -197,6 +208,16 @@ impl Vm {
     // ── Function call ──────────────────────────────────────────────────
 
     fn call_func(&mut self, func_id: FuncId, args: &[Val], ret_reg: u32) -> Result<(), VmError> {
+        self.call_func_with_captures(func_id, args, ret_reg, Vec::new())
+    }
+
+    fn call_func_with_captures(
+        &mut self,
+        func_id: FuncId,
+        args: &[Val],
+        ret_reg: u32,
+        new_captures: Vec<Val>,
+    ) -> Result<(), VmError> {
         // Save current frame
         if !self.regs.is_empty() || !self.frames.is_empty() {
             self.frames.push(Frame {
@@ -205,6 +226,7 @@ impl Vm {
                 ip: self.ip,
                 regs: std::mem::take(&mut self.regs),
                 ret_reg,
+                captures: std::mem::take(&mut self.captures),
             });
         }
 
@@ -228,6 +250,7 @@ impl Vm {
             self.regs[i] = val;
         }
 
+        self.captures = new_captures;
         self.func = func_id;
         self.block = BlockId(0);
         self.ip = 0;
@@ -238,6 +261,7 @@ impl Vm {
         if let Some(frame) = self.frames.pop() {
             let ret_reg = frame.ret_reg;
             self.regs = frame.regs;
+            self.captures = frame.captures;
             self.func = frame.func;
             self.block = frame.block;
             self.ip = frame.ip;
@@ -348,7 +372,7 @@ impl Vm {
                 End::TailInvoke(callee, ref args) => {
                     let func_val = self.r(callee);
                     let vals = self.read_regs(args);
-                    if let Some(Obj::Closure(fid, _)) = self.get_obj(func_val).cloned() {
+                    if let Some(Obj::Closure(fid, caps)) = self.get_obj(func_val).cloned() {
                         let f = &module.funcs[fid.0 as usize];
                         let reg_count = f
                             .blocks
@@ -366,6 +390,7 @@ impl Vm {
                         for (i, &val) in vals.iter().enumerate() {
                             self.regs[i] = val;
                         }
+                        self.captures = caps;
                         self.func = fid;
                         self.block = BlockId(0);
                         self.ip = 0;
@@ -423,9 +448,13 @@ impl Vm {
                 self.w(*dst, v);
             }
 
-            Op::Upval(dst, _idx, _) => {
-                // TODO: closure upvalue access
-                self.w(*dst, Val::UNIT);
+            Op::Upval(dst, idx, _) => {
+                let val = self
+                    .captures
+                    .get(*idx as usize)
+                    .copied()
+                    .unwrap_or(Val::UNIT);
+                self.w(*dst, val);
             }
 
             Op::Bin(dst, binop, a, b, _) => {
@@ -464,9 +493,9 @@ impl Vm {
                 let vals = self.read_regs(args);
                 if let Some(obj) = self.get_obj(func_val).cloned() {
                     match obj {
-                        Obj::Closure(fid, _captures) => {
+                        Obj::Closure(fid, caps) => {
                             let ret_reg = dst.0;
-                            self.call_func(fid, &vals, ret_reg)?;
+                            self.call_func_with_captures(fid, &vals, ret_reg, caps)?;
                         }
                         _ => return Err(VmError::NotCallable),
                     }
@@ -550,12 +579,12 @@ impl Vm {
                 if let Some(ev_reg) = evidence {
                     // Evidence-passed: direct call to handler
                     let handler = self.r(*ev_reg);
-                    if let Some(Obj::Closure(fid, _)) = self.get_obj(handler).cloned() {
+                    if let Some(Obj::Closure(fid, caps)) = self.get_obj(handler).cloned() {
                         let resume_val = self.resume_closure;
                         let mut call_args = vec![resume_val];
                         call_args.extend_from_slice(&vals);
                         let ret_reg = dst.0;
-                        self.call_func(fid, &call_args, ret_reg)?;
+                        self.call_func_with_captures(fid, &call_args, ret_reg, caps)?;
                     } else {
                         self.w(*dst, Val::UNIT);
                     }
@@ -573,12 +602,12 @@ impl Vm {
                         .map(|h| h.closure);
 
                     if let Some(hval) = handler {
-                        if let Some(Obj::Closure(fid, _)) = self.get_obj(hval).cloned() {
+                        if let Some(Obj::Closure(fid, caps)) = self.get_obj(hval).cloned() {
                             let resume_val = self.resume_closure;
                             let mut call_args = vec![resume_val];
                             call_args.extend_from_slice(&vals);
                             let ret_reg = dst.0;
-                            self.call_func(fid, &call_args, ret_reg)?;
+                            self.call_func_with_captures(fid, &call_args, ret_reg, caps)?;
                         } else {
                             self.w(*dst, Val::UNIT);
                         }
@@ -908,10 +937,11 @@ impl Vm {
                 };
 
                 match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
-                    (Some(Obj::Closure(fid, _)), Some(Obj::Vec(items))) => {
+                    (Some(Obj::Closure(fid, caps)), Some(Obj::Vec(items))) => {
                         let mut results = Vec::new();
                         for item in &items {
-                            let result = self.run_call(fid, &[*item])?;
+                            let result =
+                                self.run_call_with_captures(fid, &[*item], caps.clone())?;
                             match built {
                                 Built::Map => results.push(result),
                                 Built::Filter => {
@@ -945,7 +975,21 @@ impl Vm {
                 match self.get_obj(coll) {
                     Some(Obj::Vec(items)) => Ok(Val::bool(items.contains(&val))),
                     Some(Obj::Set(items)) => Ok(Val::bool(items.contains(&val))),
-                    Some(Obj::Map(pairs)) => Ok(Val::bool(pairs.iter().any(|(k, _)| *k == val))),
+                    Some(Obj::Map(pairs)) => Ok(Val::bool(pairs.iter().any(|(k, _)| {
+                        *k == val || {
+                            let ks = self.get_str(*k).map(|s| s.to_string());
+                            let kk = self.get_str(val).map(|s| s.to_string());
+                            ks.is_some() && ks == kk
+                        }
+                    }))),
+                    Some(Obj::Str(s)) => {
+                        // String contains substring
+                        if let Some(needle) = self.get_str(val) {
+                            Ok(Val::bool(s.contains(needle)))
+                        } else {
+                            Ok(Val::bool(false))
+                        }
+                    }
                     _ => Ok(Val::bool(false)),
                 }
             }
@@ -1209,9 +1253,10 @@ impl Vm {
                 let func = args.first().copied().unwrap_or(Val::UNIT);
                 let coll = args.get(1).copied().unwrap_or(Val::UNIT);
                 match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
-                    (Some(Obj::Closure(fid, _)), Some(Obj::Vec(items))) => {
+                    (Some(Obj::Closure(fid, caps)), Some(Obj::Vec(items))) => {
                         for item in &items {
-                            let result = self.run_call(fid, &[*item])?;
+                            let result =
+                                self.run_call_with_captures(fid, &[*item], caps.clone())?;
                             if result.is_truthy() {
                                 return Ok(Val::TRUE);
                             }
@@ -1225,9 +1270,10 @@ impl Vm {
                 let func = args.first().copied().unwrap_or(Val::UNIT);
                 let coll = args.get(1).copied().unwrap_or(Val::UNIT);
                 match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
-                    (Some(Obj::Closure(fid, _)), Some(Obj::Vec(items))) => {
+                    (Some(Obj::Closure(fid, caps)), Some(Obj::Vec(items))) => {
                         for item in &items {
-                            let result = self.run_call(fid, &[*item])?;
+                            let result =
+                                self.run_call_with_captures(fid, &[*item], caps.clone())?;
                             if !result.is_truthy() {
                                 return Ok(Val::FALSE);
                             }
@@ -1280,10 +1326,10 @@ impl Vm {
                 let func = args.get(1).copied().unwrap_or(Val::UNIT);
                 let coll = args.get(2).copied().unwrap_or(Val::UNIT);
                 match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
-                    (Some(Obj::Closure(fid, _)), Some(Obj::Vec(items))) => {
+                    (Some(Obj::Closure(fid, caps)), Some(Obj::Vec(items))) => {
                         let mut acc = init;
                         for item in &items {
-                            acc = self.run_call(fid, &[acc, *item])?;
+                            acc = self.run_call_with_captures(fid, &[acc, *item], caps.clone())?;
                         }
                         Ok(acc)
                     }
@@ -1296,7 +1342,7 @@ impl Vm {
                 let key = args.get(1).copied().unwrap_or(Val::UNIT);
                 let func = args.get(2).copied().unwrap_or(Val::UNIT);
                 match (self.get_obj(map_val).cloned(), self.get_obj(func).cloned()) {
-                    (Some(Obj::Map(mut pairs)), Some(Obj::Closure(fid, _))) => {
+                    (Some(Obj::Map(mut pairs)), Some(Obj::Closure(fid, caps))) => {
                         // Find existing value or UNIT
                         let old_val = pairs
                             .iter()
@@ -1309,7 +1355,7 @@ impl Vm {
                             })
                             .map(|(_, v)| *v)
                             .unwrap_or(Val::UNIT);
-                        let new_val = self.run_call(fid, &[old_val])?;
+                        let new_val = self.run_call_with_captures(fid, &[old_val], caps)?;
                         // Remove old entry if exists, add new
                         pairs.retain(|(k, _)| {
                             *k != key && {
@@ -1343,11 +1389,11 @@ impl Vm {
                 let func = args.first().copied().unwrap_or(Val::UNIT);
                 let coll = args.last().copied().unwrap_or(Val::UNIT);
                 match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
-                    (Some(Obj::Closure(fid, _)), Some(Obj::Vec(items))) => {
+                    (Some(Obj::Closure(fid, caps)), Some(Obj::Vec(items))) => {
                         // Compute sort keys
                         let mut keyed: Vec<(Val, Val)> = Vec::new();
                         for item in &items {
-                            let key = self.run_call(fid, &[*item])?;
+                            let key = self.run_call_with_captures(fid, &[*item], caps.clone())?;
                             keyed.push((key, *item));
                         }
                         // Check for :desc flag
@@ -1386,17 +1432,290 @@ impl Vm {
                 // [magnitude dimensioned-value] — extract the numeric value
                 Ok(args.first().copied().unwrap_or(Val::UNIT))
             }
-            Built::FlatMap
-            | Built::GroupBy
-            | Built::Collect
-            | Built::IntoMap
-            | Built::Chunk
-            | Built::IndexOf
-            | Built::CharAt
-            | Built::Substring
-            | Built::Slice => {
-                // TODO: implement these
-                Ok(Val::UNIT)
+            Built::FlatMap => {
+                // [flat-map f coll] → map then flatten
+                let func = args.first().copied().unwrap_or(Val::UNIT);
+                let coll = args.get(1).copied().unwrap_or(Val::UNIT);
+                match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
+                    (Some(Obj::Closure(fid, caps)), Some(Obj::Vec(items))) => {
+                        let mut results = Vec::new();
+                        for item in &items {
+                            let result =
+                                self.run_call_with_captures(fid, &[*item], caps.clone())?;
+                            if let Some(Obj::Vec(inner)) = self.get_obj(result).cloned() {
+                                results.extend(inner);
+                            } else {
+                                results.push(result);
+                            }
+                        }
+                        Ok(self.alloc(Obj::Vec(results)))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::GroupBy => {
+                // [group-by f coll] → map of key → vec
+                let func = args.first().copied().unwrap_or(Val::UNIT);
+                let coll = args.get(1).copied().unwrap_or(Val::UNIT);
+                match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
+                    (Some(Obj::Closure(fid, caps)), Some(Obj::Vec(items))) => {
+                        // Build groups: Vec<(key_val, Vec<Val>)>
+                        let mut groups: Vec<(Val, Vec<Val>)> = Vec::new();
+                        for item in &items {
+                            let key = self.run_call_with_captures(fid, &[*item], caps.clone())?;
+                            // Find existing group by key
+                            let found = groups.iter_mut().find(|(k, _)| {
+                                *k == key || {
+                                    let ks = self.get_str(*k).map(|s| s.to_string());
+                                    let kk = self.get_str(key).map(|s| s.to_string());
+                                    ks.is_some() && ks == kk
+                                }
+                            });
+                            if let Some((_, ref mut vals)) = found {
+                                vals.push(*item);
+                            } else {
+                                groups.push((key, vec![*item]));
+                            }
+                        }
+                        // Convert to map of key → vec
+                        let pairs: Vec<(Val, Val)> = groups
+                            .into_iter()
+                            .map(|(k, vals)| {
+                                let v = self.alloc(Obj::Vec(vals));
+                                (k, v)
+                            })
+                            .collect();
+                        Ok(self.alloc(Obj::Map(pairs)))
+                    }
+                    _ => Ok(self.alloc(Obj::Map(Vec::new()))),
+                }
+            }
+            Built::Collect => {
+                // [collect coll] → evaluate lazy collection (identity for eager)
+                Ok(args.first().copied().unwrap_or(Val::UNIT))
+            }
+            Built::IntoMap => {
+                // [into-map pairs] → convert vec of tuples to map
+                let coll = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll).cloned() {
+                    Some(Obj::Vec(items)) => {
+                        let mut pairs = Vec::new();
+                        for item in &items {
+                            if let Some(Obj::Tuple(fields)) = self.get_obj(*item) {
+                                if fields.len() >= 2 {
+                                    pairs.push((fields[0], fields[1]));
+                                }
+                            }
+                        }
+                        Ok(self.alloc(Obj::Map(pairs)))
+                    }
+                    _ => Ok(self.alloc(Obj::Map(Vec::new()))),
+                }
+            }
+            Built::Chunk => {
+                // [chunk n coll] → split into groups of n
+                let n = args.first().copied().unwrap_or(Val::int(1));
+                let coll = args.get(1).copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll).cloned() {
+                    Some(Obj::Vec(items)) if n.is_int() && n.as_int() > 0 => {
+                        let chunk_size = n.as_int() as usize;
+                        let chunks: Vec<Val> = items
+                            .chunks(chunk_size)
+                            .map(|chunk| self.alloc(Obj::Vec(chunk.to_vec())))
+                            .collect();
+                        Ok(self.alloc(Obj::Vec(chunks)))
+                    }
+                    _ => Ok(self.alloc(Obj::Vec(Vec::new()))),
+                }
+            }
+            Built::IndexOf => {
+                // [index-of str substr] → first index or -1
+                let s = args.first().copied().unwrap_or(Val::UNIT);
+                let sub = args.get(1).copied().unwrap_or(Val::UNIT);
+                match (
+                    self.get_str(s).map(|s| s.to_string()),
+                    self.get_str(sub).map(|s| s.to_string()),
+                ) {
+                    (Some(s), Some(sub)) => {
+                        let idx = s.find(&sub).map(|i| i as i64).unwrap_or(-1);
+                        Ok(Val::int(idx))
+                    }
+                    _ => Ok(Val::int(-1)),
+                }
+            }
+            Built::CharAt => {
+                // [char-at str index] → character at position
+                let s = args.first().copied().unwrap_or(Val::UNIT);
+                let idx = args.get(1).copied().unwrap_or(Val::int(0));
+                match self.get_str(s).map(|s| s.to_string()) {
+                    Some(s) if idx.is_int() => {
+                        let i = idx.as_int() as usize;
+                        if let Some(c) = s.chars().nth(i) {
+                            Ok(self.alloc(Obj::Str(c.to_string())))
+                        } else {
+                            Ok(self.alloc(Obj::Str(String::new())))
+                        }
+                    }
+                    _ => Ok(self.alloc(Obj::Str(String::new()))),
+                }
+            }
+            Built::Substring => {
+                // [substring str start end] → slice string
+                let s = args.first().copied().unwrap_or(Val::UNIT);
+                let start = args.get(1).copied().unwrap_or(Val::int(0));
+                let end = args.get(2).copied().unwrap_or(Val::int(0));
+                match self.get_str(s).map(|s| s.to_string()) {
+                    Some(s) if start.is_int() && end.is_int() => {
+                        let st = start.as_int().max(0) as usize;
+                        let en = end.as_int().max(0) as usize;
+                        let chars: Vec<char> = s.chars().collect();
+                        let en = en.min(chars.len());
+                        let st = st.min(en);
+                        let sub: String = chars[st..en].iter().collect();
+                        Ok(self.alloc(Obj::Str(sub)))
+                    }
+                    _ => Ok(self.alloc(Obj::Str(String::new()))),
+                }
+            }
+            Built::Slice => {
+                // [slice coll start end] → slice collection
+                let coll = args.first().copied().unwrap_or(Val::UNIT);
+                let start = args.get(1).copied().unwrap_or(Val::int(0));
+                let end = args.get(2).copied().unwrap_or(Val::int(0));
+                match self.get_obj(coll).cloned() {
+                    Some(Obj::Vec(items)) if start.is_int() && end.is_int() => {
+                        let st = start.as_int().max(0) as usize;
+                        let en = end.as_int().max(0) as usize;
+                        let en = en.min(items.len());
+                        let st = st.min(en);
+                        Ok(self.alloc(Obj::Vec(items[st..en].to_vec())))
+                    }
+                    Some(Obj::Str(s)) if start.is_int() && end.is_int() => {
+                        let st = start.as_int().max(0) as usize;
+                        let en = end.as_int().max(0) as usize;
+                        let chars: Vec<char> = s.chars().collect();
+                        let en = en.min(chars.len());
+                        let st = st.min(en);
+                        let sub: String = chars[st..en].iter().collect();
+                        Ok(self.alloc(Obj::Str(sub)))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Abs => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                if v.is_int() {
+                    Ok(Val::int(v.as_int().abs()))
+                } else if v.is_float() {
+                    Ok(Val::float(v.as_float().abs()))
+                } else {
+                    Ok(Val::UNIT)
+                }
+            }
+            Built::First => {
+                let coll = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll) {
+                    Some(Obj::Vec(items)) => Ok(items.first().copied().unwrap_or(Val::UNIT)),
+                    Some(Obj::Tuple(items)) => Ok(items.first().copied().unwrap_or(Val::UNIT)),
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Last => {
+                let coll = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll) {
+                    Some(Obj::Vec(items)) => Ok(items.last().copied().unwrap_or(Val::UNIT)),
+                    Some(Obj::Tuple(items)) => Ok(items.last().copied().unwrap_or(Val::UNIT)),
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Find => {
+                // [find f coll] → first element where f returns truthy
+                let func = args.first().copied().unwrap_or(Val::UNIT);
+                let coll = args.get(1).copied().unwrap_or(Val::UNIT);
+                match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
+                    (Some(Obj::Closure(fid, caps)), Some(Obj::Vec(items))) => {
+                        for item in &items {
+                            let result =
+                                self.run_call_with_captures(fid, &[*item], caps.clone())?;
+                            if result.is_truthy() {
+                                return Ok(*item);
+                            }
+                        }
+                        Ok(Val::UNIT)
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Keyword => {
+                // [keyword str] → keyword from string
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_str(v).map(|s| s.to_string()) {
+                    Some(s) => Ok(Val::sym(
+                        self.module
+                            .strings
+                            .iter()
+                            .position(|x| *x == s)
+                            .unwrap_or_else(|| {
+                                // Can't mutate module through Rc, so return sym(0)
+                                0
+                            }) as u32,
+                    )),
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::KeywordizeKeys => {
+                // [keywordize-keys map] → convert string keys to keywords
+                let m = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_obj(m).cloned() {
+                    Some(Obj::Map(pairs)) => {
+                        let new_pairs: Vec<(Val, Val)> = pairs
+                            .into_iter()
+                            .map(|(k, v)| {
+                                if let Some(s) = self.get_str(k).map(|s| s.to_string()) {
+                                    let sym_id = self
+                                        .module
+                                        .strings
+                                        .iter()
+                                        .position(|x| *x == s)
+                                        .unwrap_or(0)
+                                        as u32;
+                                    (Val::sym(sym_id), v)
+                                } else {
+                                    (k, v)
+                                }
+                            })
+                            .collect();
+                        Ok(self.alloc(Obj::Map(new_pairs)))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::AssertEq => {
+                // [assert-eq actual expected] → Unit or panic
+                let actual = args.first().copied().unwrap_or(Val::UNIT);
+                let expected = args.get(1).copied().unwrap_or(Val::UNIT);
+                if actual == expected {
+                    Ok(Val::UNIT)
+                } else {
+                    let actual_s = self.val_to_string(actual);
+                    let expected_s = self.val_to_string(expected);
+                    Err(VmError::AssertFailed(actual_s, expected_s))
+                }
+            }
+            Built::Concat => {
+                // [concat coll1 coll2] → concatenate collections
+                let a = args.first().copied().unwrap_or(Val::UNIT);
+                let b = args.get(1).copied().unwrap_or(Val::UNIT);
+                match (self.get_obj(a).cloned(), self.get_obj(b).cloned()) {
+                    (Some(Obj::Vec(mut va)), Some(Obj::Vec(vb))) => {
+                        va.extend(vb);
+                        Ok(self.alloc(Obj::Vec(va)))
+                    }
+                    (Some(Obj::Str(sa)), Some(Obj::Str(sb))) => {
+                        Ok(self.alloc(Obj::Str(format!("{sa}{sb}"))))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
             }
         }
     }
@@ -1489,7 +1808,7 @@ impl Vm {
                         format!("[{name} {}]", inner.join(" "))
                     }
                 }
-                Some(Obj::Closure(fid, _)) => {
+                Some(Obj::Closure(fid, _caps)) => {
                     let name = self
                         .module
                         .funcs
@@ -1517,6 +1836,7 @@ pub enum VmError {
     NotCallable,
     Trap,
     StackOverflow,
+    AssertFailed(String, String),
 }
 
 impl std::fmt::Display for VmError {
@@ -1525,6 +1845,9 @@ impl std::fmt::Display for VmError {
             VmError::NotCallable => write!(f, "value is not callable"),
             VmError::Trap => write!(f, "unreachable code"),
             VmError::StackOverflow => write!(f, "stack overflow"),
+            VmError::AssertFailed(actual, expected) => {
+                write!(f, "assertion failed: {actual} != {expected}")
+            }
         }
     }
 }

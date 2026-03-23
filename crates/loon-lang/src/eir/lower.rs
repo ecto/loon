@@ -416,6 +416,36 @@ impl<'a> Lower<'a> {
                 return r;
             }
         }
+        // Check if it's a builtin — wrap as a closure for first-class use
+        if let Some(built) = self.resolve_builtin(name) {
+            // Create a wrapper function: [fn [x] [builtin x]]
+            let saved_func = self.cur_func;
+            let saved_block = self.cur_block;
+            let saved_next_reg = self.next_reg;
+            let saved_scopes = std::mem::take(&mut self.scopes);
+
+            let func_id = self.begin_func(None, span);
+            self.scopes = vec![HashMap::new()];
+            // Single param
+            let param = Reg(0);
+            self.next_reg = 1;
+            self.bind("__x", param);
+            self.module.funcs[func_id.0 as usize].params = vec![Ty::Any];
+
+            let result = self.reg();
+            self.emit(Op::Builtin(result, built, vec![param], span));
+            self.seal(End::Ret(result));
+
+            self.cur_func = saved_func;
+            self.cur_block = saved_block;
+            self.next_reg = saved_next_reg;
+            self.scopes = saved_scopes;
+
+            let r = self.reg();
+            self.emit(Op::Close(r, func_id, Vec::new(), span));
+            return r;
+        }
+
         // Fallback: emit as a string literal (will be resolved by the VM)
         let r = self.reg();
         let sid = self.intern(name);
@@ -473,12 +503,23 @@ impl<'a> Lower<'a> {
                     self.emit(Op::Lit(r, Lit::Unit, span));
                     return r;
                 }
+                "use" => {
+                    // Module loading: [use module] — stub for now
+                    // TODO: resolve module, parse, type check, lower, bind exports
+                    let r = self.reg();
+                    self.emit(Op::Lit(r, Lit::Unit, span));
+                    return r;
+                }
                 "effect" | "trait" | "sig" | "macro" | "macro+" | "macroexpand" => {
                     let r = self.reg();
                     self.emit(Op::Lit(r, Lit::Unit, span));
                     return r;
                 }
-                "impl" | "test" | "derive" | "inspect" | "catch-errors" => {
+                "test" => {
+                    // [test name [params] body...] → treat as named fn
+                    return self.lower_fn(&items[1..], span);
+                }
+                "impl" | "derive" | "inspect" | "catch-errors" => {
                     // These need runtime support — emit as builtin calls for now
                     let r = self.reg();
                     self.emit(Op::Lit(r, Lit::Unit, span));
@@ -526,6 +567,7 @@ impl<'a> Lower<'a> {
 
             // Single-arity: get params
             let param_names = extract_param_names(&args[1]);
+            let destructuring = extract_destructuring(&args[1]);
 
             // Skip effect annotation
             let mut body_start = 2;
@@ -574,6 +616,18 @@ impl<'a> Lower<'a> {
             let func_mut = &mut self.module.funcs[func_id.0 as usize];
             func_mut.blocks[0].params = param_regs;
 
+            // Emit field extraction for destructured params
+            for destr in &destructuring {
+                let base = Reg(destr.param_idx as u32);
+                for (j, field_name) in destr.fields.iter().enumerate() {
+                    if field_name != "_" {
+                        let field_reg = self.reg();
+                        self.emit(Op::Field(field_reg, base, Selector::Index(j as u16), span));
+                        self.bind(field_name, field_reg);
+                    }
+                }
+            }
+
             // Lower body
             let mut last = None;
             for expr in body {
@@ -603,12 +657,52 @@ impl<'a> Lower<'a> {
             let destructuring = extract_destructuring(&args[0]);
             let body = &args[1..];
 
+            // Collect free variables before switching scopes
+            let mut locals = std::collections::HashSet::new();
+            for p in &param_names {
+                locals.insert(p.clone());
+            }
+            // Also add destructured field names as locals
+            for destr in &destructuring {
+                for field_name in &destr.fields {
+                    locals.insert(field_name.clone());
+                }
+            }
+            let ctor_map_ref = &self.ctor_map;
+            let func_map_ref = &self.func_map;
+            let resolve =
+                |name: &str| -> bool { self.resolve_builtin(name).is_some() || is_operator(name) };
+            let mut free_vars = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for expr in body {
+                collect_free_vars(
+                    expr,
+                    &locals,
+                    &resolve,
+                    ctor_map_ref,
+                    func_map_ref,
+                    &mut free_vars,
+                    &mut seen,
+                );
+            }
+
+            // Resolve free vars to registers in the outer scope
+            let mut capture_regs = Vec::new();
+            let mut capture_names = Vec::new();
+            for name in &free_vars {
+                if let Some(r) = self.lookup(name) {
+                    capture_regs.push(r);
+                    capture_names.push(name.clone());
+                }
+            }
+
             let saved_func = self.cur_func;
             let saved_block = self.cur_block;
             let saved_next_reg = self.next_reg;
             let saved_scopes = std::mem::take(&mut self.scopes);
 
             let func_id = self.begin_func(None, span);
+            self.module.funcs[func_id.0 as usize].is_closure = !capture_names.is_empty();
 
             self.scopes = vec![HashMap::new()];
             for (i, pname) in param_names.iter().enumerate() {
@@ -617,6 +711,13 @@ impl<'a> Lower<'a> {
                 self.bind(pname, r);
             }
             self.module.funcs[func_id.0 as usize].params = vec![Ty::Any; param_names.len()];
+
+            // Emit upvalue loads for captured variables
+            for (idx, cap_name) in capture_names.iter().enumerate() {
+                let r = self.reg();
+                self.emit(Op::Upval(r, idx as u16, span));
+                self.bind(cap_name, r);
+            }
 
             // Emit field extraction for destructured params
             for destr in &destructuring {
@@ -647,7 +748,7 @@ impl<'a> Lower<'a> {
             self.scopes = saved_scopes;
 
             let r = self.reg();
-            self.emit(Op::Close(r, func_id, Vec::new(), span));
+            self.emit(Op::Close(r, func_id, capture_regs, span));
             r
         }
     }
@@ -1665,6 +1766,15 @@ impl Lower<'_> {
             "unit" => Some(Built::Unit),
             "magnitude" => Some(Built::Magnitude),
             "or" => Some(Built::Or),
+            "abs" => Some(Built::Abs),
+            "first" => Some(Built::First),
+            "last" => Some(Built::Last),
+            "find" => Some(Built::Find),
+            "keyword" => Some(Built::Keyword),
+            "keywordize-keys" => Some(Built::KeywordizeKeys),
+            "assert-eq" => Some(Built::AssertEq),
+            "concat" => Some(Built::Concat),
+            "slice" => Some(Built::Slice),
             _ => None,
         }
     }
@@ -1721,6 +1831,215 @@ fn extract_destructuring(expr: &Expr) -> Vec<Destr> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// Collect free variable names referenced in an expression that are not
+/// in the given `locals` set, builtins, or constructors.
+fn collect_free_vars(
+    expr: &Expr,
+    locals: &std::collections::HashSet<String>,
+    builtins: &dyn Fn(&str) -> bool,
+    ctors: &HashMap<String, (u16, u16)>,
+    func_map: &HashMap<String, FuncId>,
+    out: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    match &expr.kind {
+        ExprKind::Symbol(s) => {
+            // Skip keywords, builtins, operators, ctors, known functions, wildcards
+            if !s.starts_with(':')
+                && !s.starts_with(char::is_uppercase)
+                && s != "_"
+                && s != "true"
+                && s != "false"
+                && !locals.contains(s)
+                && !builtins(s)
+                && !ctors.contains_key(s)
+                && !func_map.contains_key(s)
+                && !is_special_form(s)
+                && !seen.contains(s)
+            {
+                seen.insert(s.clone());
+                out.push(s.clone());
+            }
+        }
+        ExprKind::List(items) => {
+            if items.is_empty() {
+                return;
+            }
+            // Check for special forms that introduce bindings
+            if let ExprKind::Symbol(head) = &items[0].kind {
+                match head.as_str() {
+                    "fn" => {
+                        // [fn name [params] body] or [fn [params] body]
+                        // params are local, body is scanned with extended locals
+                        if items.len() >= 3 {
+                            let (params_expr, body_start) =
+                                if matches!(&items[1].kind, ExprKind::Symbol(_)) {
+                                    // named fn — name + params + body
+                                    let mut locs = locals.clone();
+                                    locs.insert(if let ExprKind::Symbol(n) = &items[1].kind {
+                                        n.clone()
+                                    } else {
+                                        String::new()
+                                    });
+                                    if items.len() >= 4 {
+                                        let pnames = extract_param_names(&items[2]);
+                                        for p in &pnames {
+                                            locs.insert(p.clone());
+                                        }
+                                        for e in &items[3..] {
+                                            collect_free_vars(
+                                                e, &locs, builtins, ctors, func_map, out, seen,
+                                            );
+                                        }
+                                    }
+                                    return;
+                                } else {
+                                    (&items[1], 2)
+                                };
+                            let pnames = extract_param_names(params_expr);
+                            let mut locs = locals.clone();
+                            for p in &pnames {
+                                locs.insert(p.clone());
+                            }
+                            for e in &items[body_start..] {
+                                collect_free_vars(e, &locs, builtins, ctors, func_map, out, seen);
+                            }
+                            return;
+                        }
+                    }
+                    "let" => {
+                        // [let name val body...] — name is bound after val
+                        if items.len() >= 3 {
+                            let start = if matches!(&items[1].kind, ExprKind::Symbol(s) if s == "mut")
+                            {
+                                // [let mut name val]
+                                if items.len() >= 4 {
+                                    collect_free_vars(
+                                        &items[3], locals, builtins, ctors, func_map, out, seen,
+                                    );
+                                    let mut locs = locals.clone();
+                                    if let ExprKind::Symbol(n) = &items[2].kind {
+                                        locs.insert(n.clone());
+                                    }
+                                    return;
+                                }
+                                return;
+                            } else {
+                                1
+                            };
+                            collect_free_vars(
+                                &items[start + 1],
+                                locals,
+                                builtins,
+                                ctors,
+                                func_map,
+                                out,
+                                seen,
+                            );
+                            let mut locs = locals.clone();
+                            if let ExprKind::Symbol(n) = &items[start].kind {
+                                locs.insert(n.clone());
+                            }
+                            // Scan remaining body with name in scope
+                            for e in &items[(start + 2)..] {
+                                collect_free_vars(e, &locs, builtins, ctors, func_map, out, seen);
+                            }
+                            return;
+                        }
+                    }
+                    "loop" => {
+                        // [loop [bindings...] body...]
+                        if items.len() >= 2 {
+                            let mut locs = locals.clone();
+                            if let ExprKind::List(bindings) = &items[1].kind {
+                                let mut j = 0;
+                                while j + 1 < bindings.len() {
+                                    collect_free_vars(
+                                        &bindings[j + 1],
+                                        &locs,
+                                        builtins,
+                                        ctors,
+                                        func_map,
+                                        out,
+                                        seen,
+                                    );
+                                    if let ExprKind::Symbol(n) = &bindings[j].kind {
+                                        locs.insert(n.clone());
+                                    }
+                                    j += 2;
+                                }
+                            }
+                            for e in &items[2..] {
+                                collect_free_vars(e, &locs, builtins, ctors, func_map, out, seen);
+                            }
+                            return;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // Generic list: scan all children
+            for item in items {
+                collect_free_vars(item, locals, builtins, ctors, func_map, out, seen);
+            }
+        }
+        ExprKind::Vec(items) | ExprKind::Set(items) | ExprKind::Tuple(items) => {
+            for item in items {
+                collect_free_vars(item, locals, builtins, ctors, func_map, out, seen);
+            }
+        }
+        ExprKind::Map(pairs) => {
+            for (k, v) in pairs {
+                collect_free_vars(k, locals, builtins, ctors, func_map, out, seen);
+                collect_free_vars(v, locals, builtins, ctors, func_map, out, seen);
+            }
+        }
+        ExprKind::DotAccess(inner, _) => {
+            collect_free_vars(inner, locals, builtins, ctors, func_map, out, seen);
+        }
+        _ => {} // literals, keywords, etc.
+    }
+}
+
+fn is_special_form(name: &str) -> bool {
+    matches!(
+        name,
+        "fn" | "let"
+            | "if"
+            | "when"
+            | "do"
+            | "match"
+            | "pipe"
+            | "loop"
+            | "recur"
+            | "handle"
+            | "try"
+            | "type"
+            | "mut"
+            | "set!"
+            | "pub"
+            | "effect"
+            | "trait"
+            | "sig"
+            | "macro"
+            | "macro+"
+            | "macroexpand"
+            | "impl"
+            | "test"
+            | "derive"
+            | "inspect"
+            | "catch-errors"
+            | "use"
+    )
+}
+
+fn is_operator(name: &str) -> bool {
+    matches!(
+        name,
+        "+" | "-" | "*" | "/" | "%" | "=" | "!=" | "<" | ">" | "<=" | ">=" | "and" | "or" | "not"
+    )
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────

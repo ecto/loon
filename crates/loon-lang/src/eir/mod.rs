@@ -342,4 +342,12 @@ pub enum Built {
     Unit,
     Magnitude,
     Or,
+    Abs,
+    First,
+    Last,
+    Find,
+    Keyword,
+    KeywordizeKeys,
+    AssertEq,
+    Concat,
 }
