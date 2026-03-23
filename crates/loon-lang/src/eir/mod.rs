@@ -159,6 +159,10 @@ pub enum Op {
     Perform(Reg, StringId, StringId, Vec<Reg>, Option<Reg>, Span),
     /// Call a built-in runtime operation.
     Builtin(Reg, Built, Vec<Reg>, Span),
+    /// Push a dynamic effect handler (handler_closure, effect_sid, op_sid).
+    PushHandler(Reg, StringId, StringId, Span),
+    /// Pop a dynamic effect handler.
+    PopHandler(Span),
 }
 
 impl Op {
@@ -181,7 +185,9 @@ impl Op {
             | Op::Field(r, ..)
             | Op::Tag(r, ..)
             | Op::Perform(r, ..)
-            | Op::Builtin(r, ..) => *r,
+            | Op::Builtin(r, ..)
+            | Op::PushHandler(r, ..) => *r,
+            Op::PopHandler(_) => Reg(0), // no destination
         }
     }
 
@@ -203,7 +209,9 @@ impl Op {
             | Op::Field(_, _, _, s)
             | Op::Tag(_, _, s)
             | Op::Perform(_, _, _, _, _, s)
-            | Op::Builtin(_, _, _, s) => *s,
+            | Op::Builtin(_, _, _, s)
+            | Op::PushHandler(_, _, _, s)
+            | Op::PopHandler(s) => *s,
         }
     }
 }

@@ -49,6 +49,13 @@ struct Frame {
 
 // ─── VM ────────────────────────────────────────────────────────────────────
 
+/// Dynamic effect handler entry.
+struct DynHandler {
+    effect: String,
+    op: String,
+    closure: Val,
+}
+
 /// The register VM. Executes an EIR Module.
 pub struct Vm {
     module: Rc<Module>,
@@ -62,6 +69,10 @@ pub struct Vm {
     output: Vec<String>,
     /// String constants resolved to heap indices.
     string_cache: HashMap<StringId, usize>,
+    /// Dynamic effect handler stack.
+    handlers: Vec<DynHandler>,
+    /// Pre-allocated identity closure for `resume`.
+    resume_closure: Val,
 }
 
 /// Result of running the VM.
@@ -82,11 +93,35 @@ impl Vm {
             ip: 0,
             output: Vec::new(),
             string_cache: HashMap::new(),
+            handlers: Vec::new(),
+            resume_closure: Val::UNIT, // set in run()
         }
     }
 
     /// Run the module's entry function.
     pub fn run(&mut self) -> Result<VmResult, VmError> {
+        // Pre-create the identity function for `resume` in effect handlers.
+        self.resume_closure = {
+            let module = Rc::get_mut(&mut self.module).unwrap();
+            let id = FuncId(module.funcs.len() as u32);
+            module.funcs.push(Func {
+                id,
+                name: Some("resume".to_string()),
+                params: vec![Ty::Any],
+                ret: Ty::Any,
+                evidence: Vec::new(),
+                captures: Vec::new(),
+                blocks: vec![Block {
+                    id: BlockId(0),
+                    params: vec![Reg(0)],
+                    ops: Vec::new(),
+                    end: End::Ret(Reg(0)),
+                }],
+                span: Span::ZERO,
+                is_closure: false,
+            });
+            self.alloc(Obj::Closure(id, Vec::new()))
+        };
         let entry = self.module.entry;
         self.call_func(entry, &[], 0)?;
         let val = self.execute(0)?;
@@ -516,9 +551,8 @@ impl Vm {
                     // Evidence-passed: direct call to handler
                     let handler = self.r(*ev_reg);
                     if let Some(Obj::Closure(fid, _)) = self.get_obj(handler).cloned() {
-                        // Call handler with (resume, ...args)
-                        // For simple handlers, resume is identity
-                        let mut call_args = vec![Val::UNIT]; // resume placeholder
+                        let resume_val = self.resume_closure;
+                        let mut call_args = vec![resume_val];
                         call_args.extend_from_slice(&vals);
                         let ret_reg = dst.0;
                         self.call_func(fid, &call_args, ret_reg)?;
@@ -526,11 +560,32 @@ impl Vm {
                         self.w(*dst, Val::UNIT);
                     }
                 } else {
-                    // Dynamic: try builtin handler
+                    // Dynamic: check handler stack, then builtin
                     let effect = self.module.strings[eff_sid.0 as usize].clone();
                     let op_name = self.module.strings[op_sid.0 as usize].clone();
-                    let result = self.builtin_effect(&effect, &op_name, &vals);
-                    self.w(*dst, result);
+
+                    // Search handler stack (most recent first)
+                    let handler = self
+                        .handlers
+                        .iter()
+                        .rev()
+                        .find(|h| h.effect == effect && h.op == op_name)
+                        .map(|h| h.closure);
+
+                    if let Some(hval) = handler {
+                        if let Some(Obj::Closure(fid, _)) = self.get_obj(hval).cloned() {
+                            let resume_val = self.resume_closure;
+                            let mut call_args = vec![resume_val];
+                            call_args.extend_from_slice(&vals);
+                            let ret_reg = dst.0;
+                            self.call_func(fid, &call_args, ret_reg)?;
+                        } else {
+                            self.w(*dst, Val::UNIT);
+                        }
+                    } else {
+                        let result = self.builtin_effect(&effect, &op_name, &vals);
+                        self.w(*dst, result);
+                    }
                 }
             }
 
@@ -538,6 +593,21 @@ impl Vm {
                 let vals = self.read_regs(args);
                 let result = self.exec_builtin(*built, &vals)?;
                 self.w(*dst, result);
+            }
+
+            Op::PushHandler(handler_reg, eff_sid, op_sid, _) => {
+                let closure = self.r(*handler_reg);
+                let effect = self.module.strings[eff_sid.0 as usize].clone();
+                let op = self.module.strings[op_sid.0 as usize].clone();
+                self.handlers.push(DynHandler {
+                    effect,
+                    op,
+                    closure,
+                });
+            }
+
+            Op::PopHandler(_) => {
+                self.handlers.pop();
             }
         }
         Ok(())

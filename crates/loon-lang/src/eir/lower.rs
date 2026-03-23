@@ -164,6 +164,45 @@ impl<'a> Lower<'a> {
             }
         }
 
+        // Second pass: pre-register all top-level function names for forward refs.
+        // This enables mutual recursion (is-even calling is-odd and vice versa).
+        // We reserve FuncIds starting after __main (FuncId 0).
+        {
+            let mut next_id = 1u32; // 0 = __main
+            for expr in &self.checker.expanded_program {
+                if let ExprKind::List(items) = &expr.kind {
+                    if items.len() >= 3 {
+                        let kw = items.first().and_then(|e| {
+                            if let ExprKind::Symbol(s) = &e.kind {
+                                Some(s.as_str())
+                            } else {
+                                None
+                            }
+                        });
+                        match kw {
+                            Some("fn") => {
+                                if let ExprKind::Symbol(name) = &items[1].kind {
+                                    self.func_map.insert(name.clone(), FuncId(next_id));
+                                    next_id += 1;
+                                }
+                            }
+                            Some("pub") if items.len() >= 4 => {
+                                if let ExprKind::Symbol(inner) = &items[1].kind {
+                                    if inner == "fn" {
+                                        if let ExprKind::Symbol(name) = &items[2].kind {
+                                            self.func_map.insert(name.clone(), FuncId(next_id));
+                                            next_id += 1;
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+
         // Create the entry function (__main)
         let main_id = self.begin_func(Some("__main"), Span::ZERO);
         self.module.entry = main_id;
@@ -1337,10 +1376,16 @@ impl<'a> Lower<'a> {
                             self.next_reg = saved_next_reg;
                             self.scopes = saved_scopes;
 
-                            // Create closure for handler and bind as evidence
+                            // Create closure for handler
                             let handler_reg = self.reg();
                             self.emit(Op::Close(handler_reg, handler_fn_id, Vec::new(), span));
 
+                            // Install as dynamic handler (accessible to called functions)
+                            let eff_id = self.intern(effect);
+                            let op_id = self.intern(op);
+                            self.emit(Op::PushHandler(handler_reg, eff_id, op_id, span));
+
+                            // Also bind as evidence for direct use in body
                             let key = format!("{effect}.{op}");
                             self.evidence_scope.insert(key, handler_reg);
                         }
@@ -1350,8 +1395,16 @@ impl<'a> Lower<'a> {
             i += 2;
         }
 
-        // Lower body with evidence in scope
+        // Count handlers to pop
+        let handler_count = self.evidence_scope.len() - saved_evidence.len();
+
+        // Lower body with evidence + handlers in scope
         let result = self.lower_expr(body);
+
+        // Pop dynamic handlers
+        for _ in 0..handler_count {
+            self.emit(Op::PopHandler(span));
+        }
 
         // Restore evidence scope
         self.evidence_scope = saved_evidence;
@@ -1359,16 +1412,64 @@ impl<'a> Lower<'a> {
     }
 
     fn lower_try(&mut self, args: &[Expr], span: Span) -> Reg {
-        // [try body handler] → handle with Fail.fail
+        // [try body on-fail] → desugar to:
+        //   [handle body [Fail.fail msg] [on-fail msg]]
         if args.is_empty() {
             let r = self.reg();
             self.emit(Op::Lit(r, Lit::Unit, span));
             return r;
         }
 
-        // For now, lower body directly — try/catch is handled by the VM
-        // A full implementation would desugar to handle
-        self.lower_expr(&args[0])
+        let body = &args[0];
+        let handler_expr = if args.len() > 1 {
+            Some(&args[args.len() - 1])
+        } else {
+            None
+        };
+
+        if let Some(on_fail) = handler_expr {
+            // Create handler closure for Fail.fail
+            let saved_func = self.cur_func;
+            let saved_block = self.cur_block;
+            let saved_next_reg = self.next_reg;
+            let saved_scopes = std::mem::take(&mut self.scopes);
+
+            let handler_fn_id = self.begin_func(None, span);
+            self.scopes = vec![HashMap::new()];
+            // Params: (resume, msg)
+            let _resume_reg = Reg(0);
+            let msg_reg = Reg(1);
+            self.next_reg = 2;
+            self.bind("resume", _resume_reg);
+            self.bind("__fail_msg", msg_reg);
+            self.module.funcs[handler_fn_id.0 as usize].params = vec![Ty::Any; 2];
+
+            // Handler body: call on-fail with msg
+            let on_fail_fn = self.lower_expr(on_fail);
+            let result = self.reg();
+            self.emit(Op::Invoke(result, on_fail_fn, vec![msg_reg], span));
+            self.seal(End::Ret(result));
+
+            self.cur_func = saved_func;
+            self.cur_block = saved_block;
+            self.next_reg = saved_next_reg;
+            self.scopes = saved_scopes;
+
+            // Create handler closure and bind as evidence for Fail.fail
+            let handler_reg = self.reg();
+            self.emit(Op::Close(handler_reg, handler_fn_id, Vec::new(), span));
+
+            let saved_evidence = self.evidence_scope.clone();
+            self.evidence_scope
+                .insert("Fail.fail".to_string(), handler_reg);
+
+            let result = self.lower_expr(body);
+
+            self.evidence_scope = saved_evidence;
+            result
+        } else {
+            self.lower_expr(body)
+        }
     }
 
     fn lower_call(&mut self, items: &[Expr], span: Span) -> Reg {
