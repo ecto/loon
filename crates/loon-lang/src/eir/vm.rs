@@ -10,16 +10,21 @@ use crate::eir::*;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+// Persistent collection types — O(log n) clone via structural sharing.
+type ImVec = imbl::Vector<Val>;
+type ImMap = imbl::HashMap<Val, Val>;
+type ImSet = imbl::HashSet<Val>;
+
 // ─── Heap objects ──────────────────────────────────────────────────────────
 
 /// A heap-allocated object. Stored in the VM's object table.
 #[derive(Debug, Clone)]
 enum Obj {
     Str(String),
-    Vec(Vec<Val>),
-    Map(Vec<(Val, Val)>),
-    Set(Vec<Val>),
-    Tuple(Vec<Val>),
+    Vec(ImVec),
+    Map(ImMap),
+    Set(ImSet),
+    Tuple(Vec<Val>),           // fixed-size, no persistence needed
     Adt(u16, Vec<Val>),        // tag + fields
     Closure(FuncId, Vec<Val>), // func + captured values
 }
@@ -29,8 +34,10 @@ impl Obj {
     fn estimated_bytes(&self) -> u64 {
         match self {
             Obj::Str(s) => (24 + s.len()) as u64,
-            Obj::Vec(v) | Obj::Set(v) | Obj::Tuple(v) => (24 + v.len() * 8) as u64,
-            Obj::Map(pairs) => (24 + pairs.len() * 16) as u64,
+            Obj::Vec(v) => (24 + v.len() * 8) as u64,
+            Obj::Set(s) => (24 + s.len() * 8) as u64,
+            Obj::Tuple(v) => (24 + v.len() * 8) as u64,
+            Obj::Map(m) => (24 + m.len() * 16) as u64,
             Obj::Adt(_, fields) => (24 + 2 + fields.len() * 8) as u64,
             Obj::Closure(_, caps) => (24 + 4 + caps.len() * 8) as u64,
         }
@@ -543,13 +550,13 @@ impl Vm {
             }
 
             Op::Vec(dst, elems, _) => {
-                let vals = self.read_regs(elems);
+                let vals: ImVec = elems.iter().map(|r| self.r(*r)).collect();
                 let val = self.alloc(Obj::Vec(vals));
                 self.w(*dst, val);
             }
 
             Op::Map(dst, pairs, _) => {
-                let kv: Vec<(Val, Val)> = pairs
+                let kv: ImMap = pairs
                     .iter()
                     .map(|(k, v)| (self.r(*k), self.r(*v)))
                     .collect();
@@ -558,7 +565,7 @@ impl Vm {
             }
 
             Op::Set(dst, elems, _) => {
-                let vals = self.read_regs(elems);
+                let vals: ImSet = elems.iter().map(|r| self.r(*r)).collect();
                 let val = self.alloc(Obj::Set(vals));
                 self.w(*dst, val);
             }
@@ -584,13 +591,19 @@ impl Vm {
                     (Some(Obj::Tuple(fields)), Selector::Index(i)) => {
                         fields.get(*i as usize).copied().unwrap_or(Val::UNIT)
                     }
-                    (Some(Obj::Map(pairs)), Selector::Name(sid)) => {
-                        let key_str = &self.module.strings[sid.0 as usize];
-                        pairs
-                            .iter()
-                            .find(|(k, _)| self.get_str(*k) == Some(key_str))
-                            .map(|(_, v)| *v)
-                            .unwrap_or(Val::UNIT)
+                    (Some(Obj::Map(map)), Selector::Name(sid)) => {
+                        // Try symbol key first, then string key
+                        let sym_key = Val::sym(sid.0);
+                        if let Some(v) = map.get(&sym_key) {
+                            *v
+                        } else {
+                            let key_str = &self.module.strings[sid.0 as usize];
+                            // Fall back to scanning for string keys
+                            map.iter()
+                                .find(|(k, _)| self.get_str(**k) == Some(key_str))
+                                .map(|(_, v)| *v)
+                                .unwrap_or(Val::UNIT)
+                        }
                     }
                     _ => Val::UNIT,
                 };
@@ -900,15 +913,18 @@ impl Vm {
                 let key = args.get(1).copied().unwrap_or(Val::UNIT);
                 let default = args.get(2).copied().unwrap_or(Val::UNIT);
                 match self.get_obj(coll) {
-                    Some(Obj::Map(pairs)) => {
-                        for (k, v) in pairs {
-                            if *k == key {
-                                return Ok(*v);
-                            }
-                            // String key comparison
-                            if let (Some(ks), Some(kk)) = (self.get_str(*k), self.get_str(key)) {
-                                if ks == kk {
-                                    return Ok(*v);
+                    Some(Obj::Map(map)) => {
+                        // Direct hash lookup (O(log₃₂ n))
+                        if let Some(v) = map.get(&key) {
+                            return Ok(*v);
+                        }
+                        // Fuzzy: try string↔symbol interop
+                        if let Some(ks) = self.get_str(key).map(|s| s.to_string()) {
+                            for (k, v) in map.iter() {
+                                if let Some(ks2) = self.get_str(*k) {
+                                    if ks2 == ks {
+                                        return Ok(*v);
+                                    }
                                 }
                             }
                         }
@@ -929,8 +945,12 @@ impl Vm {
                 let val = args.get(1).copied().unwrap_or(Val::UNIT);
                 match self.get_obj(coll).cloned() {
                     Some(Obj::Vec(mut items)) => {
-                        items.push(val);
+                        items.push_back(val);  // O(log n) with structural sharing
                         Ok(self.alloc(Obj::Vec(items)))
+                    }
+                    Some(Obj::Set(mut items)) => {
+                        items.insert(val);
+                        Ok(self.alloc(Obj::Set(items)))
                     }
                     _ => Ok(Val::UNIT),
                 }
@@ -940,9 +960,9 @@ impl Vm {
                 let key = args.get(1).copied().unwrap_or(Val::UNIT);
                 let val = args.get(2).copied().unwrap_or(Val::UNIT);
                 match self.get_obj(coll).cloned() {
-                    Some(Obj::Map(mut pairs)) => {
-                        pairs.push((key, val));
-                        Ok(self.alloc(Obj::Map(pairs)))
+                    Some(Obj::Map(mut map)) => {
+                        map.insert(key, val);  // O(log₃₂ n) with structural sharing
+                        Ok(self.alloc(Obj::Map(map)))
                     }
                     _ => Ok(Val::UNIT),
                 }
@@ -951,10 +971,10 @@ impl Vm {
                 let start = args.first().copied().unwrap_or(Val::int(0));
                 let end = args.get(1).copied().unwrap_or(Val::int(0));
                 if start.is_int() && end.is_int() {
-                    let items: Vec<Val> = (start.as_int()..end.as_int()).map(Val::int).collect();
+                    let items: ImVec = (start.as_int()..end.as_int()).map(Val::int).collect();
                     Ok(self.alloc(Obj::Vec(items)))
                 } else {
-                    Ok(self.alloc(Obj::Vec(Vec::new())))
+                    Ok(self.alloc(Obj::Vec(ImVec::new())))
                 }
             }
             Built::Map | Built::Filter | Built::Each | Built::Reduce => {
@@ -967,15 +987,15 @@ impl Vm {
 
                 match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
                     (Some(Obj::Closure(fid, caps)), Some(Obj::Vec(items))) => {
-                        let mut results = Vec::new();
+                        let mut results = ImVec::new();
                         for item in &items {
                             let result =
                                 self.run_call_with_captures(fid, &[*item], caps.clone())?;
                             match built {
-                                Built::Map => results.push(result),
+                                Built::Map => results.push_back(result),
                                 Built::Filter => {
                                     if result.is_truthy() {
-                                        results.push(*item);
+                                        results.push_back(*item);
                                     }
                                 }
                                 Built::Each => {} // side-effect only
@@ -1004,13 +1024,15 @@ impl Vm {
                 match self.get_obj(coll) {
                     Some(Obj::Vec(items)) => Ok(Val::bool(items.contains(&val))),
                     Some(Obj::Set(items)) => Ok(Val::bool(items.contains(&val))),
-                    Some(Obj::Map(pairs)) => Ok(Val::bool(pairs.iter().any(|(k, _)| {
-                        *k == val || {
-                            let ks = self.get_str(*k).map(|s| s.to_string());
-                            let kk = self.get_str(val).map(|s| s.to_string());
-                            ks.is_some() && ks == kk
+                    Some(Obj::Map(map)) => Ok(Val::bool(
+                        map.contains_key(&val) || {
+                            let ks = self.get_str(val).map(|s| s.to_string());
+                            ks.is_some() && map.iter().any(|(k, _)| {
+                                let kk = self.get_str(*k).map(|s| s.to_string());
+                                kk.is_some() && kk == ks
+                            })
                         }
-                    }))),
+                    )),
                     Some(Obj::Str(s)) => {
                         // String contains substring
                         if let Some(needle) = self.get_str(val) {
@@ -1025,15 +1047,16 @@ impl Vm {
             Built::Sort => {
                 let coll = args.first().copied().unwrap_or(Val::UNIT);
                 match self.get_obj(coll).cloned() {
-                    Some(Obj::Vec(mut items)) => {
-                        items.sort_by(|a, b| {
+                    Some(Obj::Vec(items)) => {
+                        let mut v: Vec<Val> = items.into_iter().collect();
+                        v.sort_by(|a, b| {
                             if a.is_int() && b.is_int() {
                                 a.as_int().cmp(&b.as_int())
                             } else {
                                 std::cmp::Ordering::Equal
                             }
                         });
-                        Ok(self.alloc(Obj::Vec(items)))
+                        Ok(self.alloc(Obj::Vec(v.into_iter().collect())))
                     }
                     _ => Ok(Val::UNIT),
                 }
@@ -1041,9 +1064,9 @@ impl Vm {
             Built::Reverse => {
                 let coll = args.first().copied().unwrap_or(Val::UNIT);
                 match self.get_obj(coll).cloned() {
-                    Some(Obj::Vec(mut items)) => {
-                        items.reverse();
-                        Ok(self.alloc(Obj::Vec(items)))
+                    Some(Obj::Vec(items)) => {
+                        let reversed: ImVec = items.into_iter().rev().collect();
+                        Ok(self.alloc(Obj::Vec(reversed)))
                     }
                     _ => Ok(Val::UNIT),
                 }
@@ -1095,7 +1118,7 @@ impl Vm {
                 let coll = args.get(1).copied().unwrap_or(Val::UNIT);
                 match self.get_obj(coll).cloned() {
                     Some(Obj::Vec(mut items)) => {
-                        items.insert(0, val);
+                        items.push_front(val);  // O(log n) with imbl
                         Ok(self.alloc(Obj::Vec(items)))
                     }
                     _ => Ok(Val::UNIT),
@@ -1105,9 +1128,9 @@ impl Vm {
                 let a = args.first().copied().unwrap_or(Val::UNIT);
                 let b = args.get(1).copied().unwrap_or(Val::UNIT);
                 match (self.get_obj(a).cloned(), self.get_obj(b).cloned()) {
-                    (Some(Obj::Map(mut ma)), Some(Obj::Map(mb))) => {
-                        ma.extend(mb);
-                        Ok(self.alloc(Obj::Map(ma)))
+                    (Some(Obj::Map(ma)), Some(Obj::Map(mb))) => {
+                        let merged = ma.union(mb);  // O(n log n) with structural sharing
+                        Ok(self.alloc(Obj::Map(merged)))
                     }
                     _ => Ok(Val::UNIT),
                 }
@@ -1117,7 +1140,7 @@ impl Vm {
                 let coll = args.get(1).copied().unwrap_or(Val::UNIT);
                 match self.get_obj(coll).cloned() {
                     Some(Obj::Vec(items)) if n.is_int() => {
-                        let taken: Vec<Val> = items.into_iter().take(n.as_int() as usize).collect();
+                        let taken = items.take(n.as_int() as usize);
                         Ok(self.alloc(Obj::Vec(taken)))
                     }
                     _ => Ok(Val::UNIT),
@@ -1128,8 +1151,7 @@ impl Vm {
                 let coll = args.get(1).copied().unwrap_or(Val::UNIT);
                 match self.get_obj(coll).cloned() {
                     Some(Obj::Vec(items)) if n.is_int() => {
-                        let dropped: Vec<Val> =
-                            items.into_iter().skip(n.as_int() as usize).collect();
+                        let dropped = items.skip(n.as_int() as usize);
                         Ok(self.alloc(Obj::Vec(dropped)))
                     }
                     _ => Ok(Val::UNIT),
@@ -1144,13 +1166,13 @@ impl Vm {
                     self.get_str(s).map(|s| s.to_string()),
                 ) {
                     (Some(sep), Some(s)) => {
-                        let parts: Vec<Val> = s
+                        let parts: ImVec = s
                             .split(&sep)
                             .map(|p| self.alloc(Obj::Str(p.to_string())))
                             .collect();
                         Ok(self.alloc(Obj::Vec(parts)))
                     }
-                    _ => Ok(self.alloc(Obj::Vec(Vec::new()))),
+                    _ => Ok(self.alloc(Obj::Vec(ImVec::new()))),
                 }
             }
             Built::StartsWith => {
@@ -1209,21 +1231,21 @@ impl Vm {
             Built::Keys => {
                 let m = args.first().copied().unwrap_or(Val::UNIT);
                 match self.get_obj(m).cloned() {
-                    Some(Obj::Map(pairs)) => {
-                        let keys: Vec<Val> = pairs.into_iter().map(|(k, _)| k).collect();
+                    Some(Obj::Map(map)) => {
+                        let keys: ImVec = map.keys().copied().collect();
                         Ok(self.alloc(Obj::Vec(keys)))
                     }
-                    _ => Ok(self.alloc(Obj::Vec(Vec::new()))),
+                    _ => Ok(self.alloc(Obj::Vec(ImVec::new()))),
                 }
             }
             Built::Vals => {
                 let m = args.first().copied().unwrap_or(Val::UNIT);
                 match self.get_obj(m).cloned() {
-                    Some(Obj::Map(pairs)) => {
-                        let vals: Vec<Val> = pairs.into_iter().map(|(_, v)| v).collect();
+                    Some(Obj::Map(map)) => {
+                        let vals: ImVec = map.values().copied().collect();
                         Ok(self.alloc(Obj::Vec(vals)))
                     }
-                    _ => Ok(self.alloc(Obj::Vec(Vec::new()))),
+                    _ => Ok(self.alloc(Obj::Vec(ImVec::new()))),
                 }
             }
             Built::Join => {
@@ -1250,12 +1272,12 @@ impl Vm {
                 let coll = args.first().copied().unwrap_or(Val::UNIT);
                 match self.get_obj(coll).cloned() {
                     Some(Obj::Vec(items)) => {
-                        let mut flat = Vec::new();
+                        let mut flat = ImVec::new();
                         for item in items {
                             if let Some(Obj::Vec(inner)) = self.get_obj(item).cloned() {
-                                flat.extend(inner);
+                                flat.append(inner);
                             } else {
-                                flat.push(item);
+                                flat.push_back(item);
                             }
                         }
                         Ok(self.alloc(Obj::Vec(flat)))
@@ -1268,14 +1290,14 @@ impl Vm {
                 let b = args.get(1).copied().unwrap_or(Val::UNIT);
                 match (self.get_obj(a).cloned(), self.get_obj(b).cloned()) {
                     (Some(Obj::Vec(va)), Some(Obj::Vec(vb))) => {
-                        let zipped: Vec<Val> = va
+                        let zipped: ImVec = va
                             .into_iter()
                             .zip(vb)
                             .map(|(x, y)| self.alloc(Obj::Tuple(vec![x, y])))
                             .collect();
                         Ok(self.alloc(Obj::Vec(zipped)))
                     }
-                    _ => Ok(self.alloc(Obj::Vec(Vec::new()))),
+                    _ => Ok(self.alloc(Obj::Vec(ImVec::new()))),
                 }
             }
             Built::Any => {
@@ -1336,8 +1358,8 @@ impl Vm {
                 let v = args.first().copied().unwrap_or(Val::UNIT);
                 let empty = match self.get_obj(v) {
                     Some(Obj::Vec(items)) => items.is_empty(),
-                    Some(Obj::Map(pairs)) => pairs.is_empty(),
-                    Some(Obj::Set(items)) => items.is_empty(),
+                    Some(Obj::Map(map)) => map.is_empty(),
+                    Some(Obj::Set(set)) => set.is_empty(),
                     Some(Obj::Str(s)) => s.is_empty(),
                     _ => true,
                 };
@@ -1371,30 +1393,11 @@ impl Vm {
                 let key = args.get(1).copied().unwrap_or(Val::UNIT);
                 let func = args.get(2).copied().unwrap_or(Val::UNIT);
                 match (self.get_obj(map_val).cloned(), self.get_obj(func).cloned()) {
-                    (Some(Obj::Map(mut pairs)), Some(Obj::Closure(fid, caps))) => {
-                        // Find existing value or UNIT
-                        let old_val = pairs
-                            .iter()
-                            .find(|(k, _)| {
-                                *k == key || {
-                                    let ks = self.get_str(*k).map(|s| s.to_string());
-                                    let kk = self.get_str(key).map(|s| s.to_string());
-                                    ks.is_some() && ks == kk
-                                }
-                            })
-                            .map(|(_, v)| *v)
-                            .unwrap_or(Val::UNIT);
+                    (Some(Obj::Map(mut map)), Some(Obj::Closure(fid, caps))) => {
+                        let old_val = map.get(&key).copied().unwrap_or(Val::UNIT);
                         let new_val = self.run_call_with_captures(fid, &[old_val], caps)?;
-                        // Remove old entry if exists, add new
-                        pairs.retain(|(k, _)| {
-                            *k != key && {
-                                let ks = self.get_str(*k).map(|s| s.to_string());
-                                let kk = self.get_str(key).map(|s| s.to_string());
-                                ks.is_none() || ks != kk
-                            }
-                        });
-                        pairs.push((key, new_val));
-                        Ok(self.alloc(Obj::Map(pairs)))
+                        map.insert(key, new_val);
+                        Ok(self.alloc(Obj::Map(map)))
                     }
                     _ => Ok(map_val),
                 }
@@ -1403,14 +1406,14 @@ impl Vm {
                 // [entries map] → vector of [key value] tuples
                 let m = args.first().copied().unwrap_or(Val::UNIT);
                 match self.get_obj(m).cloned() {
-                    Some(Obj::Map(pairs)) => {
-                        let entries: Vec<Val> = pairs
+                    Some(Obj::Map(map)) => {
+                        let entries: ImVec = map
                             .into_iter()
                             .map(|(k, v)| self.alloc(Obj::Tuple(vec![k, v])))
                             .collect();
                         Ok(self.alloc(Obj::Vec(entries)))
                     }
-                    _ => Ok(self.alloc(Obj::Vec(Vec::new()))),
+                    _ => Ok(self.alloc(Obj::Vec(ImVec::new()))),
                 }
             }
             Built::SortBy => {
@@ -1446,7 +1449,7 @@ impl Vm {
                                 ord
                             }
                         });
-                        let sorted: Vec<Val> = keyed.into_iter().map(|(_, v)| v).collect();
+                        let sorted: ImVec = keyed.into_iter().map(|(_, v)| v).collect();
                         Ok(self.alloc(Obj::Vec(sorted)))
                     }
                     _ => Ok(coll),
@@ -1467,14 +1470,14 @@ impl Vm {
                 let coll = args.get(1).copied().unwrap_or(Val::UNIT);
                 match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
                     (Some(Obj::Closure(fid, caps)), Some(Obj::Vec(items))) => {
-                        let mut results = Vec::new();
+                        let mut results = ImVec::new();
                         for item in &items {
                             let result =
                                 self.run_call_with_captures(fid, &[*item], caps.clone())?;
                             if let Some(Obj::Vec(inner)) = self.get_obj(result).cloned() {
-                                results.extend(inner);
+                                results.append(inner);
                             } else {
-                                results.push(result);
+                                results.push_back(result);
                             }
                         }
                         Ok(self.alloc(Obj::Vec(results)))
@@ -1488,35 +1491,29 @@ impl Vm {
                 let coll = args.get(1).copied().unwrap_or(Val::UNIT);
                 match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
                     (Some(Obj::Closure(fid, caps)), Some(Obj::Vec(items))) => {
-                        // Build groups: Vec<(key_val, Vec<Val>)>
-                        let mut groups: Vec<(Val, Vec<Val>)> = Vec::new();
+                        // Build groups using a temporary HashMap for O(1) lookup
+                        let mut groups: HashMap<Val, Vec<Val>> = HashMap::new();
+                        let mut order: Vec<Val> = Vec::new();
                         for item in &items {
                             let key = self.run_call_with_captures(fid, &[*item], caps.clone())?;
-                            // Find existing group by key
-                            let found = groups.iter_mut().find(|(k, _)| {
-                                *k == key || {
-                                    let ks = self.get_str(*k).map(|s| s.to_string());
-                                    let kk = self.get_str(key).map(|s| s.to_string());
-                                    ks.is_some() && ks == kk
-                                }
-                            });
-                            if let Some((_, ref mut vals)) = found {
-                                vals.push(*item);
-                            } else {
-                                groups.push((key, vec![*item]));
+                            let entry = groups.entry(key);
+                            if matches!(entry, std::collections::hash_map::Entry::Vacant(_)) {
+                                order.push(key);
+                            }
+                            entry.or_default().push(*item);
+                        }
+                        // Convert to ImMap of key → ImVec
+                        let mut map = ImMap::new();
+                        for k in order {
+                            if let Some(vals) = groups.remove(&k) {
+                                let v: ImVec = vals.into_iter().collect();
+                                let v = self.alloc(Obj::Vec(v));
+                                map.insert(k, v);
                             }
                         }
-                        // Convert to map of key → vec
-                        let pairs: Vec<(Val, Val)> = groups
-                            .into_iter()
-                            .map(|(k, vals)| {
-                                let v = self.alloc(Obj::Vec(vals));
-                                (k, v)
-                            })
-                            .collect();
-                        Ok(self.alloc(Obj::Map(pairs)))
+                        Ok(self.alloc(Obj::Map(map)))
                     }
-                    _ => Ok(self.alloc(Obj::Map(Vec::new()))),
+                    _ => Ok(self.alloc(Obj::Map(ImMap::new()))),
                 }
             }
             Built::Collect => {
@@ -1528,17 +1525,17 @@ impl Vm {
                 let coll = args.first().copied().unwrap_or(Val::UNIT);
                 match self.get_obj(coll).cloned() {
                     Some(Obj::Vec(items)) => {
-                        let mut pairs = Vec::new();
+                        let mut map = ImMap::new();
                         for item in &items {
                             if let Some(Obj::Tuple(fields)) = self.get_obj(*item) {
                                 if fields.len() >= 2 {
-                                    pairs.push((fields[0], fields[1]));
+                                    map.insert(fields[0], fields[1]);
                                 }
                             }
                         }
-                        Ok(self.alloc(Obj::Map(pairs)))
+                        Ok(self.alloc(Obj::Map(map)))
                     }
-                    _ => Ok(self.alloc(Obj::Map(Vec::new()))),
+                    _ => Ok(self.alloc(Obj::Map(ImMap::new()))),
                 }
             }
             Built::Chunk => {
@@ -1548,13 +1545,18 @@ impl Vm {
                 match self.get_obj(coll).cloned() {
                     Some(Obj::Vec(items)) if n.is_int() && n.as_int() > 0 => {
                         let chunk_size = n.as_int() as usize;
-                        let chunks: Vec<Val> = items
-                            .chunks(chunk_size)
-                            .map(|chunk| self.alloc(Obj::Vec(chunk.to_vec())))
-                            .collect();
+                        let mut chunks = ImVec::new();
+                        let mut i = 0;
+                        let len = items.len();
+                        while i < len {
+                            let end = (i + chunk_size).min(len);
+                            let chunk = items.clone().slice(i..end);
+                            chunks.push_back(self.alloc(Obj::Vec(chunk)));
+                            i = end;
+                        }
                         Ok(self.alloc(Obj::Vec(chunks)))
                     }
-                    _ => Ok(self.alloc(Obj::Vec(Vec::new()))),
+                    _ => Ok(self.alloc(Obj::Vec(ImVec::new()))),
                 }
             }
             Built::IndexOf => {
@@ -1617,7 +1619,7 @@ impl Vm {
                         let en = end.as_int().max(0) as usize;
                         let en = en.min(items.len());
                         let st = st.min(en);
-                        Ok(self.alloc(Obj::Vec(items[st..en].to_vec())))
+                        Ok(self.alloc(Obj::Vec(items.clone().slice(st..en))))
                     }
                     Some(Obj::Str(s)) if start.is_int() && end.is_int() => {
                         let st = start.as_int().max(0) as usize;
@@ -1644,7 +1646,7 @@ impl Vm {
             Built::First => {
                 let coll = args.first().copied().unwrap_or(Val::UNIT);
                 match self.get_obj(coll) {
-                    Some(Obj::Vec(items)) => Ok(items.first().copied().unwrap_or(Val::UNIT)),
+                    Some(Obj::Vec(items)) => Ok(items.front().copied().unwrap_or(Val::UNIT)),
                     Some(Obj::Tuple(items)) => Ok(items.first().copied().unwrap_or(Val::UNIT)),
                     _ => Ok(Val::UNIT),
                 }
@@ -1652,7 +1654,7 @@ impl Vm {
             Built::Last => {
                 let coll = args.first().copied().unwrap_or(Val::UNIT);
                 match self.get_obj(coll) {
-                    Some(Obj::Vec(items)) => Ok(items.last().copied().unwrap_or(Val::UNIT)),
+                    Some(Obj::Vec(items)) => Ok(items.back().copied().unwrap_or(Val::UNIT)),
                     Some(Obj::Tuple(items)) => Ok(items.last().copied().unwrap_or(Val::UNIT)),
                     _ => Ok(Val::UNIT),
                 }
@@ -1693,25 +1695,23 @@ impl Vm {
                 // [keywordize-keys map] → convert string keys to keywords
                 let m = args.first().copied().unwrap_or(Val::UNIT);
                 match self.get_obj(m).cloned() {
-                    Some(Obj::Map(pairs)) => {
-                        let new_pairs: Vec<(Val, Val)> = pairs
-                            .into_iter()
-                            .map(|(k, v)| {
-                                if let Some(s) = self.get_str(k).map(|s| s.to_string()) {
-                                    let sym_id = self
-                                        .module
-                                        .strings
-                                        .iter()
-                                        .position(|x| *x == s)
-                                        .unwrap_or(0)
-                                        as u32;
-                                    (Val::sym(sym_id), v)
-                                } else {
-                                    (k, v)
-                                }
-                            })
-                            .collect();
-                        Ok(self.alloc(Obj::Map(new_pairs)))
+                    Some(Obj::Map(map)) => {
+                        let mut new_map = ImMap::new();
+                        for (k, v) in map {
+                            if let Some(s) = self.get_str(k).map(|s| s.to_string()) {
+                                let sym_id = self
+                                    .module
+                                    .strings
+                                    .iter()
+                                    .position(|x| *x == s)
+                                    .unwrap_or(0)
+                                    as u32;
+                                new_map.insert(Val::sym(sym_id), v);
+                            } else {
+                                new_map.insert(k, v);
+                            }
+                        }
+                        Ok(self.alloc(Obj::Map(new_map)))
                     }
                     _ => Ok(Val::UNIT),
                 }
@@ -1737,7 +1737,7 @@ impl Vm {
                 let b = args.get(1).copied().unwrap_or(Val::UNIT);
                 match (self.get_obj(a).cloned(), self.get_obj(b).cloned()) {
                     (Some(Obj::Vec(mut va)), Some(Obj::Vec(vb))) => {
-                        va.extend(vb);
+                        va.append(vb);
                         Ok(self.alloc(Obj::Vec(va)))
                     }
                     (Some(Obj::Str(sa)), Some(Obj::Str(sb))) => {
@@ -1812,8 +1812,8 @@ impl Vm {
                     let inner: Vec<String> = items.iter().map(|v| self.val_to_string(*v)).collect();
                     format!("#[{}]", inner.join(" "))
                 }
-                Some(Obj::Map(pairs)) => {
-                    let inner: Vec<String> = pairs
+                Some(Obj::Map(map)) => {
+                    let inner: Vec<String> = map
                         .iter()
                         .map(|(k, v)| {
                             format!("{} {}", self.val_to_string(*k), self.val_to_string(*v))

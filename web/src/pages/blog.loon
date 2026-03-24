@@ -114,11 +114,11 @@
         [blog-code [str
           "                legacy    VM     native\n"
           "fib(30)          2.09    0.50     0.01    (4x / 209x)\n"
-          "fib(35)         22.4     5.57     0.06    (4x / 373x)\n"
-          "loop 1M          0.44    0.07     0.006   (6x / 73x)\n"
-          "vec 100K          0.13    5.1      —      (slower — heap overhead)\n"
-          "map 10K           0.04    0.08     —      (slower — heap overhead)"]]
-        [p "The VM wins big on pure numeric work where NaN-boxing shines — values stay in registers as raw u64s with no allocation. Collection-heavy code is slower because every persistent data structure operation crosses the NaN-box boundary. This is the clear next optimization target."]
+          "fib(35)         22.4     5.75     0.06    (4x / 373x)\n"
+          "loop 1M          0.44    0.08     0.006   (6x / 73x)\n"
+          "vec 100K          0.14    0.03     —      (4.7x faster)\n"
+          "map 10K           0.03    0.03     —      (on par)"]]
+        [p "The VM is faster across the board. Numeric code benefits from NaN-boxing — values stay in registers as raw u64s. Collection code uses the same imbl persistent data structures as the legacy interpreter, with structural sharing for O(log n) updates."]
 
         [blog-h3 "Status"]
         [p "All 14 sample programs pass. 465 tests. Three backends from one IR. The tree-walking interpreter remains available via --legacy."]]
