@@ -64,6 +64,62 @@
                    :margin-bottom "3.5rem"}}
         "Changelog"]
 
+      ; ── v0.6.0 — Evidence IR & Register VM ─────────────────────────────
+
+      [blog-article "The Register VM" "Mar 23, 2026"
+
+        [p "Loon v0.6 replaces the tree-walking interpreter with a register-based virtual machine. Programs compile to Evidence IR — a flat, typed intermediate representation — then execute on a NaN-boxed register VM. The result: 7x faster interpretation, with a Cranelift backend that hits 138x on numeric loops."]
+
+        [blog-h3 "Evidence IR"]
+        [p "EIR is a register-based IR where every value lives in a virtual register. Functions lower to blocks of flat instructions — no recursion, no tree walks. The compiler resolves closures, pattern matching, and effect dispatch at compile time."]
+        [blog-code [str
+          "; source\n"
+          "[fn add [a b] [+ a b]]\n"
+          "\n"
+          "; lowers to\n"
+          ";   r0 = param 0    (a)\n"
+          ";   r1 = param 1    (b)\n"
+          ";   r2 = add r0, r1\n"
+          ";   ret r2"]]
+
+        [blog-h3 "NaN-boxing"]
+        [p "Every value fits in 8 bytes. Floats are stored as-is. Integers, booleans, nil, and heap pointers are encoded in the NaN payload bits. No allocation for small values, no type tags to check — the IEEE 754 NaN space gives us 51 bits of payload for free."]
+        [blog-code [str
+          "; all of these are a single u64:\n"
+          "42          ; tagged integer\n"
+          "3.14        ; raw f64\n"
+          "true        ; tagged boolean\n"
+          ":hello      ; interned symbol index"]]
+
+        [blog-h3 "Three backends"]
+        [p "EIR compiles to three targets from the same IR:"]
+        [ul-el {:style {:margin-left "1.5rem" :line-height "1.8"}}
+          [li-el "Register VM — 7x faster than the tree-walker, portable, debuggable"]
+          [li-el "WASM — runs in browsers and edge workers via wasm32 codegen"]
+          [li-el "Cranelift — native x86-64/aarch64, 138x on tight loops"]]
+        [blog-code [str
+          "loon run fib.oo             ; VM (default)\n"
+          "loon run --native fib.oo    ; Cranelift\n"
+          "loon build --wasm fib.oo    ; WASM module"]]
+
+        [blog-h3 "Trace recorder"]
+        [p "The VM includes a trace recorder that captures hot loop iterations — instruction sequences, types, branch decisions. This is the foundation for a future tracing JIT: record a trace, type-specialize it, emit native code via Cranelift, guard on type assumptions."]
+        [blog-code [str
+          "loon run --trace fib.oo\n"
+          "; Trace 0: 12 instructions, 3 guards\n"
+          ";   loop_header -> int_add -> int_sub -> branch ..."]]
+
+        [blog-h3 "What emerged"]
+        [p "The architecture wasn't designed for these — they fell out of the primitives interacting:"]
+        [ul-el {:style {:margin-left "1.5rem" :line-height "1.8"}}
+          [li-el "Time-travel debugging — persistent data + effect recording = full replay"]
+          [li-el "Capability security — effects ARE capabilities, no handler = no access"]
+          [li-el "Testing without mocks — swap effect handlers, no DI framework needed"]
+          [li-el "Hot code reload — closures point to FuncIds, update the table, done"]]
+
+        [blog-h3 "Performance"]
+        [p "All 14 sample programs pass. 465 tests. Three backends from one IR. The tree-walking interpreter remains as a fallback — the VM is the default."]]
+
       ; ── v0.5.0 — Tail Call Optimization ──────────────────────────────────
 
       [blog-article "Tail Call Optimization" "Feb 25, 2026"
