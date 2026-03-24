@@ -134,11 +134,15 @@ if (!noRust) {
   const bundlePath = join(DIST, 'bundle.loon');
   const templateHtml = readFileSync(join(PUBLIC, 'index.html'), 'utf-8');
 
+  // Routes that need WASM (interactive pages)
+  const interactiveRoutes = new Set(['/play']);
+
   const routes = [
     '/',
     '/tour',
     '/play',
     '/blog',
+    '/changelog',
     '/roadmap',
     '/install',
     '/examples',
@@ -187,6 +191,16 @@ if (!noRust) {
       // Update title if the bridge captured one
       if (title) {
         page = page.replace(/<title>.*?<\/title>/, `<title>${title}</title>`);
+      }
+
+      // Static pages: strip boot.js and WASM — pre-rendered HTML is the final output
+      if (!interactiveRoutes.has(route)) {
+        page = page.replace(/\s*<script type="module" src="\/boot\.js"><\/script>/, '');
+        // Update noscript message since JS isn't needed
+        page = page.replace(
+          /<noscript>[\s\S]*?<\/noscript>/,
+          ''
+        );
       }
 
       // Write to dist/{route}/index.html
