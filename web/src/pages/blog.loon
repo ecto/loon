@@ -110,15 +110,14 @@
           ";   loop_header -> int_add -> int_sub -> branch ..."]]
 
         [blog-h3 "Benchmarks"]
-        [p "All times in seconds, release mode (Apple M1 Max). Lower is better."]
+        [p "Release mode, Apple M1 Max. Lower is better."]
         [blog-code [str
           "                legacy    VM     native\n"
-          "fib(30)          2.09    0.50     0.01    (4x / 209x)\n"
           "fib(35)         22.4     5.75     0.06    (4x / 373x)\n"
           "loop 1M          0.44    0.08     0.006   (6x / 73x)\n"
-          "vec 100K          0.14    0.03     —      (4.7x faster)\n"
-          "map 10K           0.03    0.03     —      (on par)"]]
-        [p "The VM is faster across the board. Numeric code benefits from NaN-boxing — values stay in registers as raw u64s. Collection code uses the same imbl persistent data structures as the legacy interpreter, with structural sharing for O(log n) updates."]
+          "vec 100K          0.14    0.03     —      (4.7x)\n"
+          "map 10K           0.03    0.03     —      (1x)"]]
+        [p "The VM is faster across the board. Numeric code benefits from NaN-boxing — values stay in registers as raw u64s with no allocation. Collection code uses imbl persistent data structures with O(log n) structural sharing. The Cranelift native backend compiles to machine code for tight loops."]
 
         [blog-h3 "Status"]
         [p "All 14 sample programs pass. 465 tests. Three backends from one IR. The tree-walking interpreter remains available via --legacy."]]
