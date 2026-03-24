@@ -216,7 +216,81 @@ if (!noRust) {
 
   console.log(`  ${rendered} pages pre-rendered${failed ? `, ${failed} failed` : ''}`);
 } else {
-  console.log('Skipping pre-rendering (--no-rust)...');
+  // No Rust toolchain — use committed pre-rendered JSON files
+  console.log('Pre-rendering from cached JSON...');
+  const PRERENDERED = join(WEB, 'prerendered');
+  const templateHtml = readFileSync(join(PUBLIC, 'index.html'), 'utf-8');
+  const interactiveRoutes = new Set(['/play']);
+
+  const routes = [
+    '/',
+    '/tour',
+    '/play',
+    '/blog',
+    '/changelog',
+    '/roadmap',
+    '/install',
+    '/examples',
+    '/guide/basics',
+    '/guide/functions',
+    '/guide/types',
+    '/guide/collections',
+    '/guide/pattern-matching',
+    '/guide/ownership',
+    '/guide/effects',
+    '/guide/modules',
+    '/guide/macros',
+    '/guide/testing',
+    '/guide/errors',
+    '/ref/syntax',
+    '/ref/builtins',
+    '/ref/cli',
+    '/ref/effects',
+    '/ref/lsp',
+    '/ref/formatter',
+    '/concepts/invisible-types',
+    '/concepts/effects',
+    '/concepts/ownership',
+    '/concepts/from-rust',
+    '/concepts/from-js',
+    '/concepts/from-clojure',
+  ];
+
+  let rendered = 0;
+  let missed = 0;
+
+  for (const route of routes) {
+    const jsonFile = route === '/'
+      ? join(PRERENDERED, 'index.json')
+      : join(PRERENDERED, route.slice(1) + '.json');
+
+    try {
+      const { html, title } = JSON.parse(readFileSync(jsonFile, 'utf-8'));
+
+      let page = templateHtml.replace(
+        /<div id="app">[\s\S]*?<\/div>/,
+        `<div id="app" data-ssr="1">${html}</div>`
+      );
+
+      if (title) {
+        page = page.replace(/<title>.*?<\/title>/, `<title>${title}</title>`);
+      }
+
+      if (!interactiveRoutes.has(route)) {
+        page = page.replace(/\s*<script type="module" src="\/boot\.js"><\/script>/, '');
+        page = page.replace(/<noscript>[\s\S]*?<\/noscript>/, '');
+      }
+
+      const outDir = route === '/' ? DIST : join(DIST, route.slice(1));
+      mkdirSync(outDir, { recursive: true });
+      writeFileSync(join(outDir, 'index.html'), page);
+      rendered++;
+    } catch {
+      missed++;
+    }
+  }
+
+  console.log(`  ${rendered} pages from cache${missed ? `, ${missed} missed` : ''}`);
 }
 
 // Step 6: Type-check Loon sources (skip without Rust toolchain)
