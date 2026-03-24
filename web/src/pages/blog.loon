@@ -68,7 +68,7 @@
 
       [blog-article "The Register VM" "Mar 23, 2026"
 
-        [p "Loon v0.6 replaces the tree-walking interpreter with a register-based virtual machine. Programs compile to Evidence IR — a flat, typed intermediate representation — then execute on a NaN-boxed register VM. The result: 7x faster interpretation, with a Cranelift backend that hits 138x on numeric loops."]
+        [p "Loon v0.6 replaces the tree-walking interpreter with a register-based virtual machine. Programs compile to Evidence IR — a flat, typed intermediate representation — then execute on a NaN-boxed register VM. The result: 4x faster interpretation, with a Cranelift native backend that hits 370x on compute-heavy code."]
 
         [blog-h3 "Evidence IR"]
         [p "EIR is a register-based IR where every value lives in a virtual register. Functions lower to blocks of flat instructions — no recursion, no tree walks. The compiler resolves closures, pattern matching, and effect dispatch at compile time."]
@@ -94,9 +94,9 @@
         [blog-h3 "Three backends"]
         [p "EIR compiles to three targets from the same IR:"]
         [ul-el {:style {:margin-left "1.5rem" :line-height "1.8"}}
-          [li-el "Register VM — 7x faster than the tree-walker, portable, debuggable"]
+          [li-el "Register VM — 4x faster than the tree-walker, portable, debuggable"]
           [li-el "WASM — runs in browsers and edge workers via wasm32 codegen"]
-          [li-el "Cranelift — native x86-64/aarch64, 138x on tight loops"]]
+          [li-el "Cranelift — native x86-64/aarch64, up to 370x on numeric code"]]
         [blog-code [str
           "loon run fib.oo             ; VM (default)\n"
           "loon run --native fib.oo    ; Cranelift\n"
@@ -109,16 +109,19 @@
           "; Trace 0: 12 instructions, 3 guards\n"
           ";   loop_header -> int_add -> int_sub -> branch ..."]]
 
-        [blog-h3 "What emerged"]
-        [p "The architecture wasn't designed for these — they fell out of the primitives interacting:"]
-        [ul-el {:style {:margin-left "1.5rem" :line-height "1.8"}}
-          [li-el "Time-travel debugging — persistent data + effect recording = full replay"]
-          [li-el "Capability security — effects ARE capabilities, no handler = no access"]
-          [li-el "Testing without mocks — swap effect handlers, no DI framework needed"]
-          [li-el "Hot code reload — closures point to FuncIds, update the table, done"]]
+        [blog-h3 "Benchmarks"]
+        [p "All times in seconds, release mode (Apple M1 Max). Lower is better."]
+        [blog-code [str
+          "                legacy    VM     native\n"
+          "fib(30)          2.09    0.50     0.01    (4x / 209x)\n"
+          "fib(35)         22.4     5.57     0.06    (4x / 373x)\n"
+          "loop 1M          0.44    0.07     0.006   (6x / 73x)\n"
+          "vec 100K          0.13    5.1      —      (slower — heap overhead)\n"
+          "map 10K           0.04    0.08     —      (slower — heap overhead)"]]
+        [p "The VM wins big on pure numeric work where NaN-boxing shines — values stay in registers as raw u64s with no allocation. Collection-heavy code is slower because every persistent data structure operation crosses the NaN-box boundary. This is the clear next optimization target."]
 
-        [blog-h3 "Performance"]
-        [p "All 14 sample programs pass. 465 tests. Three backends from one IR. The tree-walking interpreter remains as a fallback — the VM is the default."]]
+        [blog-h3 "Status"]
+        [p "All 14 sample programs pass. 465 tests. Three backends from one IR. The tree-walking interpreter remains available via --legacy."]]
 
       ; ── v0.5.0 — Tail Call Optimization ──────────────────────────────────
 
