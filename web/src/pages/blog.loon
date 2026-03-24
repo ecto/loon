@@ -110,59 +110,38 @@
           ";   loop_header -> int_add -> int_sub -> branch ..."]]
 
         [blog-h3 "Benchmarks"]
-        [p "Release mode, Apple M1 Max. Shorter bars are faster."]
+        [p "Release mode, Apple M4 Max. Shorter bars are faster."]
 
-        ; ── chart: fib(35) ──
-        [div {:style {:margin-bottom "1.5rem"}}
-          [div {:style {:font-family [font :mono] :font-size "0.8rem" :color [color :muted] :margin-bottom "0.4rem"}} "fib(35) — exponential recursion"]
-          [div {:style {:display "flex" :align-items "center" :gap "0.5rem" :margin-bottom "0.25rem"}}
-            [span {:style {:font-family [font :mono] :font-size "0.75rem" :color [color :muted] :width "52px" :text-align "right"}} "legacy"]
-            [div {:style {:width "100%" :height "22px" :background [color :border] :border-radius "2px" :overflow "hidden"}}
-              [div {:style {:width "100%" :height "100%" :background [color :muted] :border-radius "2px" :display "flex" :align-items "center" :padding-left "8px"}}
-                [span {:style {:font-family [font :mono] :font-size "0.7rem" :color [color :bg]}} "22.4s"]]]]
-          [div {:style {:display "flex" :align-items "center" :gap "0.5rem" :margin-bottom "0.25rem"}}
-            [span {:style {:font-family [font :mono] :font-size "0.75rem" :color [color :muted] :width "52px" :text-align "right"}} "VM"]
-            [div {:style {:width "100%" :height "22px" :background [color :border] :border-radius "2px" :overflow "hidden"}}
-              [div {:style {:width "25.7%" :height "100%" :background "var(--accent)" :border-radius "2px" :display "flex" :align-items "center" :padding-left "8px"}}
-                [span {:style {:font-family [font :mono] :font-size "0.7rem" :color [color :bg]}} "5.75s"]]]]
-          [div {:style {:display "flex" :align-items "center" :gap "0.5rem"}}
-            [span {:style {:font-family [font :mono] :font-size "0.75rem" :color [color :muted] :width "52px" :text-align "right"}} "native"]
-            [div {:style {:width "100%" :height "22px" :background [color :border] :border-radius "2px" :overflow "hidden"}}
-              [div {:style {:width "1%" :min-width "48px" :height "100%" :background [color :green] :border-radius "2px" :display "flex" :align-items "center" :padding-left "8px"}}
-                [span {:style {:font-family [font :mono] :font-size "0.7rem" :color "#fff"}} "0.06s"]]]]]
+        ; ── benchmark chart helper: each bar is 2 divs (row + fill) ──
+        ; bar: [label, width%, time, color]
 
-        ; ── chart: loop 1M ──
-        [div {:style {:margin-bottom "1.5rem"}}
-          [div {:style {:font-family [font :mono] :font-size "0.8rem" :color [color :muted] :margin-bottom "0.4rem"}} "loop 1M — tight iteration"]
-          [div {:style {:display "flex" :align-items "center" :gap "0.5rem" :margin-bottom "0.25rem"}}
-            [span {:style {:font-family [font :mono] :font-size "0.75rem" :color [color :muted] :width "52px" :text-align "right"}} "legacy"]
-            [div {:style {:width "100%" :height "22px" :background [color :border] :border-radius "2px" :overflow "hidden"}}
-              [div {:style {:width "100%" :height "100%" :background [color :muted] :border-radius "2px" :display "flex" :align-items "center" :padding-left "8px"}}
-                [span {:style {:font-family [font :mono] :font-size "0.7rem" :color [color :bg]}} "0.44s"]]]]
-          [div {:style {:display "flex" :align-items "center" :gap "0.5rem" :margin-bottom "0.25rem"}}
-            [span {:style {:font-family [font :mono] :font-size "0.75rem" :color [color :muted] :width "52px" :text-align "right"}} "VM"]
-            [div {:style {:width "100%" :height "22px" :background [color :border] :border-radius "2px" :overflow "hidden"}}
-              [div {:style {:width "18.2%" :min-width "48px" :height "100%" :background "var(--accent)" :border-radius "2px" :display "flex" :align-items "center" :padding-left "8px"}}
-                [span {:style {:font-family [font :mono] :font-size "0.7rem" :color [color :bg]}} "0.08s"]]]]
-          [div {:style {:display "flex" :align-items "center" :gap "0.5rem"}}
-            [span {:style {:font-family [font :mono] :font-size "0.75rem" :color [color :muted] :width "52px" :text-align "right"}} "native"]
-            [div {:style {:width "100%" :height "22px" :background [color :border] :border-radius "2px" :overflow "hidden"}}
-              [div {:style {:width "1%" :min-width "52px" :height "100%" :background [color :green] :border-radius "2px" :display "flex" :align-items "center" :padding-left "8px"}}
-                [span {:style {:font-family [font :mono] :font-size "0.7rem" :color "#fff"}} "0.006s"]]]]]
+        ; ── fib(35) ──
+        [div {:style {:font-family [font :mono] :font-size "0.8rem" :color [color :muted] :margin "1.5rem 0 0.4rem"}} "fib(35) — exponential recursion"]
+        [div {:style {:display "grid" :grid-template-columns "52px 1fr" :gap "0.3rem 0.5rem" :align-items "center"}}
+          [span {:style {:font-size "0.75rem" :text-align "right" :color [color :muted]}} "legacy"]
+          [div {:style {:height "20px" :border-radius "2px" :background [color :muted] :width "100%" :font-size "0.7rem" :line-height "20px" :padding-left "8px" :color [color :bg]}} "22.4s"]
+          [span {:style {:font-size "0.75rem" :text-align "right" :color [color :muted]}} "VM"]
+          [div {:style {:height "20px" :border-radius "2px" :background "var(--accent)" :width "25.7%" :font-size "0.7rem" :line-height "20px" :padding-left "8px" :color [color :bg]}} "5.75s"]
+          [span {:style {:font-size "0.75rem" :text-align "right" :color [color :muted]}} "native"]
+          [div {:style {:height "20px" :border-radius "2px" :background [color :green] :width "1%" :min-width "48px" :font-size "0.7rem" :line-height "20px" :padding-left "8px" :color "#fff"}} "0.06s"]]
 
-        ; ── chart: vec 100K ──
-        [div {:style {:margin-bottom "1.5rem"}}
-          [div {:style {:font-family [font :mono] :font-size "0.8rem" :color [color :muted] :margin-bottom "0.4rem"}} "vec 100K — persistent vector build"]
-          [div {:style {:display "flex" :align-items "center" :gap "0.5rem" :margin-bottom "0.25rem"}}
-            [span {:style {:font-family [font :mono] :font-size "0.75rem" :color [color :muted] :width "52px" :text-align "right"}} "legacy"]
-            [div {:style {:width "100%" :height "22px" :background [color :border] :border-radius "2px" :overflow "hidden"}}
-              [div {:style {:width "100%" :height "100%" :background [color :muted] :border-radius "2px" :display "flex" :align-items "center" :padding-left "8px"}}
-                [span {:style {:font-family [font :mono] :font-size "0.7rem" :color [color :bg]}} "0.14s"]]]]
-          [div {:style {:display "flex" :align-items "center" :gap "0.5rem"}}
-            [span {:style {:font-family [font :mono] :font-size "0.75rem" :color [color :muted] :width "52px" :text-align "right"}} "VM"]
-            [div {:style {:width "100%" :height "22px" :background [color :border] :border-radius "2px" :overflow "hidden"}}
-              [div {:style {:width "21.4%" :min-width "48px" :height "100%" :background "var(--accent)" :border-radius "2px" :display "flex" :align-items "center" :padding-left "8px"}}
-                [span {:style {:font-family [font :mono] :font-size "0.7rem" :color [color :bg]}} "0.03s"]]]]]
+        ; ── loop 1M ──
+        [div {:style {:font-family [font :mono] :font-size "0.8rem" :color [color :muted] :margin "1.5rem 0 0.4rem"}} "loop 1M — tight iteration"]
+        [div {:style {:display "grid" :grid-template-columns "52px 1fr" :gap "0.3rem 0.5rem" :align-items "center"}}
+          [span {:style {:font-size "0.75rem" :text-align "right" :color [color :muted]}} "legacy"]
+          [div {:style {:height "20px" :border-radius "2px" :background [color :muted] :width "100%" :font-size "0.7rem" :line-height "20px" :padding-left "8px" :color [color :bg]}} "0.44s"]
+          [span {:style {:font-size "0.75rem" :text-align "right" :color [color :muted]}} "VM"]
+          [div {:style {:height "20px" :border-radius "2px" :background "var(--accent)" :width "18.2%" :min-width "48px" :font-size "0.7rem" :line-height "20px" :padding-left "8px" :color [color :bg]}} "0.08s"]
+          [span {:style {:font-size "0.75rem" :text-align "right" :color [color :muted]}} "native"]
+          [div {:style {:height "20px" :border-radius "2px" :background [color :green] :width "1%" :min-width "52px" :font-size "0.7rem" :line-height "20px" :padding-left "8px" :color "#fff"}} "0.006s"]]
+
+        ; ── vec 100K ──
+        [div {:style {:font-family [font :mono] :font-size "0.8rem" :color [color :muted] :margin "1.5rem 0 0.4rem"}} "vec 100K — persistent vector build"]
+        [div {:style {:display "grid" :grid-template-columns "52px 1fr" :gap "0.3rem 0.5rem" :align-items "center"}}
+          [span {:style {:font-size "0.75rem" :text-align "right" :color [color :muted]}} "legacy"]
+          [div {:style {:height "20px" :border-radius "2px" :background [color :muted] :width "100%" :font-size "0.7rem" :line-height "20px" :padding-left "8px" :color [color :bg]}} "0.14s"]
+          [span {:style {:font-size "0.75rem" :text-align "right" :color [color :muted]}} "VM"]
+          [div {:style {:height "20px" :border-radius "2px" :background "var(--accent)" :width "21.4%" :min-width "48px" :font-size "0.7rem" :line-height "20px" :padding-left "8px" :color [color :bg]}} "0.03s"]]
 
         [blog-h3 "Status"]
         [p "All 14 sample programs pass. 465 tests. Three backends from one IR. The tree-walking interpreter remains available via --legacy."]]
