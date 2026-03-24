@@ -78,7 +78,7 @@ if (noRust) {
 // Step 2: Copy static assets
 console.log('Copying static assets...');
 mkdirSync(DIST, { recursive: true });
-for (const file of ['index.html', 'boot.js', 'style.css', 'install.sh']) {
+for (const file of ['index.html', 'boot.js', 'style.css', 'install.sh', 'loon.png', 'loon-light.png', 'loon-bird.svg']) {
   try {
     cpSync(join(PUBLIC, file), join(DIST, file));
   } catch {
