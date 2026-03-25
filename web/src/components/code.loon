@@ -145,25 +145,17 @@
         [dom.append-child parent sp]]]]
     tokens]]
 
-; --- Two-phase code block: plain text first, highlight async ---
+; --- Syntax-highlighted code block (works with SSR pre-rendering) ---
 
 [fn code-block [first & rest]
   [let props [if [map? first] first {}]]
   [let source [if [map? first] [nth rest 0] first]]
   [let label [get props :label ""]]
   [let cls [get props :class ""]]
-  [let block-id [str "lc-" [len source] "-" [index-of source "\n"]]]
-  ; Schedule async highlight after paint
-  [dom.set-timeout
-    [fn []
-      [let el [dom.query-selector [str "#" block-id]]]
-      [dom.set-inner-html el ""]
-      [render-tokens-to-dom el [tokenize source]]]
-    0]
-  ; Return plain text immediately
   [div {:class [cx "code-block-wrapper" cls]}
     [if [not [= label ""]]
       [div {:class "code-block-label"} label]
       Empty]
     [pre-el {:class "code-block"}
-      [code-el {:class "language-loon" :id block-id} source]]]]
+      [El "code" {:class "language-loon"}
+        [coerce-children [render-tokens [tokenize source]]]]]]]

@@ -302,11 +302,6 @@ a:hover {
 .tour-step:hover { border-color: var(--muted); }
 .card:hover { border-color: var(--muted); }
 
-/* Nested code blocks in cards — no double border/radius */
-div > .code-block:first-child {
-  border-radius: 4px 4px 0 0;
-  border-bottom: none;
-}
 
 /* Mobile menu toggle */
 .menu-toggle {
