@@ -1,0 +1,11 @@
+[fn fizzbuzz [n]
+  [match true
+    [= 0 [% n 15]] "FizzBuzz"
+    [= 0 [% n 3]]  "Fizz"
+    [= 0 [% n 5]]  "Buzz"
+    _              [str n]]]
+
+[fn main []
+  [pipe [range 1 101]
+    [map fizzbuzz]
+    [each println]]]

@@ -1,0 +1,9 @@
+[fn factorial [n]
+  [match n
+    0 1
+    n [* n [factorial [- n 1]]]]]
+
+[fn main []
+  [pipe [range 0 11]
+    [map factorial]
+    [each println]]]

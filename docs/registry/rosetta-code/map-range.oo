@@ -1,0 +1,2 @@
+[fn main []
+  [each println [range 1 11]]]

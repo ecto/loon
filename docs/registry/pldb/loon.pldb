@@ -1,0 +1,87 @@
+title Loon
+appeared 2025
+type pl
+description Loon is a functional programming language with invisible types (full Hindley-Milner inference with let-polymorphism and row types), safe ownership (Rust-style move semantics and borrow checking, inferred from dataflow with no lifetime syntax), and algebraic effects that replace exceptions, async/await, and mutable state. Syntax is s-expressions in square brackets; the file extension is .oo (from l-oo-n), with .loon as a fallback.
+website https://loonlang.com
+fileExtensions oo loon
+githubRepo https://github.com/ecto/loon
+githubLanguage
+ fileExtensions oo loon
+ type programming
+ codemirror clojure
+ tmScope source.loon
+ aceMode clojure
+ ace_mode clojure
+wikipedia
+domainName loonlang.com
+
+features
+ hasAlgebraicTypes true
+ hasPatternMatching true
+ hasTypeInference true
+ hasAlgebraicEffects true
+ hasOwnership true
+ hasBorrowChecking true
+ hasMacros true
+ hasPipes true
+ hasModules true
+ hasGenerics true
+ hasFirstClassFunctions true
+ hasClosures true
+ hasLambda true
+ hasHindleyMilner true
+ hasStaticTyping true
+ hasGarbageCollection false
+ hasManualMemoryManagement false
+ hasSemanticIndentation false
+ hasLineComments true
+  ; line comment
+ hasMultiLineComments false
+ hasStrings true
+  "hello, world!"
+ hasStringInterpolation true
+  [fmt "hello, {name}!"]
+ hasBooleans true
+ hasIntegers true
+ hasFloats true
+ hasTuples true
+ hasSets true
+ hasMaps true
+ hasSExpressions true
+
+example
+ [fn greet [name]
+   [println [fmt "hello, {name}!"]]]
+
+ [fn fib [n]
+   [match n
+     0 0
+     1 1
+     n [+ [fib [- n 1]] [fib [- n 2]]]]]
+
+ [fn main []
+   [greet "world"]
+   [pipe [range 1 10]
+     [filter [fn [n] [> n 4]]]
+     [map [fn [n] [* n n]]]
+     [each println]]]
+
+helloWorldCollection Loon
+ [fn main []
+   [println "hello, world!"]]
+
+writtenIn rust typescript
+
+influencedBy
+ clojure
+ rust
+ ocaml
+ haskell
+ koka
+
+paradigms
+ functional
+ effect-oriented
+
+usesSemanticVersioning true
+packageRepository https://loonlang.com/packages

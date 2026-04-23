@@ -1,0 +1,18 @@
+[fn bottles [n]
+  [match n
+    0 "no more bottles"
+    1 "1 bottle"
+    n [fmt "{n} bottles"]]]
+
+[fn verse [n]
+  [match n
+    0 [do
+        [println "No more bottles of beer on the wall, no more bottles of beer."]
+        [println "Go to the store and buy some more, 99 bottles of beer on the wall."]]
+    n [do
+        [println [fmt "{[bottles n]} of beer on the wall, {[bottles n]} of beer."]]
+        [println [fmt "Take one down and pass it around, {[bottles [- n 1]]} of beer on the wall."]]
+        [println ""]]]]
+
+[fn main []
+  [each verse [reverse [range 0 100]]]]

@@ -1,0 +1,9 @@
+; A function that takes a function and applies it twice.
+[fn twice [f x]
+  [f [f x]]]
+
+[fn add1 [x] [+ x 1]]
+
+[fn main []
+  [println [twice add1 5]]
+  [println [twice [fn [x] [* x x]] 3]]]

@@ -1,0 +1,7 @@
+[fn reverse-string [s]
+  [pipe [split s ""]
+    [reverse]
+    [join ""]]]
+
+[fn main []
+  [println [reverse-string "asdf"]]]

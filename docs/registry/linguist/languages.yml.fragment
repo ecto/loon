@@ -1,0 +1,28 @@
+# Fragment to merge into github-linguist/linguist's lib/linguist/languages.yml.
+# Insert alphabetically (between "Logos" and "Loongson Assembly"). Do not
+# submit until Loon meets the 200-unique-repo threshold documented in
+# linguist/CONTRIBUTING.md — a premature PR will be closed.
+#
+# The TextMate/VS Code grammar lives in tree-sitter-loon/ and the VS Code
+# extension; ensure one is published and referenced via `tm_scope` before
+# submitting.
+
+Loon:
+  type: programming
+  color: "#4a90e2"
+  extensions:
+    - ".oo"
+    - ".loon"
+  filenames:
+    - "pkg.oo"
+    - "pkg.loon"
+    - "lock.oo"
+    - "lock.loon"
+  tm_scope: source.loon
+  ace_mode: clojure
+  codemirror_mode: clojure
+  codemirror_mime_type: text/x-clojure
+  aliases:
+    - oo
+    - loon-lang
+  language_id: # omit; assigned by `script/update-ids` on the PR

@@ -1,0 +1,7 @@
+[fn sum-of-squares [xs]
+  [pipe xs
+    [map [fn [x] [* x x]]]
+    [fold 0 [fn [acc x] [+ acc x]]]]]
+
+[fn main []
+  [println [sum-of-squares #[1 2 3 4 5]]]]

@@ -3,6 +3,8 @@
 > **Status: Research / checklist** — list of external catalogs where Loon should
 > be registered. Each entry records the registration mechanism, realistic bar
 > for acceptance, and a "worth it?" note. Tackle the low-friction ones first.
+>
+> Drafts for each submission live in [`docs/registry/`](../registry/README.md).
 
 Grouped by what they are, not by priority. A suggested order is at the bottom.
 
