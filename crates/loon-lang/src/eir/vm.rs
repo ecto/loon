@@ -2056,4 +2056,72 @@ mod tests {
         let out = run_output(r#"[IO.println "hello from eir"]"#);
         assert_eq!(out, vec!["hello from eir"]);
     }
+
+    #[test]
+    fn vm_match_scalar_literal() {
+        let out = run_output(
+            r#"[fn word [n]
+                 [match n
+                   0 "zero"
+                   1 "one"
+                   n "many"]]
+               [println [word 0]]
+               [println [word 1]]
+               [println [word 5]]"#,
+        );
+        assert_eq!(out, vec!["zero", "one", "many"]);
+    }
+
+    #[test]
+    fn vm_match_expression_guard() {
+        // `match true` with lowercase-headed patterns — each pattern is
+        // evaluated as an expression in the enclosing scope and the arm
+        // matches when the result is truthy.
+        let out = run_output(
+            r#"[fn classify [n]
+                 [match true
+                   [= n 3] "three"
+                   [= n 5] "five"
+                   _       "other"]]
+               [println [classify 1]]
+               [println [classify 3]]
+               [println [classify 5]]
+               [println [classify 7]]"#,
+        );
+        assert_eq!(out, vec!["other", "three", "five", "other"]);
+    }
+
+    #[test]
+    fn vm_match_tuple_pattern() {
+        let out = run_output(
+            r#"[fn classify [t]
+                 [match t
+                   (0 0) "both"
+                   (0 _) "first"
+                   (_ 0) "second"
+                   _     "neither"]]
+               [println [classify (0 0)]]
+               [println [classify (0 1)]]
+               [println [classify (1 0)]]
+               [println [classify (1 1)]]"#,
+        );
+        assert_eq!(out, vec!["both", "first", "second", "neither"]);
+    }
+
+    #[test]
+    fn vm_match_fizzbuzz_via_guards() {
+        let out = run_output(
+            r#"[fn fizzbuzz [n]
+                 [match true
+                   [= 0 [% n 15]] "FizzBuzz"
+                   [= 0 [% n 3]]  "Fizz"
+                   [= 0 [% n 5]]  "Buzz"
+                   _              [str n]]]
+               [println [fizzbuzz 1]]
+               [println [fizzbuzz 3]]
+               [println [fizzbuzz 5]]
+               [println [fizzbuzz 15]]"#,
+        );
+        assert_eq!(out, vec!["1", "Fizz", "Buzz", "FizzBuzz"]);
+    }
 }

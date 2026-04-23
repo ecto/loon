@@ -1207,23 +1207,67 @@ impl<'a> Lower<'a> {
 
             // Constructor pattern [Ctor field1 field2 ...]
             ExprKind::List(items) if !items.is_empty() => {
-                if let ExprKind::Symbol(ctor) = &items[0].kind {
-                    if let Some(&(tag, _)) = self.ctor_map.get(ctor.as_str()) {
-                        let stag = self.reg();
-                        self.emit(Op::Tag(stag, scrutinee, span));
-                        let expected = self.reg();
-                        self.emit(Op::Lit(expected, Lit::Int(tag as i64), span));
-                        let cond = self.reg();
-                        self.emit(Op::Bin(cond, BinOp::Eq, stag, expected, span));
-                        return Some(cond);
+                if let ExprKind::Symbol(head) = &items[0].kind {
+                    // Uppercase head → ADT constructor pattern
+                    if head.starts_with(char::is_uppercase) {
+                        if let Some(&(tag, _)) = self.ctor_map.get(head.as_str()) {
+                            let stag = self.reg();
+                            self.emit(Op::Tag(stag, scrutinee, span));
+                            let expected = self.reg();
+                            self.emit(Op::Lit(expected, Lit::Int(tag as i64), span));
+                            let cond = self.reg();
+                            self.emit(Op::Bin(cond, BinOp::Eq, stag, expected, span));
+                            return Some(cond);
+                        }
+                        return None;
                     }
+                    // Lowercase head → expression guard like [= n 3]. Evaluate
+                    // as an expression in the enclosing scope; the resulting
+                    // bool is the arm condition.
+                    let guard_expr = Expr::new(ExprKind::List(items.clone()), pattern.span);
+                    return Some(self.lower_expr(&guard_expr));
                 }
-                // Expression-based guard (e.g., [> x 0])
                 None
             }
 
+            // Tuple pattern (a b c) — matches a tuple of the same arity with
+            // each sub-pattern matching the corresponding field.
+            ExprKind::Tuple(items) => self.compile_tuple_pattern_test(items, scrutinee, span),
+
             _ => None,
         }
+    }
+
+    fn compile_tuple_pattern_test(
+        &mut self,
+        items: &[Expr],
+        scrutinee: Reg,
+        span: Span,
+    ) -> Option<Reg> {
+        // Arity check: len(scrutinee) == items.len().
+        let len_reg = self.reg();
+        self.emit(Op::Builtin(len_reg, Built::Len, vec![scrutinee], span));
+        let expected_len = self.reg();
+        self.emit(Op::Lit(expected_len, Lit::Int(items.len() as i64), span));
+        let mut acc = self.reg();
+        self.emit(Op::Bin(acc, BinOp::Eq, len_reg, expected_len, span));
+
+        // AND each sub-pattern test into acc.
+        for (i, sub) in items.iter().enumerate() {
+            let field = self.reg();
+            self.emit(Op::Field(
+                field,
+                scrutinee,
+                Selector::Index(i as u16),
+                sub.span,
+            ));
+            if let Some(sub_cond) = self.compile_pattern_test(sub, field, sub.span) {
+                let next = self.reg();
+                self.emit(Op::Bin(next, BinOp::And, acc, sub_cond, span));
+                acc = next;
+            }
+        }
+        Some(acc)
     }
 
     fn bind_pattern(&mut self, pattern: &Expr, scrutinee: Reg) {
@@ -1234,23 +1278,35 @@ impl<'a> Lower<'a> {
                 self.bind(s, scrutinee);
             }
             ExprKind::List(items) if !items.is_empty() => {
-                // Constructor pattern: [Ctor field1 field2]
-                if let ExprKind::Symbol(ctor) = &items[0].kind {
-                    for (i, field) in items[1..].iter().enumerate() {
-                        if let ExprKind::Symbol(name) = &field.kind {
-                            if name != "_" {
-                                let r = self.reg();
-                                self.emit(Op::Field(
-                                    r,
-                                    scrutinee,
-                                    Selector::Index(i as u16),
-                                    field.span,
-                                ));
-                                self.bind(name, r);
-                            }
+                // Only uppercase-headed lists are constructor patterns that
+                // bind positional fields. Lowercase-headed lists are
+                // expression guards — they reference names from the outer
+                // scope, so there's nothing to bind from the scrutinee.
+                if let ExprKind::Symbol(head) = &items[0].kind {
+                    if head.starts_with(char::is_uppercase) {
+                        for (i, field) in items[1..].iter().enumerate() {
+                            let r = self.reg();
+                            self.emit(Op::Field(
+                                r,
+                                scrutinee,
+                                Selector::Index(i as u16),
+                                field.span,
+                            ));
+                            self.bind_pattern(field, r);
                         }
                     }
-                    let _ = ctor; // used for tag check in full implementation
+                }
+            }
+            ExprKind::Tuple(items) => {
+                for (i, field) in items.iter().enumerate() {
+                    let r = self.reg();
+                    self.emit(Op::Field(
+                        r,
+                        scrutinee,
+                        Selector::Index(i as u16),
+                        field.span,
+                    ));
+                    self.bind_pattern(field, r);
                 }
             }
             _ => {
