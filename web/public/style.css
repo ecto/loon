@@ -108,6 +108,8 @@ a:hover {
   border-radius: 4px;
   padding: 1.25rem 1.5rem;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
   font: 0.85rem/1.7 var(--font-mono);
   color: var(--fg);
 }
@@ -331,13 +333,13 @@ a:hover {
   transition: transform 0.2s, opacity 0.2s;
 }
 .menu-toggle[aria-expanded="true"] span:nth-child(1) {
-  transform: rotate(45deg) translate(2.5px, 2.5px);
+  transform: rotate(45deg) translate(5px, 5px);
 }
 .menu-toggle[aria-expanded="true"] span:nth-child(2) {
   opacity: 0;
 }
 .menu-toggle[aria-expanded="true"] span:nth-child(3) {
-  transform: rotate(-45deg) translate(2.5px, -2.5px);
+  transform: rotate(-45deg) translate(5px, -5px);
 }
 
 .sidebar-backdrop {
@@ -347,9 +349,10 @@ a:hover {
   background: rgba(0, 0, 0, 0.4);
   z-index: 999;
   opacity: 0;
+  pointer-events: none;
   transition: opacity 0.2s;
 }
-.sidebar-backdrop.open { opacity: 1; }
+.sidebar-backdrop.open { opacity: 1; pointer-events: auto; }
 
 /* Responsive */
 @media (max-width: 800px) {
@@ -365,6 +368,11 @@ a:hover {
     grid-template-columns: 1fr !important;
     gap: 0.25rem !important;
     padding: 2rem 0 !important;
+  }
+
+  /* Changelog: drop sticky on date so it doesn't slide under the hamburger */
+  .changelog article > div:first-child {
+    position: static !important;
   }
 
   /* Benchmark charts: narrower label column */
