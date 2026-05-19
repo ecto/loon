@@ -256,6 +256,9 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "println", |_, args: &[Value]| {
+        if let Some(msg) = super::compile_sandbox_denial("IO", "println") {
+            return Err(err(msg));
+        }
         let parts: Vec<String> = args.iter().map(|v| v.display_str()).collect();
         let line = parts.join(" ");
         let captured = PRINT_BUF.with(|buf| {
@@ -274,6 +277,9 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "print", |_, args: &[Value]| {
+        if let Some(msg) = super::compile_sandbox_denial("IO", "println") {
+            return Err(err(msg));
+        }
         let parts: Vec<String> = args.iter().map(|v| v.display_str()).collect();
         let text = parts.join(" ");
         let captured = PRINT_BUF.with(|buf| {

@@ -513,9 +513,6 @@ impl MacroExpander {
         bindings: &HashMap<String, Vec<Expr>>,
         call_span: Span,
     ) -> Result<Expr, String> {
-        // Check compile-time effects
-        self.check_compile_effects(mac)?;
-
         // Build a mini program that evaluates the macro body with bindings
         // The approach: create let bindings for each macro param, then evaluate body
         let mut program = Vec::new();
@@ -548,19 +545,38 @@ impl MacroExpander {
         // Add the macro body
         program.push(mac.body.clone());
 
+        // Enter the compile-time effect sandbox. A procedural macro body runs
+        // arbitrary Loon code via the interpreter at *build time*; without this
+        // a malicious dependency macro could read ~/.ssh, spawn processes, or
+        // exfiltrate over the network during `loon build`. Default-deny: only
+        // the effect categories the macro explicitly declared via `#{...}` are
+        // permitted. Save/restore the prior value so nested procedural macro
+        // expansion composes correctly.
+        let allowed: std::collections::HashSet<String> = mac
+            .compile_effects
+            .iter()
+            .map(|e| {
+                match e {
+                    CompileEffect::IO => "IO",
+                    CompileEffect::Net => "Net",
+                    CompileEffect::Env => "Env",
+                    CompileEffect::Print => "Print",
+                }
+                .to_string()
+            })
+            .collect();
+        let prev_sandbox = interp::swap_compile_sandbox(Some(allowed));
+
         // Evaluate the program using the interpreter
-        let result = interp::eval_program(&program)
+        let eval_result = interp::eval_program(&program);
+
+        interp::swap_compile_sandbox(prev_sandbox);
+
+        let result = eval_result
             .map_err(|e| format!("procedural macro '{}' failed: {}", mac.name, e.message))?;
 
         // Convert the result value back to an AST Expr
         ast_value_to_expr(&result, call_span)
-    }
-
-    fn check_compile_effects(&self, _mac: &MacroDef) -> Result<(), String> {
-        // For now, we just record what's declared. Full enforcement happens
-        // when compile-time builtins are called.
-        // Pure macros (no declared effects) should not call IO/Net/etc builtins.
-        Ok(())
     }
 
     /// Check if a name is a registered macro.
@@ -917,6 +933,95 @@ mod tests {
         let s = format!("{}", expanded[0]);
         // when2 expands to when, which expands to if
         assert!(s.contains("if"), "expected 'if' in: {s}");
+    }
+
+    #[test]
+    fn procedural_macro_undeclared_effect_denied() {
+        // A procedural macro that performs an effect at expansion time without
+        // declaring it must be hard-denied — this is the supply-chain guard.
+        let src = r#"
+            [macro snitch [x]
+              [do
+                [Process.env "HOME"]
+                {:kind :int :value 1}]]
+            [snitch 0]
+        "#;
+        let exprs = parse(src).unwrap();
+        let mut expander = MacroExpander::new();
+        let e = expander.expand_program(&exprs).unwrap_err();
+        assert!(e.contains("compile-time effect `Env`"), "got: {e}");
+        assert!(e.contains("did not declare it"), "got: {e}");
+    }
+
+    #[test]
+    fn procedural_macro_declared_effect_allowed() {
+        // Same macro, but it declares `#{Env}` — expansion is permitted.
+        let src = r#"
+            [macro envy [x] #{Env}
+              [do
+                [Process.env "HOME"]
+                {:kind :int :value 7}]]
+            [envy 0]
+        "#;
+        let exprs = parse(src).unwrap();
+        let mut expander = MacroExpander::new();
+        let expanded = expander.expand_program(&exprs).unwrap();
+        assert_eq!(expanded.len(), 1);
+        assert!(
+            matches!(expanded[0].kind, ExprKind::Int(7)),
+            "expected Int(7), got: {}",
+            expanded[0]
+        );
+    }
+
+    #[test]
+    fn procedural_macro_undeclared_when_other_effect_declared() {
+        // Declaring `#{Print}` must not implicitly grant `Env` — categories
+        // are independent (default-deny per category).
+        let src = r#"
+            [macro sneaky [x] #{Print}
+              [do
+                [Process.env "HOME"]
+                {:kind :int :value 1}]]
+            [sneaky 0]
+        "#;
+        let exprs = parse(src).unwrap();
+        let mut expander = MacroExpander::new();
+        let e = expander.expand_program(&exprs).unwrap_err();
+        assert!(e.contains("compile-time effect `Env`"), "got: {e}");
+    }
+
+    #[test]
+    fn procedural_macro_thread_spawn_always_denied() {
+        // Async.spawn is a sandbox-escape vector and is denied even though the
+        // macro declares IO.
+        let src = r#"
+            [macro forker [x] #{IO}
+              [do
+                [Async.spawn [fn [] 1]]
+                {:kind :int :value 1}]]
+            [forker 0]
+        "#;
+        let exprs = parse(src).unwrap();
+        let mut expander = MacroExpander::new();
+        let e = expander.expand_program(&exprs).unwrap_err();
+        assert!(e.contains("Async.spawn"), "got: {e}");
+        assert!(e.contains("not permitted"), "got: {e}");
+    }
+
+    #[test]
+    fn runtime_effects_not_sandboxed() {
+        // Regression guard: the compile-time sandbox must not leak into normal
+        // runtime execution. A plain program performing an effect is fine.
+        let exprs = parse(r#"[Process.env "HOME"]"#).unwrap();
+        let mut expander = MacroExpander::new();
+        let expanded = expander.expand_program(&exprs).unwrap();
+        let r = crate::interp::eval_program(&expanded);
+        assert!(
+            r.is_ok(),
+            "runtime effect wrongly sandboxed: {:?}",
+            r.err().map(|e| e.message)
+        );
     }
 
     #[test]

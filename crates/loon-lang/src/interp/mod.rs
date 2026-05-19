@@ -31,6 +31,11 @@ thread_local! {
     static CURRENT_MODULE: RefCell<Option<String>> = const { RefCell::new(None) };
     /// Effect grants loaded from manifest (None = no enforcement)
     static EFFECT_GRANTS: RefCell<Option<crate::pkg::capability::EffectGrants>> = const { RefCell::new(None) };
+    /// Compile-time effect sandbox for procedural macro bodies.
+    /// `None` = not expanding a macro (runtime / unrestricted).
+    /// `Some(allowed)` = inside a procedural macro; only the listed effect
+    /// categories ("IO"/"Net"/"Env"/"Print") may be performed. Default-deny.
+    static COMPILE_SANDBOX: RefCell<Option<std::collections::HashSet<String>>> = const { RefCell::new(None) };
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +105,12 @@ pub fn err_at(msg: impl Into<String>, span: Span) -> InterpError {
 
 /// Try to handle an effect with a built-in handler (for IO at the top level).
 pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
+    // Compile-time sandbox: deny effectful ops a procedural macro did not
+    // declare. This is the single chokepoint for IO/Net/Env/Process effects,
+    // so gating here covers every dependency-macro execution path.
+    if let Some(msg) = compile_sandbox_denial(&performed.effect, &performed.operation) {
+        return Some(Err(err(msg)));
+    }
     match (performed.effect.as_str(), performed.operation.as_str()) {
         ("IO", "println") => {
             let parts: Vec<String> = performed.args.iter().map(|v| v.display_str()).collect();
@@ -623,6 +634,67 @@ pub fn set_effect_grants(grants: crate::pkg::capability::EffectGrants) {
 /// Set the current module for grant checking. None = root (unrestricted).
 pub fn set_current_module(module: Option<String>) {
     CURRENT_MODULE.with(|m| *m.borrow_mut() = module);
+}
+
+/// Enter/leave the compile-time macro sandbox. Returns the previous value so
+/// callers can restore it (nested procedural macro expansion).
+pub fn swap_compile_sandbox(
+    sandbox: Option<std::collections::HashSet<String>>,
+) -> Option<std::collections::HashSet<String>> {
+    COMPILE_SANDBOX.with(|s| s.replace(sandbox))
+}
+
+/// Classify an effectful `(effect, op)` pair into a compile-time effect
+/// category, or `None` if the operation is pure/benign (cannot exfiltrate,
+/// tamper, or escape the sandbox: json codec, hashing, clock, uuid, sleep).
+fn compile_effect_category(effect: &str, op: &str) -> Option<&'static str> {
+    match (effect, op) {
+        // Stdout — benign but declared so the model stays coherent.
+        ("IO", "println") => Some("Print"),
+        // Filesystem + process: read/write/enumerate/mutate the host.
+        (
+            "IO",
+            "read-file" | "write-file" | "list-dir" | "copy-file" | "mkdir" | "delete-file"
+            | "read-line" | "file-exists?" | "mtime",
+        ) => Some("IO"),
+        ("Process", "exec" | "exit") => Some("IO"),
+        // Environment read.
+        ("Process", "env" | "args") => Some("Env"),
+        // Network.
+        ("Net", _) => Some("Net"),
+        _ => None,
+    }
+}
+
+/// If a compile-time macro sandbox is active, returns `Some(error)` when the
+/// given effectful op is not in the declared allow-set. `None` otherwise
+/// (no sandbox, or operation permitted/pure).
+pub(crate) fn compile_sandbox_denial(effect: &str, op: &str) -> Option<String> {
+    COMPILE_SANDBOX.with(|s| {
+        let guard = s.borrow();
+        let allowed = guard.as_ref()?;
+        // Thread spawn is always denied inside the sandbox: a freshly spawned
+        // OS thread does not inherit COMPILE_SANDBOX, so allowing it would let
+        // a macro escape the sandbox by doing its IO on another thread.
+        if effect == "Async" && op == "spawn" {
+            return Some(
+                "compile-time `Async.spawn` is not permitted: a procedural macro may not \
+                 spawn threads during build (sandbox-escape vector)."
+                    .to_string(),
+            );
+        }
+        let category = compile_effect_category(effect, op)?;
+        if allowed.contains(category) {
+            None
+        } else {
+            Some(format!(
+                "compile-time effect `{category}` ({effect}.{op}) used by a procedural macro \
+                 that did not declare it. A macro may only perform compile-time effects it \
+                 declares: `[macro name [..] #{{{category}}} ..]`. This guard blocks \
+                 dependency macros from running arbitrary IO/Net/Env code during build."
+            ))
+        }
+    })
 }
 
 pub fn get_effect_log() -> Vec<EffectEntry> {
