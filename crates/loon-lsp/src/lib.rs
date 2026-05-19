@@ -1,4 +1,4 @@
-use tower_lsp::jsonrpc::{Error as JsonrpcError, ErrorCode as JsonrpcErrorCode, Result};
+use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -125,37 +125,10 @@ impl LanguageServer for LoonLanguageServer {
             return Ok(None);
         };
 
-        let source = doc.rope.to_string();
-
-        let Ok(exprs) = loon_lang::parser::parse(&source) else {
-            return Err(JsonrpcError {
-                code: JsonrpcErrorCode::InternalError,
-                message: "failed to parse source".into(),
-                data: None,
-            });
-        };
-
-        let formatted = loon_lang::fmt::format_program(&exprs);
-
-        if formatted == source {
-            return Ok(None);
-        }
-
-        let end = Position {
-            line: doc.rope.len_lines() as u32,
-            character: 0,
-        };
-
-        Ok(Some(vec![TextEdit {
-            range: Range {
-                start: Position {
-                    line: 0,
-                    character: 0,
-                },
-                end,
-            },
-            new_text: formatted,
-        }]))
+        Ok(formatting_edits(
+            &doc.rope.to_string(),
+            doc.rope.len_lines() as u32,
+        ))
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -323,6 +296,33 @@ fn classify_completion_kind(ty: &Type) -> CompletionItemKind {
         Type::Con(_, _) => CompletionItemKind::ENUM,
         _ => CompletionItemKind::VARIABLE,
     }
+}
+
+/// Compute the formatting edit for a document. Returns `None` when the source
+/// is already formatted or cannot be parsed — an unparseable buffer (e.g. an
+/// in-progress edit saved with format-on-save) should be a silent no-op, not an
+/// error popup.
+fn formatting_edits(source: &str, len_lines: u32) -> Option<Vec<TextEdit>> {
+    let exprs = loon_lang::parser::parse(source).ok()?;
+    let formatted = loon_lang::fmt::format_program(&exprs);
+
+    if formatted == source {
+        return None;
+    }
+
+    Some(vec![TextEdit {
+        range: Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: len_lines,
+                character: 0,
+            },
+        },
+        new_text: formatted,
+    }])
 }
 
 /// Recursively collect inlay hints for let bindings and defn params.
@@ -508,6 +508,28 @@ mod tests {
             .filter(|r| r.name == "add")
             .collect();
         assert!(!add_refs.is_empty(), "should have references to 'add'");
+    }
+
+    #[test]
+    fn formatting_edits_reformats_unformatted_source() {
+        let src = "[let   x    42]";
+        let edits = formatting_edits(src, 1).expect("unformatted source should yield an edit");
+        assert_eq!(edits.len(), 1);
+        assert_ne!(edits[0].new_text, src);
+        // The replacement must be itself stable (idempotent formatter output).
+        assert!(formatting_edits(&edits[0].new_text, 1).is_none());
+    }
+
+    #[test]
+    fn formatting_edits_noop_when_already_formatted() {
+        let src = loon_lang::fmt::format_program(&loon_lang::parser::parse("[let x 42]").unwrap());
+        assert!(formatting_edits(&src, 1).is_none());
+    }
+
+    #[test]
+    fn formatting_edits_silent_on_parse_error() {
+        // Unparseable buffer must be a no-op, not an error popup.
+        assert!(formatting_edits("[let x", 1).is_none());
     }
 
     #[test]
