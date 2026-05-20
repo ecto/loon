@@ -22,3 +22,11 @@ impl Span {
         }
     }
 }
+
+/// A `;`-style line comment captured by the lexer. The formatter uses these
+/// to put comments back at the right positions; the parser never sees them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Comment {
+    pub span: Span,
+    pub text: String,
+}

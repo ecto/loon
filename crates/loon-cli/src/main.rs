@@ -700,8 +700,8 @@ fn fmt_files(files: &[PathBuf], check: bool) {
             }
         };
 
-        let exprs = match loon_lang::parser::parse(&source) {
-            Ok(exprs) => exprs,
+        let (exprs, comments) = match loon_lang::parser::parse_with_comments(&source) {
+            Ok(out) => out,
             Err(e) => {
                 eprintln!(
                     "{} parsing {}: {}",
@@ -714,7 +714,7 @@ fn fmt_files(files: &[PathBuf], check: bool) {
             }
         };
 
-        let formatted = loon_lang::fmt::format_program(&exprs);
+        let formatted = loon_lang::fmt::format_program_with_comments(&exprs, &comments, &source);
 
         if formatted != source {
             changed_count += 1;
