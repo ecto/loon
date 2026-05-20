@@ -125,10 +125,7 @@ impl LanguageServer for LoonLanguageServer {
             return Ok(None);
         };
 
-        Ok(formatting_edits(
-            &doc.rope.to_string(),
-            doc.rope.len_lines() as u32,
-        ))
+        Ok(formatting_edits(&doc.rope.to_string()))
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -302,13 +299,19 @@ fn classify_completion_kind(ty: &Type) -> CompletionItemKind {
 /// is already formatted or cannot be parsed — an unparseable buffer (e.g. an
 /// in-progress edit saved with format-on-save) should be a silent no-op, not an
 /// error popup.
-fn formatting_edits(source: &str, len_lines: u32) -> Option<Vec<TextEdit>> {
-    let exprs = loon_lang::parser::parse(source).ok()?;
-    let formatted = loon_lang::fmt::format_program(&exprs);
+fn formatting_edits(source: &str) -> Option<Vec<TextEdit>> {
+    let (exprs, comments) = loon_lang::parser::parse_with_comments(source).ok()?;
+    let formatted = loon_lang::fmt::format_program_with_comments(&exprs, &comments, source);
 
     if formatted == source {
         return None;
     }
+
+    // Anchor the edit's end at the true end of the document. Hand-rolling
+    // `{ line: rope.len_lines(), character: 0 }` points one line past EOF
+    // (ropey counts the trailing line); lean on the existing offset helper.
+    let rope = ropey::Rope::from_str(source);
+    let end = offset_to_position(&rope, rope.len_bytes());
 
     Some(vec![TextEdit {
         range: Range {
@@ -316,10 +319,7 @@ fn formatting_edits(source: &str, len_lines: u32) -> Option<Vec<TextEdit>> {
                 line: 0,
                 character: 0,
             },
-            end: Position {
-                line: len_lines,
-                character: 0,
-            },
+            end,
         },
         new_text: formatted,
     }])
@@ -513,23 +513,67 @@ mod tests {
     #[test]
     fn formatting_edits_reformats_unformatted_source() {
         let src = "[let   x    42]";
-        let edits = formatting_edits(src, 1).expect("unformatted source should yield an edit");
+        let edits = formatting_edits(src).expect("unformatted source should yield an edit");
         assert_eq!(edits.len(), 1);
         assert_ne!(edits[0].new_text, src);
         // The replacement must be itself stable (idempotent formatter output).
-        assert!(formatting_edits(&edits[0].new_text, 1).is_none());
+        assert!(formatting_edits(&edits[0].new_text).is_none());
     }
 
     #[test]
     fn formatting_edits_noop_when_already_formatted() {
         let src = loon_lang::fmt::format_program(&loon_lang::parser::parse("[let x 42]").unwrap());
-        assert!(formatting_edits(&src, 1).is_none());
+        assert!(formatting_edits(&src).is_none());
     }
 
     #[test]
     fn formatting_edits_silent_on_parse_error() {
         // Unparseable buffer must be a no-op, not an error popup.
-        assert!(formatting_edits("[let x", 1).is_none());
+        assert!(formatting_edits("[let x").is_none());
+    }
+
+    #[test]
+    fn formatting_edit_range_spans_to_true_eof() {
+        // Source with no trailing newline: the edit's end must be the real
+        // end-of-document (line 0, col = len), not a line past EOF.
+        let src = "[let   x   42]";
+        let edits = formatting_edits(src).unwrap();
+        assert_eq!(edits[0].range.start, Position::new(0, 0));
+        assert_eq!(edits[0].range.end, Position::new(0, src.len() as u32));
+    }
+
+    #[test]
+    fn formatting_edit_round_trips_when_applied() {
+        // Applying the produced edit to the buffer (resolving its range the
+        // same way a client does) must yield exactly the formatter output —
+        // proving the range actually covers the whole document.
+        for src in ["[let   x   42]", "[let x 1]\n[let   y   2]\n"] {
+            let edits = formatting_edits(src).unwrap();
+            let edit = &edits[0];
+            let rope = ropey::Rope::from_str(src);
+            let start = position_to_offset(&rope, edit.range.start);
+            let end = position_to_offset(&rope, edit.range.end);
+            let mut bytes = src.as_bytes().to_vec();
+            bytes.splice(start..end, edit.new_text.bytes());
+            let applied = String::from_utf8(bytes).unwrap();
+            let (exprs, comments) = loon_lang::parser::parse_with_comments(src).unwrap();
+            let expected = loon_lang::fmt::format_program_with_comments(&exprs, &comments, src);
+            assert_eq!(applied, expected);
+        }
+    }
+
+    #[test]
+    fn formatting_preserves_comments() {
+        // The whole reason for this rewrite: format-on-save must not destroy
+        // user comments. Both leading and trailing forms.
+        let src = "; header\n[let   x   42] ; the answer\n";
+        let edits = formatting_edits(src).expect("should produce an edit");
+        let new_text = &edits[0].new_text;
+        assert!(new_text.contains("; header"), "leading comment lost:\n{new_text}");
+        assert!(
+            new_text.contains("; the answer"),
+            "trailing comment lost:\n{new_text}"
+        );
     }
 
     #[test]
