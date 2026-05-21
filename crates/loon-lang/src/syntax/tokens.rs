@@ -63,8 +63,13 @@ fn unescape(s: &str) -> String {
 
 #[derive(Logos, Debug, Clone, PartialEq)]
 #[logos(skip r"[ \t\r\n]+")]
-#[logos(skip r";[^\n]*")]
 pub enum Token {
+    // Line comments. Captured rather than skipped so the formatter can put
+    // them back; the parser routes them into a side table so the grammar
+    // never sees them.
+    #[regex(r";[^\n]*", |lex| lex.slice().to_string())]
+    Comment(String),
+
     // Delimiters
     #[token("[")]
     LBracket,

@@ -1,5 +1,5 @@
 use crate::ast::{Expr, ExprKind};
-use crate::syntax::{Span, Token};
+use crate::syntax::{Comment, Span, Token};
 use logos::Logos;
 
 #[derive(Debug, Clone)]
@@ -41,6 +41,7 @@ fn extract_suffix(s: &str) -> String {
 
 struct Parser<'a> {
     tokens: Vec<(Token, Span)>,
+    comments: Vec<Comment>,
     pos: usize,
     source: &'a str,
 }
@@ -48,11 +49,13 @@ struct Parser<'a> {
 impl<'a> Parser<'a> {
     fn new(source: &'a str) -> Result<Self, ParseError> {
         let mut tokens = Vec::new();
+        let mut comments = Vec::new();
         let mut lexer = Token::lexer(source);
         while let Some(tok) = lexer.next() {
             let span = lexer.span();
             let span = Span::new(span.start, span.end);
             match tok {
+                Ok(Token::Comment(text)) => comments.push(Comment { span, text }),
                 Ok(t) => tokens.push((t, span)),
                 Err(()) => {
                     return Err(ParseError {
@@ -67,6 +70,7 @@ impl<'a> Parser<'a> {
         }
         Ok(Self {
             tokens,
+            comments,
             pos: 0,
             source,
         })
@@ -470,13 +474,46 @@ fn desugar_question(expr: Expr, span: Span) -> Expr {
 
 /// Parse a source string into a list of top-level expressions.
 pub fn parse(source: &str) -> Result<Vec<Expr>, ParseError> {
+    parse_with_comments(source).map(|(exprs, _)| exprs)
+}
+
+/// Parse a source string into top-level expressions and a list of comments
+/// captured at lex time. The formatter uses the comments to put them back in
+/// the output; everything else can keep using `parse`.
+pub fn parse_with_comments(source: &str) -> Result<(Vec<Expr>, Vec<Comment>), ParseError> {
     let mut parser = Parser::new(source)?;
-    parser.parse_program()
+    let exprs = parser.parse_program()?;
+    Ok((exprs, parser.comments))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_with_comments_captures_with_spans() {
+        let src = "; head\n[+ 1 2] ; trail\n";
+        let (exprs, comments) = parse_with_comments(src).unwrap();
+        // Grammar untouched: still parses one top-level expression.
+        assert_eq!(exprs.len(), 1);
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].text, "; head");
+        assert_eq!(&src[comments[0].span.start..comments[0].span.end], "; head");
+        assert_eq!(comments[1].text, "; trail");
+        assert_eq!(
+            &src[comments[1].span.start..comments[1].span.end],
+            "; trail"
+        );
+    }
+
+    #[test]
+    fn parse_shim_drops_comments() {
+        // The classic `parse` entry point must not see comments — preserves
+        // every existing caller's contract.
+        let src = "; ignore\n[+ 1 2]\n";
+        let exprs = parse(src).unwrap();
+        assert_eq!(exprs.len(), 1);
+    }
 
     #[test]
     fn parse_hello_world() {
