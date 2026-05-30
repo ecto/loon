@@ -289,3 +289,32 @@ and the Stage-0 source is therefore kept hand-formatted in canonical style and
 **not** run through `fmt`. This is a concrete defect Stage 1's self-hosted
 formatter must fix (and a caution for Stage 1's "byte-identical to the Rust
 formatter" gate: the Rust formatter's own output is invalid here).
+
+### Stage 1 — Formatter (self-hosted, faithful)
+
+Location: `src/frontend/formatter.oo` (concatenated after `reader.oo`).
+A Wadler/Leijen pretty-printer (`Doc = DNil | DText | DLine | DHard |
+DIndent | DConcat | DGroup`) with a cons-list-stack renderer, mirroring the
+Rust formatter's per-form layout (generic lists, `fn`/defn, `let`, `if`,
+`match` pair-per-line, `pipe`, `type`/`effect`, vec/set/map/tuple) at
+2-space indent / width 80.
+
+**Deliberately faithful, NOT byte-identical to `loon fmt`.** On inspection the
+plan's **gate 2 (faithful round-trip) and gate 3 (byte-identical to the Rust
+formatter) conflict** on the corpus, because `loon fmt` is lossy:
+
+- **Floats:** rendered via Rust `Display`, so `5.0`→`5` (re-reads as an
+  **int**) and `3.140`→`3.14` (verified empirically).
+- **Literal braces:** `"\{"`→`"{"`, unparseable (the brace bug above).
+- **Interpolation:** `"hi {x}"` is desugared to `[str "hi " x]` and printed
+  that way — the original literal is gone.
+- **Blank lines / comments:** preserved from the source buffer via a
+  position-based attachment pass the reader does not reproduce.
+
+A formatter satisfying gate 2 (`read(fmt x) ≡ read x`) therefore *cannot* be
+byte-identical to one that rewrites `5.0`→`5`. The self-hosted formatter keeps
+float lexemes, literal braces, and interpolated strings, targeting gates 1
+(`fmt(fmt x)==fmt x`) and 2 (`canon(fmt x)==canon(x)`). **Gate 3 is reported as
+blocked by Rust-formatter defects**; closing it globally would mean reproducing
+those defects (which breaks gate 2). Decision needed: fix the Rust formatter to
+be a faithful reference, or scope gate 3 to the defect-free subset.

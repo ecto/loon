@@ -75,6 +75,21 @@
 ; Does `s` contain the substring `sub`?
 [fn has-sub [s sub] [>= [index-of s sub] 0]]
 
+; The reader operates over a CHAR VECTOR, not a string: the VM's `char-at` and
+; `substring` are O(index) (they re-scan from the start), which is O(n^2) over a
+; whole file. `to-chars` splits the source into characters once (O(n)); `cat`
+; is a bounds-safe index returning "" at/after the end, so the reader's "" EOF
+; sentinel keeps working unchanged.
+[fn to-chars [s]
+  [let v [split s ""]]              ; split on "" yields ["" c0 c1 ... ""]
+  [slice v 1 [- [len v] 1]]]        ; drop the leading and trailing empties
+
+[fn cat [cv i]
+  [if [>= i [len cv]] "" [nth cv i]]]
+
+; Substring of a char vector as a string.
+[fn cvsub [cv a b] [join "" [slice cv a b]]]
+
 ; Tricky single characters built so the Rust lexer reading THIS file produces
 ; the right value (`{` must be written `\{`; a bare `{` is a parse error).
 [fn ch-quote [] "\""]
@@ -106,7 +121,7 @@
 ; Skip whitespace, commas, and `;`-to-end-of-line comments. Returns an index.
 [fn skip-ws [src i]
   [loop [j i]
-    [let c [char-at src j]]
+    [let c [cat src j]]
     [if [= [len c] 0]
       j
       [if [ws-char c]
@@ -117,7 +132,7 @@
 
 [fn skip-eol [src i]
   [loop [j i]
-    [let c [char-at src j]]
+    [let c [cat src j]]
     [if [= [len c] 0]
       j
       [if [cin c "\n"]
@@ -127,7 +142,7 @@
 ; Index just past a maximal run of non-terminator characters.
 [fn atom-end [src i]
   [loop [j i]
-    [if [terminator [char-at src j]]
+    [if [terminator [cat src j]]
       j
       [recur [+ j 1]]]]]
 
@@ -148,32 +163,32 @@
           c]]]]]
 
 [fn encode-str [s]
-  [loop [j 0 acc ""]
-    [let c [char-at s j]]
-    [if [= [len c] 0]
-      acc
-      [recur [+ j 1] [str acc [encode-char c]]]]]]
+  [let cv [to-chars s]]
+  [loop [j 0 acc #[]]
+    [if [>= j [len cv]]
+      [join "" acc]
+      [recur [+ j 1] [conj acc [encode-char [nth cv j]]]]]]]
 
 ; ── Reader ─────────────────────────────────────────────────────────────────
 
 ; Read a string literal. `i` points at the opening quote.
 [fn read-string [src i]
-  [loop [j [+ i 1] acc ""]
-    [let c [char-at src j]]
+  [loop [j [+ i 1] acc #[]]
+    [let c [cat src j]]
     [if [= [len c] 0]
       [R [Reader.error "unterminated string literal" i] j]
       [if [streq c [ch-quote]]
-        [R [FStr acc [Source.span i [+ j 1]]] [+ j 1]]
+        [R [FStr [join "" acc] [Source.span i [+ j 1]]] [+ j 1]]
         [if [streq c [ch-bs]]
-          [recur [+ j 2] [str acc [decode-escape [char-at src [+ j 1]]]]]
-          [recur [+ j 1] [str acc c]]]]]]]
+          [recur [+ j 2] [conj acc [decode-escape [cat src [+ j 1]]]]]
+          [recur [+ j 1] [conj acc c]]]]]]]
 
 ; Read a sequence of forms until `close`. `open` is the index of the opening
 ; delimiter; reading starts just after it. Returns RS (items, index past close).
 [fn read-seq [src open close]
   [loop [j [+ open 1] acc #[]]
     [let k [skip-ws src j]]
-    [let c [char-at src k]]
+    [let c [cat src k]]
     [if [= [len c] 0]
       [RS [conj acc [Reader.error [str "unterminated, expected " close] open]] k]
       [if [streq c close]
@@ -198,7 +213,7 @@
     [RS items ni] [R [mk-coll kind items [Source.span i ni]] ni]]]
 
 [fn read-hash [src i]
-  [let n [char-at src [+ i 1]]]
+  [let n [cat src [+ i 1]]]
   [if [cin n "["] [read-hashdelim src i "]" :vec]
     [if [streq n [ch-ob]] [read-hashdelim src i [ch-cb] :set]
       [R [Reader.error "expected a vector or set after hash" i] [+ i 1]]]]]
@@ -212,11 +227,11 @@
   [let e [atom-end src [+ i 1]]]
   [if [= e [+ i 1]]
     [R [FSym ":" #[] [Source.span i [+ i 1]]] [+ i 1]]
-    [R [FKw [substring src [+ i 1] e] [Source.span i e]] e]]]
+    [R [FKw [cvsub src [+ i 1] e] [Source.span i e]] e]]]
 
 [fn read-number [src i]
   [let e [atom-end src i]]
-  [let lex [substring src i e]]
+  [let lex [cvsub src i e]]
   [if [has-sub lex "."]
     [R [FFloat lex [Source.span i e]] e]
     [R [FInt lex [Source.span i e]] e]]]
@@ -230,7 +245,7 @@
 
 [fn read-symbol [src i]
   [let e [atom-end src i]]
-  [let name [substring src i e]]
+  [let name [cvsub src i e]]
   [let sp [Source.span i e]]
   [if [has-sub name "."]
     [R [build-dots [split name "."] sp] e]
@@ -239,7 +254,7 @@
 ; `-` begins a number only when immediately followed by a digit.
 [fn neg-number [src i c]
   [if [cin c "-"]
-    [digit [char-at src [+ i 1]]]
+    [digit [cat src [+ i 1]]]
     false]]
 
 [fn wrap-prefix [kind f sp]
@@ -252,7 +267,7 @@
     [R f ni] [R [wrap-prefix kind f [Source.span i ni]] ni]]]
 
 [fn read-tilde [src i]
-  [if [cin [char-at src [+ i 1]] "@"]
+  [if [cin [cat src [+ i 1]] "@"]
     [read-prefix src i :splice 2]
     [read-prefix src i :unquote 1]]]
 
@@ -278,19 +293,19 @@
 
 ; Read one form, then absorb a postfix `?` into FQuery.
 [fn read-form [src i]
-  [let c [char-at src i]]
+  [let c [cat src i]]
   [if [= [len c] 0]
     [R [Reader.error "unexpected end of input" i] i]
     [match [read-core src i c]
       [R f ni]
-      [if [cin [char-at src ni] "?"]
+      [if [cin [cat src ni] "?"]
         [R [FQuery f [Source.span i [+ ni 1]]] [+ ni 1]]
         [R f ni]]]]]
 
 ; Read every top-level form in `src`.
 [fn read-program [src]
   [loop [i [skip-ws src 0] acc #[]]
-    [if [= [len [char-at src i]] 0]
+    [if [= [len [cat src i]] 0]
       acc
       [match [read-form src i]
         [R f ni] [recur [skip-ws src ni] [conj acc f]]]]]]
@@ -298,13 +313,10 @@
 ; ── Writer (canonical Form -> Str) ─────────────────────────────────────────
 
 [fn write-seq [items]
-  [loop [k 0 acc ""]
+  [loop [k 0 acc #[]]
     [if [>= k [len items]]
-      acc
-      [recur [+ k 1]
-        [if [= k 0]
-          [write-form [nth items k]]
-          [str acc " " [write-form [nth items k]]]]]]]]
+      [join " " acc]
+      [recur [+ k 1] [conj acc [write-form [nth items k]]]]]]]
 
 [fn write-form [f]
   [match f
@@ -326,13 +338,10 @@
     [FError m _] [str [ch-hash] "<error:" m ">"]]]
 
 [fn write-program [forms]
-  [loop [k 0 acc ""]
+  [loop [k 0 acc #[]]
     [if [>= k [len forms]]
-      acc
-      [recur [+ k 1]
-        [if [= k 0]
-          [write-form [nth forms k]]
-          [str acc "\n" [write-form [nth forms k]]]]]]]]
+      [join "\n" acc]
+      [recur [+ k 1] [conj acc [write-form [nth forms k]]]]]]]
 
 ; ── Top-level entry points ─────────────────────────────────────────────────
 
@@ -340,7 +349,7 @@
 ; plain [Span a b]; reader errors become FError placeholders and reading
 ; continues (error recovery, not exceptions).
 [fn read-all [src]
-  [handle [read-program src]
+  [handle [read-program [to-chars src]]
     [Source.span a b] [resume [Span a b]]
     [Reader.error msg pos] [resume [FError msg [Span pos pos]]]]]
 

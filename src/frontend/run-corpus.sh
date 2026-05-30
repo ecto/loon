@@ -1,25 +1,34 @@
 #!/usr/bin/env bash
-# Stage-0 corpus round-trip harness.
+# Corpus harness for the self-hosted frontend.
 #
-# Builds a single runnable Loon program (the EIR VM has no working module
-# `use`, so we concatenate) from:
-#   1. the reader library,
+# The EIR VM has no working module `use`, so we amalgamate by concatenation:
+#   1. the frontend library files (reader, and for fmt also the formatter),
 #   2. a generated `corpus-files` function listing every .oo/.loon source,
-#   3. the corpus driver.
-# Then runs it on the Rust-hosted Loon and prints the ship-gate result.
+#   3. the chosen test driver.
+# Then run it on the Rust-hosted Loon and print the ship-gate result.
 #
-# Usage: src/frontend/run-corpus.sh [loon-binary]
+# Usage:
+#   src/frontend/run-corpus.sh read   # Stage-0 reader round-trip gate
+#   src/frontend/run-corpus.sh fmt    # Stage-1 formatter idempotence+round-trip
 set -euo pipefail
 
+mode="${1:-read}"
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
-loon="${1:-$root/target/debug/loon}"
+loon="${2:-$root/target/debug/loon}"
+
+case "$mode" in
+  read) libs=("$root/src/frontend/reader.oo")
+        driver="$root/src/frontend/tests/corpus_driver.oo" ;;
+  fmt)  libs=("$root/src/frontend/reader.oo" "$root/src/frontend/formatter.oo")
+        driver="$root/src/frontend/tests/fmt_corpus_driver.oo" ;;
+  *) echo "usage: $0 {read|fmt} [loon-binary]" >&2; exit 2 ;;
+esac
 
 gen="$(mktemp /tmp/loon-corpus-list.XXXXXX.oo)"
-prog="$(mktemp /tmp/loon-stage0.XXXXXX.oo)"
+prog="$(mktemp /tmp/loon-frontend.XXXXXX.oo)"
 trap 'rm -f "$gen" "$prog"' EXIT
 
-# Generate `[fn corpus-files [] #[ "path" ... ]]` over the whole repo corpus.
 {
   printf '[fn corpus-files []\n  #[\n'
   cd "$root"
@@ -29,7 +38,6 @@ trap 'rm -f "$gen" "$prog"' EXIT
   printf '  ]]\n'
 } > "$gen"
 
-cat "$root/src/frontend/reader.oo" "$gen" "$root/src/frontend/tests/corpus_driver.oo" > "$prog"
-
+cat "${libs[@]}" "$gen" "$driver" > "$prog"
 cd "$root"
 "$loon" run "$prog"
