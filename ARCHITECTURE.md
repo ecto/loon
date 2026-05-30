@@ -314,7 +314,32 @@ formatter) conflict** on the corpus, because `loon fmt` is lossy:
 A formatter satisfying gate 2 (`read(fmt x) ≡ read x`) therefore *cannot* be
 byte-identical to one that rewrites `5.0`→`5`. The self-hosted formatter keeps
 float lexemes, literal braces, and interpolated strings, targeting gates 1
-(`fmt(fmt x)==fmt x`) and 2 (`canon(fmt x)==canon(x)`). **Gate 3 is reported as
-blocked by Rust-formatter defects**; closing it globally would mean reproducing
-those defects (which breaks gate 2). Decision needed: fix the Rust formatter to
-be a faithful reference, or scope gate 3 to the defect-free subset.
+(`fmt(fmt x)==fmt x`) and 2 (`canon(fmt x)==canon(x)`), both **PASS 65/65** on
+the corpus (+ 16 inline).
+
+#### Gate 3 — progress (decision: fix Rust fmt, then match)
+
+Step 1 done: the Rust formatter's **float defect is fixed** —
+`crates/loon-lang/src/fmt/mod.rs` now renders `Float` with `{:?}` so `5.0`
+stays `5.0` (re-reads as a float, not an int) instead of `5`. Idempotent;
+full Rust suite still 488/0.
+
+**Measured Loon-vs-fixed-Rust byte match on `samples/*.oo`: 8 identical, 13
+differ — and every diff is blank-lines or comments, never layout.** That is,
+the self-hosted formatter's *layout* (indentation, group/break, and all
+special-form rules) is already byte-identical to the Rust formatter; the only
+remaining gate-3 gaps are **metadata the Stage-0 reader drops by design**:
+
+1. **Blank-line preservation** — Rust keeps source blank lines via a
+   position-based `blank_before` set; the Loon side only inserts blanks
+   between `fn`/`type`/`effect` defns. (Smaller fix: have the reader record
+   ≥2-newline gaps and thread them to the formatter.)
+2. **Comment preservation** — the reader discards comments; Rust attaches them
+   (leading/trailing/dangling) and re-emits them. (Larger: port the
+   comment-attachment pass.)
+
+Still parser-level (out of formatter scope): literal-brace round-trip (the
+`unescape`/desugar `\}`→`}}` interaction) and interpolation (`"hi {x}"` is
+desugared in the parser before the formatter sees it). Gate 3 is therefore
+**substantially closed (layout-identical)**; full byte-identity is itemized
+above as reader-metadata + parser work.

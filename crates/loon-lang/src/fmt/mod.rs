@@ -478,7 +478,11 @@ fn close_after(last_body: &Expr, ctx: &Ctx) -> Doc {
 fn expr_kind_to_doc(expr: &Expr, ctx: &Ctx) -> Doc {
     match &expr.kind {
         ExprKind::Int(n) => text(n.to_string()),
-        ExprKind::Float(n) => text(format!("{n}")),
+        // Use the debug formatting for f64 so the value always re-parses as a
+        // float: `{}` renders 5.0 as "5" (which re-reads as an Int), whereas
+        // `{:?}` renders it as "5.0". The original lexeme is gone after parsing,
+        // so this is the faithful canonical form, not byte-for-byte recovery.
+        ExprKind::Float(n) => text(format!("{n:?}")),
         ExprKind::Bool(b) => text(if *b { "true" } else { "false" }),
         ExprKind::Str(s) => text(format!("\"{}\"", escape_string(s))),
         ExprKind::Keyword(k) => text(format!(":{k}")),
