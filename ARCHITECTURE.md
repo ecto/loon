@@ -343,3 +343,38 @@ Still parser-level (out of formatter scope): literal-brace round-trip (the
 desugared in the parser before the formatter sees it). Gate 3 is therefore
 **substantially closed (layout-identical)**; full byte-identity is itemized
 above as reader-metadata + parser work.
+
+### Stage 2 — Macro expander (core): quasiquote + scope-set hygiene
+
+Location: `src/frontend/expander.oo` (concatenated after `reader.oo`).
+
+Done and tested (9/9 inline):
+- **Quasiquote / unquote / unquote-splicing** as a `Form -> Form` engine with
+  nesting levels (nested `` ` `` raise the level; `~`/`~@` fire at level 0).
+- **Template macros** `[macro name [params] `body]`, including `&rest`
+  parameters, an argument used multiple times, **nested macros**, and
+  **macro-generating-macro** (output is re-expanded to a fixpoint); expansion
+  descends into sub-forms and is identity (modulo layout) on macro-free source.
+- **Scope-set hygiene (D2), expander side:** every identifier a macro
+  *introduces* gets the macro use's fresh scope (carried in the `FSym`
+  scope-set slot reserved in Stage 0); identifiers coming from the macro's
+  *arguments* are untouched. Verified: expanding `[cap tmp]` where `cap`
+  introduces its own `tmp` yields a scoped introduced `tmp` and an unscoped
+  argument `tmp` — the no-capture mechanism. (Binding *resolution* over scopes
+  is the Stage-3 resolver's job; hygiene is only *observable* through name
+  resolution, so the end-to-end no-capture guarantee lands in Stage 3.)
+- **Effects:** expansion-time diagnostics via `Expand.error` only. The plan's
+  `Gensym` effect is replaced by deriving each macro use's scope from its
+  **call-site span start** (unique per source position): the EIR VM cannot
+  keep handler state across one-shot resumes, so a stateful `Gensym` handler
+  would hand out a constant — span-derived scopes need no state. A threaded
+  counter is the alternative if globally fresh ids are later required.
+
+Remaining for the full Stage-2 ship gate (not yet done):
+- **Procedural macros** (arbitrary code evaluated at expansion time) —
+  intentionally deferred to reuse the Stage-3 evaluator rather than fork one,
+  as the plan directs.
+- **Differential test vs the Rust expander** over a corpus. Note the Rust
+  expander is *unhygienic*; since scopes are invisible in written output, the
+  two agree textually on non-capture cases and differ only in binding behavior
+  on capture cases (observable in Stage 3, not in text).

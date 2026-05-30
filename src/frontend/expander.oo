@@ -1,0 +1,240 @@
+; Loon self-hosted frontend — Stage 2: macro expander (core).
+;
+; Concatenated after reader.oo. Implements quasiquote/unquote/unquote-splice
+; expansion, template macros, gensym, and scope-set hygiene (D2) — the part
+; of Racket/Flatt hygiene that lives in the expander: every identifier a macro
+; *introduces* gets the macro use's fresh scope, so it is distinguishable from
+; a same-named identifier that came from the macro's arguments (no capture).
+; Binding *resolution* over those scopes belongs to the Stage-3 resolver.
+;
+; Expansion-time effects are restricted to Gensym and Expand.error (no IO),
+; matching the plan. A procedural-macro evaluator (arbitrary code at expansion
+; time) is intentionally deferred to share the Stage-3 evaluator rather than
+; fork one.
+
+; ── Expansion effects ──────────────────────────────────────────────────────
+
+[effect Expand
+  [error [String] Form]]   ; expansion diagnostic, resumed with a placeholder
+
+; Hygiene scopes. The plan calls for a `Gensym` effect, but the EIR VM cannot
+; maintain handler state across one-shot resumes (a pure handler would hand out
+; the same id every time). Instead each macro USE takes a fresh scope from its
+; call-site span start, which is unique per source position — no mutable state,
+; no effect needed. (A threaded counter would also work; this is lighter.)
+
+; ── Macro table ────────────────────────────────────────────────────────────
+; A macro definition: name, parameter Forms (FSym, with `&rest` as the last),
+; and the template body Form (expected to be a quasiquote).
+[type Mac [Mac String Vec Form]]
+; A binding of one macro parameter to a vector of argument Forms (length 1 for
+; a normal parameter; N for a `&rest` parameter).
+[type Bind [Bind String Vec]]
+
+[fn mac-lookup [macs name]
+  [loop [k 0]
+    [if [>= k [len macs]]
+      :none
+      [match [nth macs k]
+        [Mac mname _ _]
+        [if [streq mname name] [nth macs k] [recur [+ k 1]]]]]]]
+
+[fn bind-lookup [env name]
+  [loop [k 0]
+    [if [>= k [len env]]
+      :none
+      [match [nth env k]
+        [Bind bname forms]
+        [if [streq bname name] [nth env k] [recur [+ k 1]]]]]]]
+
+; ── Hygiene: scope sets on symbols ─────────────────────────────────────────
+; Add scope id `sc` to a symbol's scope-set vector (idempotent-ish; we don't
+; dedupe, which is fine for distinguishing introduced vs argument identifiers).
+[fn sym-add-scope [f sc]
+  [match f
+    [FSym n scopes sp] [FSym n [conj scopes sc] sp]
+    _ f]]
+
+[fn has-scope [scopes sc]
+  [loop [k 0]
+    [if [>= k [len scopes]]
+      false
+      [if [= [nth scopes k] sc] true [recur [+ k 1]]]]]]
+
+; ── Quasiquote expansion ────────────────────────────────────────────────────
+; Expand template `t` against binding env, tagging every *introduced* symbol
+; (one not substituted from an unquote) with scope `sc`. `level` tracks nested
+; quasiquote: at level 0 unquotes fire; nested quotes raise the level and pass
+; through unsubstituted.
+
+[fn qq [t env sc level]
+  [match t
+    [FUnquote inner sp]
+    [if [= level 0] [qq-unquote inner env sc] [FUnquote [qq inner env sc [- level 1]] sp]]
+    [FSplice inner sp]
+    ; a bare ~@ outside a list context is an error; in list/vec it's handled by
+    ; qq-seq. Treat a stray one as level-aware passthrough.
+    [if [= level 0]
+      [Expand.error "unquote-splicing not in a list/vector"]
+      [FSplice [qq inner env sc [- level 1]] sp]]
+    [FQuote inner sp] [FQuote [qq inner env sc [+ level 1]] sp]
+    [FList items sp]  [FList [qq-seq items env sc level] sp]
+    [FVec items sp]   [FVec [qq-seq items env sc level] sp]
+    [FSet items sp]   [FSet [qq-seq items env sc level] sp]
+    [FMap items sp]   [FMap [qq-seq items env sc level] sp]
+    [FTuple items sp] [FTuple [qq-seq items env sc level] sp]
+    [FDot base fld sp] [FDot [qq base env sc level] fld sp]
+    [FSym n scopes sp] [FSym n [conj scopes sc] sp]   ; introduced -> tag scope
+    _ t]]                                              ; literals pass through
+
+; `~sym` substitutes the (single) bound argument; an unquote of anything else
+; with no evaluator is an error in this core expander.
+[fn qq-unquote [inner env sc]
+  [match inner
+    [FSym n _ _]
+    [match [bind-lookup env n]
+      :none [Expand.error [str "unquote of unbound name: " n]]
+      [Bind _ forms] [nth forms 0]]
+    _ [Expand.error "unquote of a non-symbol needs the evaluator (deferred)"]]]
+
+; Expand a sequence, splicing ~@param bindings in place.
+[fn qq-seq [items env sc level]
+  [loop [k 0 acc #[]]
+    [if [>= k [len items]]
+      acc
+      [recur [+ k 1] [qq-seq-item [nth items k] env sc level acc]]]]]
+
+[fn qq-seq-item [it env sc level acc]
+  [match it
+    [FSplice inner sp]
+    [if [= level 0] [splice-into acc inner env] [conj acc [qq it env sc level]]]
+    _ [conj acc [qq it env sc level]]]]
+
+[fn splice-into [acc inner env]
+  [match inner
+    [FSym n _ _]
+    [match [bind-lookup env n]
+      :none [conj acc [Expand.error [str "unquote-splicing of unbound name: " n]]]
+      [Bind _ forms] [vec-append acc forms]]
+    _ [conj acc [Expand.error "splice of a non-symbol needs the evaluator"]]]]
+
+[fn vec-append [a b]
+  [loop [k 0 acc a]
+    [if [>= k [len b]] acc [recur [+ k 1] [conj acc [nth b k]]]]]]
+
+; ── Template-macro expansion ────────────────────────────────────────────────
+; Bind parameter Forms to argument Forms. A parameter named "&" introduces the
+; next parameter as a rest binding capturing the remaining args.
+[fn bind-params [params args]
+  [loop [pi 0 ai 0 env #[]]
+    [if [>= pi [len params]]
+      env
+      [match [nth params pi]
+        [FSym pname _ _]
+        [if [streq pname "&"]
+          ; next param captures the rest
+          [match [nth params [+ pi 1]]
+            [FSym rname _ _]
+            [conj env [Bind rname [vec-rest args ai]]]
+            _ env]
+          [recur [+ pi 1] [+ ai 1]
+            [conj env [Bind pname #[[arg-at args ai]]]]]]
+        _ [recur [+ pi 1] [+ ai 1] env]]]]]
+
+[fn arg-at [args i]
+  [if [< i [len args]] [nth args i] [Expand.error "too few macro arguments"]]]
+
+[fn vec-rest [args i]
+  [loop [k i acc #[]]
+    [if [>= k [len args]] acc [recur [+ k 1] [conj acc [nth args k]]]]]]
+
+; Expand a single macro call `[name arg...]` using definition `m`, tagging
+; introduced identifiers with scope `sc` (the call site's span start).
+[fn expand-call [m args sc]
+  [match m
+    [Mac _ params body]
+    ; the macro body's leading backtick is the quasiquote entry point: strip it
+    ; and expand its contents at level 0 (so ~ / ~@ fire).
+    [match body
+      [FQuote inner _] [qq inner [bind-params params args] sc 0]
+      _ [qq body [bind-params params args] sc 0]]]]
+
+; ── Whole-program expansion ──────────────────────────────────────────────────
+; Collect `[macro name [params] body]` definitions, then expand the rest,
+; recursively re-expanding macro output and descending into sub-forms.
+
+[fn macro-def? [f]
+  [match f
+    [FList items _]
+    [if [< [len items] 4]
+      false
+      [match [nth items 0] [FSym n _ _] [streq n "macro"] _ false]]
+    _ false]]
+
+[fn parse-macro [f]
+  [match f
+    [FList items _]
+    [match [nth items 1]
+      [FSym name _ _]
+      [match [nth items 2]
+        [FList params _] [Mac name params [nth items 3]]
+        _ [Mac name #[] [nth items 3]]]
+      _ [Mac "?" #[] [nth items 3]]]
+    _ [Mac "?" #[] f]]]
+
+[fn collect-macros [forms]
+  [loop [k 0 acc #[]]
+    [if [>= k [len forms]]
+      acc
+      [recur [+ k 1]
+        [if [macro-def? [nth forms k]]
+          [conj acc [parse-macro [nth forms k]]]
+          acc]]]]]
+
+; Expand one form to a fixpoint, descending into children.
+[fn expand-form [f macs]
+  [match f
+    [FList items _] [expand-list f items macs]
+    [FVec items sp] [FVec [expand-each items macs] sp]
+    [FSet items sp] [FSet [expand-each items macs] sp]
+    [FMap items sp] [FMap [expand-each items macs] sp]
+    [FTuple items sp] [FTuple [expand-each items macs] sp]
+    _ f]]
+
+[fn list-scope [f]
+  [match f [FList _ [Span s _]] s _ 0]]
+
+[fn expand-list [f items macs]
+  [if [= [len items] 0]
+    f
+    [match [nth items 0]
+      [FSym hname _ _]
+      [match [mac-lookup macs hname]
+        :none [rebuild-list items macs f]
+        m [expand-form [expand-call m [vec-rest items 1] [list-scope f]] macs]]
+      _ [rebuild-list items macs f]]]]
+
+[fn rebuild-list [items macs f]
+  [match f [FList _ sp] [FList [expand-each items macs] sp] _ f]]
+
+[fn expand-each [items macs]
+  [loop [k 0 acc #[]]
+    [if [>= k [len items]]
+      acc
+      [recur [+ k 1] [conj acc [expand-form [nth items k] macs]]]]]]
+
+; Expand a whole program: drop macro definitions, expand the rest.
+[fn expand-program [forms]
+  [let macs [collect-macros forms]]
+  [loop [k 0 acc #[]]
+    [if [>= k [len forms]]
+      acc
+      [recur [+ k 1]
+        [if [macro-def? [nth forms k]]
+          acc
+          [conj acc [expand-form [nth forms k] macs]]]]]]]
+
+; Top-level entry under the expansion-time effect handler.
+[fn expand-all [forms]
+  [handle [expand-program forms]
+    [Expand.error msg] [resume [FError msg [Span 0 0]]]]]
