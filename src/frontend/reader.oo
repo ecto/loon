@@ -1,0 +1,351 @@
+; Loon self-hosted frontend — Stage 0: reader + Form AST.
+;
+; Written in Loon, runs today on the Rust-hosted Loon (the EIR VM) via
+; `loon run`. See ARCHITECTURE.md for how this maps onto the existing Rust
+; implementation and the D1/D2/D3 decisions that shape it.
+;
+; Design notes (consequences of the current EIR VM, established empirically):
+;   * `=` is identity on heap strings, so string equality is built from
+;     `len` + `index-of` (see `streq`). Character comparison uses `index-of`
+;     membership, never `=`.
+;   * Numeric literals keep their original lexeme text (FInt/FFloat hold a
+;     String). A reader should not interpret numbers; this also makes the
+;     round-trip trivially exact for floats.
+;   * Multi-file `use` does not work on the VM, so the whole frontend is one
+;     file; later stages are concatenated, not imported.
+;   * Diagnostics are EFFECTS, never exceptions: `Reader.error` reports a
+;     malformed-input diagnostic (resumed with a placeholder Form) and
+;     `Source.span` mints spans (resumed with a Span). Installing a different
+;     handler lets a host collect errors or enrich spans with a filename.
+
+; ── Diagnostics as effects ─────────────────────────────────────────────────
+
+[effect Source
+  [span [i64 i64] Span]]
+
+[effect Reader
+  [error [String i64] Form]]
+
+; ── Core types ─────────────────────────────────────────────────────────────
+
+[type Span [Span i64 i64]]
+
+; The single shared surface Form. Symbols carry a scope-set slot (a vector of
+; scope ids, empty at read time) reserved for Stage-2 scope-set hygiene (D2),
+; so later stages extend Form rather than redefining it.
+[type Form
+  [FInt    String Span]        ; integer literal, lexeme kept verbatim
+  [FFloat  String Span]        ; float literal, lexeme kept verbatim
+  [FStr    String Span]        ; string literal, decoded value
+  [FKw     String Span]        ; :keyword, name without the colon
+  [FSym    String Vec Span]    ; symbol: name, scope-set, span
+  [FList   Vec Span]           ; [ ... ]
+  [FVec    Vec Span]           ; #[ ... ]
+  [FSet    Vec Span]           ; #{ ... }
+  [FMap    Vec Span]           ; { k v ... }, stored flat: k0 v0 k1 v1 ...
+  [FTuple  Vec Span]           ; ( ... )
+  [FQuote  Form Span]          ; `form
+  [FUnquote Form Span]         ; ~form
+  [FSplice Form Span]          ; ~@form
+  [FDot    Form String Span]   ; base.field
+  [FQuery  Form Span]          ; form?  (postfix)
+  [FError  String Span]]       ; reader diagnostic placeholder
+
+; A single read result: a Form plus the next source index.
+[type R [R Form i64]]
+; A sequence read result: a vector of Forms plus the next source index.
+[type RS [RS Vec i64]]
+
+; ── String / character utilities ───────────────────────────────────────────
+
+; Content equality for strings (the VM's `=` is heap identity). Two strings
+; are equal iff they have the same length and one is a prefix of the other.
+[fn streq [a b]
+  [if [= [len a] [len b]]
+    [= [index-of a b] 0]
+    false]]
+
+; Does the (length-1) string `c` occur in `set`? The empty/EOF char is never
+; a member (index-of of "" is 0, which would otherwise read as a false hit).
+[fn cin [c set]
+  [if [= [len c] 0]
+    false
+    [>= [index-of set c] 0]]]
+
+; Does `s` contain the substring `sub`?
+[fn has-sub [s sub] [>= [index-of s sub] 0]]
+
+; Tricky single characters built so the Rust lexer reading THIS file produces
+; the right value (`{` must be written `\{`; a bare `{` is a parse error).
+[fn ch-quote [] "\""]
+[fn ch-tick [] "`"]
+[fn ch-tilde [] "~"]
+[fn ch-hash [] "#"]
+[fn ch-ob [] "\{"]
+[fn ch-cb [] "}"]
+[fn ch-bs [] "\\"]
+
+; Whitespace also swallows commas and `;` line comments at the call sites.
+; NB: the Rust lexer reading this file has no `\r` escape, so carriage return
+; is never written literally; the corpus is LF.
+[fn ws-char [c] [cin c " \t\n,"]]
+[fn digit [c] [cin c "0123456789"]]
+
+; Characters that end an atom run (symbol / number / keyword body).
+[fn terminator [c]
+  [if [= [len c] 0]
+    true
+    [if [cin c " \t\n,;"]
+      true
+      [if [cin c "[]()"]
+        true
+        [cin c [str [ch-quote] [ch-tick] [ch-tilde] [ch-hash] [ch-ob] [ch-cb]]]]]]]
+
+; ── Lexical scanning helpers ───────────────────────────────────────────────
+
+; Skip whitespace, commas, and `;`-to-end-of-line comments. Returns an index.
+[fn skip-ws [src i]
+  [loop [j i]
+    [let c [char-at src j]]
+    [if [= [len c] 0]
+      j
+      [if [ws-char c]
+        [recur [+ j 1]]
+        [if [cin c ";"]
+          [recur [skip-eol src j]]
+          j]]]]]
+
+[fn skip-eol [src i]
+  [loop [j i]
+    [let c [char-at src j]]
+    [if [= [len c] 0]
+      j
+      [if [cin c "\n"]
+        [+ j 1]
+        [recur [+ j 1]]]]]]
+
+; Index just past a maximal run of non-terminator characters.
+[fn atom-end [src i]
+  [loop [j i]
+    [if [terminator [char-at src j]]
+      j
+      [recur [+ j 1]]]]]
+
+; ── String escapes ─────────────────────────────────────────────────────────
+
+[fn decode-escape [e]
+  [if [cin e "n"] "\n"
+    [if [cin e "t"] "\t"
+      [if [streq e [ch-quote]] [ch-quote]
+        [if [streq e [ch-bs]] [ch-bs]
+          [str [ch-bs] e]]]]]]   ; unknown escape: keep backslash + char
+
+[fn encode-char [c]
+  [if [streq c [ch-quote]] [str [ch-bs] [ch-quote]]
+    [if [streq c [ch-bs]] [str [ch-bs] [ch-bs]]
+      [if [cin c "\n"] [str [ch-bs] "n"]
+        [if [cin c "\t"] [str [ch-bs] "t"]
+          c]]]]]
+
+[fn encode-str [s]
+  [loop [j 0 acc ""]
+    [let c [char-at s j]]
+    [if [= [len c] 0]
+      acc
+      [recur [+ j 1] [str acc [encode-char c]]]]]]
+
+; ── Reader ─────────────────────────────────────────────────────────────────
+
+; Read a string literal. `i` points at the opening quote.
+[fn read-string [src i]
+  [loop [j [+ i 1] acc ""]
+    [let c [char-at src j]]
+    [if [= [len c] 0]
+      [R [Reader.error "unterminated string literal" i] j]
+      [if [streq c [ch-quote]]
+        [R [FStr acc [Source.span i [+ j 1]]] [+ j 1]]
+        [if [streq c [ch-bs]]
+          [recur [+ j 2] [str acc [decode-escape [char-at src [+ j 1]]]]]
+          [recur [+ j 1] [str acc c]]]]]]]
+
+; Read a sequence of forms until `close`. `open` is the index of the opening
+; delimiter; reading starts just after it. Returns RS (items, index past close).
+[fn read-seq [src open close]
+  [loop [j [+ open 1] acc #[]]
+    [let k [skip-ws src j]]
+    [let c [char-at src k]]
+    [if [= [len c] 0]
+      [RS [conj acc [Reader.error [str "unterminated, expected " close] open]] k]
+      [if [streq c close]
+        [RS acc [+ k 1]]
+        [match [read-form src k]
+          [R f ni] [recur ni [conj acc f]]]]]]]
+
+[fn mk-coll [kind items sp]
+  [if [= kind :list] [FList items sp]
+    [if [= kind :vec] [FVec items sp]
+      [if [= kind :set] [FSet items sp]
+        [FTuple items sp]]]]]
+
+; A bracketed collection whose opening delimiter is a single char at `i`.
+[fn read-delim [src i close kind]
+  [match [read-seq src i close]
+    [RS items ni] [R [mk-coll kind items [Source.span i ni]] ni]]]
+
+; A `#[` / `#{` collection: the real opening bracket is at i+1.
+[fn read-hashdelim [src i close kind]
+  [match [read-seq src [+ i 1] close]
+    [RS items ni] [R [mk-coll kind items [Source.span i ni]] ni]]]
+
+[fn read-hash [src i]
+  [let n [char-at src [+ i 1]]]
+  [if [cin n "["] [read-hashdelim src i "]" :vec]
+    [if [streq n [ch-ob]] [read-hashdelim src i [ch-cb] :set]
+      [R [Reader.error "expected a vector or set after hash" i] [+ i 1]]]]]
+
+[fn read-map [src i]
+  [match [read-seq src i [ch-cb]]
+    [RS items ni] [R [FMap items [Source.span i ni]] ni]]]
+
+; `:keyword`, or a bare `:` symbol.
+[fn read-keyword [src i]
+  [let e [atom-end src [+ i 1]]]
+  [if [= e [+ i 1]]
+    [R [FSym ":" #[] [Source.span i [+ i 1]]] [+ i 1]]
+    [R [FKw [substring src [+ i 1] e] [Source.span i e]] e]]]
+
+[fn read-number [src i]
+  [let e [atom-end src i]]
+  [let lex [substring src i e]]
+  [if [has-sub lex "."]
+    [R [FFloat lex [Source.span i e]] e]
+    [R [FInt lex [Source.span i e]] e]]]
+
+; A symbol; a name containing `.` becomes a left-nested FDot chain.
+[fn build-dots [parts sp]
+  [loop [k 1 acc [FSym [nth parts 0] #[] sp]]
+    [if [>= k [len parts]]
+      acc
+      [recur [+ k 1] [FDot acc [nth parts k] sp]]]]]
+
+[fn read-symbol [src i]
+  [let e [atom-end src i]]
+  [let name [substring src i e]]
+  [let sp [Source.span i e]]
+  [if [has-sub name "."]
+    [R [build-dots [split name "."] sp] e]
+    [R [FSym name #[] sp] e]]]
+
+; `-` begins a number only when immediately followed by a digit.
+[fn neg-number [src i c]
+  [if [cin c "-"]
+    [digit [char-at src [+ i 1]]]
+    false]]
+
+[fn wrap-prefix [kind f sp]
+  [if [= kind :quote] [FQuote f sp]
+    [if [= kind :unquote] [FUnquote f sp]
+      [FSplice f sp]]]]
+
+[fn read-prefix [src i kind skip]
+  [match [read-form src [skip-ws src [+ i skip]]]
+    [R f ni] [R [wrap-prefix kind f [Source.span i ni]] ni]]]
+
+[fn read-tilde [src i]
+  [if [cin [char-at src [+ i 1]] "@"]
+    [read-prefix src i :splice 2]
+    [read-prefix src i :unquote 1]]]
+
+; Dispatch on the first character of a form (whitespace already skipped).
+; Split across two functions to keep the nesting shallow.
+[fn read-core [src i c]
+  [if [streq c [ch-quote]] [read-string src i]
+    [if [cin c "["] [read-delim src i "]" :list]
+      [if [cin c "("] [read-delim src i ")" :tuple]
+        [if [streq c [ch-ob]] [read-map src i]
+          [read-core2 src i c]]]]]]
+
+[fn read-core2 [src i c]
+  [if [streq c [ch-hash]] [read-hash src i]
+    [if [streq c [ch-tick]] [read-prefix src i :quote 1]
+      [if [streq c [ch-tilde]] [read-tilde src i]
+        [if [cin c ":"] [read-keyword src i]
+          [if [cin c "]})"]
+            [R [Reader.error [str "unexpected " c] i] [+ i 1]]
+            [if [if [digit c] true [neg-number src i c]]
+              [read-number src i]
+              [read-symbol src i]]]]]]]]
+
+; Read one form, then absorb a postfix `?` into FQuery.
+[fn read-form [src i]
+  [let c [char-at src i]]
+  [if [= [len c] 0]
+    [R [Reader.error "unexpected end of input" i] i]
+    [match [read-core src i c]
+      [R f ni]
+      [if [cin [char-at src ni] "?"]
+        [R [FQuery f [Source.span i [+ ni 1]]] [+ ni 1]]
+        [R f ni]]]]]
+
+; Read every top-level form in `src`.
+[fn read-program [src]
+  [loop [i [skip-ws src 0] acc #[]]
+    [if [= [len [char-at src i]] 0]
+      acc
+      [match [read-form src i]
+        [R f ni] [recur [skip-ws src ni] [conj acc f]]]]]]
+
+; ── Writer (canonical Form -> Str) ─────────────────────────────────────────
+
+[fn write-seq [items]
+  [loop [k 0 acc ""]
+    [if [>= k [len items]]
+      acc
+      [recur [+ k 1]
+        [if [= k 0]
+          [write-form [nth items k]]
+          [str acc " " [write-form [nth items k]]]]]]]]
+
+[fn write-form [f]
+  [match f
+    [FInt s _] s
+    [FFloat s _] s
+    [FStr v _] [str [ch-quote] [encode-str v] [ch-quote]]
+    [FKw n _] [str ":" n]
+    [FSym n _ _] n
+    [FList items _] [str "[" [write-seq items] "]"]
+    [FVec items _] [str "#[" [write-seq items] "]"]
+    [FSet items _] [str [ch-hash] [ch-ob] [write-seq items] [ch-cb]]
+    [FMap items _] [str [ch-ob] [write-seq items] [ch-cb]]
+    [FTuple items _] [str "(" [write-seq items] ")"]
+    [FQuote x _] [str [ch-tick] [write-form x]]
+    [FUnquote x _] [str [ch-tilde] [write-form x]]
+    [FSplice x _] [str [ch-tilde] "@" [write-form x]]
+    [FDot base fld _] [str [write-form base] "." fld]
+    [FQuery x _] [str [write-form x] "?"]
+    [FError m _] [str [ch-hash] "<error:" m ">"]]]
+
+[fn write-program [forms]
+  [loop [k 0 acc ""]
+    [if [>= k [len forms]]
+      acc
+      [recur [+ k 1]
+        [if [= k 0]
+          [write-form [nth forms k]]
+          [str acc "\n" [write-form [nth forms k]]]]]]]]
+
+; ── Top-level entry points ─────────────────────────────────────────────────
+
+; Read a full program under the default diagnostics handlers: spans become
+; plain [Span a b]; reader errors become FError placeholders and reading
+; continues (error recovery, not exceptions).
+[fn read-all [src]
+  [handle [read-program src]
+    [Source.span a b] [resume [Span a b]]
+    [Reader.error msg pos] [resume [FError msg [Span pos pos]]]]]
+
+; Canonical text of a source string: read then write.
+[fn canon [src] [write-program [read-all src]]]
+
+; Does the canonical text contain a reader-error placeholder?
+[fn had-error [text] [has-sub text [str [ch-hash] "<error:"]]]
