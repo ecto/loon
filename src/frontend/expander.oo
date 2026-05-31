@@ -1,16 +1,25 @@
-; Loon self-hosted frontend — Stage 2: macro expander (core).
+; Loon self-hosted frontend — Stage 2: macro expander.
 ;
 ; Concatenated after reader.oo. Implements quasiquote/unquote/unquote-splice
-; expansion, template macros, gensym, and scope-set hygiene (D2) — the part
-; of Racket/Flatt hygiene that lives in the expander: every identifier a macro
+; expansion, template macros (substitution matching the Rust expander exactly),
+; macro-generating-macro re-expansion, and scope-set hygiene (D2) — the part of
+; Racket/Flatt hygiene that lives in the expander: every identifier a macro
 ; *introduces* gets the macro use's fresh scope, so it is distinguishable from
 ; a same-named identifier that came from the macro's arguments (no capture).
 ; Binding *resolution* over those scopes belongs to the Stage-3 resolver.
 ;
-; Expansion-time effects are restricted to Gensym and Expand.error (no IO),
-; matching the plan. A procedural-macro evaluator (arbitrary code at expansion
-; time) is intentionally deferred to share the Stage-3 evaluator rather than
-; fork one.
+; Behavioral equivalence to the Rust expander is checked by run-differential.sh;
+; the expander is a verified no-op on macro-free corpus source (run-corpus.sh
+; expand).
+;
+; Procedural macros ([macro n [p] #{effects} body], arbitrary Loon code run at
+; expansion time) are RECOGNIZED but their execution is deferred: it needs the
+; tree-walking evaluator (shared with Stage 3) and there is no `eval` builtin to
+; borrow. A procedural call expands to an Expand.error placeholder.
+;
+; Expansion-time effects are restricted to Expand.error (no IO). Each macro
+; use's hygiene scope is its call-site span start (the one-shot VM cannot keep
+; Gensym handler state across resumes).
 
 ; ── Expansion effects ──────────────────────────────────────────────────────
 
@@ -26,7 +35,8 @@
 ; ── Macro table ────────────────────────────────────────────────────────────
 ; A macro definition: name, parameter Forms (FSym, with `&rest` as the last),
 ; and the template body Form (expected to be a quasiquote).
-[type Mac [Mac String Vec Form]]
+; A macro: name, parameter Forms, body, and style (:template or :procedural).
+[type Mac [Mac String Vec Form Keyword]]
 ; A binding of one macro parameter to a vector of argument Forms (length 1 for
 ; a normal parameter; N for a `&rest` parameter).
 [type Bind [Bind String Vec]]
@@ -36,7 +46,7 @@
     [if [>= k [len macs]]
       :none
       [match [nth macs k]
-        [Mac mname _ _]
+        [Mac mname _ _ _]
         [if [streq mname name] [nth macs k] [recur [+ k 1]]]]]]]
 
 [fn bind-lookup [env name]
@@ -84,18 +94,24 @@
     [FMap items sp]   [FMap [qq-seq items env sc level] sp]
     [FTuple items sp] [FTuple [qq-seq items env sc level] sp]
     [FDot base fld sp] [FDot [qq base env sc level] fld sp]
-    [FSym n scopes sp] [FSym n [conj scopes sc] sp]   ; introduced -> tag scope
+    [FSym n scopes sp]
+    ; Rust substitutes a bound parameter name even when bare (no ~); an unbound
+    ; name is macro-introduced, so we tag it with the hygiene scope.
+    [match [bind-lookup env n]
+      :none [FSym n [conj scopes sc] sp]
+      [Bind _ forms] [if [= [len forms] 1] [nth forms 0] [FSym n scopes sp]]]
     _ t]]                                              ; literals pass through
 
-; `~sym` substitutes the (single) bound argument; an unquote of anything else
-; with no evaluator is an error in this core expander.
+; `~name`: substitute the binding (single value, or a List when bound to many,
+; matching the Rust expander); `~<anything-else>` and unbound names pass the
+; inner form through unchanged (also matching Rust).
 [fn qq-unquote [inner env sc]
   [match inner
     [FSym n _ _]
     [match [bind-lookup env n]
-      :none [Expand.error [str "unquote of unbound name: " n]]
-      [Bind _ forms] [nth forms 0]]
-    _ [Expand.error "unquote of a non-symbol needs the evaluator (deferred)"]]]
+      :none inner
+      [Bind _ forms] [if [= [len forms] 1] [nth forms 0] [FList forms [Span 0 0]]]]
+    _ inner]]
 
 ; Expand a sequence, splicing ~@param bindings in place.
 [fn qq-seq [items env sc level]
@@ -152,12 +168,16 @@
 ; introduced identifiers with scope `sc` (the call site's span start).
 [fn expand-call [m args sc]
   [match m
-    [Mac _ params body]
-    ; the macro body's leading backtick is the quasiquote entry point: strip it
-    ; and expand its contents at level 0 (so ~ / ~@ fire).
-    [match body
-      [FQuote inner _] [qq inner [bind-params params args] sc 0]
-      _ [qq body [bind-params params args] sc 0]]]]
+    [Mac _ params body style]
+    [if [= style :procedural]
+      ; Procedural bodies are arbitrary Loon code run at expansion time; that
+      ; needs the tree-walking evaluator (shared with Stage 3) — deferred.
+      [Expand.error "procedural macro execution requires the Stage-3 evaluator (deferred)"]
+      ; Template: the body's leading backtick is the quasiquote entry point —
+      ; strip it and expand its contents at level 0 (so ~ / ~@ fire).
+      [match body
+        [FQuote inner _] [qq inner [bind-params params args] sc 0]
+        _ [qq body [bind-params params args] sc 0]]]]]
 
 ; ── Whole-program expansion ──────────────────────────────────────────────────
 ; Collect `[macro name [params] body]` definitions, then expand the rest,
@@ -171,16 +191,22 @@
       [match [nth items 0] [FSym n _ _] [streq n "macro"] _ false]]
     _ false]]
 
+; [macro name [params] body]                    -> template
+; [macro name [params] #{effects} body]          -> procedural (effects declared)
 [fn parse-macro [f]
   [match f
     [FList items _]
-    [match [nth items 1]
-      [FSym name _ _]
-      [match [nth items 2]
-        [FList params _] [Mac name params [nth items 3]]
-        _ [Mac name #[] [nth items 3]]]
-      _ [Mac "?" #[] [nth items 3]]]
-    _ [Mac "?" #[] f]]]
+    [parse-macro-2 items
+      [match [nth items 1] [FSym name _ _] name _ "?"]
+      [match [nth items 2] [FList params _] params _ #[]]]
+    _ [Mac "?" #[] f :template]]]
+
+[fn parse-macro-2 [items name params]
+  [if [if [>= [len items] 5] [is-effect-set [nth items 3]] false]
+    [Mac name params [nth items 4] :procedural]
+    [Mac name params [nth items 3] :template]]]
+
+[fn is-effect-set [f] [match f [FSet _ _] true _ false]]
 
 [fn collect-macros [forms]
   [loop [k 0 acc #[]]

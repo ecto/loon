@@ -22,7 +22,9 @@ case "$mode" in
         driver="$root/src/frontend/tests/corpus_driver.oo" ;;
   fmt)  libs=("$root/src/frontend/reader.oo" "$root/src/frontend/comments.oo" "$root/src/frontend/formatter.oo")
         driver="$root/src/frontend/tests/fmt_corpus_driver.oo" ;;
-  *) echo "usage: $0 {read|fmt} [loon-binary]" >&2; exit 2 ;;
+  expand) libs=("$root/src/frontend/reader.oo" "$root/src/frontend/expander.oo")
+        driver="$root/src/frontend/tests/expand_corpus_driver.oo" ;;
+  *) echo "usage: $0 {read|fmt|expand} [loon-binary]" >&2; exit 2 ;;
 esac
 
 gen="$(mktemp /tmp/loon-corpus-list.XXXXXX.oo)"

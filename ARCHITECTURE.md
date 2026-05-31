@@ -380,13 +380,16 @@ above as reader-metadata + parser work.
 
 Location: `src/frontend/expander.oo` (concatenated after `reader.oo`).
 
-Done and tested (9/9 inline):
+Done and tested (12/12 inline, 6/6 differential, 65/65 corpus):
 - **Quasiquote / unquote / unquote-splicing** as a `Form -> Form` engine with
   nesting levels (nested `` ` `` raise the level; `~`/`~@` fire at level 0).
 - **Template macros** `[macro name [params] `body]`, including `&rest`
   parameters, an argument used multiple times, **nested macros**, and
   **macro-generating-macro** (output is re-expanded to a fixpoint); expansion
   descends into sub-forms and is identity (modulo layout) on macro-free source.
+  Substitution matches the Rust expander exactly: a bound parameter is
+  substituted even when **bare** (no `~`); `~name` bound to many values becomes
+  a `List`; unbound `~` / names pass through unchanged.
 - **Scope-set hygiene (D2), expander side:** every identifier a macro
   *introduces* gets the macro use's fresh scope (carried in the `FSym`
   scope-set slot reserved in Stage 0); identifiers coming from the macro's
@@ -402,11 +405,21 @@ Done and tested (9/9 inline):
   would hand out a constant — span-derived scopes need no state. A threaded
   counter is the alternative if globally fresh ids are later required.
 
-Remaining for the full Stage-2 ship gate (not yet done):
-- **Procedural macros** (arbitrary code evaluated at expansion time) —
-  intentionally deferred to reuse the Stage-3 evaluator rather than fork one,
-  as the plan directs.
-- **Differential test vs the Rust expander** over a corpus. Note the Rust
-  expander is *unhygienic*; since scopes are invisible in written output, the
-  two agree textually on non-capture cases and differ only in binding behavior
-  on capture cases (observable in Stage 3, not in text).
+- **Procedural macros** `[macro name [params] #{effects} body]` are
+  **recognized** (the body sits after an effect set) and carried as
+  `style :procedural`, so they are never mis-parsed as templates. Their
+  *execution* — running the arbitrary Loon body at expansion time — is
+  **deferred**: it needs the tree-walking evaluator (shared with Stage 3) and
+  there is no `eval` builtin on the EIR VM to borrow. A procedural call expands
+  to an `Expand.error` placeholder rather than wrong output. Implementing it is
+  Stage-3 work (the evaluator) plus the AST-as-value map protocol
+  (`{:kind :symbol :name …}`) and the compile-effect sandbox.
+
+**Differential test vs the Rust expander** (`run-differential.sh`,
+`tests/macros/*.oo`): each program uses macros and prints deterministic output;
+we compare `loon run PROG` (Rust expands + runs) against self-hosted-expand →
+write macro-free source → `loon run`. **6/6 behaviorally equivalent** (simple,
+rest+splice, nested, macro-generating-macro, arg-used-twice, bare-substitution).
+A behavioral diff cannot exhibit hygiene (scopes don't serialize), so hygiene is
+asserted at the Form level instead (inline). The expander is also a verified
+no-op on the whole corpus (`run-corpus.sh expand`: **65/65**, 0 changed).

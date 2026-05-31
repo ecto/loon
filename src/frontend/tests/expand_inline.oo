@@ -2,6 +2,9 @@
 
 [fn report [name ok] [println [str [if ok "  pass " "  FAIL "] name]]]
 
+[fn mk-span [] [Span 0 0]]
+[fn mk-sym [n] [FSym n #[] [mk-span]]]
+
 ; Expand a program string and write the resulting forms back to text.
 [fn xpand [src] [write-program [expand-all [read-all src]]]]
 
@@ -49,6 +52,26 @@
   [check "nested call site"
     "[macro inc [x] `[+ ~x 1]] [fn f [n] [inc n]]"
     "[fn f [n] [+ n 1]]"]
+
+  ; a bound parameter is substituted even when bare (no ~), matching Rust
+  [check "bare param substitution"
+    "[macro iddo [x] `[do x]] [iddo 5]"
+    "[do 5]"]
+
+  ; procedural macro ([macro n [p] #{effects} body]) is recognized as :procedural
+  ; (its body sits after an effect set), so it is never mis-parsed as a template.
+  ; Built directly because a literal #{...} cannot be embedded in a string here
+  ; (the host lexer would read the braces as interpolation).
+  [report "procedural macro recognized"
+    [match [parse-macro
+             [FList #[[mk-sym "macro"] [mk-sym "p"] [FList #[[mk-sym "x"]] [mk-span]]
+                      [FSet #[[mk-sym "Env"]] [mk-span]] [mk-sym "x"]] [mk-span]]]
+      [Mac _ _ _ style] [= style :procedural] _ false]]
+  [report "template macro recognized"
+    [match [parse-macro
+             [FList #[[mk-sym "macro"] [mk-sym "p"] [FList #[[mk-sym "x"]] [mk-span]]
+                      [mk-sym "x"]] [mk-span]]]
+      [Mac _ _ _ style] [= style :template] _ false]]
 
   ; ── Hygiene: an introduced identifier is scope-tagged; an argument
   ; identifier of the same name is not (so it cannot be captured). ──

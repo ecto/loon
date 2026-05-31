@@ -1,0 +1,28 @@
+; Stage-2 corpus driver: the expander must be a no-op (modulo layout) on
+; macro-free source. The corpus has no top-level macros, so for every file
+;   write-program(expand-all(read-all src)) == canon(src).
+; Any :changed is a bug (the expander altered ordinary code).
+
+[fn estatus [src]
+  [if [= [len src] 0]
+    :empty
+    [if [had-error [canon src]]
+      :readerr
+      [if [streq [write-program [expand-all [read-all src]]] [canon src]]
+        :ok
+        :changed]]]]
+
+[fn step [tally path]
+  [let s [estatus [IO.read-file path]]]
+  [do
+    [if [= s :ok] :silent [println [str "  " s "  " path]]]
+    #[[+ [nth tally 0] [if [= s :ok] 1 0]]
+      [+ [nth tally 1] [if [= s :changed] 1 0]]
+      [+ [nth tally 2] [if [if [= s :empty] true [= s :readerr]] 1 0]]]]]
+
+[fn main []
+  [let files [corpus-files]]
+  [println [str "Stage-2 expander corpus: " [len files] " files"]]
+  [let t [fold #[0 0 0] step files]]
+  [println [str "ok=" [nth t 0] " changed=" [nth t 1] " skipped=" [nth t 2]]]
+  [if [= [nth t 1] 0] [println "EXPANDER CORPUS GATE: PASS"] [println "EXPANDER CORPUS GATE: FAIL"]]]
