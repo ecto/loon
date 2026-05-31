@@ -1,0 +1,62 @@
+; Stage-2 expander inline tests. Concatenated after reader.oo + expander.oo.
+
+[fn report [name ok] [println [str [if ok "  pass " "  FAIL "] name]]]
+
+; Expand a program string and write the resulting forms back to text.
+[fn xpand [src] [write-program [expand-all [read-all src]]]]
+
+[fn check [name src expected]
+  [let got [xpand src]]
+  [report name [streq got expected]]
+  [if [streq got expected] :ok [println [str "      got: " got]]]]
+
+; Scope-count of the i-th element of the first top-level form's list.
+[fn elem-scopes [forms i]
+  [match [nth forms 0]
+    [FList items _]
+    [match [nth items i] [FSym _ scopes _] [len scopes] _ -1]
+    _ -1]]
+
+[fn main []
+  [println "Stage-2 expander — inline tests"]
+
+  ; quasiquote + unquote
+  [check "unless"
+    "[macro unless [c body] `[if ~c :nothing ~body]] [unless x y]"
+    "[if x :nothing y]"]
+
+  ; unquote-splicing with a rest parameter
+  [check "splice rest"
+    "[macro all [& xs] `[do ~@xs]] [all a b c]"
+    "[do a b c]"]
+
+  ; an argument used twice
+  [check "twice"
+    "[macro twice [e] `[do ~e ~e]] [twice [f q]]"
+    "[do [f q] [f q]]"]
+
+  ; macro-generating-macro: m1 expands to an `unless` call, which re-expands
+  [check "macro-generating-macro"
+    "[macro unless [c body] `[if ~c :nothing ~body]] [macro guard [x] `[unless ~x :bad]] [guard ok]"
+    "[if ok :nothing :bad]"]
+
+  ; nested data structures and splicing inside a vector
+  [check "splice in vector"
+    "[macro v [& xs] `#[~@xs]] [v 1 2 3]"
+    "#[1 2 3]"]
+
+  ; expansion descends into sub-forms (macro call nested in a fn body)
+  [check "nested call site"
+    "[macro inc [x] `[+ ~x 1]] [fn f [n] [inc n]]"
+    "[fn f [n] [+ n 1]]"]
+
+  ; ── Hygiene: an introduced identifier is scope-tagged; an argument
+  ; identifier of the same name is not (so it cannot be captured). ──
+  ; Expand `[cap tmp]` where the macro introduces its own `tmp`.
+  [let forms [expand-all [read-all "[macro cap [x] `[let tmp ~x]] [cap tmp]"]]]
+  ; result first form = [let <introduced tmp> <user tmp>]
+  [report "hygiene: 'let' introduced (scoped)"      [> [elem-scopes forms 0] 0]]
+  [report "hygiene: introduced 'tmp' scoped"        [> [elem-scopes forms 1] 0]]
+  [report "hygiene: argument 'tmp' NOT scoped"      [= [elem-scopes forms 2] 0]]
+
+  [println "done"]]

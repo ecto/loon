@@ -1,0 +1,45 @@
+; Stage-1 formatter inline tests. Concatenated after reader.oo + formatter.oo.
+; Checks the self-host gates: idempotence fmt(fmt x)==fmt x, and round-trip
+; canon(fmt x)==canon(x)  (i.e. read(fmt x) is AST-equivalent to read x).
+
+[fn report [name ok] [println [str [if ok "  pass " "  FAIL "] name]]]
+
+[fn check [name src]
+  [let f1 [fmt src]]
+  [let f2 [fmt f1]]
+  [report name
+    [if [streq f1 f2]                  ; idempotent
+      [if [streq [canon f1] [canon src]] true false]  ; round-trip faithful
+      false]]]
+
+[fn show [name src]
+  [println [str "--- " name " ---"]]
+  [println [fmt src]]]
+
+[fn main []
+  [println "Stage-1 formatter — inline tests (idempotence + round-trip)"]
+  [check "atom"            "foo"]
+  [check "small list fits" "[+ 1 2]"]
+  [check "defn"            "[fn add [a b] [+ a b]]"]
+  [check "nested"          "[fn area [shape] [match shape [Circle r] [* 3.14159 [* r r]] [Rect w h] [* w h] Point 0.0]]"]
+  [check "vector"          "#[1 2 3]"]
+  [check "map"             [str [ch-ob] ":name \"loon\" :n 1" [ch-cb]]]
+  [check "set"             [str "#" [ch-ob] ":a :b :c" [ch-cb]]]
+  [check "let"             "[let x [compute a b c]]"]
+  [check "if"              "[if [> x 0] positive negative]"]
+  [check "pipe"            "[pipe #[1 2 3] [map inc] [filter even?]]"]
+  [check "type"            "[type Shape [Circle f64] [Rect f64 f64] Point]"]
+  [check "dot+query"       "[parse [IO.read-file path]]?"]
+  [check "quasiquote"      "`[if ~cond ~@body]"]
+  [check "string"          "[log \"hi\\tthere\"]"]
+  [check "float verbatim"  "[g 5.0 0.0 3.140]"]
+  [check "long breaks"
+    "[some-function-with-a-long-name argument-one argument-two argument-three argument-four]"]
+
+  ; Eyeball a couple of layouts.
+  [show "defn layout"
+    "[fn classify [c] [if [digit c] :digit [if [alpha c] :alpha :other]]]"]
+  [show "long-list layout"
+    "[some-function-with-a-long-name argument-one argument-two argument-three argument-four]"]
+  [show "match layout" "[match n 0 :zero 1 :one n :many]"]
+  [println "done"]]

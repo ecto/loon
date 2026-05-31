@@ -1,0 +1,52 @@
+; Stage-0 inline tests. Concatenated after reader.oo and run on the EIR VM.
+; Self-contained: no IO, no corpus. Validates that the reader accepts each
+; representative snippet and that canon is an exact fixpoint (canon == canon^2).
+
+[fn report [name ok]
+  [println [str [if ok "  pass " "  FAIL "] name]]]
+
+; canon must be idempotent: canon(src) == canon(canon(src)).
+[fn check-idem [name src]
+  [let c1 [canon src]]
+  [let c2 [canon c1]]
+  [report name [if [streq c1 c2] [if [had-error c1] false true] false]]]
+
+; A focused check that canon(src) equals an expected canonical string.
+[fn check-eq [name src expected]
+  [report name [streq [canon src] expected]]]
+
+[fn main []
+  [println "Stage-0 reader — inline tests"]
+
+  ; Round-trip idempotence across every Form kind.
+  [check-idem "atoms"          "foo 42 3.14 :kw true"]
+  [check-idem "nested list"    "[fn add [a b] [+ a b]]"]
+  [check-idem "vector"         "#[1 2 3]"]
+  [check-idem "set"            [str "#" [ch-ob] ":a :b :c" [ch-cb]]]
+  [check-idem "map"            [str [ch-ob] ":name \"loon\" :n 1" [ch-cb]]]
+  [check-idem "tuple"          "(a b c)"]
+  [check-idem "dot access"     "[IO.read-file path]"]
+  [check-idem "deep dot"       "[a.b.c.d x]"]
+  [check-idem "quasiquote"     "`[if ~cond ~@body]"]
+  [check-idem "postfix query"  "[parse text]?"]
+  [check-idem "string escapes" "[str \"tab\\there\" \"q\\\"q\"]"]
+  [check-idem "comment skip"   "; a comment\n[+ 1 2] ; trailing\n[- 3 4]"]
+  [check-idem "match form"
+    "[match n 0 \"zero\" n [+ n 1]]"]
+  [check-idem "effect+handle"
+    "[handle [load p] [IO.read-file path] [resume \"x\"]]"]
+
+  ; Exact canonical output (whitespace/comment normalization).
+  [check-eq "normalize ws"  "[+   1    2]"       "[+ 1 2]"]
+  [check-eq "drop comments" "[a] ; c\n[b]"       "[a]\n[b]"]
+  [check-eq "keyword"       ":foo-bar"           ":foo-bar"]
+  [check-eq "negative num"  "[- -5 -3.0]"        "[- -5 -3.0]"]
+  [check-eq "float verbatim" "3.140000"          "3.140000"]
+
+  ; Error recovery: malformed input yields an FError placeholder, no crash.
+  [report "unterminated list -> error placeholder"
+    [had-error [canon "[a b c"]]]
+  [report "stray close -> error placeholder"
+    [had-error [canon "]"]]]
+
+  [println "done"]]

@@ -1,0 +1,44 @@
+; Stage-0 corpus round-trip driver. Concatenated after reader.oo and a
+; generated `corpus-files` function (a vector of path strings). For each file
+; it checks the Stage-0 ship gate:
+;   * the reader accepts the file (no FError placeholder in the output), and
+;   * canon is an exact fixpoint: canon(src) == canon(canon(src)).
+; Reports per-file failures and a summary, then a PASS/FAIL banner.
+
+[fn check-canon [c1]
+  [if [had-error c1]
+    :error
+    [if [streq c1 [canon c1]]
+      :ok
+      :unstable]]]
+
+[fn classify [src]
+  [if [= [len src] 0]
+    :empty
+    [check-canon [canon src]]]]
+
+[fn check-file [path]
+  [classify [IO.read-file path]]]
+
+; Fold step: update the 4-slot tally #[ok error unstable empty] and report
+; any non-ok file.
+[fn tally-step [tally path]
+  [let status [check-file path]]
+  [do
+    [if [= status :ok] :silent [println [str "  " status "  " path]]]
+    #[[+ [nth tally 0] [if [= status :ok] 1 0]]
+      [+ [nth tally 1] [if [= status :error] 1 0]]
+      [+ [nth tally 2] [if [= status :unstable] 1 0]]
+      [+ [nth tally 3] [if [= status :empty] 1 0]]]]]
+
+[fn main []
+  [let files [corpus-files]]
+  [println [str "Stage-0 corpus round-trip: " [len files] " files"]]
+  [let t [fold #[0 0 0 0] tally-step files]]
+  [println [str "ok=" [nth t 0]
+                " errored=" [nth t 1]
+                " unstable=" [nth t 2]
+                " empty=" [nth t 3]]]
+  [if [= [+ [nth t 1] [nth t 2]] 0]
+    [println "GATE: PASS"]
+    [println "GATE: FAIL"]]]
