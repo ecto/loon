@@ -1,54 +1,38 @@
-; Loon self-hosted frontend — Stage 1: formatter (Form -> Doc -> Str).
+; Loon self-hosted frontend — Stage 1: formatter (Form + comments -> Doc -> Str).
 ;
-; Concatenated after reader.oo. A Wadler/Leijen pretty-printer mirroring the
-; layout rules of the existing Rust formatter (crates/loon-lang/src/fmt), but
-; FAITHFUL: it preserves what the reader read (notably float lexemes like
-; `5.0`, literal-brace strings, and string interpolation), so that
-;   read(fmt(x)) is AST-equivalent to read(x)   [round-trip], and
-;   fmt(fmt(x)) == fmt(x)                        [idempotence].
-;
-; This is intentionally NOT byte-identical to `loon fmt`, which is lossy:
-; it renders `5.0`->`5` (then re-reads as an int), rewrites `"\{"`->`"{"`
-; (unparseable), and desugars interpolation away. See ARCHITECTURE.md §6.
+; Concatenated after reader.oo + comments.oo. A Wadler/Leijen pretty-printer
+; that reproduces the Rust formatter's layout AND its comment / blank-line
+; placement (see crates/loon-lang/src/fmt), so output is byte-identical to the
+; (float-fixed) Rust formatter on comment-bearing source — while staying
+; faithful (float lexemes, literal braces, and interpolation are preserved).
 
 ; ── Document algebra ───────────────────────────────────────────────────────
-
 [type Doc
   DNil
   [DText String]
-  DLine                 ; soft break: space when flat, newline when broken
-  DHard                 ; always a newline
+  DLine
+  DHard
   [DIndent i64 Doc]
   [DConcat Doc Doc]
   [DGroup Doc]]
 
-; Render command and an explicit cons-list stack (O(1) push/pop; the mode
-; field carries a keyword :flat/:break — field types are runtime-irrelevant).
 [type Cmd [Cmd i64 i64 Doc]]
 [type Stk SNil [SCons Cmd Stk]]
 
 [fn dconcat-all [docs]
   [loop [k 0 acc DNil]
-    [if [>= k [len docs]]
-      acc
-      [recur [+ k 1] [DConcat acc [nth docs k]]]]]]
+    [if [>= k [len docs]] acc [recur [+ k 1] [DConcat acc [nth docs k]]]]]]
 
 [fn dintersperse [docs sep]
   [loop [k 0 acc DNil]
-    [if [>= k [len docs]]
-      acc
+    [if [>= k [len docs]] acc
       [recur [+ k 1]
-        [if [= k 0]
-          [nth docs k]
-          [DConcat [DConcat acc sep] [nth docs k]]]]]]]
+        [if [= k 0] [nth docs k] [DConcat [DConcat acc sep] [nth docs k]]]]]]]
 
 ; ── Renderer ───────────────────────────────────────────────────────────────
-
 [fn spaces [n]
-  [loop [k 0 acc ""]
-    [if [>= k n] acc [recur [+ k 1] [str acc " "]]]]]
+  [loop [k 0 acc ""] [if [>= k n] acc [recur [+ k 1] [str acc " "]]]]]
 
-; Does the flat layout on `stack` fit in `remaining` columns?
 [fn fits [remaining stack]
   [loop [rem remaining st stack]
     [if [< rem 0]
@@ -88,188 +72,303 @@
               [recur [SCons [Cmd ind :flat inner] rest] out col]
               [recur [SCons [Cmd ind :break inner] rest] out col]]]]]]]
 
-; ── Form -> Doc ────────────────────────────────────────────────────────────
+; ── Comment helpers (consult attachments) ────────────────────────────────────
+[fn flast [items] [nth items [- [len items] 1]]]
 
-[fn fdoc-vec [items lo]
-  [loop [k lo acc #[]]
-    [if [>= k [len items]]
-      acc
-      [recur [+ k 1] [conj acc [fdoc [nth items k]]]]]]]
+; " ; text" per trailing comment, no break (DNil when none).
+[fn comments-inline [ts]
+  [loop [k 0 acc DNil]
+    [if [>= k [len ts]] acc
+      [recur [+ k 1] [DConcat [DConcat acc [DText " "]] [DText [comment-text [nth ts k]]]]]]]]
 
-; Children from index `lo`, interspersed with separator `sep`.
-[fn fchildren [items lo sep]
-  [dintersperse [fdoc-vec items lo] sep]]
+[fn trailing-doc [f att] [comments-inline [nc-trailing [nc-at att [fkey f]]]]]
 
+; Between a header's last item and its body: trailing comments + hard break, or
+; a soft line (so small forms can stay flat).
+[fn body-break [f att]
+  [if [nc-has-trailing [nc-at att [fkey f]]]
+    [DConcat [comments-inline [nc-trailing [nc-at att [fkey f]]]] DHard]
+    DLine]]
+
+; For hardbody forms (type/effect/match) the body always starts on a new line.
+[fn between-doc [f hardbody att]
+  [if hardbody
+    [if [nc-has-trailing [nc-at att [fkey f]]] [body-break f att] DHard]
+    [body-break f att]]]
+
+; Before the closing bracket: hard break if the last body item has a trailing
+; comment (a comment runs to EOL, so the bracket can't share its line).
+[fn close-after [f att]
+  [if [nc-has-trailing [nc-at att [fkey f]]] DHard DNil]]
+
+; Conj (DText text)(DHard) for each leading comment (each prints on its own line).
+[fn leading-parts [parts cs]
+  [loop [k 0 acc parts]
+    [if [>= k [len cs]] acc
+      [recur [+ k 1] [conj [conj acc [DText [comment-text [nth cs k]]]] DHard]]]]]
+
+; Conj (DHard)(DText text) for each dangling comment (before a close bracket).
+[fn dangling-parts [parts cs]
+  [loop [k 0 acc parts]
+    [if [>= k [len cs]] acc
+      [recur [+ k 1] [conj [conj acc DHard] [DText [comment-text [nth cs k]]]]]]]]
+
+; ── fmt-children: a sibling sequence with comment / blank handling ──────────
+[fn fmt-children [parent-key items lo sep att]
+  [dconcat-all [fc-parts parent-key items lo sep att]]]
+
+[fn fc-parts [parent-key items lo sep att]
+  [fc-dangle parent-key att
+    [loop [k lo acc #[]]
+      [if [>= k [len items]] acc [recur [+ k 1] [fc-item items k lo sep att acc]]]]]]
+
+[fn fc-dangle [parent-key att body]
+  [if [some? parent-key]
+    [dangling-parts body [nc-dangling [nc-at att parent-key]]]
+    body]]
+
+[fn fc-item [items k lo sep att acc]
+  [conj
+    [conj
+      [leading-parts
+        [if [> k lo] [conj acc [fc-sep items k att sep]] acc]
+        [nc-leading [nc-at att [fkey [nth items k]]]]]
+      [fdoc [nth items k] att]]
+    [trailing-doc [nth items k] att]]]
+
+; Separator before items[k]: hard break (doubled for a blank line) when the
+; previous sibling has a trailing comment, this one has a leading comment, or a
+; blank line preceded it; otherwise the soft separator.
+[fn fc-sep [items k att sep]
+  [if [if [nc-has-trailing [nc-at att [fkey [nth items [- k 1]]]]] true
+        [if [nc-has-leading [nc-at att [fkey [nth items k]]]] true
+          [att-blank? att [fkey [nth items k]]]]]
+    [if [att-blank? att [fkey [nth items k]]] [DConcat DHard DHard] DHard]
+    sep]]
+
+; ── Form -> Doc ──────────────────────────────────────────────────────────────
 [fn head-name [items]
-  [if [= [len items] 0]
-    ""
-    [match [nth items 0]
-      [FSym n _ _] n
-      _ ""]]]
+  [if [= [len items] 0] ""
+    [match [nth items 0] [FSym n _ _] n _ ""]]]
 
-; Generic list: `[head arg ...]` — inline if it fits, else head then indented
-; args one per line.
-[fn generic-doc [items]
+[fn is-named-fn [items]
+  [if [< [len items] 2] false
+    [match [nth items 1] [FSym _ _ _] true _ false]]]
+
+[fn generic-doc [f items att]
   [if [= [len items] 0]
     [DText "[]"]
     [if [= [len items] 1]
-      [dconcat-all #[[DText "["] [fdoc [nth items 0]] [DText "]"]]]
+      [dconcat-all #[[DText "["] [fdoc [nth items 0] att] [trailing-doc [nth items 0] att]
+                     [close-after [nth items 0] att] [DText "]"]]]
       [DGroup [dconcat-all
         #[[DText "["]
-          [fdoc [nth items 0]]
-          [DIndent 2 [DConcat DLine [fchildren items 1 DLine]]]
+          [fdoc [nth items 0] att]
+          [DIndent 2 [DConcat [body-break [nth items 0] att] [fmt-children [fkey f] items 1 DLine att]]]
+          [close-after [flast items] att]
           [DText "]"]]]]]]]
 
-; A header-style special form: keyword + items up to `headerlo` kept on the
-; first line, body (from `bodylo`) indented; `grouped?` controls whether the
-; whole thing may collapse to one line; `hardbody?` forces a hard break before
-; the body (type/effect/match).
-[fn header-prefix [items headerlo]
+; Header forms: defn/fn/if/pipe/type/effect. headerlo == bodylo for all of them.
+[fn header-prefix [items bodylo att]
   [loop [k 0 acc DNil]
-    [if [>= k headerlo]
-      acc
+    [if [>= k bodylo] acc
       [recur [+ k 1]
-        [if [= k 0]
-          [DConcat [DText "["] [fdoc [nth items k]]]
-          [DConcat [DConcat acc [DText " "]] [fdoc [nth items k]]]]]]]]
+        [if [= k 0] [DConcat [DText "["] [fdoc [nth items k] att]]
+          [DConcat [DConcat acc [DText " "]] [fdoc [nth items k] att]]]]]]]
 
-[fn header-core [items headerlo bodylo hardbody]
+[fn header-form [items bodylo minlen grouped hardbody node att]
+  [if [< [len items] minlen]
+    [generic-doc node items att]
+    [if [<= [len items] bodylo]
+      [dconcat-all #[[header-prefix items bodylo att]
+                     [trailing-doc [nth items [- bodylo 1]] att] [DText "]"]]]
+      [if grouped
+        [DGroup [header-core items bodylo hardbody node att]]
+        [header-core items bodylo hardbody node att]]]]]
+
+[fn header-core [items bodylo hardbody node att]
   [dconcat-all
-    #[[header-prefix items headerlo]
-      [DIndent 2 [DConcat [if hardbody DHard DLine] [fchildren items bodylo DLine]]]
+    #[[header-prefix items bodylo att]
+      [DIndent 2 [DConcat [between-doc [nth items [- bodylo 1]] hardbody att]
+                          [fmt-children [fkey node] items bodylo DLine att]]]
+      [close-after [flast items] att]
       [DText "]"]]]]
 
-[fn header-form [items headerlo bodylo grouped hardbody]
-  [if [<= [len items] bodylo]
-    [DConcat [header-prefix items headerlo] [DText "]"]]
-    [if grouped
-      [DGroup [header-core items headerlo bodylo hardbody]]
-      [header-core items headerlo bodylo hardbody]]]]
-
-[fn list-doc [items]
-  [let h [head-name items]]
-  [if [streq h "fn"]
-    [if [is-named-fn items] [header-form items 3 3 true false]
-                            [header-form items 2 2 true false]]
-    [if [streq h "let"] [let-doc items]
-      [if [streq h "if"] [header-form items 2 2 true false]
-        [if [streq h "match"] [match-doc items]
-          [if [streq h "pipe"] [header-form items 2 2 true false]
-            [if [streq h "type"] [header-form items 2 2 false true]
-              [if [streq h "effect"] [header-form items 2 2 false true]
-                [generic-doc items]]]]]]]]]
-
-[fn is-named-fn [items]
-  [if [< [len items] 2]
-    false
-    [match [nth items 1] [FSym n _ _] true _ false]]]
-
-; `[let name value]` — no indent; value follows on the same or next line.
-[fn let-doc [items]
+[fn let-doc [f items att]
   [if [< [len items] 3]
-    [generic-doc items]
+    [generic-doc f items att]
     [DGroup [dconcat-all
-      #[[DText "["]
-        [fdoc [nth items 0]]
-        [DText " "]
-        [fchildren items 1 DLine]
-        [DText "]"]]]]]]
+      #[[DText "["] [fdoc [nth items 0] att] [trailing-doc [nth items 0] att] [DText " "]
+        [fmt-children [fkey f] items 1 DLine att] [close-after [flast items] att] [DText "]"]]]]]]
 
-; match arms: each (pattern body) pair on its own line, never collapsing.
-[fn match-doc [items]
+; match: each (pattern body) pair on its own line, never collapsing.
+[fn match-doc [f items att]
   [if [< [len items] 3]
-    [header-form items 2 2 false true]
+    [header-form items 2 2 false true f att]
     [dconcat-all
-      #[[header-prefix items 2]
-        [DIndent 2 [DConcat DHard [match-pairs items 2]]]
+      #[[header-prefix items 2 att]
+        [DIndent 2 [DConcat [between-doc [nth items 1] true att]
+                            [DConcat [dintersperse [match-pairs items 2 att] DHard]
+                                     [dconcat-all [dangling-parts #[] [nc-dangling [nc-at att [fkey f]]]]]]]]
+        [close-after [flast items] att]
         [DText "]"]]]]]
 
-[fn match-pairs [items lo]
-  [loop [i lo acc #[]]
-    [if [>= i [len items]]
-      [dintersperse acc DHard]
-      [if [< [+ i 1] [len items]]
-        [recur [+ i 2]
-          [conj acc [dconcat-all
-            #[[fdoc [nth items i]] [DText " "] [fdoc [nth items [+ i 1]]]]]]]
-        [recur [+ i 1] [conj acc [fdoc [nth items i]]]]]]]]
+[fn match-pairs [items lo att]
+  [loop [i lo pidx 0 acc #[]]
+    [if [>= i [len items]] acc
+      [recur [if [< [+ i 1] [len items]] [+ i 2] [+ i 1]] [+ pidx 1]
+             [conj acc [match-one-pair items i pidx att]]]]]]
 
-; collections
-[fn coll-doc [open close items]
+[fn match-one-pair [items i pidx att]
+  [if [< [+ i 1] [len items]]
+    [dconcat-all
+      [conj [conj [conj [conj
+        [leading-parts [if [if [> pidx 0] [att-blank? att [fkey [nth items i]]] false] #[DHard] #[]]
+                       [nc-leading [nc-at att [fkey [nth items i]]]]]
+        [fdoc [nth items i] att]]
+        [trailing-doc [nth items i] att]]
+        [DConcat [DText " "] [fdoc [nth items [+ i 1]] att]]]
+        [trailing-doc [nth items [+ i 1]] att]]]
+    [dconcat-all
+      [conj [conj
+        [leading-parts [if [if [> pidx 0] [att-blank? att [fkey [nth items i]]] false] #[DHard] #[]]
+                       [nc-leading [nc-at att [fkey [nth items i]]]]]
+        [fdoc [nth items i] att]]
+        [trailing-doc [nth items i] att]]]]]
+
+[fn coll-doc [f open close items att]
   [if [= [len items] 0]
     [DText [str open close]]
     [DGroup [dconcat-all
-      #[[DText open]
-        [DIndent 2 [fchildren items 0 DLine]]
-        [DText close]]]]]]
+      #[[DText open] [DIndent 2 [fmt-children [fkey f] items 0 DLine att]]
+        [close-after [flast items] att] [DText close]]]]]]
 
-[fn map-doc [items]
+; map: flat items (k0 v0 k1 v1). Pairs grouped tightly; key leading / key
+; trailing handled, value trailing affects only the break decision (matching
+; the Rust formatter).
+[fn map-doc [f items att]
   [if [= [len items] 0]
     [DText [str [ch-ob] [ch-cb]]]
     [DGroup [dconcat-all
-      #[[DText [ch-ob]]
-        [DIndent 2 [map-pairs items]]
-        [DText [ch-cb]]]]]]]
+      #[[DText [ch-ob]] [DIndent 2 [dconcat-all [map-parts f items att]]] [DText [ch-cb]]]]]]]
 
-[fn map-pairs [items]
-  [loop [i 0 acc #[]]
-    [if [>= i [len items]]
-      [dintersperse acc DLine]
-      [if [< [+ i 1] [len items]]
-        [recur [+ i 2]
-          [conj acc [dconcat-all
-            #[[fdoc [nth items i]] [DText " "] [fdoc [nth items [+ i 1]]]]]]]
-        [recur [+ i 1] [conj acc [fdoc [nth items i]]]]]]]]
+[fn map-parts [f items att]
+  [dangling-parts
+    [loop [p 0 acc #[]]
+      [if [>= [* p 2] [len items]] acc [recur [+ p 1] [map-pair items p att acc]]]]
+    [nc-dangling [nc-at att [fkey f]]]]]
 
-[fn fdoc [f]
+[fn map-pair [items p att acc]
+  [conj
+    [leading-parts
+      [if [> p 0] [conj acc [map-sep items p att]] acc]
+      [nc-leading [nc-at att [fkey [nth items [* p 2]]]]]]
+    [dconcat-all
+      #[[fdoc [nth items [* p 2]] att]
+        [comments-inline [nc-trailing [nc-at att [fkey [nth items [* p 2]]]]]]
+        [DText " "]
+        [fdoc [map-val items p] att]]]]]
+
+[fn map-val [items p]
+  [if [< [+ [* p 2] 1] [len items]] [nth items [+ [* p 2] 1]] [nth items [* p 2]]]]
+
+[fn map-sep [items p att]
+  [if [if [nc-has-trailing [nc-at att [fkey [nth items [- [* p 2] 1]]]]] true
+        [if [nc-has-leading [nc-at att [fkey [nth items [* p 2]]]]] true
+          [att-blank? att [fkey [nth items [* p 2]]]]]]
+    [if [att-blank? att [fkey [nth items [* p 2]]]] [DConcat DHard DHard] DHard]
+    DLine]]
+
+[fn fdoc [f att]
   [match f
     [FInt s _] [DText s]
     [FFloat s _] [DText s]
     [FStr v _] [DText [str [ch-quote] [encode-str v] [ch-quote]]]
     [FKw n _] [DText [str ":" n]]
     [FSym n _ _] [DText n]
-    [FList items _] [list-doc items]
-    [FVec items _] [coll-doc "#[" "]" items]
-    [FSet items _] [coll-doc [str [ch-hash] [ch-ob]] [ch-cb] items]
-    [FMap items _] [map-doc items]
-    [FTuple items _] [coll-doc "(" ")" items]
-    [FQuote x _] [DConcat [DText [ch-tick]] [fdoc x]]
-    [FUnquote x _] [DConcat [DText [ch-tilde]] [fdoc x]]
-    [FSplice x _] [DConcat [DText [str [ch-tilde] "@"]] [fdoc x]]
-    [FDot base fld _] [DConcat [DConcat [fdoc base] [DText "."]] [DText fld]]
-    [FQuery x _] [DConcat [fdoc x] [DText "?"]]
+    [FList items _] [list-doc f items att]
+    [FVec items _] [coll-doc f "#[" "]" items att]
+    [FSet items _] [coll-doc f [str [ch-hash] [ch-ob]] [ch-cb] items att]
+    [FMap items _] [map-doc f items att]
+    [FTuple items _] [coll-doc f "(" ")" items att]
+    [FQuote x _] [DConcat [DText [ch-tick]] [fdoc x att]]
+    [FUnquote x _] [DConcat [DText [ch-tilde]] [fdoc x att]]
+    [FSplice x _] [DConcat [DText [str [ch-tilde] "@"]] [fdoc x att]]
+    [FDot base fld _] [DConcat [DConcat [fdoc base att] [DText "."]] [DText fld]]
+    [FQuery x _] [DConcat [fdoc x att] [DText "?"]]
     [FError m _] [DText [str [ch-hash] "<error:" m ">"]]]]
 
-; ── Top-level program ──────────────────────────────────────────────────────
+[fn list-doc [f items att]
+  [let h [head-name items]]
+  [if [streq h "fn"]
+    [if [is-named-fn items] [header-form items 3 3 true false f att]
+                            [header-form items 2 2 true false f att]]
+    [if [streq h "let"] [let-doc f items att]
+      [if [streq h "if"] [header-form items 2 3 true false f att]
+        [if [streq h "match"] [match-doc f items att]
+          [if [streq h "pipe"] [header-form items 2 2 true false f att]
+            [if [streq h "type"] [header-form items 2 2 false true f att]
+              [if [streq h "effect"] [header-form items 2 2 false true f att]
+                [generic-doc f items att]]]]]]]]]
 
+; ── Top-level program ──────────────────────────────────────────────────────
 [fn defn-head [h]
-  [match h
-    [FSym n _ _]
+  [match h [FSym n _ _]
     [if [streq n "fn"] true [if [streq n "type"] true [streq n "effect"]]]
     _ false]]
-
 [fn is-defn [f]
-  [match f
-    [FList items _] [if [= [len items] 0] false [defn-head [nth items 0]]]
-    _ false]]
+  [match f [FList items _] [if [= [len items] 0] false [defn-head [nth items 0]]] _ false]]
 
-; A blank line separates two top-level forms when either is a fn/type/effect.
-[fn sep-before [forms k]
-  [if [if [is-defn [nth forms [- k 1]]] true [is-defn [nth forms k]]]
-    "\n\n"
-    "\n"]]
+; program-leading / program-trailing vectors.
+[fn att-pl [att] [match att [Att _ _ pl _] pl]]
+[fn att-pt [att] [match att [Att _ _ _ pt] pt]]
 
-[fn render-form [f] [render [fdoc f] 80]]
+[fn comment-text-parts [parts cs]
+  [loop [k 0 acc parts]
+    [if [>= k [len cs]] acc [recur [+ k 1] [conj acc [comment-text [nth cs k]]]]]]]
 
-[fn format-program [forms]
-  [loop [k 0 acc #[]]
+[fn trailing-str [ts]
+  [loop [k 0 acc ""]
+    [if [>= k [len ts]] acc [recur [+ k 1] [str acc " " [comment-text [nth ts k]]]]]]]
+
+; A blank line separates two top-level forms when the source had one before the
+; next form, or either form is a fn/type/effect.
+[fn fp-blank? [forms k att]
+  [if [att-blank? att [fkey [nth forms [+ k 1]]]] true
+    [if [is-defn [nth forms k]] true [is-defn [nth forms [+ k 1]]]]]]
+
+[fn format-program [forms att]
+  [if [if [= [len forms] 0] [if [= [len [att-pl att]] 0] [= [len [att-pt att]] 0] false] false]
+    ""
+    [fp-finish [comment-text-parts [fp-loop forms att] [att-pt att]]]]]
+
+[fn fp-loop [forms att]
+  [loop [k 0 acc [comment-text-parts #[] [att-pl att]]]
     [if [>= k [len forms]]
-      [join "" acc]
-      [recur [+ k 1]
-        [conj acc
-          [if [= k 0]
-            [render-form [nth forms k]]
-            [str [sep-before forms k] [render-form [nth forms k]]]]]]]]]
+      acc
+      [recur [+ k 1] [fp-emit forms k att acc]]]]]
 
-; Format source text: read, lay out, ensure exactly one trailing newline.
-[fn fmt [src] [str [format-program [read-all src]] "\n"]]
+[fn fp-emit [forms k att acc]
+  [maybe-blank-part forms k att
+    [conj
+      [comment-text-parts acc [nc-leading [nc-at att [fkey [nth forms k]]]]]
+      [str [render [fdoc [nth forms k] att] 80]
+           [trailing-str [nc-trailing [nc-at att [fkey [nth forms k]]]]]]]]]
+
+[fn maybe-blank-part [forms k att acc]
+  [if [< [+ k 1] [len forms]]
+    [if [fp-blank? forms k att] [conj acc ""] acc]
+    acc]]
+
+[fn fp-finish [parts]
+  [if [ends-nl [join "\n" parts]] [join "\n" parts] [str [join "\n" parts] "\n"]]]
+
+[fn ends-nl [s]
+  [if [= [len s] 0] false [streq [str-last s] "\n"]]]
+[fn str-last [s] [let cv [to-chars s]] [nth cv [- [len cv] 1]]]
+
+; Format source text: read, scan comments, attach, lay out.
+[fn fmt [src]
+  [let cv [to-chars src]]
+  [let forms [read-all src]]
+  [format-program forms [build-attachments forms [scan-comments cv] cv]]]
