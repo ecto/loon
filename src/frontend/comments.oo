@@ -1,0 +1,202 @@
+; Loon self-hosted frontend — Stage 1 gate-3: comment + blank-line capture.
+;
+; Concatenated after reader.oo, before formatter.oo. Scans comments out of the
+; source (the reader drops them) and attaches each to a Form by source position
+; — a faithful port of crates/loon-lang/src/fmt build_attachments/attach_seq/
+; attach_into, so the self-hosted formatter can reproduce the Rust formatter's
+; comment and blank-line placement byte-for-byte.
+;
+; All offsets are CHAR indices into the source char vector (consistent with the
+; reader's spans and scan-comments); only relative ordering and newline counts
+; matter for layout, so char vs byte offsets are immaterial to the output.
+;
+; `recur` only targets its enclosing `loop`, so loops cannot be split across
+; helper functions; multi-value results are returned as small vectors and
+; destructured with `nth` inside the loop body (keeping `recur` in place).
+
+; A captured comment: text (";" through end-of-line, no newline), start, end.
+[type Comment [Comment String i64 i64]]
+
+[fn comment-text [c] [match c [Comment t _ _] t]]
+[fn comment-start [c] [match c [Comment _ s _] s]]
+[fn comment-end [c] [match c [Comment _ _ e] e]]
+
+; ── Comment scanning ─────────────────────────────────────────────────────────
+[fn skip-string-body [cv i]      ; i = index just after the opening quote
+  [loop [j i]
+    [if [>= j [len cv]]
+      j
+      [if [streq [nth cv j] [ch-quote]]
+        [+ j 1]
+        [if [streq [nth cv j] [ch-bs]]
+          [recur [+ j 2]]
+          [recur [+ j 1]]]]]]]
+
+[fn comment-eol [cv i]           ; index of the newline ending the comment at i
+  [loop [j i]
+    [if [>= j [len cv]]
+      j
+      [if [cin [nth cv j] "\n"] j [recur [+ j 1]]]]]]
+
+[fn scan-comments [cv]
+  [loop [i 0 acc #[]]
+    [if [>= i [len cv]]
+      acc
+      [if [streq [nth cv i] [ch-quote]]
+        [recur [skip-string-body cv [+ i 1]] acc]
+        [if [cin [nth cv i] ";"]
+          [recur [comment-eol cv i]
+                 [conj acc [Comment [cvsub cv i [comment-eol cv i]] i [comment-eol cv i]]]]
+          [recur [+ i 1] acc]]]]]]
+
+; ── Attachment data ──────────────────────────────────────────────────────────
+; NodeComments: leading / trailing / dangling comment vectors for one node.
+[type NC [NC Vec Vec Vec]]
+; Attachments: by-node map (span-key -> NC), blank-before map (span-key -> true),
+; program-leading vec, program-trailing vec.
+[type Att [Att Map Map Vec Vec]]
+
+[fn empty-nc [] [NC #[] #[] #[]]]
+
+; Span key: encode (start,end) into one int (offsets < 1e6 in practice).
+[fn span-key [s e] [+ [* s 1000000] e]]
+[fn form-span [f]
+  [match f
+    [FInt _ sp] sp
+    [FFloat _ sp] sp
+    [FStr _ sp] sp
+    [FKw _ sp] sp
+    [FSym _ _ sp] sp
+    [FList _ sp] sp
+    [FVec _ sp] sp
+    [FSet _ sp] sp
+    [FMap _ sp] sp
+    [FTuple _ sp] sp
+    [FQuote _ sp] sp
+    [FUnquote _ sp] sp
+    [FSplice _ sp] sp
+    [FDot _ _ sp] sp
+    [FQuery _ sp] sp
+    [FError _ sp] sp]]
+[fn fkey [f] [match [form-span f] [Span s e] [span-key s e]]]
+[fn fstart [f] [match [form-span f] [Span s _] s]]
+[fn fend [f] [match [form-span f] [Span _ e] e]]
+
+; NC lookup (returns an empty NC when absent).
+[fn nc-or-empty [r] [if [= r :none] [empty-nc] r]]
+[fn nc-at [att k]
+  [match att [Att byn _ _ _] [nc-or-empty [get byn k :none]]]]
+
+[fn nc-leading  [nc] [match nc [NC l _ _] l]]
+[fn nc-trailing [nc] [match nc [NC _ t _] t]]
+[fn nc-dangling [nc] [match nc [NC _ _ d] d]]
+[fn nc-has-leading  [nc] [> [len [nc-leading nc]] 0]]
+[fn nc-has-trailing [nc] [> [len [nc-trailing nc]] 0]]
+
+[fn nc-push-leading  [nc c] [match nc [NC l t d] [NC [conj l c] t d]]]
+[fn nc-push-trailing [nc c] [match nc [NC l t d] [NC l [conj t c] d]]]
+[fn nc-push-dangling [nc c] [match nc [NC l t d] [NC l t [conj d c]]]]
+
+[fn att-set-nc [att k nc]
+  [match att [Att byn blank pl pt] [Att [assoc byn k nc] blank pl pt]]]
+[fn att-add-leading  [att k c] [att-set-nc att k [nc-push-leading  [nc-at att k] c]]]
+[fn att-add-trailing [att k c] [att-set-nc att k [nc-push-trailing [nc-at att k] c]]]
+[fn att-add-dangling [att k c] [att-set-nc att k [nc-push-dangling [nc-at att k] c]]]
+[fn att-add-blank [att k]
+  [match att [Att byn blank pl pt] [Att byn [assoc blank k true] pl pt]]]
+[fn att-add-proglead  [att c] [match att [Att byn blank pl pt] [Att byn blank [conj pl c] pt]]]
+[fn att-add-progtrail [att c] [match att [Att byn blank pl pt] [Att byn blank pl [conj pt c]]]]
+[fn att-proglead-nonempty [att] [match att [Att _ _ pl _] [> [len pl] 0]]]
+[fn att-blank? [att k] [match att [Att _ blank _ _] [get blank k false]]]
+
+; ── Helpers ──────────────────────────────────────────────────────────────────
+[fn count-nl-range [cv a b]
+  [loop [j a n 0]
+    [if [>= j b] n [recur [+ j 1] [if [cin [nth cv j] "\n"] [+ n 1] n]]]]]
+[fn no-nl [cv a b] [= [count-nl-range cv a b] 0]]
+[fn some? [k] [if [= k :none] false true]]
+
+; A non-trailing drained comment: blank-detect, then attach as leading (or as
+; program-leading at the very top of file). Pure; returns the new Att.
+[fn add-nontrailing [cv att c prev-key child is-prog pe]
+  [add-leading-comment
+    [if [if [some? prev-key] [>= [count-nl-range cv pe [comment-start c]] 2] false]
+      [att-add-blank att [fkey child]]
+      att]
+    c prev-key child is-prog]]
+[fn add-leading-comment [att c prev-key child is-prog]
+  [if [if [some? prev-key] false is-prog]
+    [att-add-proglead att c]
+    [att-add-leading att [fkey child] c]]]
+[fn blank-eligible [att prev-key is-prog]
+  [if [some? prev-key] true [if is-prog [att-proglead-nonempty att] false]]]
+; Blank line in the gap before a child marks it blank-before. Returns new Att.
+[fn maybe-blank [cv att pe cstart child-key prev-key is-prog]
+  [if [if [blank-eligible att prev-key is-prog] [>= [count-nl-range cv pe cstart] 2] false]
+    [att-add-blank att child-key]
+    att]]
+
+; ── Attachment pass ──────────────────────────────────────────────────────────
+; Each loop returns a small vector; #[att idx] for sequences, #[att idx pe] for
+; the drain loop.
+
+[fn build-attachments [forms comments cv]
+  [nth [attach-seq forms cv :none 0 [len cv] comments [Att {} {} #[] #[]] 0 true] 0]]
+
+; Drain comments starting before `child`. Returns #[att idx prev-end].
+[fn drain-before [cv comments att0 idx0 pe0 prev-key child is-prog]
+  [loop [att att0 idx idx0 pe pe0]
+    [if [>= idx [len comments]]
+      #[att idx pe]
+      [if [>= [comment-start [nth comments idx]] [fstart child]]
+        #[att idx pe]
+        [if [if [some? prev-key] [no-nl cv pe [comment-start [nth comments idx]]] false]
+          [recur [att-add-trailing att prev-key [nth comments idx]] [+ idx 1] [comment-end [nth comments idx]]]
+          [recur [add-nontrailing cv att [nth comments idx] prev-key child is-prog pe]
+                 [+ idx 1] [comment-end [nth comments idx]]]]]]]]
+
+; Comments after the last child but before seq-end. Returns #[att idx].
+[fn attach-tail [cv ekey seq-end comments att0 idx0 pe0 prev-key]
+  [loop [att att0 idx idx0 pe pe0]
+    [if [>= idx [len comments]]
+      #[att idx]
+      [if [>= [comment-start [nth comments idx]] seq-end]
+        #[att idx]
+        [if [if [some? prev-key] [no-nl cv pe [comment-start [nth comments idx]]] false]
+          [recur [att-add-trailing att prev-key [nth comments idx]] [+ idx 1] [comment-end [nth comments idx]]]
+          [recur [if [some? ekey]
+                   [att-add-dangling att ekey [nth comments idx]]
+                   [att-add-progtrail att [nth comments idx]]]
+                 [+ idx 1] [comment-end [nth comments idx]]]]]]]]
+
+; Attach comments to a sequence of sibling forms. Returns #[att idx].
+; Loop state is a vector #[k att idx prev-end prev-key]; `step-child` computes
+; the next state purely so `recur` can stay lexically inside the loop.
+[fn attach-seq [children cv ekey seq-start seq-end comments att0 idx0 is-prog]
+  [loop [st #[0 att0 idx0 seq-start :none]]
+    [if [>= [nth st 0] [len children]]
+      [attach-tail cv ekey seq-end comments [nth st 1] [nth st 2] [nth st 3] [nth st 4]]
+      [recur [step-child children cv comments st is-prog]]]]]
+
+; st = #[k att idx prev-end prev-key] -> next st.
+[fn step-child [children cv comments st is-prog]
+  [let k [nth st 0]]
+  [let child [nth children k]]
+  [let dr [drain-before cv comments [nth st 1] [nth st 2] [nth st 3] [nth st 4] child is-prog]]
+  [let att2 [maybe-blank cv [nth dr 0] [nth dr 2] [fstart child] [fkey child] [nth st 4] is-prog]]
+  [let si [attach-into child cv comments att2 [nth dr 1]]]
+  #[[+ k 1] [nth si 0] [nth si 1] [fend child] [fkey child]]]
+
+; Recurse into a form's own child sequences. Returns #[att idx].
+[fn attach-into [expr cv comments att idx]
+  [match expr
+    [FList items _]  [attach-seq items cv [fkey expr] [fstart expr] [fend expr] comments att idx false]
+    [FVec items _]   [attach-seq items cv [fkey expr] [fstart expr] [fend expr] comments att idx false]
+    [FSet items _]   [attach-seq items cv [fkey expr] [fstart expr] [fend expr] comments att idx false]
+    [FTuple items _] [attach-seq items cv [fkey expr] [fstart expr] [fend expr] comments att idx false]
+    [FMap items _]   [attach-seq items cv [fkey expr] [fstart expr] [fend expr] comments att idx false]
+    [FQuote inner _]   [attach-into inner cv comments att idx]
+    [FUnquote inner _] [attach-into inner cv comments att idx]
+    [FSplice inner _]  [attach-into inner cv comments att idx]
+    [FDot inner _ _]   [attach-into inner cv comments att idx]
+    _ #[att idx]]]

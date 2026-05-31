@@ -315,7 +315,39 @@ A formatter satisfying gate 2 (`read(fmt x) ≡ read x`) therefore *cannot* be
 byte-identical to one that rewrites `5.0`→`5`. The self-hosted formatter keeps
 float lexemes, literal braces, and interpolated strings, targeting gates 1
 (`fmt(fmt x)==fmt x`) and 2 (`canon(fmt x)==canon(x)`), both **PASS 65/65** on
-the corpus (+ 16 inline).
+the corpus (+ 21 inline).
+
+#### Comment + blank-line preservation (gate-3 closure)
+
+`src/frontend/comments.oo` ports the Rust formatter's comment machinery: a
+string-aware comment scanner plus `build_attachments`/`attach_seq`/`attach_into`
+(leading / trailing / dangling per node, `blank_before`, program leading/
+trailing), keyed by an encoded span. `formatter.oo` is now comment-aware
+(`trailing_doc`/`body_break`/`close_after`/`fmt_children` and the special
+`match`/`map` printers), and `format_program` emits program-leading/trailing
+comments, per-form leading/trailing, and source blank lines.
+
+Result: **byte-identical to the float-fixed Rust formatter on every corpus file
+free of parser-level desugaring** — full corpus **45/65** (`samples/*.oo` went
+from 8/21 layout-only to 19/21). Every one of the 20 remaining diffs is a
+*parser* divergence, not a formatter or comment/blank one:
+
+- **String interpolation** — `"…{x}…"` → the parser desugars to `[str …]`.
+- **Literal braces** — source `\{` → the parser's unescape+desugar collapses it
+  to a bare `{`; the faithful reader keeps `\{` (which round-trips). This is the
+  brace bug from §6: Rust's bare-`{` output does not re-parse.
+- **Unit literals** — `100.0m` → the parser desugars to `[unit 100.0 :m]`.
+
+(The 18 web `.loon` files differ only via interpolation / literal braces, which
+saturate HTML-templating source.) Closing these needs the parser to preserve
+surface syntax (or the reader to replicate its desugaring) — out of formatter
+scope, and in conflict with gate 2 wherever the Rust desugaring is lossy.
+
+Known edge: a comment placed immediately before a close bracket (dangling) is
+where the Rust formatter has a latent bug (it lets `]` share the comment's line,
+producing non-round-trippable output) and the EIR VM additionally shows
+attachment non-determinism for it; no real corpus file exercises this and the
+corpus round-trip gate is 65/65.
 
 #### Gate 3 — progress (decision: fix Rust fmt, then match)
 

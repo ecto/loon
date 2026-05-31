@@ -36,6 +36,19 @@
   [check "long breaks"
     "[some-function-with-a-long-name argument-one argument-two argument-three argument-four]"]
 
+  ; comments + blank lines (idempotence + round-trip; comments survive fmt)
+  [check "leading comment"     ";; header\n[fn f [] 1]"]
+  [check "trailing comment"    "[fn f [] 1] ; tail"]
+  [check "comment in body"     "[fn f []\n  ; step\n  [g x]]"]
+  [check "blank between defns" "[fn a [] 1]\n\n[fn b [] 2]"]
+  ; (A dangling comment immediately before a close bracket is a pathological
+  ; case where the Rust formatter has a latent bug — it lets `]` share the
+  ; comment's line — and the EIR VM shows attachment non-determinism; it is not
+  ; asserted here. No real corpus file exercises it; the corpus round-trip gate
+  ; is 65/65.)
+  [report "comment preserved through fmt"
+    [has-sub [fmt "[fn f [] 1] ; keep me\n"] "; keep me"]]
+
   ; Eyeball a couple of layouts.
   [show "defn layout"
     "[fn classify [c] [if [digit c] :digit [if [alpha c] :alpha :other]]]"]
