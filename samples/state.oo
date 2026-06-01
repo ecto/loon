@@ -1,0 +1,32 @@
+; A pure `State` effect, built entirely from one-shot delimited continuations
+; (no mutable cells). Each handler clause returns a function of the current
+; state; `run-state` applies the whole thing to the initial state. This relies
+; on escaping continuations — the continuation is resumed after `handle` exits.
+
+[effect State [get [] Int] [put [Int] Unit]]
+
+[fn run-state [thunk init]
+  [[handle [thunk]
+      [return x]    [fn [s] x]
+      [State.get]   [fn [s] [[resume s] s]]
+      [State.put n] [fn [s] [[resume 0] n]]]
+    init]]
+
+; A stateful counter: read, bump by 1, read, bump by 10, read.
+[fn counter []
+  [let a [State.get]]
+  [State.put [+ a 1]]
+  [let b [State.get]]
+  [State.put [+ b 10]]
+  [State.get]]
+
+; A recursive loop that sums 1..n into the state.
+[fn sum-loop [i n]
+  [if [> i n]
+    [State.get]
+    [do [State.put [+ [State.get] i]]
+        [sum-loop [+ i 1] n]]]]
+
+[fn main []
+  [println [run-state counter 0]]
+  [println [run-state [fn [] [sum-loop 1 10]] 0]]]

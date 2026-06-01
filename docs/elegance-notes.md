@@ -93,26 +93,25 @@ Legend: **break?** = backward-incompatible · **effort** S/M/L.
    concatenation) would let the compiler be organized into actual modules.
    _break? no · effort L · **highest structural impact**_
 
-10. **⚙ PARTIAL — effect handlers were tail-resumptive only.** `resume` was an
-    identity closure and the handler's return was spliced at the perform site,
-    so there was no real abort and no resume-after-work. Now (EIR VM): `handle`
-    delimits a prompt (body lowered as a thunk), `perform` captures the frame
-    segment above the prompt as a one-shot `Obj::Continuation`, and the handler
-    runs there with `resume := k`. This gives **real abort (0-shot → `try`
-    works, was returning the wrong value)** and **resume-anywhere (1-shot, not
-    just tail)**, one-shot enforced. Still TODO: **escaping continuations** (a
-    continuation resumed *after* its `handle` has exited — needed for the
-    function-passing `State` encoding and multi-shot); that needs a relocatable,
-    self-contained continuation that re-establishes its prompt + handlers on
-    resume (OCaml-5 fiber style), rather than the in-place frame-segment capture.
-    A `Gensym`/`State`/`Ref` effect (#11) waits on that. _effort: L remaining_
+10. **✅ FIXED — one-shot delimited continuations (incl. escaping).** `resume`
+    was an identity closure (tail-resumptive only — no abort, no
+    resume-after-work). Now (EIR VM): `handle` delimits a prompt (body lowered
+    as a thunk), `perform` captures the frame segment above the prompt as a
+    one-shot `Obj::Continuation` that also **snapshots the prompt's handlers**.
+    This gives **real abort** (`try` works — was returning the wrong value),
+    **resume-anywhere** (not just tail), and — because a non-tail resume pushes a
+    fresh prompt and re-establishes those handlers — **escaping continuations**:
+    a continuation resumed *after* its `handle` has exited. That makes the pure
+    function-passing **`State` effect** work (see `samples/state.oo`). One-shot is
+    enforced; true multi-shot (clone-on-resume) is the only remaining tier, with
+    the documented mutation-soundness caveat.
 
-11. **No ergonomic local mutation — but we have effects!** Every pass threads
+11. **Ergonomic local mutation via effects — now unblocked.** Every pass threads
     state by hand (reader counters, the type `Subst`, the lowering builder `LS`).
-    This is inherent to purity, but a built-in `State`/`Ref` **effect** (handled
-    by the VM) would let passes use mutable cells while staying pure-by-default —
-    dogfooding the effect system. Depends on #10 for multi-shot. _break? no ·
-    effort M (after #10)_
+    With escaping continuations landed (#10), a pure `State`/`Ref` effect is now
+    expressible (`samples/state.oo` demonstrates it). Remaining work is purely
+    ergonomic: ship `State`/`Ref` as a small prelude/stdlib so passes can use it
+    without re-deriving the handler each time. _break? no · effort S now_
 
 ## D. Self-hosted compiler ergonomics
 
