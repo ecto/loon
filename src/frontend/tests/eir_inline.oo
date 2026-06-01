@@ -97,4 +97,15 @@
     "[fn vmap [f xs] [loop [k 0 acc #[]] [if [>= k [len xs]] acc [recur [+ k 1] [conj acc [f [nth xs k]]]]]]] [fn main [] [join \",\" [vmap [fn [x] [* x x]] #[1 2 3 4]]]]"
     "1,4,9,16"]
 
+  ; ── maps / sets (braces escaped in embedded source) ──
+  [evals "map lit"    "[fn main [] \{:a 1 :b 2\}]" "\{:a 1 :b 2\}"]
+  [evals "map get"    "[fn main [] [get \{:a 1 :b 2\} :b]]" "2"]
+  [evals "map miss"   "[fn main [] [get \{:a 1\} :z]]" "()"]
+  [evals "map assoc"  "[fn main [] [get [assoc \{:a 1\} :a 9] :a]]" "9"]
+  [evals "map keys"   "[fn main [] [join \",\" [keys \{:a 1 :b 2\}]]]" ":a,:b"]
+  [evals "map len"    "[fn main [] [len \{:a 1 :b 2 :c 3\}]]" "3"]
+  [evals "map has"    "[fn main [] [if [contains? \{:a 1\} :a] 1 0]]" "1"]
+  [evals "set has"    "[fn main [] [if [contains? #\{1 2 3\} 2] 1 0]]" "1"]
+  [evals "set len"    "[fn main [] [len #\{1 2 3 4\}]]" "4"]
+
   [println "done"]]

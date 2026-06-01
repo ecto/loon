@@ -1,0 +1,1 @@
+[fn main [] [println [write-program [expand-all [read-all "[macro unless [c body] `[if ~c :nothing ~body]] [macro guard [x] `[unless ~x :bad]] [guard ok]"]]]]]

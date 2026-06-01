@@ -1,0 +1,12 @@
+[fn lookup-all [m ks]
+  [loop [k 0 acc #[]]
+    [if [>= k [len ks]] acc
+      [recur [+ k 1] [conj acc [get m [nth ks k]]]]]]]
+[fn main []
+  [let m [assoc [assoc {:x 1} :y 2] :z 3]]
+  ; order-independent: Loon maps are hash-ordered, the self-hosted VM's are
+  ; insertion-ordered, so avoid comparing key order / map display here.
+  [println [join "," [lookup-all m #[:x :y :z]]]]
+  [println [len m]]
+  [println [if [contains? m :y] "has-y" "no-y"]]
+  [println [get m :missing]]]
