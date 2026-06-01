@@ -88,4 +88,13 @@
   [evals "perform deep"
     "[effect S [span]] [fn inner [] [S.span]] [fn outer [] [inner]] [fn main [] [handle [outer] [S.span] [resume 7]]]" "7"]
 
+  ; ── closures ──
+  [evals "capture"    "[fn main [] [let n 10] [let f [fn [x] [+ x n]]] [f 5]]" "15"]
+  [evals "higher-ord" "[fn ap2 [f x] [f [f x]]] [fn main [] [ap2 [fn [y] [* y 3]] 2]]" "18"]
+  [evals "curry"      "[fn main [] [let mk [fn [a] [fn [b] [+ a b]]]] [[mk 100] 7]]" "107"]
+  [evals "identity"   "[fn main [] [let id [fn [x] x]] [id 42]]" "42"]
+  [evals "map-like"
+    "[fn vmap [f xs] [loop [k 0 acc #[]] [if [>= k [len xs]] acc [recur [+ k 1] [conj acc [f [nth xs k]]]]]]] [fn main [] [join \",\" [vmap [fn [x] [* x x]] #[1 2 3 4]]]]"
+    "1,4,9,16"]
+
   [println "done"]]

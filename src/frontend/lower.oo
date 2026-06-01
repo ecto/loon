@@ -14,30 +14,40 @@
 
 ; ── Builder state ───────────────────────────────────────────────────────────
 
-[type LS  [LS i64 i64 Vec i64 Vec]]   ; next-reg, next-block, blocks, cur-id, cur-ops
+; next-reg, next-block, blocks, cur-id, cur-ops, lifted-funcs, base.
+; `lifted` accumulates closure functions lifted out of lambdas; `base` is the
+; number of top-level functions (so a lifted closure's index is base + its
+; position in `lifted`). Both thread through the whole lowering of a program.
+[type LS  [LS i64 i64 Vec i64 Vec Vec i64]]
 [type RP  [RP i64 LS]]                 ; an int result (reg/block id) + state
 [type RPS [RPS Vec LS]]                ; a vector of regs + state
 
-[fn ls-init [nparams] [LS nparams 1 #[] 0 #[]]]   ; entry block is id 0
-[fn ls-nregs [ls] [match ls [LS nr _ _ _ _] nr]]
-[fn ls-blocks [ls] [match ls [LS _ _ bl _ _] bl]]
+[fn ls-init [nparams lifted base] [LS nparams 1 #[] 0 #[] lifted base]]
+[fn ls-nregs [ls] [match ls [LS nr _ _ _ _ _ _] nr]]
+[fn ls-blocks [ls] [match ls [LS _ _ bl _ _ _ _] bl]]
+[fn ls-lifted [ls] [match ls [LS _ _ _ _ _ lf _] lf]]
+[fn ls-base [ls] [match ls [LS _ _ _ _ _ _ b] b]]
 
 [fn ls-reg [ls]
-  [match ls [LS nr nb bl ci co] [RP nr [LS [+ nr 1] nb bl ci co]]]]
+  [match ls [LS nr nb bl ci co lf b] [RP nr [LS [+ nr 1] nb bl ci co lf b]]]]
 
 [fn ls-block [ls]
-  [match ls [LS nr nb bl ci co] [RP nb [LS nr [+ nb 1] bl ci co]]]]
+  [match ls [LS nr nb bl ci co lf b] [RP nb [LS nr [+ nb 1] bl ci co lf b]]]]
 
 [fn ls-emit [ls op]
-  [match ls [LS nr nb bl ci co] [LS nr nb bl ci [conj co op]]]]
+  [match ls [LS nr nb bl ci co lf b] [LS nr nb bl ci [conj co op] lf b]]]
 
 ; Finish the current block with `term` (push it to the completed list).
 [fn ls-finish [ls term]
-  [match ls [LS nr nb bl ci co] [LS nr nb [conj bl [Block ci co term]] ci co]]]
+  [match ls [LS nr nb bl ci co lf b] [LS nr nb [conj bl [Block ci co term]] ci co lf b]]]
 
 ; Start filling a fresh block `bid` (empty ops).
 [fn ls-start [ls bid]
-  [match ls [LS nr nb bl _ _] [LS nr nb bl bid #[]]]]
+  [match ls [LS nr nb bl _ _ lf b] [LS nr nb bl bid #[] lf b]]]
+
+; Replace the lifted-functions accumulator (used to merge nested closures back).
+[fn ls-with-lifted [ls lifted]
+  [match ls [LS nr nb bl ci co _ b] [LS nr nb bl ci co lifted b]]]
 
 ; ── Lexical environment (name -> register) ───────────────────────────────────
 
@@ -127,7 +137,16 @@
       [FSym h _ _] [lower-form env fns ls items h]
       [FDot [FSym eff _ _] fld _]
       [lower-perform env fns ls [str eff "." fld] [eir-vec-rest items 1]]
-      _ [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]]]]
+      _ [lower-callexpr env fns ls items]]]]   ; head is an expression: indirect call
+
+; An indirect call where the head is an arbitrary expression evaluating to a
+; closure, e.g. [[mk 100] 7].
+[fn lower-callexpr [env fns ls items]
+  [match [lower-expr env fns ls [nth items 0]]
+    [RP fr ls1]
+    [match [lower-args env fns ls1 [eir-vec-rest items 1]]
+      [RPS regs ls2]
+      [match [ls-reg ls2] [RP d ls3] [RP d [ls-emit ls3 [OCallV d fr regs]]]]]]]
 
 ; A perform site [Eff.op args…] (dotted head) dispatches dynamically to the
 ; installed handler at run time.
@@ -147,9 +166,10 @@
             [if [streq h "let"] [lower-seq env fns ls #[[FList items [Span 0 0]]]]
               [if [streq h "handle"] [lower-handle env fns ls items]
                 [if [streq h "resume"] [lower-expr env fns ls [nth items 1]]
-                  [if [upper-head? h]
-                    [lower-ctor env fns ls h [eir-vec-rest items 1]]
-                    [lower-call env fns ls h [eir-vec-rest items 1]]]]]]]]]]]]
+                  [if [streq h "fn"] [lower-lambda env fns ls items]
+                    [if [upper-head? h]
+                      [lower-ctor env fns ls h [eir-vec-rest items 1]]
+                      [lower-call env fns ls h [eir-vec-rest items 1]]]]]]]]]]]]]
 
 ; handle: after desugaring, the form is [handle body [opname fnname]…]. Install a
 ; handler frame (resolving handler function names to indices) for the dynamic
@@ -181,6 +201,60 @@
 [fn upper-head? [s]
   [if [= [len s] 0] false
     [>= [index-of "ABCDEFGHIJKLMNOPQRSTUVWXYZ" [nth [to-chars s] 0]] 0]]]
+
+; ── Closures (anonymous fn) ──────────────────────────────────────────────────
+;
+; [fn [params…] body…] is lifted to a top-level synthetic function whose leading
+; parameters are the captured variables (every local binding in scope — the env
+; is already accurate, so over-capture is the worst case and is harmless),
+; followed by the lambda's own parameters. The lambda expression itself becomes
+; an OClosure capturing the current registers of those variables; a call then
+; prepends the captured values to the arguments (call-closure in the VM).
+[type CAP [CAP Vec Vec]]    ; capture names, capture registers
+[type FNR [FNR Func Vec]]   ; a lowered Func + the updated lifted accumulator
+
+[fn lower-lambda [env fns ls items]
+  [match [env-captures env] [CAP cnames cregs]
+    [lower-lambda2 env fns ls items cnames cregs]]]
+
+[fn lower-lambda2 [env fns ls items cnames cregs]
+  [let params [lambda-param-names items]]
+  [let cenv [closure-env cnames params]]
+  [match [lower-fn-body-env "$lam" cenv [+ [len cnames] [len params]]
+            [eir-vec-rest items 2] fns [ls-lifted ls] [ls-base ls]]
+    [FNR lamfunc lifted2]
+    [closure-finish ls [+ [ls-base ls] [len lifted2]] lamfunc lifted2 cregs]]]
+
+[fn closure-finish [ls lamidx lamfunc lifted2 cregs]
+  [match [ls-reg [ls-with-lifted ls [conj lifted2 lamfunc]]]
+    [RP d ls2]
+    [RP d [ls-emit ls2 [OClosure d lamidx cregs]]]]]
+
+; Capture every variable binding currently in scope (skipping loop contexts).
+[fn env-captures [env]
+  [loop [k 0 names #[] regs #[]]
+    [if [>= k [len env]]
+      [CAP names regs]
+      [match [nth env k]
+        [VB n r] [recur [+ k 1] [conj names n] [conj regs r]]
+        _ [recur [+ k 1] names regs]]]]]
+
+; Body environment for a lifted closure: captures occupy registers 0..c-1, the
+; lambda's own parameters c..c+p-1.
+[fn closure-env [cnames params]
+  [vconcat
+    [loop [k 0 acc #[]]
+      [if [>= k [len cnames]] acc [recur [+ k 1] [conj acc [VB [nth cnames k] k]]]]]
+    [loop [j 0 acc #[]]
+      [if [>= j [len params]] acc
+        [recur [+ j 1] [conj acc [VB [nth params j] [+ [len cnames] j]]]]]]]]
+
+[fn lambda-param-names [items]
+  [match [nth items 1] [FList ps _]
+    [loop [k 0 acc #[]]
+      [if [>= k [len ps]] acc
+        [match [nth ps k] [FSym n _ _] [recur [+ k 1] [conj acc n]] _ [recur [+ k 1] acc]]]]
+    _ #[]]]
 
 ; loop / recur — tail-recursive iteration.
 ;
@@ -260,7 +334,9 @@
     [match [ls-reg [ls-start ls1 deadb]] [RP d ls2]
       [RP d [ls-emit ls2 [OUnit d]]]]]]
 
-; A call to a primitive or a user function.
+; A call whose head is a symbol: a primitive, a call through a local binding
+; that holds a closure (a function parameter or a let-bound lambda), or a direct
+; call to a top-level function.
 [fn lower-call [env fns ls h args]
   [match [lower-args env fns ls args]
     [RPS regs ls1]
@@ -268,7 +344,9 @@
       [RP d ls2]
       [if [eir-prim? h]
         [RP d [ls-emit ls2 [OPrim d h regs]]]
-        [RP d [ls-emit ls2 [OCall d [fn-index fns h] regs]]]]]]]
+        [if [>= [lenv-lookup env h] 0]
+          [RP d [ls-emit ls2 [OCallV d [lenv-lookup env h] regs]]]
+          [RP d [ls-emit ls2 [OCall d [fn-index fns h] regs]]]]]]]]
 
 [fn lower-args [env fns ls items]
   [loop [k 0 ls ls acc #[]]
@@ -467,18 +545,22 @@
 
 ; ── Function & program lowering ──────────────────────────────────────────────
 
-[fn lower-fn [fns items]
+[fn lower-fn [fns items lifted base]
   [match [nth items 1] [FSym name _ _]
     [match [nth items 2] [FList params _]
-      [lower-fn-body fns name params [eir-vec-rest items 3]]
-      _ [Func name 0 0 #[]]]
-    _ [Func "?" 0 0 #[]]]]
+      [lower-fn-body-env name [params-env params] [len params]
+        [eir-vec-rest items 3] fns lifted base]
+      _ [FNR [Func name 0 0 #[]] lifted]]
+    _ [FNR [Func "?" 0 0 #[]] lifted]]]
 
-[fn lower-fn-body [fns name params body]
-  [match [lower-seq [params-env params] fns [ls-init [len params]] body]
+; Lower a function body under `env` with `nparams` parameters, threading the
+; lifted-closure accumulator. Returns the Func plus the (possibly extended)
+; accumulator, since lowering the body may lift nested lambdas.
+[fn lower-fn-body-env [name env nparams body fns lifted base]
+  [match [lower-seq env fns [ls-init nparams lifted base] body]
     [RP rreg ls]
     [match [ls-finish ls [TRet rreg]]
-      ls2 [Func name [len params] [ls-nregs ls2] [ls-blocks ls2]]]]]
+      ls2 [FNR [Func name nparams [ls-nregs ls2] [ls-blocks ls2]] [ls-lifted ls2]]]]]
 
 [fn params-env [params]
   [loop [k 0 acc #[]]
@@ -487,15 +569,21 @@
         [FSym pn _ _] [recur [+ k 1] [conj acc [VB pn k]]]
         _ [recur [+ k 1] acc]]]]]
 
+; Top-level functions occupy indices 0..base-1 (in definition order); lifted
+; closures are appended after, so a closure's index is base + its position in
+; the threaded `lifted` accumulator.
 [fn lower-program [forms0]
   [let forms [desugar-program forms0]]    ; lift handle clauses to synthetic fns
   [let fns [build-fntab forms]]
-  [Module
-    [loop [k 0 acc #[]]
-      [if [>= k [len forms]] acc
-        [match [lower-fn-def? [nth forms k]]
-          :no [recur [+ k 1] acc]
-          items [recur [+ k 1] [conj acc [lower-fn fns items]]]]]]]]
+  [let base [len fns]]
+  [loop [k 0 lifted #[] tops #[]]
+    [if [>= k [len forms]]
+      [Module [vconcat tops lifted]]
+      [match [lower-fn-def? [nth forms k]]
+        :no [recur [+ k 1] lifted tops]
+        items
+        [match [lower-fn fns items lifted base]
+          [FNR f lifted2] [recur [+ k 1] lifted2 [conj tops f]]]]]]]
 
 ; ── Desugaring: lift handler clauses to top-level synthetic functions ────────
 ;

@@ -20,6 +20,7 @@
   [VKw String]         ; keyword (:name, stored without colon)
   [VVec Vec]           ; vector of Vals
   [VAdt String Vec]    ; constructor value: tag + fields
+  [VClosure i64 Vec]   ; closure: function index + captured values
   [VUnit]]
 
 [fn vint [v] [match v [VInt i] i _ 0]]
@@ -39,6 +40,7 @@
     [VVec xs]  [str "#[" [join " " [map-display-vec xs]] "]"]
     [VAdt t fs] [if [= [len fs] 0] [str "[" t "]"]
                   [str "[" t " " [join " " [map-display-vec fs]] "]"]]
+    [VClosure _ _] "#<closure>"
     [VUnit]    "()"]]
 
 [fn map-display-vec [xs]
@@ -204,7 +206,19 @@
     [OCall d fi args] [ER [vset regs d [exec-func funcs [nth funcs fi] [gather regs args] handlers]] handlers]
     [OPerform d nm args] [ER [vset regs d [perform funcs handlers nm [gather regs args]]] handlers]
     [OHandlePush frame] [ER regs [conj handlers frame]]
-    [OHandlePop] [ER regs [slice handlers 0 [- [len handlers] 1]]]]]
+    [OHandlePop] [ER regs [slice handlers 0 [- [len handlers] 1]]]
+    [OClosure d fi caps] [ER [vset regs d [VClosure fi [gather regs caps]]] handlers]
+    [OCallV d fr args] [ER [vset regs d [call-closure funcs [nth regs fr] [gather regs args] handlers]] handlers]]]
+
+; Call a closure: prepend its captured values to the arguments and invoke its
+; function (the lifted function's leading parameters are the captures).
+[fn call-closure [funcs cval args handlers]
+  [match cval
+    [VClosure fi caps] [exec-func funcs [nth funcs fi] [vapp caps args] handlers]
+    _ [VUnit]]]
+
+[fn vapp [a b]
+  [loop [k 0 acc a] [if [>= k [len b]] acc [recur [+ k 1] [conj acc [nth b k]]]]]]
 
 ; Perform an effect operation: find the innermost handler for it and call its
 ; (synthetic) handler function with the operation arguments. Tail-resumptive —

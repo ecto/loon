@@ -29,6 +29,8 @@
   [OPerform i64 String Vec] ; dest <- perform effect op (name, arg regs)
   [OHandlePush Vec]        ; push a handler frame (vector of HE)
   [OHandlePop]             ; pop the top handler frame
+  [OClosure i64 i64 Vec]   ; dest <- closure over func #idx capturing the given regs
+  [OCallV i64 i64 Vec]     ; dest <- call the closure in a register with arg regs
   [OMove  i64 i64]]        ; dest <- src register
 
 ; A handler-frame entry: an effect operation name -> the index of the synthetic
@@ -89,6 +91,8 @@
     [OPerform d nm args] [str "r" d " = perform " nm " " [eir-write-regs args]]
     [OHandlePush frame] [str "handle-push (" [len frame] ")"]
     [OHandlePop] "handle-pop"
+    [OClosure d fi caps] [str "r" d " = closure #" fi " [" [eir-write-regs caps] "]"]
+    [OCallV d fr args] [str "r" d " = call-v r" fr " " [eir-write-regs args]]
     [OMove d s]  [str "r" d " = r" s]]]
 
 [fn eir-write-regs [args]
