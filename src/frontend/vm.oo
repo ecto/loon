@@ -19,6 +19,8 @@
   [VBool Bool]
   [VKw String]         ; keyword (:name, stored without colon)
   [VVec Vec]           ; vector of Vals
+  [VMap Vec]           ; map: flat assoc vector #[k0 v0 k1 v1 …]
+  [VSet Vec]           ; set: vector of (unique) elements
   [VAdt String Vec]    ; constructor value: tag + fields
   [VClosure i64 Vec]   ; closure: function index + captured values
   [VUnit]]
@@ -38,6 +40,8 @@
     [VBool b]  [if b "true" "false"]
     [VKw n]    [str ":" n]
     [VVec xs]  [str "#[" [join " " [map-display-vec xs]] "]"]
+    [VMap kvs] [str "\{" [join " " [map-display-vec kvs]] "}"]
+    [VSet es]  [str "#\{" [join " " [map-display-vec es]] "}"]
     [VAdt t fs] [if [= [len fs] 0] [str "[" t "]"]
                   [str "[" t " " [join " " [map-display-vec fs]] "]"]]
     [VClosure _ _] "#<closure>"
@@ -86,7 +90,9 @@
 [fn cmp?   [nm] [eir-member nm #["<" ">" "<=" ">=" "="]]]
 
 [fn coll? [nm]
-  [eir-member nm #["len" "nth" "conj" "join" "split" "index-of" "slice"]]]
+  [eir-member nm
+    #["len" "nth" "conj" "join" "split" "index-of" "slice"
+      "get" "assoc" "keys" "contains?"]]]
 
 [fn apply-prim [nm vals]
   [if [arith? nm] [apply-arith nm [vint [nth vals 0]] [vint [nth vals 1]]]
@@ -112,10 +118,54 @@
               [VVec [wrap-strs [split [vstr [nth vals 0]] [vstr [nth vals 1]]]]]
               [if [streq nm "index-of"]
                 [VInt [index-of [vstr [nth vals 0]] [vstr [nth vals 1]]]]
-                [VUnit]]]]]]]]]
+                [apply-map nm vals]]]]]]]]]
+
+; Map / set operations (maps are flat assoc vectors; lookup uses val-eq, so
+; keyword/int/string keys all work regardless of host map semantics).
+[fn apply-map [nm vals]
+  [if [streq nm "get"] [map-get [nth vals 0] [nth vals 1]]
+    [if [streq nm "assoc"] [VMap [assoc-kvs [vkvs [nth vals 0]] [nth vals 1] [nth vals 2]]]
+      [if [streq nm "keys"] [VVec [map-keys [vkvs [nth vals 0]]]]
+        [if [streq nm "contains?"] [VBool [coll-has [nth vals 0] [nth vals 1]]]
+          [VUnit]]]]]]
+
+[fn vkvs [v] [match v [VMap kvs] kvs _ #[]]]
+
+[fn map-get [m k]
+  [match m
+    [VMap kvs]
+    [loop [i 0]
+      [if [>= i [len kvs]] [VUnit]
+        [if [val-eq [nth kvs i] k] [nth kvs [+ i 1]] [recur [+ i 2]]]]]
+    _ [VUnit]]]
+
+[fn assoc-kvs [kvs k v]
+  [loop [i 0 acc #[] done false]
+    [if [>= i [len kvs]]
+      [if done acc [conj [conj acc k] v]]
+      [if [val-eq [nth kvs i] k]
+        [recur [+ i 2] [conj [conj acc k] v] true]
+        [recur [+ i 2] [conj [conj acc [nth kvs i]] [nth kvs [+ i 1]]] done]]]]]
+
+[fn map-keys [kvs]
+  [loop [i 0 acc #[]]
+    [if [>= i [len kvs]] acc [recur [+ i 2] [conj acc [nth kvs i]]]]]]
+
+; contains?: maps test keys; sets and vectors test membership.
+[fn coll-has [c x]
+  [match c
+    [VMap kvs] [loop [i 0] [if [>= i [len kvs]] false [if [val-eq [nth kvs i] x] true [recur [+ i 2]]]]]
+    [VSet es]  [elem? es x]
+    [VVec es]  [elem? es x]
+    _ false]]
+
+[fn elem? [es x]
+  [loop [k 0] [if [>= k [len es]] false [if [val-eq [nth es k] x] true [recur [+ k 1]]]]]]
 
 [fn coll-len [v]
-  [match v [VVec xs] [len xs] [VStr s] [len s] _ 0]]
+  [match v
+    [VVec xs] [len xs] [VStr s] [len s]
+    [VMap kvs] [/ [len kvs] 2] [VSet es] [len es] _ 0]]
 
 ; Wrap a host vector of loon strings as a VVec of VStr.
 [fn wrap-strs [xs]
@@ -199,6 +249,8 @@
     [OUnit d]      [ER [vset regs d [VUnit]] handlers]
     [OMove d s]    [ER [vset regs d [nth regs s]] handlers]
     [OVec d args]  [ER [vset regs d [VVec [gather regs args]]] handlers]
+    [OMap d args]  [ER [vset regs d [VMap [gather regs args]]] handlers]
+    [OSet d args]  [ER [vset regs d [VSet [gather regs args]]] handlers]
     [OAdt d ctor args] [ER [vset regs d [VAdt ctor [gather regs args]]] handlers]
     [OTag d s]     [ER [vset regs d [VStr [adt-tag [nth regs s]]]] handlers]
     [OField d s ix] [ER [vset regs d [adt-field [nth regs s] ix]] handlers]

@@ -110,14 +110,19 @@
     [FKw v _]      [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OKw d v]]]]
     [FSym n _ _]   [lower-sym env ls n]
     [FList items _] [lower-list env fns ls items]
-    [FVec items _] [lower-vec env fns ls items]
+    [FVec items _] [lower-coll env fns ls items :vec]
+    [FSet items _] [lower-coll env fns ls items :set]
+    [FMap items _] [lower-coll env fns ls items :map]
     _ [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]]]
 
-; #[…] literal: lower each element, then build a vector from the registers.
-[fn lower-vec [env fns ls items]
+; #[…] / #{…} / {…} literal: lower each element, then build the collection.
+[fn lower-coll [env fns ls items kind]
   [match [lower-args env fns ls items]
     [RPS regs ls1]
-    [match [ls-reg ls1] [RP d ls2] [RP d [ls-emit ls2 [OVec d regs]]]]]]
+    [match [ls-reg ls1] [RP d ls2]
+      [RP d [ls-emit ls2
+        [if [= kind :vec] [OVec d regs]
+          [if [= kind :set] [OSet d regs] [OMap d regs]]]]]]]]
 
 [fn lower-sym [env ls n]
   [if [streq n "true"]  [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OBool d true]]]]
@@ -549,9 +554,16 @@
   [match [nth items 1] [FSym name _ _]
     [match [nth items 2] [FList params _]
       [lower-fn-body-env name [params-env params] [len params]
-        [eir-vec-rest items 3] fns lifted base]
+        [eir-vec-rest items [fn-body-start items]] fns lifted base]
       _ [FNR [Func name 0 0 #[]] lifted]]
     _ [FNR [Func "?" 0 0 #[]] lifted]]]
+
+; A fn def may carry an effect annotation [fn n [p…] #{Effects} body…] between
+; the params and the body; skip it when locating the body.
+[fn fn-body-start [items]
+  [if [> [len items] 3]
+    [match [nth items 3] [FSet _ _] 4 _ 3]
+    3]]
 
 ; Lower a function body under `env` with `nparams` parameters, threading the
 ; lifted-closure accumulator. Returns the Func plus the (possibly extended)

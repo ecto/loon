@@ -23,6 +23,8 @@
   [OPrim  i64 String Vec]  ; dest <- primitive op applied to arg registers
   [OCall  i64 i64 Vec]     ; dest <- call func #idx with arg registers
   [OVec   i64 Vec]         ; dest <- vector built from arg registers
+  [OMap   i64 Vec]         ; dest <- map from alternating key/value registers
+  [OSet   i64 Vec]         ; dest <- set from element registers
   [OAdt   i64 String Vec]  ; dest <- constructor value (tag + field registers)
   [OTag   i64 i64]         ; dest <- constructor tag (string) of an adt register
   [OField i64 i64 i64]     ; dest <- field #idx of an adt register
@@ -62,7 +64,8 @@
 [fn eir-prim? [h]
   [eir-member h
     #["+" "-" "*" "/" "<" ">" "<=" ">=" "=" "not" "println" "print" "str"
-      "len" "nth" "conj" "join" "split" "index-of" "slice"]]]
+      "len" "nth" "conj" "join" "split" "index-of" "slice"
+      "get" "assoc" "keys" "contains?"]]]
 
 ; Look up a block by id within a func's block vector.
 [fn eir-find-block [blocks id]
@@ -85,6 +88,8 @@
     [OPrim d nm args] [str "r" d " = " nm " " [eir-write-regs args]]
     [OCall d fi args] [str "r" d " = call #" fi " " [eir-write-regs args]]
     [OVec d args] [str "r" d " = vec " [eir-write-regs args]]
+    [OMap d args] [str "r" d " = map " [eir-write-regs args]]
+    [OSet d args] [str "r" d " = set " [eir-write-regs args]]
     [OAdt d ctor args] [str "r" d " = " ctor " " [eir-write-regs args]]
     [OTag d s] [str "r" d " = tag r" s]
     [OField d s ix] [str "r" d " = r" s "." ix]
