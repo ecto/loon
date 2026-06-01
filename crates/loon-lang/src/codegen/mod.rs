@@ -56,6 +56,13 @@ const PRE_ALLOC_TYPES: u32 = 7;
 
 struct Compiler {
     functions: Vec<FunctionBody>,
+    /// Parallel to `functions`: the provisional func index assigned to each
+    /// body at push time. Push order need not match index order (runtime
+    /// helpers and closures are pushed lazily while a body is being compiled,
+    /// but top-level fns are assigned lower indices up front), so `tree_shake`
+    /// relocates everything to its final index using this mapping rather than
+    /// assuming `position == index - import_count`.
+    fn_indices: Vec<u32>,
     fn_map: HashMap<String, FnDef>,
     strings: Vec<(String, u32)>,
     string_offset: u32,
@@ -351,6 +358,7 @@ impl Compiler {
     fn new() -> Self {
         Self {
             functions: Vec::new(),
+            fn_indices: Vec::new(),
             fn_map: HashMap::new(),
             strings: Vec::new(),
             string_offset: 1024,
@@ -383,6 +391,13 @@ impl Compiler {
         self.table_map.insert(func_idx, ti);
         ti
     }
+    /// Push a compiled function body, recording the provisional index it was
+    /// assigned. Keeps `functions` and `fn_indices` in lockstep so `tree_shake`
+    /// can relocate bodies to their final indices regardless of push order.
+    fn push_function(&mut self, func_idx: u32, body: FunctionBody) {
+        self.functions.push(body);
+        self.fn_indices.push(func_idx);
+    }
     fn ensure_string_runtime(&mut self) {
         if self.string_runtime.is_some() {
             return;
@@ -390,13 +405,13 @@ impl Compiler {
         self.force_heap = true;
         let c = self.next_fn_idx;
         self.next_fn_idx += 1;
-        self.functions.push(StringRuntime::gen_str_concat());
+        self.push_function(c, StringRuntime::gen_str_concat());
         let l = self.next_fn_idx;
         self.next_fn_idx += 1;
-        self.functions.push(StringRuntime::gen_str_len());
+        self.push_function(l, StringRuntime::gen_str_len());
         let e = self.next_fn_idx;
         self.next_fn_idx += 1;
-        self.functions.push(StringRuntime::gen_str_eq());
+        self.push_function(e, StringRuntime::gen_str_eq());
         self.string_runtime = Some(StringRuntime {
             str_concat_idx: c,
             str_len_idx: l,
@@ -410,13 +425,13 @@ impl Compiler {
         self.force_heap = true;
         let n = self.next_fn_idx;
         self.next_fn_idx += 1;
-        self.functions.push(CollectionsRuntime::gen_vec_new());
+        self.push_function(n, CollectionsRuntime::gen_vec_new());
         let p = self.next_fn_idx;
         self.next_fn_idx += 1;
-        self.functions.push(CollectionsRuntime::gen_vec_push());
+        self.push_function(p, CollectionsRuntime::gen_vec_push());
         let g = self.next_fn_idx;
         self.next_fn_idx += 1;
-        self.functions.push(CollectionsRuntime::gen_vec_get());
+        self.push_function(g, CollectionsRuntime::gen_vec_get());
         self.collections_runtime = Some(CollectionsRuntime {
             vec_new_idx: n,
             vec_push_idx: p,
@@ -507,22 +522,23 @@ impl Compiler {
             Some(def) => def.func_idx,
             None => return,
         };
-        // Total imports = WASI + effect imports
-        let total_import_count = WASI_IMPORT_COUNT + self.effect_import_defs.len() as u32;
+        // Map provisional func index → position in `self.functions`. Only
+        // compiled functions (not imports) have a body to traverse.
+        let mut id_to_pos: HashMap<u32, usize> = HashMap::new();
+        for (pos, &id) in self.fn_indices.iter().enumerate() {
+            id_to_pos.insert(id, pos);
+        }
         let mut reachable = std::collections::HashSet::new();
         let mut queue = std::collections::VecDeque::new();
         reachable.insert(main_idx);
         queue.push_back(main_idx);
         while let Some(idx) = queue.pop_front() {
-            if idx < total_import_count {
-                continue;
-            }
-            let fn_offset = (idx - total_import_count) as usize;
-            if fn_offset >= self.functions.len() {
-                continue;
-            }
+            let pos = match id_to_pos.get(&idx) {
+                Some(&p) => p,
+                None => continue, // WASI / effect import — a leaf
+            };
             let mut has_indirect = false;
-            for instr in &self.functions[fn_offset].instructions {
+            for instr in &self.functions[pos].instructions {
                 match instr {
                     WasmInstruction::Call(target) => {
                         if reachable.insert(*target) {
@@ -543,7 +559,9 @@ impl Compiler {
                 }
             }
         }
-        // Build remap: old func index → new func index
+        // Build remap: provisional index → final index. Imports come first
+        // (used WASI imports, then all effect imports — the host always
+        // provides those), then the reachable functions in their push order.
         let used_wasi: Vec<u32> = (0..WASI_IMPORT_COUNT)
             .filter(|i| reachable.contains(i))
             .collect();
@@ -553,31 +571,35 @@ impl Compiler {
             remap.insert(old, new_idx);
             new_idx += 1;
         }
-        // Effect imports are always kept (host provides them)
-        let effect_start = WASI_IMPORT_COUNT;
-        for i in 0..self.effect_import_defs.len() as u32 {
-            remap.insert(effect_start + i, new_idx);
+        // Effect imports are emitted unconditionally by `finish` (in
+        // `effect_import_defs` creation order, which matches ascending id).
+        let mut effect_old_ids: Vec<u32> = self.effect_imports.values().copied().collect();
+        effect_old_ids.sort_unstable();
+        for &old in &effect_old_ids {
+            remap.insert(old, new_idx);
             new_idx += 1;
         }
         let new_import_count = new_idx;
         let mut kept_fn_indices = Vec::new();
-        for i in 0..self.functions.len() {
-            let old = total_import_count + i as u32;
-            if reachable.contains(&old) {
-                remap.insert(old, new_idx);
-                kept_fn_indices.push(i);
+        for (pos, &id) in self.fn_indices.iter().enumerate() {
+            if reachable.contains(&id) {
+                remap.insert(id, new_idx);
+                kept_fn_indices.push(pos);
                 new_idx += 1;
             }
         }
-        // Filter functions
+        // Filter + reorder functions (and their recorded indices) so that
+        // `self.functions[j]` ends up at final index `new_import_count + j`.
         let mut old_fns: Vec<Option<FunctionBody>> = std::mem::take(&mut self.functions)
             .into_iter()
             .map(Some)
             .collect();
+        let old_ids = std::mem::take(&mut self.fn_indices);
         self.functions = kept_fn_indices
             .iter()
             .map(|&i| old_fns[i].take().unwrap())
             .collect();
+        self.fn_indices = kept_fn_indices.iter().map(|&i| remap[&old_ids[i]]).collect();
         // Rewrite Call targets
         for func in &mut self.functions {
             for instr in &mut func.instructions {
@@ -821,12 +843,16 @@ impl Compiler {
         }
         let instrs = ctx.instructions.clone();
         drop(ctx);
-        self.functions.push(FunctionBody {
-            params: vec![ValType::I64; params.len()],
-            results: if is_main { vec![] } else { vec![ValType::I64] },
-            locals: extra_locals,
-            instructions: instrs,
-        });
+        let func_idx = self.fn_map.get(&name).map(|d| d.func_idx).unwrap_or(0);
+        self.push_function(
+            func_idx,
+            FunctionBody {
+                params: vec![ValType::I64; params.len()],
+                results: if is_main { vec![] } else { vec![ValType::I64] },
+                locals: extra_locals,
+                instructions: instrs,
+            },
+        );
         Ok(())
     }
     fn intern_string(&mut self, s: &str) -> (u32, u32) {
@@ -1849,16 +1875,19 @@ impl<'a> FnCtx<'a> {
         let linstrs = lctx.instructions.clone();
         let llc = lctx.local_count;
         drop(lctx);
-        self.compiler.functions.push(FunctionBody {
-            params: vec![ValType::I64; all_params.len()],
-            results: vec![ValType::I64],
-            locals: if llc > all_params.len() as u32 {
-                vec![ValType::I64; (llc - all_params.len() as u32) as usize]
-            } else {
-                vec![]
+        self.compiler.push_function(
+            idx,
+            FunctionBody {
+                params: vec![ValType::I64; all_params.len()],
+                results: vec![ValType::I64],
+                locals: if llc > all_params.len() as u32 {
+                    vec![ValType::I64; (llc - all_params.len() as u32) as usize]
+                } else {
+                    vec![]
+                },
+                instructions: linstrs,
             },
-            instructions: linstrs,
-        });
+        );
         match hof_name {
             "map" | "filter" => {
                 for (_, li) in &captures {
@@ -1937,16 +1966,19 @@ impl<'a> FnCtx<'a> {
         let cinstrs = cctx.instructions.clone();
         let clc = cctx.local_count;
         drop(cctx);
-        self.compiler.functions.push(FunctionBody {
-            params: vec![ValType::I64; tp],
-            results: vec![ValType::I64],
-            locals: if clc > tp as u32 {
-                vec![ValType::I64; (clc - tp as u32) as usize]
-            } else {
-                vec![]
+        self.compiler.push_function(
+            idx,
+            FunctionBody {
+                params: vec![ValType::I64; tp],
+                results: vec![ValType::I64],
+                locals: if clc > tp as u32 {
+                    vec![ValType::I64; (clc - tp as u32) as usize]
+                } else {
+                    vec![]
+                },
+                instructions: cinstrs,
             },
-            instructions: cinstrs,
-        });
+        );
         if captures.is_empty() {
             self.instructions
                 .push(WasmInstruction::I64Const((ti as i64) << 32));
