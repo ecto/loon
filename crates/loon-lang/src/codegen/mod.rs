@@ -1413,9 +1413,14 @@ impl<'a> FnCtx<'a> {
                 self.instructions.push(WasmInstruction::I64Const(*n));
                 Ok(())
             }
-            ExprKind::Float(n) => {
-                self.instructions.push(WasmInstruction::F64Const(*n));
-                Ok(())
+            ExprKind::Float(_) => {
+                // The value model is untagged i64; arithmetic emits i64 ops, so
+                // an f64 here yields a module the validator rejects. Fail
+                // cleanly until there's a typed/tagged value model. (Runs on the
+                // VM via `loon run`.)
+                Err("codegen: floating-point values are not supported by the wasm \
+                     backend yet; run with `loon run`"
+                    .into())
             }
             ExprKind::Bool(b) => {
                 self.instructions
