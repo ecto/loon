@@ -798,8 +798,15 @@ impl Compiler {
         for (i, p) in params.iter().enumerate() {
             ctx.locals.insert(p.clone(), i as u32);
         }
-        for expr in &args[body_start..] {
+        // Compile each body expression; every one leaves an i64 on the stack,
+        // so drop all but the last (a statement sequence keeps only its final
+        // value). The last value is the function's result (or dropped for main).
+        let body = &args[body_start..];
+        for (i, expr) in body.iter().enumerate() {
             ctx.compile_expr(expr)?;
+            if i + 1 < body.len() {
+                ctx.instructions.push(WasmInstruction::Drop);
+            }
         }
         let is_main = name == "main";
         let extra_locals = if ctx.local_count > params.len() as u32 {
@@ -1969,6 +1976,15 @@ mod tests {
         // Printing a computed (non-literal) value emits a runtime itoa + fd_write.
         valid("[fn main [] [println [+ 1 2]]]");
         valid("[fn main [] [println [- 0 42]]]");
+    }
+
+    #[test]
+    fn compile_multi_statement_is_valid() {
+        // A function body / main with several statements: all but the last are
+        // dropped (the sequence keeps only its final value).
+        valid("[fn main [] [let x 5] [let y 6] [println [* x y]]]");
+        valid("[fn main [] [println 7] [println 8] [println 9]]");
+        valid("[fn g [a] [let b [* a 2]] [+ b 1]] [fn main [] [println [g 10]]]");
     }
 
     #[test]
