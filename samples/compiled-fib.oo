@@ -1,0 +1,7 @@
+; Compiles to a standalone .wasm with `loon build` — runs on any WASM runtime
+; (wasmtime, browsers, node --wasi) with NO Loon/Rust host at runtime.
+;   loon build samples/compiled-fib.oo   ->   target/compiled-fib.wasm
+[fn fib [n]
+  [if [< n 2] n [+ [fib [- n 1]] [fib [- n 2]]]]]
+[fn main []
+  [println [fib 20]]]

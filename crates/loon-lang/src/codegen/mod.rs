@@ -127,6 +127,8 @@ enum WasmInstruction {
     I32WrapI64,
     I64ExtendI32U,
     I64ShrU,
+    I64DivU,
+    I64RemU,
     I64And,
     I64Or,
     I64Shl,
@@ -279,6 +281,12 @@ fn emit_instruction(f: &mut Function, instr: &WasmInstruction) {
         }
         WasmInstruction::I64ShrU => {
             f.instruction(&Instruction::I64ShrU);
+        }
+        WasmInstruction::I64DivU => {
+            f.instruction(&Instruction::I64DivU);
+        }
+        WasmInstruction::I64RemU => {
+            f.instruction(&Instruction::I64RemU);
         }
         WasmInstruction::I64And => {
             f.instruction(&Instruction::I64And);
@@ -1005,6 +1013,101 @@ impl<'a> FnCtx<'a> {
         self.local_count += 1;
         i
     }
+
+    /// Emit code that prints the i64 currently on the stack as a decimal number
+    /// (with trailing newline if `newline`) to stdout via WASI fd_write, leaving
+    /// UNIT (i64 0) on the stack. A runtime itoa: digits are written backwards
+    /// into a low scratch region (below the string table at 1024), then one
+    /// fd_write emits them. Handles zero and negatives.
+    fn emit_print_i64(&mut self, newline: bool) {
+        use WasmInstruction as W;
+        // Scratch: newline (if any) at BUF, digits written just below it.
+        const BUF: i64 = 542;
+        let n = self.alloc_local();
+        let p = self.alloc_local();
+        let neg = self.alloc_local();
+        // n = value; neg = (n < 0); if neg, n = -n.
+        self.instructions.push(W::LocalSet(n));
+        self.instructions.push(W::LocalGet(n));
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::If(BlockType::Empty));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::LocalSet(neg));
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalGet(n));
+        self.instructions.push(W::I64Sub);
+        self.instructions.push(W::LocalSet(n));
+        self.instructions.push(W::Else);
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(neg));
+        self.instructions.push(W::End);
+        if newline {
+            self.instructions.push(W::I32Const(BUF as i32));
+            self.instructions.push(W::I32Const(10)); // '\n'
+            self.instructions.push(W::I32Store8(0, 0));
+        }
+        // p = BUF; do { p-=1; mem[p] = '0' + n%10; n /= 10 } while n != 0
+        self.instructions.push(W::I64Const(BUF));
+        self.instructions.push(W::LocalSet(p));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(p));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Sub);
+        self.instructions.push(W::LocalSet(p));
+        self.instructions.push(W::LocalGet(p));
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::LocalGet(n));
+        self.instructions.push(W::I64Const(10));
+        self.instructions.push(W::I64RemU);
+        self.instructions.push(W::I64Const(48)); // '0'
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I32Store8(0, 0));
+        self.instructions.push(W::LocalGet(n));
+        self.instructions.push(W::I64Const(10));
+        self.instructions.push(W::I64DivU);
+        self.instructions.push(W::LocalSet(n));
+        self.instructions.push(W::LocalGet(n));
+        self.instructions.push(W::I64Eqz);
+        self.instructions.push(W::I32Eqz); // n != 0
+        self.instructions.push(W::BrIf(0)); // loop while n != 0
+        self.instructions.push(W::End);
+        // if neg { p-=1; mem[p] = '-' }
+        self.instructions.push(W::LocalGet(neg));
+        self.instructions.push(W::I64Eqz);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::If(BlockType::Empty));
+        self.instructions.push(W::LocalGet(p));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Sub);
+        self.instructions.push(W::LocalSet(p));
+        self.instructions.push(W::LocalGet(p));
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I32Const(45)); // '-'
+        self.instructions.push(W::I32Store8(0, 0));
+        self.instructions.push(W::End);
+        // iovec at mem[0] = ptr (=p), mem[4] = len (= end - p)
+        let end = if newline { BUF as i32 + 1 } else { BUF as i32 };
+        self.instructions.push(W::I32Const(0));
+        self.instructions.push(W::LocalGet(p));
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I32Store(2, 0));
+        self.instructions.push(W::I32Const(4));
+        self.instructions.push(W::I64Const(end as i64));
+        self.instructions.push(W::LocalGet(p));
+        self.instructions.push(W::I64Sub);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I32Store(2, 0));
+        // fd_write(stdout=1, iovec=0, count=1, nwritten=8); drop; result UNIT
+        self.instructions.push(W::I32Const(1));
+        self.instructions.push(W::I32Const(0));
+        self.instructions.push(W::I32Const(1));
+        self.instructions.push(W::I32Const(8));
+        self.instructions.push(W::Call(0));
+        self.instructions.push(W::Drop);
+        self.instructions.push(W::I64Const(0));
+    }
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), String> {
         match &expr.kind {
             ExprKind::Int(n) => {
@@ -1084,18 +1187,23 @@ impl<'a> FnCtx<'a> {
                     self.compile_expr(&items[1])?;
                     self.compile_expr(&items[2])?;
                     self.instructions.push(WasmInstruction::I64GtS);
+                    // Comparisons produce an i32; values are i64 throughout
+                    // (incl. `if` conditions and booleans-as-values), so widen.
+                    self.instructions.push(WasmInstruction::I64ExtendI32U);
                     return Ok(());
                 }
                 "<" => {
                     self.compile_expr(&items[1])?;
                     self.compile_expr(&items[2])?;
                     self.instructions.push(WasmInstruction::I64LtS);
+                    self.instructions.push(WasmInstruction::I64ExtendI32U);
                     return Ok(());
                 }
                 "=" => {
                     self.compile_expr(&items[1])?;
                     self.compile_expr(&items[2])?;
                     self.instructions.push(WasmInstruction::I64Eq);
+                    self.instructions.push(WasmInstruction::I64ExtendI32U);
                     return Ok(());
                 }
                 "str-len" => {
@@ -1211,9 +1319,10 @@ impl<'a> FnCtx<'a> {
                             self.instructions.push(WasmInstruction::I64Const(0));
                             return Ok(());
                         } else {
+                            // A computed (non-literal) argument: evaluate it to
+                            // an i64 and print it as a decimal line at runtime.
                             self.compile_expr(arg)?;
-                            self.instructions.push(WasmInstruction::Drop);
-                            self.instructions.push(WasmInstruction::I64Const(0));
+                            self.emit_print_i64(true);
                             return Ok(());
                         }
                     }
@@ -1737,6 +1846,33 @@ mod tests {
     use crate::parser::parse;
     fn ok(src: &str) {
         assert_eq!(&compile(&parse(src).unwrap()).unwrap()[0..4], b"\0asm");
+    }
+
+    /// Compile and assert the bytes are a *valid* wasm module (not just magic).
+    fn valid(src: &str) {
+        let bytes = compile(&parse(src).unwrap()).unwrap();
+        wasmparser::Validator::new()
+            .validate_all(&bytes)
+            .unwrap_or_else(|e| panic!("invalid wasm for {src:?}: {e}"));
+    }
+
+    #[test]
+    fn compile_if_comparison_is_valid() {
+        // `[if [< ..] ..]`: comparisons are widened to i64 so the `if`'s i64.eqz
+        // on the condition type-checks (this used to produce invalid wasm).
+        valid("[fn main [] [if [< 1 2] [println \"a\"] [println \"b\"]]]");
+        valid(
+            "[fn fib [n] [if [< n 2] n [+ [fib [- n 1]] [fib [- n 2]]]]] \
+             [fn main [] [println [fib 10]]]",
+        );
+        valid("[fn f [n] [if [= n 0] 1 [* n [f [- n 1]]]]] [fn main [] [println [f 5]]]");
+    }
+
+    #[test]
+    fn compile_println_int_is_valid() {
+        // Printing a computed (non-literal) value emits a runtime itoa + fd_write.
+        valid("[fn main [] [println [+ 1 2]]]");
+        valid("[fn main [] [println [- 0 42]]]");
     }
     #[test]
     fn compile_hello_world() {

@@ -34,3 +34,4 @@ cranelift-native = { version = "0.116", optional = true }
 
 [dev-dependencies]
 insta = "1"
+wasmparser = "0.227"
