@@ -1495,6 +1495,32 @@ impl<'a> FnCtx<'a> {
                     }
                     return Ok(());
                 }
+                "pipe" => {
+                    // Thread-last: [pipe x s1 s2 …] feeds the running value in
+                    // as the final argument of each step. Desugar to nested
+                    // call AST and compile that (matches the EIR lowerer).
+                    let args = &items[1..];
+                    if args.is_empty() {
+                        self.instructions.push(WasmInstruction::I64Const(0));
+                        return Ok(());
+                    }
+                    let mut current = args[0].clone();
+                    for step in &args[1..] {
+                        let sp = step.span;
+                        let call = match &step.kind {
+                            ExprKind::List(parts) if !parts.is_empty() => {
+                                let mut v = parts.clone();
+                                v.push(current);
+                                v
+                            }
+                            // A bare step (symbol or other callable): [step current]
+                            _ => vec![step.clone(), current],
+                        };
+                        current = Expr::new(ExprKind::List(call), sp);
+                    }
+                    self.compile_expr(&current)?;
+                    return Ok(());
+                }
                 "println" => {
                     if let Some(arg) = items.get(1) {
                         if let ExprKind::Str(s) = &arg.kind {
@@ -2244,6 +2270,12 @@ mod tests {
         // A closure that captures a free variable: the env-pointer was left on
         // the stack by a stray LocalTee, leaving 2 values where 1 was expected.
         valid(r#"[fn adder [n] [fn [x] [+ x n]]] [fn main [] [let f [adder 10]] [println [f 5]]]"#);
+    }
+    #[test]
+    fn compile_pipe_is_valid() {
+        // Thread-last desugaring into nested calls.
+        valid(r#"[fn main [] [println [pipe 10 [+ 5] [* 2]]]]"#);
+        valid(r#"[fn d [x] [* x 2]] [fn main [] [println [pipe 20 d [+ 1]]]]"#);
     }
     #[test]
     fn compile_str_eq_is_valid() {
