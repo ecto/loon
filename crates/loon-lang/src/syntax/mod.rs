@@ -1,5 +1,6 @@
 mod tokens;
 pub use tokens::Token;
+pub(crate) use tokens::{INTERP_END, INTERP_START};
 
 /// A byte-offset span in source code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

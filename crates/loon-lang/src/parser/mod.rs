@@ -168,7 +168,7 @@ impl<'a> Parser<'a> {
             Token::True => Ok(Expr::new(ExprKind::Bool(true), span)),
             Token::False => Ok(Expr::new(ExprKind::Bool(false), span)),
             Token::Str(s) => {
-                if s.contains('{') {
+                if s.contains(crate::syntax::INTERP_START) {
                     return desugar_fmt(&s, span, self.source);
                 }
                 Ok(Expr::new(ExprKind::Str(s), span))
@@ -338,70 +338,39 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Desugar `[fmt "hello {name}, {[+ 1 2]}"]` into `[str "hello " name ", " [+ 1 2]]`
+/// Desugar an interpolated string `"hello \(name), \([+ 1 2])"` into
+/// `[str "hello " name ", " [+ 1 2]]`. The lexer (`unescape`) has already
+/// delimited each `\(expr)` with INTERP_START/INTERP_END sentinels and made all
+/// braces literal, so here we just split on the sentinels and re-parse each
+/// expression span.
 fn desugar_fmt(template: &str, span: Span, _source: &str) -> Result<Expr, ParseError> {
+    use crate::syntax::{INTERP_END, INTERP_START};
     let mut parts: Vec<Expr> = Vec::new();
     let mut literal = String::new();
-    let mut chars = template.chars().peekable();
+    let mut chars = template.chars();
 
     while let Some(c) = chars.next() {
-        if c == '{' {
-            if chars.peek() == Some(&'{') {
-                // Escaped {{ → literal {
-                chars.next();
-                literal.push('{');
-            } else {
-                // Flush literal
-                if !literal.is_empty() {
-                    parts.push(Expr::new(ExprKind::Str(literal.clone()), span));
-                    literal.clear();
-                }
-                // Collect expression text until matching }
-                let mut expr_text = String::new();
-                let mut depth = 1;
-                for ec in chars.by_ref() {
-                    if ec == '{' {
-                        depth += 1;
-                        expr_text.push(ec);
-                    } else if ec == '}' {
-                        depth -= 1;
-                        if depth == 0 {
-                            break;
-                        }
-                        expr_text.push(ec);
-                    } else {
-                        expr_text.push(ec);
-                    }
-                }
-                if depth != 0 {
-                    return Err(ParseError {
-                        message: "unclosed { in fmt string".to_string(),
-                        span,
-                    });
-                }
-                // Parse the expression text
-                let inner_exprs = parse(&expr_text).map_err(|e| ParseError {
-                    message: format!("error in fmt interpolation: {}", e.message),
-                    span,
-                })?;
-                if inner_exprs.len() == 1 {
-                    parts.push(inner_exprs.into_iter().next().unwrap());
-                } else {
-                    return Err(ParseError {
-                        message: "fmt interpolation must contain exactly one expression"
-                            .to_string(),
-                        span,
-                    });
-                }
+        if c == INTERP_START {
+            if !literal.is_empty() {
+                parts.push(Expr::new(ExprKind::Str(literal.clone()), span));
+                literal.clear();
             }
-        } else if c == '}' {
-            if chars.peek() == Some(&'}') {
-                // Escaped }} → literal }
-                chars.next();
-                literal.push('}');
+            let mut expr_text = String::new();
+            for ec in chars.by_ref() {
+                if ec == INTERP_END {
+                    break;
+                }
+                expr_text.push(ec);
+            }
+            let inner_exprs = parse(&expr_text).map_err(|e| ParseError {
+                message: format!("error in interpolation: {}", e.message),
+                span,
+            })?;
+            if inner_exprs.len() == 1 {
+                parts.push(inner_exprs.into_iter().next().unwrap());
             } else {
                 return Err(ParseError {
-                    message: "unmatched } in fmt string".to_string(),
+                    message: "interpolation \\(…) must contain exactly one expression".to_string(),
                     span,
                 });
             }
@@ -415,7 +384,10 @@ fn desugar_fmt(template: &str, span: Span, _source: &str) -> Result<Expr, ParseE
         parts.push(Expr::new(ExprKind::Str(literal), span));
     }
 
-    // If no interpolation, just return a plain string
+    // Empty or a single literal — just a plain string.
+    if parts.is_empty() {
+        return Ok(Expr::new(ExprKind::Str(String::new()), span));
+    }
     if parts.len() == 1 {
         if let ExprKind::Str(_) = &parts[0].kind {
             return Ok(parts.into_iter().next().unwrap());
@@ -612,7 +584,7 @@ mod tests {
 
     #[test]
     fn parse_fmt_simple() {
-        let src = r#"[fmt "hello {name}"]"#;
+        let src = r#"[fmt "hello \(name)"]"#;
         let exprs = parse(src).unwrap();
         assert_eq!(exprs.len(), 1);
         // Should desugar to [str "hello " name]
@@ -621,7 +593,7 @@ mod tests {
 
     #[test]
     fn parse_fmt_expr() {
-        let src = r#"[fmt "2 + 2 = {[+ 2 2]}"]"#;
+        let src = r#"[fmt "2 + 2 = \([+ 2 2])"]"#;
         let exprs = parse(src).unwrap();
         assert_eq!(exprs.len(), 1);
         assert_eq!(exprs[0].to_string(), r#"[str "2 + 2 = " [+ 2 2]]"#);
@@ -637,16 +609,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_fmt_escaped_braces() {
-        let src = r#"[fmt "escaped {{braces}}"]"#;
+    fn parse_fmt_literal_braces() {
+        // Bare braces are ordinary literal characters (interpolation is \(…)).
+        let src = r#"[fmt "literal {braces}"]"#;
         let exprs = parse(src).unwrap();
         assert_eq!(exprs.len(), 1);
-        assert_eq!(exprs[0].to_string(), r#""escaped {braces}""#);
+        assert_eq!(exprs[0].to_string(), r#""literal {braces}""#);
     }
 
     #[test]
     fn parse_universal_interpolation() {
-        let src = r#"[let x "hello {name}"]"#;
+        let src = r#"[let x "hello \(name)"]"#;
         let exprs = parse(src).unwrap();
         assert_eq!(exprs.len(), 1);
         // The string "hello {name}" should desugar to [str "hello " name]

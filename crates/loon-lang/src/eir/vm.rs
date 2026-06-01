@@ -2140,6 +2140,19 @@ mod tests {
     }
 
     #[test]
+    fn vm_interpolation() {
+        // \(expr) interpolates...
+        assert_eq!(
+            run_output(r#"[let n "world"] [println "hi \(n)"]"#),
+            vec!["hi world"]
+        );
+        assert_eq!(run_output(r#"[println "2+2=\([+ 2 2])"]"#), vec!["2+2=4"]);
+        // ...and bare braces are ordinary literal characters (no escaping).
+        assert_eq!(run_output(r#"[println "{:a 1 :b 2}"]"#), vec!["{:a 1 :b 2}"]);
+        assert_eq!(run_output(r##"[println "#{IO Fail}"]"##), vec!["#{IO Fail}"]);
+    }
+
+    #[test]
     fn vm_map_insertion_order() {
         // keys / display follow insertion order deterministically (not hash
         // order). assoc of an existing key keeps its position; a new key appends.

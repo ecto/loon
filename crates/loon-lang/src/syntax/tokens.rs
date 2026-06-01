@@ -1,60 +1,79 @@
 use logos::Logos;
 
+// Interpolation sentinels: unambiguous markers delimiting an interpolated
+// expression in the unescaped string, so the parser (desugar_fmt) can find them
+// without colliding with any literal text (these control chars can't appear in
+// source). `\(expr)` becomes START expr END.
+pub(crate) const INTERP_START: char = '\u{1}';
+pub(crate) const INTERP_END: char = '\u{2}';
+
+/// Unescape a string literal token.
+///
+/// Interpolation is Swift/Roc-style `\(expr)`: bare `{` and `}` are ordinary
+/// literal characters (so map/JSON/embedded-Loon text needs no escaping). `\{`
+/// and `\}` are also accepted as literal braces for back-compat. Standard
+/// escapes `\n \t \\ \"` apply. An `\(…)` span is emitted between sentinels with
+/// its expression text preserved verbatim (so it can be re-parsed); inner string
+/// quotes are written `\"` and balance parens are tracked so a `)` inside a
+/// nested string doesn't close the interpolation early.
 fn unescape(s: &str) -> String {
     let mut out = String::new();
-    let mut chars = s[1..s.len() - 1].chars().peekable();
-    let mut brace_depth: u32 = 0;
-    let mut in_string = false; // inside "..." within interpolation
+    let mut chars = s[1..s.len() - 1].chars();
 
     while let Some(c) = chars.next() {
-        if brace_depth > 0 {
-            // Inside {…} interpolation block.
-            // Convert \" → " (needed for inner string delimiters).
-            // Preserve other escapes (\n, \t, \\) verbatim for re-parse.
-            if c == '\\' {
-                match chars.next() {
-                    Some('"') => {
-                        out.push('"');
-                        in_string = !in_string;
-                    }
-                    Some(other) => {
-                        out.push('\\');
-                        out.push(other);
-                    }
-                    None => out.push('\\'),
-                }
-            } else {
-                out.push(c);
-                if !in_string {
-                    match c {
-                        '{' => brace_depth += 1,
-                        '}' => brace_depth -= 1,
-                        _ => {}
-                    }
-                }
-            }
-            continue;
-        }
-
-        // Outside interpolation — normal unescape
         if c == '\\' {
             match chars.next() {
                 Some('n') => out.push('\n'),
                 Some('t') => out.push('\t'),
                 Some('\\') => out.push('\\'),
                 Some('"') => out.push('"'),
-                Some('{') => out.push_str("{{"),
-                Some('}') => out.push_str("}}"),
+                Some('{') => out.push('{'), // literal brace (back-compat)
+                Some('}') => out.push('}'), // literal brace (back-compat)
+                Some('(') => {
+                    // Interpolation: collect the expression verbatim up to the
+                    // matching ')'.
+                    out.push(INTERP_START);
+                    let mut depth: u32 = 1;
+                    let mut in_string = false;
+                    while let Some(ec) = chars.next() {
+                        if ec == '\\' {
+                            // \" toggles the inner string and becomes a bare
+                            // quote for re-parsing; any other escape is kept.
+                            match chars.next() {
+                                Some('"') => {
+                                    out.push('"');
+                                    in_string = !in_string;
+                                }
+                                Some(other) => {
+                                    out.push('\\');
+                                    out.push(other);
+                                }
+                                None => out.push('\\'),
+                            }
+                        } else {
+                            if !in_string {
+                                if ec == '(' {
+                                    depth += 1;
+                                } else if ec == ')' {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        break;
+                                    }
+                                }
+                            }
+                            out.push(ec);
+                        }
+                    }
+                    out.push(INTERP_END);
+                }
                 Some(other) => {
                     out.push('\\');
                     out.push(other);
                 }
                 None => out.push('\\'),
             }
-        } else if c == '{' {
-            out.push('{');
-            brace_depth = 1;
         } else {
+            // Bare `{` / `}` and everything else are literal characters.
             out.push(c);
         }
     }

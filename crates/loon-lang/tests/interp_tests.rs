@@ -716,20 +716,21 @@ fn stdlib_into_map() {
 #[test]
 fn fmt_interpolation() {
     assert_eq!(
-        run(r#"[let name "world"] [fmt "hello {name}"]"#),
+        run(r#"[let name "world"] [fmt "hello \(name)"]"#),
         Value::Str("hello world".into())
     );
     assert_eq!(
-        run(r#"[fmt "2 + 2 = {[+ 2 2]}"]"#),
+        run(r#"[fmt "2 + 2 = \([+ 2 2])"]"#),
         Value::Str("2 + 2 = 4".into())
     );
     assert_eq!(
         run(r#"[fmt "no interpolation"]"#),
         Value::Str("no interpolation".into())
     );
+    // Bare braces are ordinary literal characters now.
     assert_eq!(
-        run(r#"[fmt "escaped {{braces}}"]"#),
-        Value::Str("escaped {braces}".into())
+        run(r#"[fmt "literal {braces}"]"#),
+        Value::Str("literal {braces}".into())
     );
 }
 
@@ -975,11 +976,11 @@ fn dot_access_string_keyed_map() {
 
 #[test]
 fn newline_inside_interpolation() {
-    // \n inside {…} interpolation should be preserved for re-parse
+    // \n inside \(…) interpolation should be preserved for re-parse
     assert_eq!(
         run(r#"
             [let items #["a" "b"]]
-            [str "list:\n{[join \"\n\" items]}"]
+            [str "list:\n\([join \"\n\" items])"]
         "#),
         Value::Str("list:\na\nb".into())
     );
