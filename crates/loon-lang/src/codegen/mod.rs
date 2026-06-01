@@ -794,6 +794,8 @@ impl Compiler {
             local_count: params.len() as u32,
             instructions: Vec::new(),
             compiler: self,
+            loop_starts: Vec::new(),
+            loop_vars: Vec::new(),
         };
         for (i, p) in params.iter().enumerate() {
             ctx.locals.insert(p.clone(), i as u32);
@@ -1032,6 +1034,10 @@ struct FnCtx<'a> {
     local_count: u32,
     instructions: Vec<WasmInstruction>,
     compiler: &'a mut Compiler,
+    /// For each enclosing `loop`: the instruction index just after its `Loop`
+    /// op (to compute `recur`'s branch depth) and its loop-variable locals.
+    loop_starts: Vec<usize>,
+    loop_vars: Vec<Vec<u32>>,
 }
 
 impl<'a> FnCtx<'a> {
@@ -1442,6 +1448,82 @@ impl<'a> FnCtx<'a> {
                     self.compile_match_arms(sc, &items[2..])?;
                     return Ok(());
                 }
+                "loop" => {
+                    // [loop [v0 i0 v1 i1 …] body…] — loop variables become
+                    // locals seeded with their inits; the body runs in a
+                    // wasm `loop` producing an i64; `recur` updates the locals
+                    // and branches back.
+                    let bindings = match items.get(1).map(|e| &e.kind) {
+                        Some(ExprKind::List(b)) => b.clone(),
+                        _ => return Err("loop requires a [v init …] bindings list".into()),
+                    };
+                    let mut lvars = Vec::new();
+                    let mut j = 0;
+                    while j + 1 < bindings.len() {
+                        let name = match &bindings[j].kind {
+                            ExprKind::Symbol(s) => s.clone(),
+                            _ => return Err("loop variable must be a symbol".into()),
+                        };
+                        self.compile_expr(&bindings[j + 1])?;
+                        let local = self.alloc_local();
+                        self.instructions.push(WasmInstruction::LocalSet(local));
+                        self.locals.insert(name, local);
+                        lvars.push(local);
+                        j += 2;
+                    }
+                    self.instructions
+                        .push(WasmInstruction::Loop(BlockType::Result(ValType::I64)));
+                    self.loop_starts.push(self.instructions.len());
+                    self.loop_vars.push(lvars);
+                    let body = &items[2..];
+                    if body.is_empty() {
+                        self.instructions.push(WasmInstruction::I64Const(0));
+                    }
+                    for (k, e) in body.iter().enumerate() {
+                        self.compile_expr(e)?;
+                        if k + 1 < body.len() {
+                            self.instructions.push(WasmInstruction::Drop);
+                        }
+                    }
+                    self.instructions.push(WasmInstruction::End);
+                    self.loop_starts.pop();
+                    self.loop_vars.pop();
+                    return Ok(());
+                }
+                "recur" => {
+                    let lvars = self
+                        .loop_vars
+                        .last()
+                        .cloned()
+                        .ok_or("recur outside of a loop")?;
+                    let loop_start = *self.loop_starts.last().unwrap();
+                    // Evaluate args into temporaries first (so a recur arg may
+                    // safely read the current loop variables), then assign.
+                    let mut temps = Vec::new();
+                    for a in &items[1..] {
+                        self.compile_expr(a)?;
+                        let t = self.alloc_local();
+                        self.instructions.push(WasmInstruction::LocalSet(t));
+                        temps.push(t);
+                    }
+                    for (lv, t) in lvars.iter().zip(temps.iter()) {
+                        self.instructions.push(WasmInstruction::LocalGet(*t));
+                        self.instructions.push(WasmInstruction::LocalSet(*lv));
+                    }
+                    // Branch depth = control frames opened since the loop body.
+                    let mut depth: i32 = 0;
+                    for instr in &self.instructions[loop_start..] {
+                        match instr {
+                            WasmInstruction::If(_)
+                            | WasmInstruction::Block(_)
+                            | WasmInstruction::Loop(_) => depth += 1,
+                            WasmInstruction::End => depth -= 1,
+                            _ => {}
+                        }
+                    }
+                    self.instructions.push(WasmInstruction::Br(depth.max(0) as u32));
+                    return Ok(());
+                }
                 "map" | "filter" => {
                     if items.len() >= 3 {
                         if let ExprKind::List(li) = &items[1].kind {
@@ -1755,6 +1837,8 @@ impl<'a> FnCtx<'a> {
             local_count: all_params.len() as u32,
             instructions: Vec::new(),
             compiler: self.compiler,
+            loop_starts: Vec::new(),
+            loop_vars: Vec::new(),
         };
         for (i, p) in all_params.iter().enumerate() {
             lctx.locals.insert(p.clone(), i as u32);
@@ -1831,6 +1915,8 @@ impl<'a> FnCtx<'a> {
             local_count: tp as u32,
             instructions: Vec::new(),
             compiler: self.compiler,
+            loop_starts: Vec::new(),
+            loop_vars: Vec::new(),
         };
         cctx.locals.insert("__env_ptr".to_string(), 0);
         for (i, p) in params.iter().enumerate() {
@@ -2009,6 +2095,13 @@ mod tests {
         valid("[fn main [] [let x 5] [let y 6] [println [* x y]]]");
         valid("[fn main [] [println 7] [println 8] [println 9]]");
         valid("[fn g [a] [let b [* a 2]] [+ b 1]] [fn main [] [println [g 10]]]");
+    }
+
+    #[test]
+    fn compile_loop_recur_is_valid() {
+        valid("[fn main [] [println [loop [i 0 a 0] [if [>= i 5] a [recur [+ i 1] [+ a i]]]]]]");
+        valid("[fn sumto [n] [loop [i 1 a 0] [if [> i n] a [recur [+ i 1] [+ a i]]]]] \
+               [fn main [] [println [sumto 100]]]");
     }
 
     #[test]
