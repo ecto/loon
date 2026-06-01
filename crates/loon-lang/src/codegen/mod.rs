@@ -1167,6 +1167,69 @@ impl<'a> FnCtx<'a> {
         self.instructions.push(W::Drop);
         self.instructions.push(W::I64Const(0));
     }
+    /// Consume a packed string `(ptr<<32)|len` on the stack and write its bytes
+    /// to stdout via WASI fd_write, optionally followed by a newline, leaving
+    /// UNIT (i64 0). Used when `println`'s argument is statically a string.
+    fn emit_print_str(&mut self, newline: bool) {
+        use WasmInstruction as W;
+        let s = self.alloc_local();
+        self.instructions.push(W::LocalSet(s));
+        // iovec at mem[0] = ptr (= s >> 32), mem[4] = len (= s & 0xFFFFFFFF)
+        self.instructions.push(W::I32Const(0));
+        self.instructions.push(W::LocalGet(s));
+        self.instructions.push(W::I64Const(32));
+        self.instructions.push(W::I64ShrU);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I32Store(2, 0));
+        self.instructions.push(W::I32Const(4));
+        self.instructions.push(W::LocalGet(s));
+        self.instructions.push(W::I64Const(0xFFFF_FFFF));
+        self.instructions.push(W::I64And);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I32Store(2, 0));
+        self.instructions.push(W::I32Const(1)); // stdout
+        self.instructions.push(W::I32Const(0)); // iovec
+        self.instructions.push(W::I32Const(1)); // count
+        self.instructions.push(W::I32Const(8)); // nwritten
+        self.instructions.push(W::Call(0));
+        self.instructions.push(W::Drop);
+        if newline {
+            const BUF: i32 = 542;
+            self.instructions.push(W::I32Const(BUF));
+            self.instructions.push(W::I32Const(10)); // '\n'
+            self.instructions.push(W::I32Store8(0, 0));
+            self.instructions.push(W::I32Const(0));
+            self.instructions.push(W::I32Const(BUF));
+            self.instructions.push(W::I32Store(2, 0));
+            self.instructions.push(W::I32Const(4));
+            self.instructions.push(W::I32Const(1));
+            self.instructions.push(W::I32Store(2, 0));
+            self.instructions.push(W::I32Const(1));
+            self.instructions.push(W::I32Const(0));
+            self.instructions.push(W::I32Const(1));
+            self.instructions.push(W::I32Const(8));
+            self.instructions.push(W::Call(0));
+            self.instructions.push(W::Drop);
+        }
+        self.instructions.push(W::I64Const(0));
+    }
+    /// Whether an expression statically produces a string value. The value
+    /// model is untagged (every value is a raw i64), so `println` can only
+    /// pick the string-printing path when it can prove the argument is a
+    /// string at compile time.
+    fn expr_is_string(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Str(_) => true,
+            ExprKind::List(items) => match items.first().map(|e| &e.kind) {
+                Some(ExprKind::Symbol(s)) => matches!(
+                    s.as_str(),
+                    "str" | "str-concat" | "substring"
+                ),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), String> {
         match &expr.kind {
             ExprKind::Int(n) => {
@@ -1452,6 +1515,12 @@ impl<'a> FnCtx<'a> {
                             self.instructions.push(WasmInstruction::Call(0));
                             self.instructions.push(WasmInstruction::Drop);
                             self.instructions.push(WasmInstruction::I64Const(0));
+                            return Ok(());
+                        } else if self.expr_is_string(arg) {
+                            // A computed string (e.g. [str a b], interpolation):
+                            // print its bytes followed by a newline.
+                            self.compile_expr(arg)?;
+                            self.emit_print_str(true);
                             return Ok(());
                         } else {
                             // A computed (non-literal) argument: evaluate it to
@@ -2155,6 +2224,20 @@ mod tests {
     #[test]
     fn compile_hello_world() {
         ok(r#"[fn main [] [println "hello, world!"]]"#);
+    }
+    #[test]
+    fn compile_println_string_is_valid() {
+        // Printing a computed string takes the byte-printing path (not itoa).
+        valid(r#"[fn main [] [println [str "a" "b"]]]"#);
+        valid(r#"[fn main [] [let s [str "x" "y"]] [println s]]"#);
+        valid(r#"[fn main [] [println [str "n=" [str "4" "2"]]]]"#);
+    }
+    #[test]
+    fn compile_closure_and_collections_are_valid() {
+        // The function-index decoupling must keep these runnable (imports +
+        // _start intact). Regression guard for the push-order bug.
+        valid(r#"[fn ap [f x] [f x]] [fn main [] [println [ap [fn [y] [* y 2]] 21]]]"#);
+        valid(r#"[fn main [] [println [vec-get [vec-push [vec-push [vec-new] 10] 20] 1]]]"#);
     }
     #[test]
     fn compile_arithmetic() {
