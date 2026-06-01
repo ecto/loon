@@ -1,0 +1,429 @@
+; Loon self-hosted frontend — Stage 3a: types + Hindley-Milner core.
+;
+; Concatenated after reader.oo (it reuses Span). This file is pure type
+; machinery — no Forms, no inference yet. Stage 3b (infer.oo) walks Forms and
+; drives these primitives; Stage 3c layers effect-row semantics on top of the
+; row unification implemented here.
+;
+; Design notes (consequences of the EIR VM, established in Stages 0-2):
+;   * No mutation: the substitution and the fresh-variable counter are threaded
+;     functionally. Every operation that can allocate a fresh variable or learn
+;     a binding takes a `Subst` and returns an updated one (see `Fr` / `UR`).
+;   * Maps key on heap identity for strings, so environments are vectors of
+;     records scanned linearly (as in reader.oo / expander.oo). The Subst is a
+;     vector of `[SEnt id ty]` entries keyed by integer variable id, where `=`
+;     is reliable.
+;   * Diagnostics here are returned as values (`UR`), not effects: unification
+;     is a leaf operation and threading a result is simpler to test. Stage 3b
+;     raises the user-facing `Check.error` effect at the inference layer.
+;
+; Rows are Remy/Leijen style and shared by records (3b) and effect rows (3c):
+;   TRowEmpty | TRowExtend label field rest | TRowVar id
+; Type variables (TVar) and row variables (TRowVar) share the integer id space
+; minted by `fresh`/`fresh-row` but are distinguished by constructor, so occurs
+; and substitution are kind-aware.
+
+; ── Type representation ─────────────────────────────────────────────────────
+
+[type Type
+  [TInt]                          ; i64 / int literals
+  [TFloat]                        ; f64
+  [TBool]
+  [TStr]
+  [TKw]                           ; keyword
+  [TUnit]
+  [TVar    i64]                   ; unification type variable
+  [TFn     Vec Type Type]         ; params (Vec Type), effect row, result
+  [TCon    String Vec]            ; named constructor: name + type args
+  [TTuple  Vec]                   ; (a, b, ...)
+  [TRecord Type]                  ; record wrapping a row
+  [TRowEmpty]                     ; closed empty row {}
+  [TRowExtend String Type Type]   ; { label: field | rest }
+  [TRowVar i64]]                  ; open row tail variable
+
+; A type scheme: quantified type-var ids, quantified row-var ids, and a body.
+[type Scheme [Scheme Vec Vec Type]]
+
+; A substitution: the next fresh id to mint, and the learned bindings. Bindings
+; for TVar and TRowVar live in the same vector; `kind` (:var | :row) on each
+; entry disambiguates the id.
+[type SEnt  [SEnt Keyword i64 Type]]
+[type Subst [Subst i64 Vec]]
+
+; A typing environment: name -> Scheme, scanned linearly.
+[type EBind [EBind String Scheme]]
+[type TEnv  [TEnv Vec]]
+
+; ── Threaded results ────────────────────────────────────────────────────────
+; `Fr` bundles a freshly-produced Type with the advanced Subst.
+[type Fr [Fr Type Subst]]
+; `UR` is the result of unification: success carries the refined Subst; failure
+; carries a message and the Subst as it stood (so callers can keep going).
+[type UR [UOk Subst] [UErr String Subst]]
+; `RW` is a row-rewrite result: the field type for a sought label, the residual
+; row, and the advanced Subst — or a failure.
+[type RW [RWOk Type Type Subst] [RWErr String Subst]]
+; A free-variable entry: kind (:var | :row) + id.
+[type FV [FV Keyword i64]]
+
+; ── Subst basics ────────────────────────────────────────────────────────────
+
+[fn subst-empty [] [Subst 0 #[]]]
+
+; Mint a fresh type variable.
+[fn fresh [s]
+  [match s [Subst n binds] [Fr [TVar n] [Subst [+ n 1] binds]]]]
+
+; Mint a fresh row variable.
+[fn fresh-row [s]
+  [match s [Subst n binds] [Fr [TRowVar n] [Subst [+ n 1] binds]]]]
+
+; Look up a binding for (kind, id). Returns :none or the bound Type.
+[fn subst-get [s kind id]
+  [match s [Subst _ binds]
+    [loop [k 0]
+      [if [>= k [len binds]]
+        :none
+        [match [nth binds k]
+          [SEnt ekind eid ety]
+          [if [if [= eid id] [keq ekind kind] false]
+            ety
+            [recur [+ k 1]]]]]]]]
+
+; Keyword equality (the VM's `=` works on keywords).
+[fn keq [a b] [= a b]]
+
+; Extend the substitution with (kind, id) := ty.
+[fn subst-put [s kind id ty]
+  [match s [Subst n binds] [Subst n [conj binds [SEnt kind id ty]]]]]
+
+; ── Resolution ──────────────────────────────────────────────────────────────
+; Follow variable chains to a head form: a non-variable, or an unbound var/row.
+
+[fn resolve [s t]
+  [match t
+    [TVar id]
+    [match [subst-get s :var id] :none t ty [resolve s ty]]
+    [TRowVar id]
+    [match [subst-get s :row id] :none t ty [resolve s ty]]
+    _ t]]
+
+; ── Occurs check ────────────────────────────────────────────────────────────
+; Does variable (kind,id) occur anywhere in `t` (under the current subst)?
+
+[fn occurs [s kind id t]
+  [let t [resolve s t]]
+  [match t
+    [TVar v]   [if [keq kind :var] [= v id] false]
+    [TRowVar v] [if [keq kind :row] [= v id] false]
+    [TFn ps eff r]
+    [if [occurs-vec s kind id ps]
+      true
+      [if [occurs s kind id eff] true [occurs s kind id r]]]
+    [TCon _ args] [occurs-vec s kind id args]
+    [TTuple xs] [occurs-vec s kind id xs]
+    [TRecord row] [occurs s kind id row]
+    [TRowExtend _ f rest]
+    [if [occurs s kind id f] true [occurs s kind id rest]]
+    _ false]]
+
+[fn occurs-vec [s kind id xs]
+  [loop [k 0]
+    [if [>= k [len xs]]
+      false
+      [if [occurs s kind id [nth xs k]] true [recur [+ k 1]]]]]]
+
+; ── Unification ─────────────────────────────────────────────────────────────
+
+[fn bind-var [s kind id t]
+  [if [occurs s kind id t]
+    [UErr "occurs check: cannot construct an infinite type" s]
+    [UOk [subst-put s kind id t]]]]
+
+[fn unify [s a b]
+  [let a [resolve s a]]
+  [let b [resolve s b]]
+  [match a
+    [TVar id]
+    [match b [TVar id2] [if [= id id2] [UOk s] [bind-var s :var id b]]
+             _ [bind-var s :var id b]]
+    _
+    [match b
+      [TVar id] [bind-var s :var id a]
+      _ [unify-con s a b]]]]
+
+; Both sides are non-(type)variables. Rows are still handled here.
+[fn unify-con [s a b]
+  [match a
+    [TInt]   [match b [TInt] [UOk s] _ [mismatch s a b]]
+    [TFloat] [match b [TFloat] [UOk s] _ [mismatch s a b]]
+    [TBool]  [match b [TBool] [UOk s] _ [mismatch s a b]]
+    [TStr]   [match b [TStr] [UOk s] _ [mismatch s a b]]
+    [TKw]    [match b [TKw] [UOk s] _ [mismatch s a b]]
+    [TUnit]  [match b [TUnit] [UOk s] _ [mismatch s a b]]
+    [TFn ps1 e1 r1]
+    [match b [TFn ps2 e2 r2] [unify-fn s ps1 e1 r1 ps2 e2 r2] _ [mismatch s a b]]
+    [TCon n1 a1]
+    [match b [TCon n2 a2]
+      [if [streq n1 n2]
+        [if [= [len a1] [len a2]]
+          [unify-vec s a1 a2]
+          [mismatch s a b]]
+        [mismatch s a b]]
+      _ [mismatch s a b]]
+    [TTuple x1]
+    [match b [TTuple x2]
+      [if [= [len x1] [len x2]] [unify-vec s x1 x2] [mismatch s a b]]
+      _ [mismatch s a b]]
+    [TRecord r1]
+    [match b [TRecord r2] [unify s r1 r2] _ [mismatch s a b]]
+    [TRowEmpty]      [unify-row s a b]
+    [TRowExtend _ _ _] [unify-row s a b]
+    [TRowVar _]      [unify-row s a b]
+    _ [mismatch s a b]]]
+
+[fn mismatch [s a b]
+  [UErr [str "type mismatch: " [show-type s a] " vs " [show-type s b]] s]]
+
+; Unify two function types: arities must match, then params, effect, result.
+[fn unify-fn [s ps1 e1 r1 ps2 e2 r2]
+  [if [= [len ps1] [len ps2]]
+    [match [unify-vec s ps1 ps2]
+      [UOk s1]
+      [match [unify s1 e1 e2]
+        [UOk s2] [unify s2 r1 r2]
+        err err]
+      err err]
+    [UErr "function arity mismatch" s]]]
+
+; Unify two equal-length vectors of types, threading the subst.
+[fn unify-vec [s xs ys]
+  [loop [k 0 s s]
+    [if [>= k [len xs]]
+      [UOk s]
+      [match [unify s [nth xs k] [nth ys k]]
+        [UOk s2] [recur [+ k 1] s2]
+        err err]]]]
+
+; ── Row unification (Remy/Leijen) ───────────────────────────────────────────
+; Unify two rows. Both already resolved at the head by `unify`.
+
+[fn unify-row [s a b]
+  [let a [resolve s a]]
+  [let b [resolve s b]]
+  [match a
+    [TRowEmpty]
+    [match b
+      [TRowEmpty] [UOk s]
+      [TRowVar id] [bind-var s :row id a]
+      _ [UErr "row mismatch: extra fields" s]]
+    [TRowVar id]
+    [match b
+      [TRowVar id2] [if [= id id2] [UOk s] [bind-var s :row id b]]
+      _ [bind-var s :row id b]]
+    [TRowExtend label field rest]
+    [match [rewrite-row s b label]
+      [RWOk field2 rest2 s1]
+      [match [unify s1 field field2]
+        [UOk s2] [unify s2 rest rest2]
+        err err]
+      [RWErr m s1] [UErr m s1]]
+    _ [UErr "not a row" s]]]
+
+; Find `label` in row `r`, returning its field type and the residual row. If `r`
+; ends in a row variable, extend it with a fresh field so the label can match.
+[fn rewrite-row [s r label]
+  [let r [resolve s r]]
+  [match r
+    [TRowEmpty] [RWErr [str "row does not contain field " label] s]
+    [TRowExtend l f rest]
+    [if [streq l label]
+      [RWOk f rest s]
+      [match [rewrite-row s rest label]
+        [RWOk f2 rest2 s2] [RWOk f2 [TRowExtend l f rest2] s2]
+        err err]]
+    [TRowVar id]
+    [match [fresh s]
+      [Fr field s1]
+      [match [fresh-row s1]
+        [Fr beta s2]
+        [RWOk field beta [subst-put s2 :row id [TRowExtend label field beta]]]]]
+    _ [RWErr "cannot rewrite a non-row" s]]]
+
+; ── Free type variables ─────────────────────────────────────────────────────
+; Collect free vars of a type (under the subst) as a deduped vector of FV.
+
+[fn ftv [s t]
+  [ftv-into s t #[]]]
+
+[fn ftv-into [s t acc]
+  [let t [resolve s t]]
+  [match t
+    [TVar id] [fv-add acc [FV :var id]]
+    [TRowVar id] [fv-add acc [FV :row id]]
+    [TFn ps eff r]
+    [ftv-into s r [ftv-into s eff [ftv-vec s ps acc]]]
+    [TCon _ args] [ftv-vec s args acc]
+    [TTuple xs] [ftv-vec s xs acc]
+    [TRecord row] [ftv-into s row acc]
+    [TRowExtend _ f rest] [ftv-into s rest [ftv-into s f acc]]
+    _ acc]]
+
+[fn ftv-vec [s xs acc]
+  [loop [k 0 acc acc]
+    [if [>= k [len xs]] acc [recur [+ k 1] [ftv-into s [nth xs k] acc]]]]]
+
+[fn fv-eq [a b]
+  [match a [FV ak ai]
+    [match b [FV bk bi] [if [= ai bi] [keq ak bk] false]]]]
+
+[fn fv-member [v xs]
+  [loop [k 0]
+    [if [>= k [len xs]] false
+      [if [fv-eq v [nth xs k]] true [recur [+ k 1]]]]]]
+
+[fn fv-add [xs v] [if [fv-member v xs] xs [conj xs v]]]
+
+; Free vars of an environment (union over all schemes' free vars).
+[fn ftv-env [s env]
+  [match env [TEnv binds]
+    [loop [k 0 acc #[]]
+      [if [>= k [len binds]]
+        acc
+        [match [nth binds k]
+          [EBind _ sch] [recur [+ k 1] [fv-union acc [ftv-scheme s sch]]]]]]]]
+
+; Free vars of a scheme: the body's free vars minus the quantified ones.
+[fn ftv-scheme [s sch]
+  [match sch [Scheme tvs rvs body]
+    [fv-diff [ftv s body] [scheme-bound tvs rvs]]]]
+
+; The quantified variables of a scheme as an FV vector.
+[fn scheme-bound [tvs rvs]
+  [loop [k 0 acc #[]]
+    [if [>= k [len tvs]]
+      [loop [j 0 acc acc]
+        [if [>= j [len rvs]]
+          acc
+          [recur [+ j 1] [conj acc [FV :row [nth rvs j]]]]]]
+      [recur [+ k 1] [conj acc [FV :var [nth tvs k]]]]]]]
+
+[fn fv-union [a b]
+  [loop [k 0 acc a] [if [>= k [len b]] acc [recur [+ k 1] [fv-add acc [nth b k]]]]]]
+
+; ── Generalization ──────────────────────────────────────────────────────────
+; Quantify over the type's free vars that are not free in the environment.
+
+[fn generalize [s env t]
+  [let tf [ftv s t]]
+  [let ef [ftv-env s env]]
+  [let q [fv-diff tf ef]]
+  [Scheme [fv-ids q :var] [fv-ids q :row] t]]
+
+[fn fv-diff [a b]
+  [loop [k 0 acc #[]]
+    [if [>= k [len a]]
+      acc
+      [recur [+ k 1]
+        [if [fv-member [nth a k] b] acc [conj acc [nth a k]]]]]]]
+
+; Pull the ids of one kind out of an FV vector.
+[fn fv-ids [xs kind]
+  [loop [k 0 acc #[]]
+    [if [>= k [len xs]]
+      acc
+      [match [nth xs k]
+        [FV vk vi]
+        [recur [+ k 1] [if [keq vk kind] [conj acc vi] acc]]]]]]
+
+; ── Instantiation ───────────────────────────────────────────────────────────
+; Replace a scheme's quantified vars with fresh ones, returning the body and the
+; advanced Subst. Builds a rename map then applies it structurally.
+
+[type Ren [Ren Keyword i64 Type]]
+
+[fn instantiate [s sch]
+  [match sch [Scheme tvs rvs body]
+    [match [fresh-many s tvs :var #[]]
+      [Fr2 ren1 s1]
+      [match [fresh-many s1 rvs :row ren1]
+        [Fr2 ren s2]
+        [Fr [apply-ren ren body] s2]]]]]
+
+; Threaded build of a rename map; `Fr2` bundles the map with the Subst.
+[type Fr2 [Fr2 Vec Subst]]
+
+[fn fresh-many [s ids kind ren]
+  [loop [k 0 s s ren ren]
+    [if [>= k [len ids]]
+      [Fr2 ren s]
+      [match [if [keq kind :var] [fresh s] [fresh-row s]]
+        [Fr nv s2]
+        [recur [+ k 1] s2 [conj ren [Ren kind [nth ids k] nv]]]]]]]
+
+[fn ren-get [ren kind id]
+  [loop [k 0]
+    [if [>= k [len ren]]
+      :none
+      [match [nth ren k]
+        [Ren rk ri rt]
+        [if [if [= ri id] [keq rk kind] false] rt [recur [+ k 1]]]]]]]
+
+[fn apply-ren [ren t]
+  [match t
+    [TVar id] [match [ren-get ren :var id] :none t nt nt]
+    [TRowVar id] [match [ren-get ren :row id] :none t nt nt]
+    [TFn ps eff r] [TFn [apply-ren-vec ren ps] [apply-ren ren eff] [apply-ren ren r]]
+    [TCon n args] [TCon n [apply-ren-vec ren args]]
+    [TTuple xs] [TTuple [apply-ren-vec ren xs]]
+    [TRecord row] [TRecord [apply-ren ren row]]
+    [TRowExtend l f rest] [TRowExtend l [apply-ren ren f] [apply-ren ren rest]]
+    _ t]]
+
+[fn apply-ren-vec [ren xs]
+  [loop [k 0 acc #[]]
+    [if [>= k [len xs]] acc [recur [+ k 1] [conj acc [apply-ren ren [nth xs k]]]]]]]
+
+; ── Typing environment ──────────────────────────────────────────────────────
+
+[fn env-empty [] [TEnv #[]]]
+
+[fn env-extend [env name sch]
+  [match env [TEnv binds] [TEnv [conj binds [EBind name sch]]]]]
+
+; Bind a monomorphic type (an empty scheme).
+[fn env-bind [env name t]
+  [env-extend env name [Scheme #[] #[] t]]]
+
+[fn env-lookup [env name]
+  [match env [TEnv binds]
+    [loop [k [- [len binds] 1]]            ; most-recent binding wins
+      [if [< k 0]
+        :none
+        [match [nth binds k]
+          [EBind bn sch] [if [streq bn name] sch [recur [- k 1]]]]]]]]
+
+; ── Pretty-printing (for diagnostics / tests) ───────────────────────────────
+
+[fn show-type [s t]
+  [let t [resolve s t]]
+  [match t
+    [TInt] "Int" [TFloat] "Float" [TBool] "Bool" [TStr] "Str"
+    [TKw] "Kw" [TUnit] "Unit"
+    [TVar id] [str "t" id]
+    [TRowVar id] [str "r" id]
+    [TFn ps eff r]
+    [str "[Fn " [show-vec s ps] " ! " [show-type s eff] " -> " [show-type s r] "]"]
+    [TCon n args]
+    [if [= [len args] 0] n [str "(" n " " [show-vec s args] ")"]]
+    [TTuple xs] [str "(" [show-vec s xs] ")"]
+    [TRecord row] [str [ch-ob] [show-type s row] [ch-cb]]
+    [TRowEmpty] "·"
+    [TRowExtend l f rest] [str l ":" [show-type s f] " " [show-type s rest]]
+    _ "?"]]
+
+[fn show-vec [s xs]
+  [loop [k 0 acc #[]]
+    [if [>= k [len xs]]
+      [join " " acc]
+      [recur [+ k 1] [conj acc [show-type s [nth xs k]]]]]]]
