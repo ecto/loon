@@ -901,6 +901,27 @@ impl Compiler {
     fn is_multi_arity(args: &[Expr]) -> bool {
         matches!(args.get(1).map(|e| &e.kind), Some(ExprKind::Tuple(_)))
     }
+    /// Whether `expr` contains a `recur` that targets the enclosing function
+    /// (i.e. not nested inside its own `loop`, and not inside a nested `fn`).
+    fn contains_bare_recur(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::List(items) => {
+                if let Some(ExprKind::Symbol(s)) = items.first().map(|e| &e.kind) {
+                    match s.as_str() {
+                        "recur" => return true,
+                        // These introduce their own recur scope / binding form.
+                        "loop" | "fn" => return false,
+                        _ => {}
+                    }
+                }
+                items.iter().any(Self::contains_bare_recur)
+            }
+            ExprKind::Tuple(items) | ExprKind::Vec(items) | ExprKind::Set(items) => {
+                items.iter().any(Self::contains_bare_recur)
+            }
+            _ => false,
+        }
+    }
     fn param_names(params: &[Expr]) -> Vec<String> {
         params
             .iter()
@@ -968,6 +989,16 @@ impl Compiler {
         for (i, p) in params.iter().enumerate() {
             ctx.locals.insert(p.clone(), i as u32);
         }
+        // Self-tail-recursion: a `recur` in the body (not inside a nested
+        // `loop`) rebinds the params and jumps to the top. Wrap the body in a
+        // wasm loop whose loop variables are the parameter locals.
+        let self_recur = body.iter().any(Self::contains_bare_recur);
+        if self_recur {
+            ctx.instructions
+                .push(WasmInstruction::Loop(BlockType::Result(ValType::I64)));
+            ctx.loop_starts.push(ctx.instructions.len());
+            ctx.loop_vars.push((0..params.len() as u32).collect());
+        }
         // Compile each body expression; every one leaves an i64 on the stack,
         // so drop all but the last (a statement sequence keeps only its final
         // value). The last value is the function's result (or dropped for main).
@@ -976,6 +1007,11 @@ impl Compiler {
             if i + 1 < body.len() {
                 ctx.instructions.push(WasmInstruction::Drop);
             }
+        }
+        if self_recur {
+            ctx.instructions.push(WasmInstruction::End);
+            ctx.loop_starts.pop();
+            ctx.loop_vars.pop();
         }
         let extra_locals = if ctx.local_count > params.len() as u32 {
             vec![ValType::I64; (ctx.local_count - params.len() as u32) as usize]
@@ -1600,13 +1636,20 @@ impl<'a> FnCtx<'a> {
                         .push(WasmInstruction::Call(rt.vec_new_idx));
                     return Ok(());
                 }
-                "vec-push" => {
+                "vec-push" | "conj" => {
                     self.compiler.ensure_collections_runtime();
                     let rt = self.compiler.collections_runtime.clone().unwrap();
                     self.compile_expr(&items[1])?;
                     self.compile_expr(&items[2])?;
                     self.instructions
                         .push(WasmInstruction::Call(rt.vec_push_idx));
+                    return Ok(());
+                }
+                "len" | "count" | "vec-len" => {
+                    // Vector length lives at header offset 0.
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(WasmInstruction::I32WrapI64);
+                    self.instructions.push(WasmInstruction::I64Load(3, 0));
                     return Ok(());
                 }
                 "vec-get" => {
@@ -2611,6 +2654,19 @@ mod tests {
         // A closure that captures a free variable: the env-pointer was left on
         // the stack by a stray LocalTee, leaving 2 values where 1 was expected.
         valid(r#"[fn adder [n] [fn [x] [+ x n]]] [fn main [] [let f [adder 10]] [println [f 5]]]"#);
+    }
+    #[test]
+    fn compile_self_recur_is_valid() {
+        // `recur` inside a fn body loops back to the top (no stack growth).
+        valid(r#"[fn c [n] [if [= n 0] 42 [recur [- n 1]]]] [fn main [] [println [c 1000000]]]"#);
+        valid(
+            r#"[fn fact [n acc] [if [<= n 1] acc [recur [- n 1] [* acc n]]]]
+               [fn main [] [println [fact 10 1]]]"#,
+        );
+    }
+    #[test]
+    fn compile_conj_len_are_valid() {
+        valid(r#"[fn main [] [println [len [conj [conj #[] 5] 9]]]]"#);
     }
     #[test]
     fn compile_vec_hofs_are_valid() {
