@@ -1,0 +1,2 @@
+[macro dbl [e] `[+ ~e ~e]]
+[fn main [] [println [dbl 21]]]

@@ -1,0 +1,2 @@
+[macro iddo [x] `[do x]]
+[fn main [] [println [iddo [+ 2 3]]]]

@@ -1,0 +1,4 @@
+[macro unless [c & body] `[if ~c :none [do ~@body]]]
+[fn main []
+  [println [unless false 1 2 7]]
+  [println [unless true 5]]]

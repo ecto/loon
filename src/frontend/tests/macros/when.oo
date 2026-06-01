@@ -1,0 +1,4 @@
+[macro when [c b] `[if ~c ~b :none]]
+[fn main []
+  [println [when true 42]]
+  [println [when false 99]]]

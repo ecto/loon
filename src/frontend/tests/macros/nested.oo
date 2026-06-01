@@ -1,0 +1,3 @@
+[macro when [c b] `[if ~c ~b :none]]
+[macro when2 [a b] `[when ~a ~b]]
+[fn main [] [println [when2 true 99]]]
