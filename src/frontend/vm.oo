@@ -18,11 +18,14 @@
   [VStr String]
   [VBool Bool]
   [VVec Vec]           ; vector of Vals
+  [VAdt String Vec]    ; constructor value: tag + fields
   [VUnit]]
 
 [fn vint [v] [match v [VInt i] i _ 0]]
 [fn vstr [v] [match v [VStr s] s _ [display v]]]
 [fn vvec [v] [match v [VVec xs] xs _ #[]]]
+[fn adt-tag [v] [match v [VAdt t _] t _ ""]]
+[fn adt-field [v i] [match v [VAdt _ fs] [nth fs i] _ [VUnit]]]
 [fn truthy [v] [match v [VBool b] b [VUnit] false _ true]]
 
 [fn display [v]
@@ -32,6 +35,8 @@
     [VStr s]   s
     [VBool b]  [if b "true" "false"]
     [VVec xs]  [str "#[" [join " " [map-display-vec xs]] "]"]
+    [VAdt t fs] [if [= [len fs] 0] [str "[" t "]"]
+                  [str "[" t " " [join " " [map-display-vec fs]] "]"]]
     [VUnit]    "()"]]
 
 [fn map-display-vec [xs]
@@ -133,8 +138,16 @@
     [VInt a]  [match y [VInt b] [= a b] _ false]
     [VBool a] [match y [VBool b] [= a b] _ false]
     [VStr a]  [match y [VStr b] [streq a b] _ false]
+    [VAdt at af] [match y [VAdt bt bf] [if [streq at bt] [vals-eq af bf] false] _ false]
     [VUnit]   [match y [VUnit] true _ false]
     _ false]]
+
+[fn vals-eq [as bs]
+  [if [= [len as] [len bs]]
+    [loop [k 0]
+      [if [>= k [len as]] true
+        [if [val-eq [nth as k] [nth bs k]] [recur [+ k 1]] false]]]
+    false]]
 
 ; ── Execution ─────────────────────────────────────────────────────────────────
 
@@ -170,6 +183,9 @@
     [OUnit d]      [vset regs d [VUnit]]
     [OMove d s]    [vset regs d [nth regs s]]
     [OVec d args]  [vset regs d [VVec [gather regs args]]]
+    [OAdt d ctor args] [vset regs d [VAdt ctor [gather regs args]]]
+    [OTag d s]     [vset regs d [VStr [adt-tag [nth regs s]]]]
+    [OField d s ix] [vset regs d [adt-field [nth regs s] ix]]
     [OPrim d nm args] [vset regs d [apply-prim nm [gather regs args]]]
     [OCall d fi args] [vset regs d [exec-func funcs [nth funcs fi] [gather regs args]]]]]
 

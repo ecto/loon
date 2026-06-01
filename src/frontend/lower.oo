@@ -110,8 +110,22 @@
         [if [streq h "match"] [lower-match env fns ls items]
           [if [streq h "do"] [lower-seq env fns ls [eir-vec-rest items 1]]
             [if [streq h "let"] [lower-seq env fns ls #[[FList items [Span 0 0]]]]  ; bare let-expr
-              [lower-call env fns ls h [eir-vec-rest items 1]]]]]]
+              [if [upper-head? h]
+                [lower-ctor env fns ls h [eir-vec-rest items 1]]
+                [lower-call env fns ls h [eir-vec-rest items 1]]]]]]]
       _ [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]]]]
+
+; A capitalized head is a constructor (Loon convention); lower the field
+; expressions and build a tagged value.
+[fn lower-ctor [env fns ls ctor args]
+  [match [lower-args env fns ls args]
+    [RPS regs ls1]
+    [match [ls-reg ls1] [RP d ls2] [RP d [ls-emit ls2 [OAdt d ctor regs]]]]]]
+
+; True when a symbol begins with an uppercase letter (a constructor name).
+[fn upper-head? [s]
+  [if [= [len s] 0] false
+    [>= [index-of "ABCDEFGHIJKLMNOPQRSTUVWXYZ" [nth [to-chars s] 0]] 0]]]
 
 ; A call to a primitive or a user function.
 [fn lower-call [env fns ls h args]
@@ -178,7 +192,65 @@
     [RP dest [ls-start [ls-finish [ls-emit ls [OUnit dest]] [TBr joinb]] joinb]]
     [if [pat-var? [nth items i]]
       [lower-arm-var env fns ls [nth items i] [nth items [+ i 1]] sreg dest joinb]
-      [lower-arm-lit env fns ls items i sreg dest joinb]]]]
+      [if [pat-ctor? [nth items i]]
+        [lower-arm-ctor env fns ls items i sreg dest joinb]
+        [lower-arm-lit env fns ls items i sreg dest joinb]]]]]
+
+; A constructor pattern: [Ctor sub0 sub1 …] (capitalized head). Tests the
+; scrutinee's tag against the constructor name, then on match extracts each
+; field into a register and binds variable/wildcard subpatterns. (Subpatterns
+; must be variables or `_`; nested literal/constructor subpatterns are a later
+; increment.)
+[type BF [BF Vec LS]]
+
+[fn pat-ctor? [pat]
+  [match pat
+    [FList pitems _]
+    [if [= [len pitems] 0] false
+      [match [nth pitems 0] [FSym n _ _] [upper-head? n] _ false]]
+    _ false]]
+
+[fn lower-arm-ctor [env fns ls items i sreg dest joinb]
+  [match [nth items i] [FList pitems _]
+    [match [nth pitems 0] [FSym ctor _ _]
+      [match [ls-reg ls] [RP tagreg ls1]
+      [match [ls-reg [ls-emit ls1 [OTag tagreg sreg]]] [RP litreg ls2]
+      [match [ls-reg [ls-emit ls2 [OStr litreg ctor]]] [RP cmp ls3]
+        [lower-arm-ctor3 env fns [ls-emit ls3 [OPrim cmp "=" #[tagreg litreg]]]
+          items i sreg dest joinb pitems cmp]]]]
+      _ [lower-arm-lit env fns ls items i sreg dest joinb]]]]
+
+[fn lower-arm-ctor3 [env fns ls items i sreg dest joinb pitems cmp]
+  [match [ls-block ls] [RP bodyb ls1]
+  [match [ls-block ls1] [RP nextb ls2]
+    [lower-arm-ctor4 env fns
+      [ls-start [ls-finish ls2 [TBrIf cmp bodyb nextb]] bodyb]
+      items i sreg dest joinb pitems nextb]]]]
+
+[fn lower-arm-ctor4 [env fns ls items i sreg dest joinb pitems nextb]
+  [match [bind-fields env ls sreg pitems]
+    [BF env2 ls1]
+    [match [lower-expr env2 fns ls1 [nth items [+ i 1]]]
+      [RP rr ls2]
+      [lower-arms env fns
+        [ls-start [ls-finish [ls-emit ls2 [OMove dest rr]] [TBr joinb]] nextb]
+        items [+ i 2] sreg dest joinb]]]]
+
+; Extract each field of the scrutinee into a fresh register and bind named
+; subpatterns; returns the extended environment and threaded state.
+[fn bind-fields [env ls sreg pitems]
+  [loop [k 1 fi 0 env env ls ls]
+    [if [>= k [len pitems]]
+      [BF env ls]
+      [match [ls-reg ls] [RP fr ls1]
+        [recur [+ k 1] [+ fi 1]
+          [extend-field-env env [nth pitems k] fr]
+          [ls-emit ls1 [OField fr sreg fi]]]]]]]
+
+[fn extend-field-env [env sub fr]
+  [match sub
+    [FSym n _ _] [if [streq n "_"] env [if [upper-head? n] env [conj env [VB n fr]]]]
+    _ env]]
 
 ; A variable/wildcard arm: bind (unless "_") and lower the body; terminal.
 [fn lower-arm-var [env fns ls pat result sreg dest joinb]

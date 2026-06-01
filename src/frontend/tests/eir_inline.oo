@@ -53,4 +53,16 @@
     "[fn sum [v i acc] [if [>= i [len v]] acc [sum v [+ i 1] [+ acc [nth v i]]]]] [fn main [] [sum #[1 2 3 4 5] 0 0]]"
     "15"]
 
+  ; ── ADT values + constructor patterns ──
+  [evals "Some unwrap"  "[fn f [o] [match o [Some n] n [None] -1]] [fn main [] [f [Some 42]]]" "42"]
+  [evals "None arm"     "[fn f [o] [match o [Some n] n [None] -1]] [fn main [] [f [None]]]" "-1"]
+  [evals "ctor display" "[fn main [] [Some 7]]" "[Some 7]"]
+  [evals "nullary disp" "[fn main [] [None]]" "[None]"]
+  [evals "two fields"   "[fn fst [p] [match p [Pair a b] a]] [fn main [] [fst [Pair 11 22]]]" "11"]
+  [evals "list sum"
+    "[fn s [xs] [match xs [Cons h t] [+ h [s t]] [Nil] 0]] [fn main [] [s [Cons 1 [Cons 2 [Cons 3 [Nil]]]]]]"
+    "6"]
+  [evals "ctor in body"
+    "[fn box [n] [Some n]] [fn main [] [match [box 5] [Some x] [* x x] [None] 0]]" "25"]
+
   [println "done"]]

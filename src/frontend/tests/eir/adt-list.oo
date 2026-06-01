@@ -1,0 +1,13 @@
+[type Lst [Cons Int Lst] [Nil]]
+[fn total [xs]
+  [match xs
+    [Cons h t] [+ h [total t]]
+    [Nil] 0]]
+[fn nelems [xs]
+  [match xs
+    [Cons h t] [+ 1 [nelems t]]
+    [Nil] 0]]
+[fn main []
+  [let xs [Cons 10 [Cons 20 [Cons 30 [Cons 40 [Nil]]]]]]
+  [println [total xs]]
+  [println [nelems xs]]]

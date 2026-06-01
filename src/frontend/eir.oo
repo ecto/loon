@@ -22,6 +22,9 @@
   [OPrim  i64 String Vec]  ; dest <- primitive op applied to arg registers
   [OCall  i64 i64 Vec]     ; dest <- call func #idx with arg registers
   [OVec   i64 Vec]         ; dest <- vector built from arg registers
+  [OAdt   i64 String Vec]  ; dest <- constructor value (tag + field registers)
+  [OTag   i64 i64]         ; dest <- constructor tag (string) of an adt register
+  [OField i64 i64 i64]     ; dest <- field #idx of an adt register
   [OMove  i64 i64]]        ; dest <- src register
 
 [type Term
@@ -70,6 +73,9 @@
     [OPrim d nm args] [str "r" d " = " nm " " [eir-write-regs args]]
     [OCall d fi args] [str "r" d " = call #" fi " " [eir-write-regs args]]
     [OVec d args] [str "r" d " = vec " [eir-write-regs args]]
+    [OAdt d ctor args] [str "r" d " = " ctor " " [eir-write-regs args]]
+    [OTag d s] [str "r" d " = tag r" s]
+    [OField d s ix] [str "r" d " = r" s "." ix]
     [OMove d s]  [str "r" d " = r" s]]]
 
 [fn eir-write-regs [args]

@@ -34,6 +34,13 @@ Legend: **break?** = backward-incompatible · **effort** S/M/L.
    effects must be declared. **Fix:** either declare everything (with a `prelude`
    of standard effects) or document a fixed built-in set. _break? maybe · S_
 
+4b. **Builtins shadow user `fn` definitions.** Defining `[fn sum …]` does *not*
+   override the builtin `sum` — `[sum xs]` still calls the builtin (discovered
+   when a self-hosted test silently computed against the builtin instead of the
+   user's recursive `sum`). User definitions should win, or at least collide
+   loudly. **Fix:** user `fn` (and `let`) bindings shadow builtins; warn on
+   shadow. _break? yes (subtle) · effort S_
+
 5. **`let` is a body statement, not an expression.** `[let x v]` scopes to the
    rest of the enclosing body — clean in sequences, but `[let …]` can't be used
    as a sub-expression (the lowerer/inferrer special-case it). **Consider:** a
