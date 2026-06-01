@@ -117,7 +117,7 @@ impl StringRuntime {
         instrs.push(LocalGet(3));
         instrs.push(I64Eq);
         instrs.push(I32Eqz); // i64.eq yields i32, so negate with i32.eqz
-        instrs.push(If(BlockType::Result(ValType::I64)));
+        instrs.push(If(BlockType::Empty)); // then-arm returns, nothing falls through
         instrs.push(I64Const(0));
         instrs.push(Return);
         instrs.push(End);

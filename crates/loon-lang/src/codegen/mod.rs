@@ -2054,7 +2054,7 @@ impl<'a> FnCtx<'a> {
         } else {
             self.emit_alloc((captures.len() * 8) as u32);
             let el = self.alloc_local();
-            self.instructions.push(WasmInstruction::LocalTee(el));
+            self.instructions.push(WasmInstruction::LocalSet(el));
             for (ci, (_, sl)) in captures.iter().enumerate() {
                 self.instructions.push(WasmInstruction::LocalGet(el));
                 self.instructions.push(WasmInstruction::I32WrapI64);
@@ -2238,6 +2238,19 @@ mod tests {
         // _start intact). Regression guard for the push-order bug.
         valid(r#"[fn ap [f x] [f x]] [fn main [] [println [ap [fn [y] [* y 2]] 21]]]"#);
         valid(r#"[fn main [] [println [vec-get [vec-push [vec-push [vec-new] 10] 20] 1]]]"#);
+    }
+    #[test]
+    fn compile_capturing_closure_is_valid() {
+        // A closure that captures a free variable: the env-pointer was left on
+        // the stack by a stray LocalTee, leaving 2 values where 1 was expected.
+        valid(r#"[fn adder [n] [fn [x] [+ x n]]] [fn main [] [let f [adder 10]] [println [f 5]]]"#);
+    }
+    #[test]
+    fn compile_str_eq_is_valid() {
+        // gen_str_eq's length-mismatch guard declared an i64 result on a
+        // one-armed if whose then-arm returns — the empty else produced 0.
+        valid(r#"[fn main [] [println [str-eq "ab" "ab"]]]"#);
+        valid(r#"[fn main [] [println [str-eq "ab" "xyz"]]]"#);
     }
     #[test]
     fn compile_arithmetic() {
