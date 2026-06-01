@@ -26,7 +26,15 @@
   [OAdt   i64 String Vec]  ; dest <- constructor value (tag + field registers)
   [OTag   i64 i64]         ; dest <- constructor tag (string) of an adt register
   [OField i64 i64 i64]     ; dest <- field #idx of an adt register
+  [OPerform i64 String Vec] ; dest <- perform effect op (name, arg regs)
+  [OHandlePush Vec]        ; push a handler frame (vector of HE)
+  [OHandlePop]             ; pop the top handler frame
   [OMove  i64 i64]]        ; dest <- src register
+
+; A handler-frame entry: an effect operation name -> the index of the synthetic
+; function that handles it. (Desugaring lifts each handler clause to a function;
+; resume is the identity, so handlers are tail-resumptive.)
+[type HE [HE String i64]]
 
 [type Term
   [TRet  i64]              ; return register
@@ -78,6 +86,9 @@
     [OAdt d ctor args] [str "r" d " = " ctor " " [eir-write-regs args]]
     [OTag d s] [str "r" d " = tag r" s]
     [OField d s ix] [str "r" d " = r" s "." ix]
+    [OPerform d nm args] [str "r" d " = perform " nm " " [eir-write-regs args]]
+    [OHandlePush frame] [str "handle-push (" [len frame] ")"]
+    [OHandlePop] "handle-pop"
     [OMove d s]  [str "r" d " = r" s]]]
 
 [fn eir-write-regs [args]

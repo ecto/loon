@@ -81,4 +81,11 @@
   [evals "kw match"    "[fn f [k] [match k :vec \"V\" :set \"S\" _ \"?\"]] [fn main [] [f :set]]" "S"]
   [evals "kw in vec"   "[fn main [] [join \",\" #[:a :b :c]]]" ":a,:b,:c"]
 
+  ; ── effects / handle (tail-resumptive) ──
+  [evals "resume"      "[effect E [op]] [fn u [] [E.op]] [fn main [] [handle [u] [E.op] [resume 42]]]" "42"]
+  [evals "resume arg"  "[effect E [dbl]] [fn u [x] [E.dbl x]] [fn main [] [handle [u 21] [E.dbl n] [resume [* n 2]]]]" "42"]
+  [evals "two ops"     "[effect E [a b]] [fn u [] [+ [E.a] [E.b]]] [fn main [] [handle [u] [E.a] [resume 10] [E.b] [resume 5]]]" "15"]
+  [evals "perform deep"
+    "[effect S [span]] [fn inner [] [S.span]] [fn outer [] [inner]] [fn main [] [handle [outer] [S.span] [resume 7]]]" "7"]
+
   [println "done"]]

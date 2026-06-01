@@ -153,45 +153,79 @@
     false]]
 
 ; ── Execution ─────────────────────────────────────────────────────────────────
+;
+; A dynamic handler stack is threaded through execution (exec-func ->
+; run-blocks -> exec-ops) and along the executed block path, so installed
+; handlers are visible to perform sites in the body and in any function it
+; calls. exec-ops returns both the register file and the (possibly updated)
+; handler stack via ER, since OHandlePush/OHandlePop mutate it.
+[type ER [ER Vec Vec]]    ; registers, handler stack
 
-[fn exec-func [funcs func args]
+[fn exec-func [funcs func args handlers]
   [match func [Func _ _ nr blocks]
-    [run-blocks funcs blocks [make-regs nr args] 0]]]
+    [run-blocks funcs blocks [make-regs nr args] handlers 0]]]
 
-[fn run-blocks [funcs blocks regs id]
+[fn run-blocks [funcs blocks regs handlers id]
   [match [eir-find-block blocks id]
     :none [VUnit]
-    blk [run-block funcs blocks blk regs]]]
+    blk [run-block funcs blocks blk regs handlers]]]
 
-[fn run-block [funcs blocks blk regs]
+[fn run-block [funcs blocks blk regs handlers]
   [match blk [Block _ ops term]
-    [run-term funcs blocks term [exec-ops funcs regs ops]]]]
+    [match [exec-ops funcs regs handlers ops]
+      [ER regs2 handlers2] [run-term funcs blocks term regs2 handlers2]]]]
 
-[fn run-term [funcs blocks term regs]
+[fn run-term [funcs blocks term regs handlers]
   [match term
     [TRet r] [nth regs r]
-    [TBr b] [run-blocks funcs blocks regs b]
-    [TBrIf c a b] [run-blocks funcs blocks regs [if [truthy [nth regs c]] a b]]]]
+    [TBr b] [run-blocks funcs blocks regs handlers b]
+    [TBrIf c a b] [run-blocks funcs blocks regs handlers [if [truthy [nth regs c]] a b]]]]
 
-[fn exec-ops [funcs regs ops]
-  [loop [k 0 regs regs]
-    [if [>= k [len ops]] regs [recur [+ k 1] [exec-op funcs regs [nth ops k]]]]]]
+[fn exec-ops [funcs regs handlers ops]
+  [loop [k 0 regs regs handlers handlers]
+    [if [>= k [len ops]] [ER regs handlers]
+      [match [exec-op funcs regs handlers [nth ops k]]
+        [ER r2 h2] [recur [+ k 1] r2 h2]]]]]
 
-[fn exec-op [funcs regs op]
+[fn exec-op [funcs regs handlers op]
   [match op
-    [OInt d lex]   [vset regs d [VInt [parse-int lex]]]
-    [OFloat d lex] [vset regs d [VFloat lex]]
-    [OStr d v]     [vset regs d [VStr v]]
-    [OBool d b]    [vset regs d [VBool b]]
-    [OKw d n]      [vset regs d [VKw n]]
-    [OUnit d]      [vset regs d [VUnit]]
-    [OMove d s]    [vset regs d [nth regs s]]
-    [OVec d args]  [vset regs d [VVec [gather regs args]]]
-    [OAdt d ctor args] [vset regs d [VAdt ctor [gather regs args]]]
-    [OTag d s]     [vset regs d [VStr [adt-tag [nth regs s]]]]
-    [OField d s ix] [vset regs d [adt-field [nth regs s] ix]]
-    [OPrim d nm args] [vset regs d [apply-prim nm [gather regs args]]]
-    [OCall d fi args] [vset regs d [exec-func funcs [nth funcs fi] [gather regs args]]]]]
+    [OInt d lex]   [ER [vset regs d [VInt [parse-int lex]]] handlers]
+    [OFloat d lex] [ER [vset regs d [VFloat lex]] handlers]
+    [OStr d v]     [ER [vset regs d [VStr v]] handlers]
+    [OBool d b]    [ER [vset regs d [VBool b]] handlers]
+    [OKw d n]      [ER [vset regs d [VKw n]] handlers]
+    [OUnit d]      [ER [vset regs d [VUnit]] handlers]
+    [OMove d s]    [ER [vset regs d [nth regs s]] handlers]
+    [OVec d args]  [ER [vset regs d [VVec [gather regs args]]] handlers]
+    [OAdt d ctor args] [ER [vset regs d [VAdt ctor [gather regs args]]] handlers]
+    [OTag d s]     [ER [vset regs d [VStr [adt-tag [nth regs s]]]] handlers]
+    [OField d s ix] [ER [vset regs d [adt-field [nth regs s] ix]] handlers]
+    [OPrim d nm args] [ER [vset regs d [apply-prim nm [gather regs args]]] handlers]
+    [OCall d fi args] [ER [vset regs d [exec-func funcs [nth funcs fi] [gather regs args] handlers]] handlers]
+    [OPerform d nm args] [ER [vset regs d [perform funcs handlers nm [gather regs args]]] handlers]
+    [OHandlePush frame] [ER regs [conj handlers frame]]
+    [OHandlePop] [ER regs [slice handlers 0 [- [len handlers] 1]]]]]
+
+; Perform an effect operation: find the innermost handler for it and call its
+; (synthetic) handler function with the operation arguments. Tail-resumptive —
+; the handler's return value IS the perform's result (resume is the identity).
+[fn perform [funcs handlers nm vals]
+  [let fi [find-handler handlers nm]]
+  [if [< fi 0]
+    [VUnit]                                       ; unhandled effect: unit
+    [exec-func funcs [nth funcs fi] vals handlers]]]
+
+[fn find-handler [handlers nm]
+  [loop [fk [- [len handlers] 1]]
+    [if [< fk 0] -1
+      [if [>= [find-in-frame [nth handlers fk] nm] 0]
+        [find-in-frame [nth handlers fk] nm]
+        [recur [- fk 1]]]]]]
+
+[fn find-in-frame [frame nm]
+  [loop [k 0]
+    [if [>= k [len frame]] -1
+      [match [nth frame k] [HE op fi] [if [streq op nm] fi [recur [+ k 1]]]]]]]
 
 ; ── Entry points ──────────────────────────────────────────────────────────────
 
@@ -202,7 +236,7 @@
 
 [fn run-module [m]
   [match m [Module funcs]
-    [match [find-main funcs] :none [VUnit] mi [exec-func funcs [nth funcs mi] #[]]]]]
+    [match [find-main funcs] :none [VUnit] mi [exec-func funcs [nth funcs mi] #[] #[]]]]]
 
 ; Lower a program (vector of Forms) to EIR and run it; returns main's value.
 [fn eir-run [forms] [run-module [lower-program forms]]]

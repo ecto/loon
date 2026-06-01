@@ -125,7 +125,16 @@
     [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]
     [match [nth items 0]
       [FSym h _ _] [lower-form env fns ls items h]
+      [FDot [FSym eff _ _] fld _]
+      [lower-perform env fns ls [str eff "." fld] [eir-vec-rest items 1]]
       _ [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]]]]
+
+; A perform site [Eff.op args…] (dotted head) dispatches dynamically to the
+; installed handler at run time.
+[fn lower-perform [env fns ls opname args]
+  [match [lower-args env fns ls args]
+    [RPS regs ls1]
+    [match [ls-reg ls1] [RP d ls2] [RP d [ls-emit ls2 [OPerform d opname regs]]]]]]
 
 ; Dispatch a list whose head is a symbol: special forms, then constructor
 ; application (capitalized head), then primitive / user calls.
@@ -136,9 +145,30 @@
         [if [streq h "loop"] [lower-loop env fns ls items]
           [if [streq h "recur"] [lower-recur env fns ls [eir-vec-rest items 1]]
             [if [streq h "let"] [lower-seq env fns ls #[[FList items [Span 0 0]]]]
-              [if [upper-head? h]
-                [lower-ctor env fns ls h [eir-vec-rest items 1]]
-                [lower-call env fns ls h [eir-vec-rest items 1]]]]]]]]]]
+              [if [streq h "handle"] [lower-handle env fns ls items]
+                [if [streq h "resume"] [lower-expr env fns ls [nth items 1]]
+                  [if [upper-head? h]
+                    [lower-ctor env fns ls h [eir-vec-rest items 1]]
+                    [lower-call env fns ls h [eir-vec-rest items 1]]]]]]]]]]]]
+
+; handle: after desugaring, the form is [handle body [opname fnname]…]. Install a
+; handler frame (resolving handler function names to indices) for the dynamic
+; extent of the body, then pop it. The body's value is the handle's value.
+[fn lower-handle [env fns ls items]
+  [match [lower-expr env fns [ls-emit ls [OHandlePush [build-frame fns items 2]]] [nth items 1]]
+    [RP bodyreg ls1]
+    [RP bodyreg [ls-emit ls1 [OHandlePop]]]]]
+
+[fn build-frame [fns items i]
+  [loop [k i acc #[]]
+    [if [>= k [len items]] acc
+      [match [nth items k] [FList pair _]
+        [match [nth pair 0] [FSym opname _ _]
+          [match [nth pair 1] [FSym fnname _ _]
+            [recur [+ k 1] [conj acc [HE opname [fn-index fns fnname]]]]
+            _ [recur [+ k 1] acc]]
+          _ [recur [+ k 1] acc]]
+        _ [recur [+ k 1] acc]]]]]
 
 ; A capitalized head is a constructor (Loon convention); lower the field
 ; expressions and build a tagged value.
@@ -457,7 +487,8 @@
         [FSym pn _ _] [recur [+ k 1] [conj acc [VB pn k]]]
         _ [recur [+ k 1] acc]]]]]
 
-[fn lower-program [forms]
+[fn lower-program [forms0]
+  [let forms [desugar-program forms0]]    ; lift handle clauses to synthetic fns
   [let fns [build-fntab forms]]
   [Module
     [loop [k 0 acc #[]]
@@ -465,3 +496,114 @@
         [match [lower-fn-def? [nth forms k]]
           :no [recur [+ k 1] acc]
           items [recur [+ k 1] [conj acc [lower-fn fns items]]]]]]]]
+
+; ── Desugaring: lift handler clauses to top-level synthetic functions ────────
+;
+; [handle body [Eff.op p…] res …] becomes [handle body [<opname> <fn>] …] with
+; one synthetic [fn <fn> [p…] res'] appended per clause, where res' has resume
+; stripped to the identity. This lets handlers be ordinary functions callable by
+; index from a perform site, and keeps lowering oblivious to handler scoping.
+; (Reader handlers don't capture enclosing scope, so the lifted functions need
+; only the operation arguments as parameters.)
+[type DR  [DR Form i64 Vec]]    ; desugared form, next counter, accumulated fns
+[type DRI [DRI Vec i64 Vec]]    ; desugared items, next counter, accumulated fns
+
+[fn desugar-program [forms]
+  [loop [k 0 counter 0 out #[] extras #[]]
+    [if [>= k [len forms]]
+      [vconcat out extras]
+      [match [desugar-expr [nth forms k] counter extras]
+        [DR f2 c2 e2] [recur [+ k 1] c2 [conj out f2] e2]]]]]
+
+[fn desugar-expr [f counter extras]
+  [match f
+    [FList items _]
+    [if [if [> [len items] 0] [is-sym? [nth items 0] "handle"] false]
+      [desugar-handle items counter extras]
+      [match [desugar-items items counter extras]
+        [DRI items2 c2 e2] [DR [FList items2 [Span 0 0]] c2 e2]]]
+    [FVec items sp]   [desugar-coll-vec items sp counter extras]
+    [FSet items sp]   [desugar-coll-set items sp counter extras]
+    [FTuple items sp] [desugar-coll-tuple items sp counter extras]
+    [FMap items sp]   [desugar-coll-map items sp counter extras]
+    [FDot b fld sp]   [match [desugar-expr b counter extras] [DR b2 c2 e2] [DR [FDot b2 fld sp] c2 e2]]
+    [FQuery x sp]     [match [desugar-expr x counter extras] [DR x2 c2 e2] [DR [FQuery x2 sp] c2 e2]]
+    _ [DR f counter extras]]]
+
+[fn desugar-items [items counter extras]
+  [loop [k 0 counter counter extras extras acc #[]]
+    [if [>= k [len items]]
+      [DRI acc counter extras]
+      [match [desugar-expr [nth items k] counter extras]
+        [DR f2 c2 e2] [recur [+ k 1] c2 e2 [conj acc f2]]]]]]
+
+[fn desugar-coll-vec [items sp counter extras]
+  [match [desugar-items items counter extras] [DRI i2 c2 e2] [DR [FVec i2 sp] c2 e2]]]
+[fn desugar-coll-set [items sp counter extras]
+  [match [desugar-items items counter extras] [DRI i2 c2 e2] [DR [FSet i2 sp] c2 e2]]]
+[fn desugar-coll-tuple [items sp counter extras]
+  [match [desugar-items items counter extras] [DRI i2 c2 e2] [DR [FTuple i2 sp] c2 e2]]]
+[fn desugar-coll-map [items sp counter extras]
+  [match [desugar-items items counter extras] [DRI i2 c2 e2] [DR [FMap i2 sp] c2 e2]]]
+
+; [handle body pat1 res1 pat2 res2 …] -> [handle body' [op1 fn1] [op2 fn2] …]
+; plus a synthetic fn per clause.
+[fn desugar-handle [items counter extras]
+  [match [desugar-expr [nth items 1] counter extras]
+    [DR body2 c1 e1]
+    [desugar-clauses body2 items 2 c1 e1 #[]]]]
+
+[fn desugar-clauses [body items i counter extras frame]
+  [if [>= i [len items]]
+    [DR [FList [vconcat #[[FSym "handle" #[] [Span 0 0]] body] frame] [Span 0 0]] counter extras]
+    [desugar-clause body items i counter extras frame]]]
+
+[fn desugar-clause [body items i counter extras frame]
+  [match [nth items i] [FList pitems _]
+    [match [desugar-expr [nth items [+ i 1]] counter extras]
+      [DR res2 c2 e2]
+      [desugar-clause2 body items i c2 e2 frame
+        [clause-opname pitems] [eir-vec-rest pitems 1] [strip-resume res2]]]
+    _ [desugar-clauses body items [+ i 2] counter extras frame]]]   ; malformed: skip
+
+[fn desugar-clause2 [body items i counter extras frame opname params res]
+  [desugar-clauses body items [+ i 2] [+ counter 1]
+    [conj extras [build-fn-form [str "$h" counter] params res]]
+    [conj frame [FList #[[FSym opname #[] [Span 0 0]] [FSym [str "$h" counter] #[] [Span 0 0]]] [Span 0 0]]]]]
+
+[fn clause-opname [pitems]
+  [match [nth pitems 0]
+    [FDot [FSym eff _ _] fld _] [str eff "." fld]
+    [FSym n _ _] n
+    _ "?"]]
+
+; Replace [resume x] with x (handlers are tail-resumptive: resume is identity).
+[fn strip-resume [f]
+  [match f
+    [FList items sp]
+    [if [if [> [len items] 0] [is-sym? [nth items 0] "resume"] false]
+      [strip-resume [nth items 1]]
+      [FList [smap-strip items] sp]]
+    [FVec items sp]   [FVec [smap-strip items] sp]
+    [FSet items sp]   [FSet [smap-strip items] sp]
+    [FTuple items sp] [FTuple [smap-strip items] sp]
+    [FMap items sp]   [FMap [smap-strip items] sp]
+    [FDot b fld sp]   [FDot [strip-resume b] fld sp]
+    [FQuery x sp]     [FQuery [strip-resume x] sp]
+    _ f]]
+
+[fn smap-strip [items]
+  [loop [k 0 acc #[]]
+    [if [>= k [len items]] acc [recur [+ k 1] [conj acc [strip-resume [nth items k]]]]]]]
+
+[fn is-sym? [f name]
+  [match f [FSym n _ _] [streq n name] _ false]]
+
+[fn build-fn-form [name params res]
+  [FList
+    #[[FSym "fn" #[] [Span 0 0]] [FSym name #[] [Span 0 0]] [FList params [Span 0 0]] res]
+    [Span 0 0]]]
+
+[fn vconcat [a b]
+  [loop [k 0 acc a]
+    [if [>= k [len b]] acc [recur [+ k 1] [conj acc [nth b k]]]]]]
