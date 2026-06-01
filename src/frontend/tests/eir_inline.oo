@@ -65,4 +65,13 @@
   [evals "ctor in body"
     "[fn box [n] [Some n]] [fn main [] [match [box 5] [Some x] [* x x] [None] 0]]" "25"]
 
+  ; ── loop / recur ──
+  [evals "loop count"  "[fn main [] [loop [k 0 acc 0] [if [>= k 5] acc [recur [+ k 1] [+ acc k]]]]]" "10"]
+  [evals "loop fact"   "[fn main [] [loop [n 5 acc 1] [if [= n 0] acc [recur [- n 1] [* acc n]]]]]" "120"]
+  [evals "loop build"  "[fn main [] [loop [k 0 acc #[]] [if [>= k 3] [len acc] [recur [+ k 1] [conj acc k]]]]]" "3"]
+  [evals "loop swap"   "[fn main [] [loop [a 1 b 10 k 0] [if [>= k 3] [+ a b] [recur b a [+ k 1]]]]]" "11"]
+  [evals "loop in fn"
+    "[fn sv [v] [loop [k 0 acc 0] [if [>= k [len v]] acc [recur [+ k 1] [+ acc [nth v k]]]]]] [fn main [] [sv #[3 4 5 6]]]"
+    "18"]
+
   [println "done"]]

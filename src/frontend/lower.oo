@@ -41,11 +41,29 @@
 
 ; ── Lexical environment (name -> register) ───────────────────────────────────
 
-[type VB [VB String i64]]
+; Environment entries. A variable binding (name -> register) and a loop context
+; (header block, result register, join block, loop-variable registers) are
+; variants of ONE type so `match` discriminates them reliably — Loon's match
+; does not distinguish constructors across *different* types, only within a
+; type, so the loop context must share a type with variable bindings to ride
+; along in the same environment vector.
+[type Env
+  [VB String i64]
+  [LCtx i64 i64 i64 Vec]]
+
 [fn lenv-lookup [env name]
   [loop [k [- [len env] 1]]
     [if [< k 0] -1
-      [match [nth env k] [VB n r] [if [streq n name] r [recur [- k 1]]]]]]]
+      [match [nth env k]
+        [VB n r] [if [streq n name] r [recur [- k 1]]]
+        _ [recur [- k 1]]]]]]
+
+[fn find-loop-ctx [env]
+  [loop [k [- [len env] 1]]
+    [if [< k 0] :none
+      [match [nth env k]
+        [LCtx a b c d] [nth env k]
+        _ [recur [- k 1]]]]]]
 
 ; ── Function table (name -> index, in definition order) ──────────────────────
 
@@ -105,15 +123,21 @@
   [if [= [len items] 0]
     [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]
     [match [nth items 0]
-      [FSym h _ _]
-      [if [streq h "if"] [lower-if env fns ls items]
-        [if [streq h "match"] [lower-match env fns ls items]
-          [if [streq h "do"] [lower-seq env fns ls [eir-vec-rest items 1]]
-            [if [streq h "let"] [lower-seq env fns ls #[[FList items [Span 0 0]]]]  ; bare let-expr
+      [FSym h _ _] [lower-form env fns ls items h]
+      _ [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]]]]
+
+; Dispatch a list whose head is a symbol: special forms, then constructor
+; application (capitalized head), then primitive / user calls.
+[fn lower-form [env fns ls items h]
+  [if [streq h "if"] [lower-if env fns ls items]
+    [if [streq h "match"] [lower-match env fns ls items]
+      [if [streq h "do"] [lower-seq env fns ls [eir-vec-rest items 1]]
+        [if [streq h "loop"] [lower-loop env fns ls items]
+          [if [streq h "recur"] [lower-recur env fns ls [eir-vec-rest items 1]]
+            [if [streq h "let"] [lower-seq env fns ls #[[FList items [Span 0 0]]]]
               [if [upper-head? h]
                 [lower-ctor env fns ls h [eir-vec-rest items 1]]
-                [lower-call env fns ls h [eir-vec-rest items 1]]]]]]]
-      _ [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]]]]
+                [lower-call env fns ls h [eir-vec-rest items 1]]]]]]]]]]
 
 ; A capitalized head is a constructor (Loon convention); lower the field
 ; expressions and build a tagged value.
@@ -126,6 +150,84 @@
 [fn upper-head? [s]
   [if [= [len s] 0] false
     [>= [index-of "ABCDEFGHIJKLMNOPQRSTUVWXYZ" [nth [to-chars s] 0]] 0]]]
+
+; loop / recur — tail-recursive iteration.
+;
+; [loop [v0 i0 v1 i1 …] body…] seeds one register per loop variable with its
+; init, jumps to a header block, and lowers the body there; the body's value
+; (the non-recur path) becomes the loop's result. [recur a0 a1 …] evaluates its
+; arguments into temporaries, moves them into the loop-variable registers, and
+; jumps back to the header. The loop context (header/result/join/var-regs) rides
+; in the environment so recur can find the innermost enclosing loop.
+[type LI [LI Vec Vec LS]]   ; loop-var names, their registers, threaded state
+
+[fn lower-loop [env fns ls items]
+  [match [nth items 1] [FList binds _]
+    [match [eval-loop-inits env fns ls binds]
+      [LI names varregs ls1]
+      [match [ls-block ls1] [RP headerb ls2]
+      [match [ls-block ls2] [RP joinb ls3]
+      [match [ls-reg ls3]   [RP dest ls4]
+        [lower-loop-body env fns
+          [ls-start [ls-finish ls4 [TBr headerb]] headerb]
+          items names varregs headerb dest joinb]]]]]
+    _ [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]]]
+
+; Evaluate each init (in the outer scope) into its loop-variable register.
+[fn eval-loop-inits [env fns ls binds]
+  [loop [k 0 ls ls names #[] regs #[]]
+    [if [>= k [len binds]]
+      [LI names regs ls]
+      [match [nth binds k]
+        [FSym nm _ _]
+        [match [lower-expr env fns ls [nth binds [+ k 1]]]
+          [RP r ls1] [recur [+ k 2] ls1 [conj names nm] [conj regs r]]]
+        _ [LI names regs ls]]]]]
+
+[fn lower-loop-body [env fns ls items names varregs headerb dest joinb]
+  [match [lower-seq [bind-loop-vars [conj env [LCtx headerb dest joinb varregs]] names varregs]
+            fns ls [eir-vec-rest items 2]]
+    [RP rr ls1]
+    [RP dest [ls-start [ls-finish [ls-emit ls1 [OMove dest rr]] [TBr joinb]] joinb]]]]
+
+[fn bind-loop-vars [env names varregs]
+  [loop [k 0 env env]
+    [if [>= k [len names]] env
+      [recur [+ k 1] [conj env [VB [nth names k] [nth varregs k]]]]]]]
+
+[fn lower-recur [env fns ls args]
+  [match [find-loop-ctx env]
+    :none [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]
+    [LCtx headerb dest joinb varregs]
+    [match [lower-recur-args env fns ls args]
+      [RPS temps ls1]
+      [lower-recur-jump [emit-recur-moves ls1 varregs temps] headerb]]]]
+
+; Lower each recur argument into a FRESH temporary register. A bare variable
+; argument lowers to the variable's own register, which may be a loop-variable
+; register; forcing a copy ensures the temporaries never alias the loop
+; variables, so the subsequent moves can't clobber (e.g. recur b a swaps).
+[fn lower-recur-args [env fns ls args]
+  [loop [k 0 ls ls acc #[]]
+    [if [>= k [len args]]
+      [RPS acc ls]
+      [match [lower-expr env fns ls [nth args k]]
+        [RP r ls1]
+        [match [ls-reg ls1] [RP t ls2]
+          [recur [+ k 1] [ls-emit ls2 [OMove t r]] [conj acc t]]]]]]]
+
+; Move each evaluated argument into its loop-variable register.
+[fn emit-recur-moves [ls varregs temps]
+  [loop [k 0 ls ls]
+    [if [>= k [len varregs]] ls
+      [recur [+ k 1] [ls-emit ls [OMove [nth varregs k] [nth temps k]]]]]]]
+
+; Jump back to the header, then open a fresh (unreachable) block so the
+; enclosing expression still has a well-formed block to emit into.
+[fn lower-recur-jump [ls headerb]
+  [match [ls-block [ls-finish ls [TBr headerb]]] [RP deadb ls1]
+    [match [ls-reg [ls-start ls1 deadb]] [RP d ls2]
+      [RP d [ls-emit ls2 [OUnit d]]]]]]
 
 ; A call to a primitive or a user function.
 [fn lower-call [env fns ls h args]

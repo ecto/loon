@@ -41,6 +41,14 @@ Legend: **break?** = backward-incompatible · **effort** S/M/L.
    loudly. **Fix:** user `fn` (and `let`) bindings shadow builtins; warn on
    shadow. _break? yes (subtle) · effort S_
 
+4c. **`match` does not discriminate constructors across different types.** A
+   pattern `[LCtx a b c d]` happily matched a `[VB s i]` value (a different
+   type, even different arity) — match appears to assume the scrutinee has the
+   pattern's type and only discriminates *within* a type. This silently binds
+   garbage when a heterogeneous collection holds values of several types.
+   **Fix:** match should check the constructor's owning type/tag, not just shape.
+   _break? yes (catches latent bugs) · effort M_
+
 5. **`let` is a body statement, not an expression.** `[let x v]` scopes to the
    rest of the enclosing body — clean in sequences, but `[let …]` can't be used
    as a sub-expression (the lowerer/inferrer special-case it). **Consider:** a
