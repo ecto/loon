@@ -26,7 +26,9 @@ case "$mode" in
           driver="$root/src/frontend/tests/types_inline.oo" ;;
   infer)  libs=("$root/src/frontend/reader.oo" "$root/src/frontend/types.oo" "$root/src/frontend/infer.oo")
           driver="$root/src/frontend/tests/infer_inline.oo" ;;
-  *) echo "usage: $0 {read|expand|types|infer} [loon-binary]" >&2; exit 2 ;;
+  effects) libs=("$root/src/frontend/reader.oo" "$root/src/frontend/types.oo" "$root/src/frontend/infer.oo")
+          driver="$root/src/frontend/tests/effects_inline.oo" ;;
+  *) echo "usage: $0 {read|expand|types|infer|effects} [loon-binary]" >&2; exit 2 ;;
 esac
 
 prog="$(mktemp /tmp/loon-inline.XXXXXX.oo)"

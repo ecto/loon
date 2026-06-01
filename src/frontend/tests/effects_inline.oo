@@ -1,0 +1,84 @@
+; Stage-3c inline tests. Concatenated after reader.oo + types.oo + infer.oo.
+; Effect rows (D1): performing an operation requires its effect in the ambient
+; row; `handle` discharges handled effects; a #{…} annotation closes a fn's row
+; so performing an undeclared effect is a type error. Self-contained (no IO).
+
+[fn report [name ok]
+  [println [str [if ok "  pass " "  FAIL "] name]]]
+
+[fn accepts [name src]
+  [let ok [checks? src]]
+  [do [report name ok] [if ok :ok [show-errs src]]]]
+
+[fn rejects [name src]
+  [report name [not [checks? src]]]]
+
+[fn show-errs [src]
+  [let c [check-program [read-all src]]]
+  [loop [k 0]
+    [if [>= k [len [ctx-errs c]]]
+      :done
+      [do [println [str "      err: " [nth [ctx-errs c] k]]] [recur [+ k 1]]]]]]
+
+; Common effect declarations reused across cases (no braces, safe in strings).
+[fn io-effect [] "[effect IO [read-file [String] String]]"]
+[fn fail-effect [] "[effect Fail [fail [String] String]]"]
+
+; Loon strings use {…} for interpolation, so literal effect-set braces must be
+; assembled from ch-hash/ch-ob/ch-cb (as the reader's own inline tests do).
+[fn effset [s] [str [ch-hash] [ch-ob] s [ch-cb]]]
+
+[fn main []
+  [println "Stage-3c effects — inline tests"]
+
+  ; ── handled effect: body performs IO, handler discharges it ──
+  [accepts "handle discharges IO"
+    [str [io-effect]
+      "[fn main []
+         [let r [handle [IO.read-file \"a\"] [IO.read-file p] [resume \"x\"]]] r]"]]
+
+  ; ── declared effect: fn annotated #{IO} may perform IO ──
+  [accepts "declared IO ok"
+    [str [io-effect]
+      "[fn load [p] " [effset "IO"] " [IO.read-file p]]"
+      " [fn main [] [handle [load \"a\"] [IO.read-file p] [resume \"x\"]]]"]]
+
+  ; ── undeclared effect: fn annotated #{} (pure) performing IO is rejected ──
+  [rejects "undeclared IO rejected"
+    [str [io-effect]
+      "[fn load [p] " [effset ""] " [IO.read-file p]] [fn main [] [load \"a\"]]"]]
+
+  ; ── wrong declared effect: annotated #{Fail} but performs IO -> reject ──
+  [rejects "wrong declared effect"
+    [str [io-effect] [fail-effect]
+      "[fn load [p] " [effset "Fail"] " [IO.read-file p]]"
+      " [fn main [] [handle [load \"a\"] [IO.read-file p] [resume \"x\"]]]"]]
+
+  ; ── two effects, both declared ──
+  [accepts "two effects declared"
+    [str [io-effect] [fail-effect]
+      "[fn load [p] " [effset "IO Fail"] " [let x [IO.read-file p]] [Fail.fail x]]"
+      " [fn main [] [handle [load \"a\"] [IO.read-file p] [resume \"x\"] [Fail.fail m] \"e\"]]"]]
+
+  ; ── effect op argument/result typing flows through ──
+  ; IO.read-file : [String -> String]; using its result as an Int is rejected.
+  [rejects "op result type mismatch"
+    [str [io-effect]
+      "[fn load [p] " [effset "IO"] " [+ 1 [IO.read-file p]]]"
+      " [fn main [] [handle [load \"a\"] [IO.read-file p] [resume \"x\"]]]"]]
+
+  ; ── handler body shares the result type with the body ──
+  ; body : String (IO.read-file), handler returns Int 5 -> branch types clash.
+  [rejects "handler body type mismatch"
+    [str [io-effect]
+      "[fn main [] [handle [IO.read-file \"a\"] [IO.read-file p] 5]]"]]
+
+  ; ── pure program still fine under effect machinery ──
+  [accepts "pure unaffected"
+    "[fn dbl [n] [+ n n]] [fn main [] [dbl 21]]"]
+
+  ; ── unknown operation (no effect decl) is an error ──
+  [rejects "unknown operation"
+    "[fn main [] [Bogus.thing 1]]"]
+
+  [println "done"]]
