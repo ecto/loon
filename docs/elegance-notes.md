@@ -93,13 +93,19 @@ Legend: **break?** = backward-incompatible · **effort** S/M/L.
    concatenation) would let the compiler be organized into actual modules.
    _break? no · effort L · **highest structural impact**_
 
-10. **One-shot continuations block stateful handlers.** The expander wanted a
-    `Gensym` effect but couldn't, because the one-shot VM can't keep handler
-    state across resumes (a pure handler hands out the same id every time) — it
-    had to use call-site spans instead. **Fix:** multi-shot / resumable
-    continuations (decision D3) in the self-hosted VM, which also unlocks
-    generators, async, and a real `State`/`Ref` effect (see #11). _break? no ·
-    effort L_
+10. **⚙ PARTIAL — effect handlers were tail-resumptive only.** `resume` was an
+    identity closure and the handler's return was spliced at the perform site,
+    so there was no real abort and no resume-after-work. Now (EIR VM): `handle`
+    delimits a prompt (body lowered as a thunk), `perform` captures the frame
+    segment above the prompt as a one-shot `Obj::Continuation`, and the handler
+    runs there with `resume := k`. This gives **real abort (0-shot → `try`
+    works, was returning the wrong value)** and **resume-anywhere (1-shot, not
+    just tail)**, one-shot enforced. Still TODO: **escaping continuations** (a
+    continuation resumed *after* its `handle` has exited — needed for the
+    function-passing `State` encoding and multi-shot); that needs a relocatable,
+    self-contained continuation that re-establishes its prompt + handlers on
+    resume (OCaml-5 fiber style), rather than the in-place frame-segment capture.
+    A `Gensym`/`State`/`Ref` effect (#11) waits on that. _effort: L remaining_
 
 11. **No ergonomic local mutation — but we have effects!** Every pass threads
     state by hand (reader counters, the type `Subst`, the lowering builder `LS`).

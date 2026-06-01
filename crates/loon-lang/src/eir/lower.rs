@@ -1443,6 +1443,32 @@ impl<'a> Lower<'a> {
 
         // Parse handler clauses and bind evidence
         let saved_evidence = self.evidence_scope.clone();
+
+        // Optional return clause: [return x] expr — a transformer applied to the
+        // body's NORMAL-completion value (an aborting handler bypasses it). It's
+        // baked into the body thunk below (bind x = body, then evaluate expr) so
+        // that an abort, which never finishes the body, never runs it. The
+        // handler loop ignores this clause (not a DotAccess). This is what makes
+        // the function-passing State encoding expressible.
+        let mut return_clause: Option<(String, Expr)> = None;
+        {
+            let mut j = 0;
+            while j + 1 < handler_args.len() {
+                if let ExprKind::List(p) = &handler_args[j].kind {
+                    if let Some(ExprKind::Symbol(s)) = p.first().map(|e| &e.kind) {
+                        if s == "return" {
+                            let xname = match p.get(1).map(|e| &e.kind) {
+                                Some(ExprKind::Symbol(n)) => n.clone(),
+                                _ => "_".to_string(),
+                            };
+                            return_clause = Some((xname, handler_args[j + 1].clone()));
+                        }
+                    }
+                }
+                j += 2;
+            }
+        }
+
         let mut i = 0;
         while i + 1 < handler_args.len() {
             if let ExprKind::List(pattern) = &handler_args[i].kind {
@@ -1515,8 +1541,40 @@ impl<'a> Lower<'a> {
         // Count handlers to pop
         let handler_count = self.evidence_scope.len() - saved_evidence.len();
 
-        // Lower body with evidence + handlers in scope
-        let result = self.lower_expr(body);
+        // Lower the body as a zero-arg thunk and invoke it, so the handler
+        // delimits a clean frame boundary (a "prompt"): the continuation the VM
+        // captures at a `perform` is exactly the frames between that perform and
+        // this invoke. Evidence (direct-call handler regs) lives in THIS frame
+        // and can't cross into the thunk, so clear it for the body — performs in
+        // the body go through the dynamic handler stack (PushHandler above is
+        // VM-global and works across frames + the thunk boundary).
+        let body_evidence = std::mem::take(&mut self.evidence_scope);
+        // The thunk's body is the handle body, with the return clause (if any)
+        // baked into its normal-completion path: [fn [] [let x BODY] RETURN].
+        let thunk_body: Vec<Expr> = match &return_clause {
+            Some((xname, rexpr)) => vec![
+                Expr::new(
+                    ExprKind::List(vec![
+                        Expr::new(ExprKind::Symbol("let".to_string()), span),
+                        Expr::new(ExprKind::Symbol(xname.clone()), span),
+                        body.clone(),
+                    ]),
+                    span,
+                ),
+                rexpr.clone(),
+            ],
+            None => vec![body.clone()],
+        };
+        let mut thunk_items = vec![
+            Expr::new(ExprKind::Symbol("fn".to_string()), span),
+            Expr::new(ExprKind::List(Vec::new()), span),
+        ];
+        thunk_items.extend(thunk_body);
+        let thunk_expr = Expr::new(ExprKind::List(thunk_items), span);
+        let thunk_reg = self.lower_expr(&thunk_expr);
+        let result = self.reg();
+        self.emit(Op::Invoke(result, thunk_reg, Vec::new(), span));
+        self.evidence_scope = body_evidence;
 
         // Pop dynamic handlers
         for _ in 0..handler_count {
