@@ -107,6 +107,19 @@ enum Obj {
     Tuple(Vec<Val>),           // fixed-size, no persistence needed
     Adt(u16, Vec<Val>),        // tag + fields
     Closure(FuncId, Vec<Val>), // func + captured values
+    /// A reified one-shot delimited continuation captured at a `perform`: the
+    /// frame segment between the perform and its handler's prompt, plus the
+    /// execution point to resume at. `used` enforces the one-shot discipline.
+    Continuation {
+        saved: Vec<Frame>,
+        func: FuncId,
+        block: BlockId,
+        ip: usize,
+        regs: Vec<Val>,
+        captures: Vec<Val>,
+        perform_dst: u32,
+        used: bool,
+    },
 }
 
 impl Obj {
@@ -120,6 +133,9 @@ impl Obj {
             Obj::Map(m) => (24 + m.len() * 16) as u64,
             Obj::Adt(_, fields) => (24 + 2 + fields.len() * 8) as u64,
             Obj::Closure(_, caps) => (24 + 4 + caps.len() * 8) as u64,
+            Obj::Continuation { saved, regs, captures, .. } => {
+                (48 + saved.len() * 64 + regs.len() * 8 + captures.len() * 8) as u64
+            }
         }
     }
 }
@@ -127,6 +143,7 @@ impl Obj {
 // ─── Call frame ────────────────────────────────────────────────────────────
 
 /// Saved call frame — pushed when entering a function, popped on return.
+#[derive(Clone, Debug)]
 struct Frame {
     func: FuncId,
     block: BlockId,
@@ -149,6 +166,9 @@ struct DynHandler {
     /// String pool index for the operation name.
     op: StringId,
     closure: Val,
+    /// Frame-stack depth at the `handle` (the prompt). The continuation captured
+    /// by a `perform` is the frames above this depth.
+    prompt_depth: usize,
 }
 
 /// The register VM. Executes an EIR Module.
@@ -428,6 +448,59 @@ impl Vm {
         Ok(())
     }
 
+    /// Resume a one-shot delimited continuation `k` with value `v`: re-install
+    /// the captured frame segment on top of the stack and continue at the
+    /// perform point with `v` plugged in. The segment's eventual result returns
+    /// into whatever frame the caller left on top (the handler frame for a
+    /// non-tail resume, or the prompt frame for a tail resume). One-shot: errors
+    /// if `k` was already resumed.
+    fn resume_continuation(&mut self, k: Val, v: Val) -> Result<(), VmError> {
+        let (saved, func, block, ip, mut regs, captures, perform_dst) = match self.get_obj(k) {
+            Some(Obj::Continuation { used: true, .. }) => {
+                return Err(VmError::new(VmErrorKind::ContinuationUsed)
+                    .with_span(self.current_span));
+            }
+            Some(Obj::Continuation {
+                saved,
+                func,
+                block,
+                ip,
+                regs,
+                captures,
+                perform_dst,
+                used: false,
+            }) => (
+                saved.clone(),
+                *func,
+                *block,
+                *ip,
+                regs.clone(),
+                captures.clone(),
+                *perform_dst,
+            ),
+            _ => {
+                return Err(VmError::new(VmErrorKind::NotCallable).with_span(self.current_span));
+            }
+        };
+        if let Some(Obj::Continuation { used, .. }) = self.heap.get_mut(k.as_ptr()) {
+            *used = true;
+        }
+        for f in saved {
+            self.frames.push(f);
+        }
+        let pd = perform_dst as usize;
+        if pd >= regs.len() {
+            regs.resize(pd + 1, Val::UNIT);
+        }
+        regs[pd] = v;
+        self.func = func;
+        self.block = block;
+        self.ip = ip;
+        self.regs = regs;
+        self.captures = captures;
+        Ok(())
+    }
+
     fn return_val(&mut self, val: Val) -> Result<Option<Val>, VmError> {
         if let Some(frame) = self.frames.pop() {
             let ret_reg = frame.ret_reg;
@@ -544,7 +617,14 @@ impl Vm {
                 End::TailInvoke(callee, ref args) => {
                     let func_val = self.r(callee);
                     let vals = self.read_regs(args);
-                    if let Some(Obj::Closure(fid, caps)) = self.get_obj(func_val).cloned() {
+                    if matches!(self.get_obj(func_val), Some(Obj::Continuation { .. })) {
+                        // Tail resume (`[resume v]` as the handler's whole body):
+                        // the current (handler) frame is being tail-replaced, so
+                        // the resumed body's result returns into the frame already
+                        // below it (the prompt frame) — don't push a frame.
+                        let v = vals.first().copied().unwrap_or(Val::UNIT);
+                        self.resume_continuation(func_val, v)?;
+                    } else if let Some(Obj::Closure(fid, caps)) = self.get_obj(func_val).cloned() {
                         let f = &module.funcs[fid.0 as usize];
                         let reg_count = f
                             .blocks
@@ -664,7 +744,21 @@ impl Vm {
             Op::Invoke(dst, callee, args, span) => {
                 let func_val = self.r(*callee);
                 let vals = self.read_regs(args);
-                if let Some(Obj::Closure(fid, caps)) = self.get_obj(func_val).cloned() {
+                if matches!(self.get_obj(func_val), Some(Obj::Continuation { .. })) {
+                    // Resume a continuation (e.g. `[resume v]` not in tail
+                    // position). Push the current (handler) frame so the
+                    // resumed body's result returns here into `dst`.
+                    let v = vals.first().copied().unwrap_or(Val::UNIT);
+                    self.frames.push(Frame {
+                        func: self.func,
+                        block: self.block,
+                        ip: self.ip,
+                        regs: std::mem::take(&mut self.regs),
+                        ret_reg: dst.0,
+                        captures: std::mem::take(&mut self.captures),
+                    });
+                    self.resume_continuation(func_val, v)?;
+                } else if let Some(Obj::Closure(fid, caps)) = self.get_obj(func_val).cloned() {
                     let ret_reg = dst.0;
                     self.call_func_with_captures(fid, &vals, ret_reg, caps)?;
                 } else {
@@ -748,46 +842,61 @@ impl Vm {
                 self.w(*dst, Val::int(tag));
             }
 
-            Op::Perform(dst, eff_sid, op_sid, args, evidence, _span) => {
+            Op::Perform(dst, _eff_sid, op_sid, args, _evidence, _span) => {
                 let vals = self.read_regs(args);
-                if let Some(ev_reg) = evidence {
-                    // Evidence-passed: direct call to handler
-                    let handler = self.r(*ev_reg);
-                    if let Some(Obj::Closure(fid, caps)) = self.get_obj(handler).cloned() {
-                        let resume_val = self.resume_closure;
-                        let mut call_args = vec![resume_val];
+                // Find the innermost handler for this operation on the dynamic
+                // stack, with its prompt depth. (Evidence is ignored: capturing
+                // a continuation needs the prompt boundary, which only the
+                // dynamic handler records. Every `handle` installs handlers, so
+                // the dynamic lookup finds them all.)
+                let found = self
+                    .handlers
+                    .iter()
+                    .rev()
+                    .find(|h| h.effect == *_eff_sid && h.op == *op_sid)
+                    .map(|h| (h.closure, h.prompt_depth));
+
+                if let Some((hval, prompt_depth)) = found {
+                    // Capture the continuation: every frame above the prompt,
+                    // plus the current execution point (already advanced past
+                    // this perform), as a one-shot Obj::Continuation.
+                    let saved: Vec<Frame> = self.frames.split_off(prompt_depth + 1);
+                    let cont = Obj::Continuation {
+                        saved,
+                        func: self.func,
+                        block: self.block,
+                        ip: self.ip,
+                        regs: std::mem::take(&mut self.regs),
+                        captures: std::mem::take(&mut self.captures),
+                        perform_dst: dst.0,
+                        used: false,
+                    };
+                    let k = self.alloc(cont);
+                    // Restore the prompt frame (the `handle`'s frame) as current;
+                    // its saved ret_reg is the handle's result register.
+                    let f0 = self.frames.pop().expect("prompt frame");
+                    let handle_ret = f0.ret_reg;
+                    self.func = f0.func;
+                    self.block = f0.block;
+                    self.ip = f0.ip;
+                    self.regs = f0.regs;
+                    self.captures = f0.captures;
+                    // Run the handler at the prompt with `resume` := k. If it
+                    // returns without invoking k, that value becomes the handle's
+                    // result (abort / 0-shot).
+                    if let Some(Obj::Closure(fid, caps)) = self.get_obj(hval).cloned() {
+                        let mut call_args = vec![k];
                         call_args.extend_from_slice(&vals);
-                        let ret_reg = dst.0;
-                        self.call_func_with_captures(fid, &call_args, ret_reg, caps)?;
+                        self.call_func_with_captures(fid, &call_args, handle_ret, caps)?;
                     } else {
                         self.w(*dst, Val::UNIT);
                     }
                 } else {
-                    // Dynamic: check handler stack, then builtin.
-                    // Compare by StringId (integer equality) — no string cloning.
-                    let handler = self
-                        .handlers
-                        .iter()
-                        .rev()
-                        .find(|h| h.effect == *eff_sid && h.op == *op_sid)
-                        .map(|h| h.closure);
-
-                    if let Some(hval) = handler {
-                        if let Some(Obj::Closure(fid, caps)) = self.get_obj(hval).cloned() {
-                            let resume_val = self.resume_closure;
-                            let mut call_args = vec![resume_val];
-                            call_args.extend_from_slice(&vals);
-                            let ret_reg = dst.0;
-                            self.call_func_with_captures(fid, &call_args, ret_reg, caps)?;
-                        } else {
-                            self.w(*dst, Val::UNIT);
-                        }
-                    } else {
-                        let effect = self.module.strings[eff_sid.0 as usize].clone();
-                        let op_name = self.module.strings[op_sid.0 as usize].clone();
-                        let result = self.builtin_effect(&effect, &op_name, &vals);
-                        self.w(*dst, result);
-                    }
+                    // Unhandled: a builtin effect (real IO, etc.).
+                    let effect = self.module.strings[_eff_sid.0 as usize].clone();
+                    let op_name = self.module.strings[op_sid.0 as usize].clone();
+                    let result = self.builtin_effect(&effect, &op_name, &vals);
+                    self.w(*dst, result);
                 }
             }
 
@@ -799,10 +908,14 @@ impl Vm {
 
             Op::PushHandler(handler_reg, eff_sid, op_sid, _) => {
                 let closure = self.r(*handler_reg);
+                // The prompt is the current frame (the `handle`'s frame). The
+                // body runs as a thunk invoked right after this, so it and any
+                // functions it calls sit at frames above this depth.
                 self.handlers.push(DynHandler {
                     effect: *eff_sid,
                     op: *op_sid,
                     closure,
+                    prompt_depth: self.frames.len(),
                 });
             }
 
@@ -2019,6 +2132,8 @@ pub enum VmErrorKind {
     NotCallable,
     /// Hit an unreachable `End::Trap` (non-exhaustive match, etc.).
     Trap,
+    /// A one-shot continuation (`resume`) was invoked more than once.
+    ContinuationUsed,
     /// Call stack exceeded the limit.
     StackOverflow,
     /// `assert-eq` failed with mismatched values.
@@ -2047,6 +2162,9 @@ impl std::fmt::Display for VmError {
         match &self.kind {
             VmErrorKind::NotCallable => write!(f, "value is not callable"),
             VmErrorKind::Trap => write!(f, "unreachable code"),
+            VmErrorKind::ContinuationUsed => {
+                write!(f, "continuation resumed more than once (one-shot)")
+            }
             VmErrorKind::StackOverflow => write!(f, "stack overflow"),
             VmErrorKind::AssertFailed(actual, expected) => {
                 write!(f, "assertion failed: {actual} != {expected}")
@@ -2137,6 +2255,34 @@ mod tests {
         let v = run("[type A [X Int] [Y]] [type B [P Int] [Q]] \
                      [match [Y] [X n] 1 [Y] 2 [P n] 3 [Q] 4]");
         assert_eq!(v.as_int(), 2);
+    }
+
+    #[test]
+    fn vm_effect_abort_and_resume() {
+        let prog = |h: &str| {
+            format!("[effect E [op [Int] Int]] [fn d [x] #{{E}} [+ 100 [E.op x]]] [handle [d 5] {h}]")
+        };
+        // Abort: a non-resuming handler discards the body's continuation
+        // (the `+ 100` after the perform never runs). This is what makes `try`
+        // work; it used to wrongly return 1099.
+        assert_eq!(run(&prog("[E.op v] 999")).as_int(), 999);
+        // Tail resume: the continuation runs and the body completes ([+ 100 5]).
+        assert_eq!(run(&prog("[E.op v] [resume v]")).as_int(), 105);
+        // Resume NOT in tail position: the handler does work after the
+        // continuation's result comes back ([+ 1000 105]).
+        assert_eq!(run(&prog("[E.op v] [+ 1000 [resume v]]")).as_int(), 1105);
+        // Return clause transforms the body's normal-completion value.
+        assert_eq!(run("[handle 42 [return x] [+ x 100]]").as_int(), 142);
+    }
+
+    #[test]
+    fn vm_effect_one_shot() {
+        // A one-shot continuation resumed twice is an error.
+        let r = eval_eir(
+            "[effect E [op [Int] Int]] [fn d [x] #{E} [+ 100 [E.op x]]] \
+             [handle [d 5] [E.op v] [+ [resume v] [resume v]]]",
+        );
+        assert!(r.is_err(), "expected one-shot violation");
     }
 
     #[test]
