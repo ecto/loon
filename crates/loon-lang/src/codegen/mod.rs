@@ -89,6 +89,10 @@ struct Compiler {
     effect_import_defs: Vec<(String, String, usize)>,
     /// Effect registry (populated from [effect ...] declarations)
     effect_registry: crate::effects::EffectRegistry,
+    /// Function keys (`name` or `name#arity`) whose result is statically a
+    /// string. Lets `println` pick the string-printing path for calls, since
+    /// the untagged value model offers no runtime check.
+    string_fns: std::collections::HashSet<String>,
 }
 
 struct FunctionBody {
@@ -380,6 +384,7 @@ impl Compiler {
             effect_imports: HashMap::new(),
             effect_import_defs: Vec::new(),
             effect_registry: crate::effects::EffectRegistry::new(),
+            string_fns: std::collections::HashSet::new(),
         }
     }
     fn ensure_in_table(&mut self, func_idx: u32) -> u32 {
@@ -480,11 +485,39 @@ impl Compiler {
                     if let ExprKind::Symbol(s) = &items[0].kind {
                         if s == "fn" {
                             if let ExprKind::Symbol(name) = &items[1].kind {
+                                let args = &items[1..];
+                                if Self::is_multi_arity(args) {
+                                    // Register one entry per clause, keyed "name#arity".
+                                    for clause in &args[1..] {
+                                        if let ExprKind::Tuple(parts) = &clause.kind {
+                                            if let Some(ExprKind::List(params)) =
+                                                parts.first().map(|e| &e.kind)
+                                            {
+                                                let arity = Self::param_names(params).len();
+                                                let key = format!("{name}#{arity}");
+                                                if self.fn_map.contains_key(&key) {
+                                                    continue;
+                                                }
+                                                let idx = self.next_fn_idx;
+                                                self.fn_map.insert(
+                                                    key,
+                                                    FnDef {
+                                                        func_idx: idx,
+                                                        arity,
+                                                        is_closure: false,
+                                                    },
+                                                );
+                                                self.next_fn_idx += 1;
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
                                 if self.fn_map.contains_key(name) {
                                     continue;
                                 }
                                 if let ExprKind::List(params) = &items[2].kind {
-                                    let arity = params.len();
+                                    let arity = Self::param_names(params).len();
                                     let idx = self.next_fn_idx;
                                     self.fn_map.insert(
                                         name.clone(),
@@ -502,6 +535,7 @@ impl Compiler {
                 }
             }
         }
+        self.analyze_string_fns(exprs);
         for expr in exprs {
             if let ExprKind::List(items) = &expr.kind {
                 if items.len() >= 3 {
@@ -516,6 +550,78 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+    /// Compute, to a fixpoint, which functions statically return a string, so
+    /// `println` can route their call results through the byte-printing path.
+    fn analyze_string_fns(&mut self, exprs: &[Expr]) {
+        // Collect (fn key, return expression) for every clause.
+        let mut returns: Vec<(String, &Expr)> = Vec::new();
+        for expr in exprs {
+            if let ExprKind::List(items) = &expr.kind {
+                if items.len() >= 3 && matches!(&items[0].kind, ExprKind::Symbol(s) if s == "fn") {
+                    if let ExprKind::Symbol(name) = &items[1].kind {
+                        let args = &items[1..];
+                        if Self::is_multi_arity(args) {
+                            for clause in &args[1..] {
+                                if let ExprKind::Tuple(parts) = &clause.kind {
+                                    if let (Some(ExprKind::List(params)), Some(last)) =
+                                        (parts.first().map(|e| &e.kind), parts.last())
+                                    {
+                                        if parts.len() >= 2 {
+                                            let key =
+                                                format!("{name}#{}", Self::param_names(params).len());
+                                            returns.push((key, last));
+                                        }
+                                    }
+                                }
+                            }
+                        } else if let Some(last) = items.last() {
+                            returns.push((name.clone(), last));
+                        }
+                    }
+                }
+            }
+        }
+        loop {
+            let mut changed = false;
+            for (key, ret) in &returns {
+                if !self.string_fns.contains(key)
+                    && Self::expr_returns_string(ret, &self.string_fns)
+                {
+                    self.string_fns.insert(key.clone());
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+    /// Whether an expression statically evaluates to a string, consulting the
+    /// set of known string-returning functions for calls. Conservative.
+    fn expr_returns_string(expr: &Expr, fns: &std::collections::HashSet<String>) -> bool {
+        match &expr.kind {
+            ExprKind::Str(_) => true,
+            ExprKind::List(items) => match items.first().map(|e| &e.kind) {
+                Some(ExprKind::Symbol(s)) => match s.as_str() {
+                    "str" | "str-concat" | "substring" => true,
+                    "do" => items.last().is_some_and(|e| Self::expr_returns_string(e, fns)),
+                    "if" => {
+                        items.len() >= 4
+                            && Self::expr_returns_string(&items[2], fns)
+                            && Self::expr_returns_string(&items[3], fns)
+                    }
+                    // A call: string iff the callee (by name or arity) is known
+                    // to return a string.
+                    name => {
+                        let argc = items.len() - 1;
+                        fns.contains(name) || fns.contains(&format!("{name}#{argc}"))
+                    }
+                },
+                _ => false,
+            },
+            _ => false,
+        }
     }
     fn tree_shake(&mut self) {
         let main_idx = match self.fn_map.get("main") {
@@ -782,6 +888,23 @@ impl Compiler {
         });
         Ok(())
     }
+    /// A `[fn name …]` form is multi-arity when its first post-name element is
+    /// a clause `([params] body…)` — parsed as a tuple `(…)`.
+    fn is_multi_arity(args: &[Expr]) -> bool {
+        matches!(args.get(1).map(|e| &e.kind), Some(ExprKind::Tuple(_)))
+    }
+    fn param_names(params: &[Expr]) -> Vec<String> {
+        params
+            .iter()
+            .filter_map(|p| {
+                if let ExprKind::Symbol(s) = &p.kind {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
     fn compile_defn(&mut self, args: &[Expr]) -> Result<(), String> {
         if args.len() < 2 {
             return Err("defn requires name, params, body".into());
@@ -790,17 +913,22 @@ impl Compiler {
             ExprKind::Symbol(s) => s.clone(),
             _ => return Err("defn name must be a symbol".into()),
         };
-        let params = match &args[1].kind {
-            ExprKind::List(items) => items
-                .iter()
-                .filter_map(|p| {
-                    if let ExprKind::Symbol(s) = &p.kind {
-                        Some(s.clone())
-                    } else {
-                        None
+        if Self::is_multi_arity(args) {
+            // Each clause is compiled as its own function keyed by arity
+            // ("name#N"); call sites resolve by argument count.
+            for clause in &args[1..] {
+                if let ExprKind::Tuple(parts) = &clause.kind {
+                    if let Some(ExprKind::List(params)) = parts.first().map(|e| &e.kind) {
+                        let names = Self::param_names(params);
+                        let key = format!("{name}#{}", names.len());
+                        self.compile_fn_body(&key, false, &names, &parts[1..])?;
                     }
-                })
-                .collect::<Vec<_>>(),
+                }
+            }
+            return Ok(());
+        }
+        let params = match &args[1].kind {
+            ExprKind::List(items) => Self::param_names(items),
             _ => return Err("defn params must be a list".into()),
         };
         let mut body_start = 2;
@@ -811,6 +939,16 @@ impl Compiler {
                 }
             }
         }
+        let is_main = name == "main";
+        self.compile_fn_body(&name, is_main, &params, &args[body_start..])
+    }
+    fn compile_fn_body(
+        &mut self,
+        key: &str,
+        is_main: bool,
+        params: &[String],
+        body: &[Expr],
+    ) -> Result<(), String> {
         let mut ctx = FnCtx {
             locals: HashMap::new(),
             local_count: params.len() as u32,
@@ -825,14 +963,12 @@ impl Compiler {
         // Compile each body expression; every one leaves an i64 on the stack,
         // so drop all but the last (a statement sequence keeps only its final
         // value). The last value is the function's result (or dropped for main).
-        let body = &args[body_start..];
         for (i, expr) in body.iter().enumerate() {
             ctx.compile_expr(expr)?;
             if i + 1 < body.len() {
                 ctx.instructions.push(WasmInstruction::Drop);
             }
         }
-        let is_main = name == "main";
         let extra_locals = if ctx.local_count > params.len() as u32 {
             vec![ValType::I64; (ctx.local_count - params.len() as u32) as usize]
         } else {
@@ -843,7 +979,7 @@ impl Compiler {
         }
         let instrs = ctx.instructions.clone();
         drop(ctx);
-        let func_idx = self.fn_map.get(&name).map(|d| d.func_idx).unwrap_or(0);
+        let func_idx = self.fn_map.get(key).map(|d| d.func_idx).unwrap_or(0);
         self.push_function(
             func_idx,
             FunctionBody {
@@ -1218,17 +1354,7 @@ impl<'a> FnCtx<'a> {
     /// pick the string-printing path when it can prove the argument is a
     /// string at compile time.
     fn expr_is_string(&self, expr: &Expr) -> bool {
-        match &expr.kind {
-            ExprKind::Str(_) => true,
-            ExprKind::List(items) => match items.first().map(|e| &e.kind) {
-                Some(ExprKind::Symbol(s)) => matches!(
-                    s.as_str(),
-                    "str" | "str-concat" | "substring"
-                ),
-                _ => false,
-            },
-            _ => false,
-        }
+        Compiler::expr_returns_string(expr, &self.compiler.string_fns)
     }
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), String> {
         match &expr.kind {
@@ -1413,12 +1539,25 @@ impl<'a> FnCtx<'a> {
                     return Ok(());
                 }
                 "str-concat" | "str" => {
-                    self.compiler.ensure_string_runtime();
-                    let rt = self.compiler.string_runtime.clone().unwrap();
-                    self.compile_expr(&items[1])?;
-                    self.compile_expr(&items[2])?;
-                    self.instructions
-                        .push(WasmInstruction::Call(rt.str_concat_idx));
+                    // Variadic: fold str_concat left-to-right over all args.
+                    // [str] -> "", [str a] -> a, [str a b c] -> concat(concat(a,b),c).
+                    let args = &items[1..];
+                    if args.is_empty() {
+                        let (offset, len) = self.compiler.intern_string("");
+                        self.instructions
+                            .push(WasmInstruction::I64Const(((offset as i64) << 32) | len as i64));
+                        return Ok(());
+                    }
+                    self.compile_expr(&args[0])?;
+                    if args.len() > 1 {
+                        self.compiler.ensure_string_runtime();
+                        let rt = self.compiler.string_runtime.clone().unwrap();
+                        for arg in &args[1..] {
+                            self.compile_expr(arg)?;
+                            self.instructions
+                                .push(WasmInstruction::Call(rt.str_concat_idx));
+                        }
+                    }
                     return Ok(());
                 }
                 "str-eq" => {
@@ -1667,7 +1806,12 @@ impl<'a> FnCtx<'a> {
                     if let Some((tag, arity)) = self.compiler.adt_constructors.get(name).cloned() {
                         return self.compile_adt_constructor(name, tag, arity, &items[1..]);
                     }
-                    if let Some(fn_def) = self.compiler.fn_map.get(name).cloned() {
+                    let argc = items.len() - 1;
+                    let fn_def = self.compiler.fn_map.get(name).cloned().or_else(|| {
+                        // Multi-arity: clauses are keyed "name#arity".
+                        self.compiler.fn_map.get(&format!("{name}#{argc}")).cloned()
+                    });
+                    if let Some(fn_def) = fn_def {
                         if fn_def.is_closure {
                             return self.compile_closure_call_named(name, &items[1..]);
                         }
@@ -2270,6 +2414,28 @@ mod tests {
         // A closure that captures a free variable: the env-pointer was left on
         // the stack by a stray LocalTee, leaving 2 values where 1 was expected.
         valid(r#"[fn adder [n] [fn [x] [+ x n]]] [fn main [] [let f [adder 10]] [println [f 5]]]"#);
+    }
+    #[test]
+    fn compile_multi_arity_is_valid() {
+        // Each clause becomes its own function; calls resolve by arg count.
+        valid(
+            r#"[fn f ([x] [* x 10]) ([x y] [+ x y])]
+               [fn main [] [println [f 5]] [println [f 3 4]]]"#,
+        );
+    }
+    #[test]
+    fn compile_string_returning_fn_println_is_valid() {
+        // println of a call whose function statically returns a string takes
+        // the byte-printing path (fixpoint analysis), including through chains.
+        valid(
+            r#"[fn greet [n] [str "hi, " n]]
+               [fn loud [s] [str s "!"]]
+               [fn main [] [println [loud [greet "cam"]]]]"#,
+        );
+        valid(
+            r#"[fn g ([n] [str "h " n]) ([a b] [str a b])]
+               [fn main [] [println [g "x"]] [println [g "a" "b"]]]"#,
+        );
     }
     #[test]
     fn compile_pipe_is_valid() {
