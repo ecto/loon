@@ -65,11 +65,12 @@ Legend: **break?** = backward-incompatible · **effort** S/M/L.
 
 ## B. Missing builtins / stdlib
 
-6. **No `string → number` parsing.** The reader deliberately keeps numeric
-   lexemes as strings, but then *everyone* downstream needs to parse them; the
-   self-hosted VM had to hand-roll `parse-int` (digit fold via `index-of`).
-   **Add:** `int`/`float`/`parse-int` (and confirm `str` covers number→string).
-   _break? no · effort S_
+6. **✅ FIXED — `string → number` parsing.** `int` and `float` are typed
+   `Str → Int`/`Str → Float` but their EIR VM impls ignored strings (returned
+   `()`); they now parse (`[int "42"]` → `42`, whitespace trimmed, unparseable
+   → `()`), keeping the int/float numeric conversions too. See `Built::Int` /
+   `Built::Float` in `eir/vm.rs`. Follow-up: the self-hosted VM's hand-rolled
+   `parse-int` can now defer to the native `int`.
 
 7. **No structural equality / `Display` story.** `str`/`println` are variadic and
    ad-hoc; there's no `Show`/`Display` trait, so the VM reimplements value

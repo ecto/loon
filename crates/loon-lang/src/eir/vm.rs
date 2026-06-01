@@ -1389,6 +1389,13 @@ impl Vm {
                     Ok(v)
                 } else if v.is_float() {
                     Ok(self.safe_int(v.as_float() as i64))
+                } else if let Some(s) = self.get_str(v) {
+                    // Parse a string to an integer (the builtin's declared type
+                    // is Str → Int); unparseable strings yield ().
+                    match s.trim().parse::<i64>() {
+                        Ok(n) => Ok(self.safe_int(n)),
+                        Err(_) => Ok(Val::UNIT),
+                    }
                 } else {
                     Ok(Val::UNIT)
                 }
@@ -1399,6 +1406,11 @@ impl Vm {
                     Ok(v)
                 } else if v.is_int() {
                     Ok(Val::float(v.as_int() as f64))
+                } else if let Some(s) = self.get_str(v) {
+                    match s.trim().parse::<f64>() {
+                        Ok(n) => Ok(Val::float(n)),
+                        Err(_) => Ok(Val::UNIT),
+                    }
                 } else {
                     Ok(Val::UNIT)
                 }
@@ -2018,6 +2030,20 @@ mod tests {
         assert!(run("[> 3 2]").as_bool());
         assert!(!run("[< 3 2]").as_bool());
         assert!(run("[= 1 1]").as_bool());
+    }
+
+    #[test]
+    fn vm_int_float_parse() {
+        // int/float parse strings (their declared type is Str -> Int/Float).
+        assert_eq!(run(r#"[int "42"]"#).as_int(), 42);
+        assert_eq!(run(r#"[int "-7"]"#).as_int(), -7);
+        assert_eq!(run(r#"[int " 13 "]"#).as_int(), 13);
+        assert_eq!(run(r#"[+ [int "40"] 2]"#).as_int(), 42);
+        assert!(run(r#"[int "nope"]"#).is_unit());
+        assert!((run(r#"[float "3.14"]"#).as_float() - 3.14).abs() < 1e-9);
+        // numeric conversions still work.
+        assert_eq!(run("[int 9]").as_int(), 9);
+        assert_eq!(run("[int 3.9]").as_int(), 3);
     }
 
     #[test]
