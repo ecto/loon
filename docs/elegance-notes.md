@@ -9,12 +9,12 @@ Legend: **break?** = backward-incompatible · **effort** S/M/L.
 
 ## A. Language warts (worth breaking to fix)
 
-1. **`=` is heap identity for strings.** The reader has to build string equality
-   from `len` + `index-of` (`streq`), and char comparison goes through
-   `index-of` membership — never `=`. This is the single most surprising wart:
-   `[= "ab" "ab"]` is `false`. **Fix:** make `=` structural for strings (and
-   ideally collections), with identity available as a separate `same?` if
-   needed. _break? yes (subtle) · effort M_
+1. **✅ FIXED — `=` is now structural.** Previously `=` in the EIR VM was heap
+   identity for strings and aggregates, so `[= "ab" [str "a" "b"]]` was `false`
+   and the reader had to build string equality from `len`+`index-of` (`streq`).
+   The VM now compares strings, vectors, tuples, ADTs, sets, and maps by content
+   (recursively), matching the legacy interpreter — see `val_eq` in `eir/vm.rs`.
+   Follow-up: the `streq` workaround in `reader.oo` can now be replaced with `=`.
 
 2. **`{…}` string interpolation collides with set/map literals.** You cannot
    write a literal `{` in a string: `"#{IO}"` becomes `#IO`, and `"#{}"` errors

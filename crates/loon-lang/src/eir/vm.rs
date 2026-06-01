@@ -217,6 +217,55 @@ impl Vm {
         }
     }
 
+    /// Structural value equality (the semantics of `=` / `!=`).
+    ///
+    /// Immediates and identical pointers compare by bits (the fast path); two
+    /// distinct heap objects are compared by content, recursively. This matches
+    /// the legacy tree-walking interpreter (whose `Value` derives a structural
+    /// `PartialEq`) — without it `=` on strings is pointer identity, so e.g.
+    /// `[= "ab" [str "a" "b"]]` would be false. Loon values are immutable and
+    /// acyclic, so the recursion terminates.
+    fn val_eq(&self, a: Val, b: Val) -> bool {
+        if a == b {
+            return true;
+        }
+        match (self.get_obj(a), self.get_obj(b)) {
+            (Some(oa), Some(ob)) => self.obj_eq(oa, ob),
+            _ => false,
+        }
+    }
+
+    fn obj_eq(&self, a: &Obj, b: &Obj) -> bool {
+        match (a, b) {
+            (Obj::Str(x), Obj::Str(y)) => x == y,
+            (Obj::Vec(x), Obj::Vec(y)) => {
+                x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| self.val_eq(*p, *q))
+            }
+            (Obj::Tuple(x), Obj::Tuple(y)) => {
+                x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| self.val_eq(*p, *q))
+            }
+            (Obj::Adt(tx, fx), Obj::Adt(ty, fy)) => {
+                tx == ty
+                    && fx.len() == fy.len()
+                    && fx.iter().zip(fy.iter()).all(|(p, q)| self.val_eq(*p, *q))
+            }
+            // Sets and maps are unordered: every entry of one must have a
+            // structurally equal counterpart in the other.
+            (Obj::Set(x), Obj::Set(y)) => {
+                x.len() == y.len() && x.iter().all(|p| y.iter().any(|q| self.val_eq(*p, *q)))
+            }
+            (Obj::Map(x), Obj::Map(y)) => {
+                x.len() == y.len()
+                    && x.iter().all(|(k, v)| {
+                        y.iter()
+                            .any(|(k2, v2)| self.val_eq(*k, *k2) && self.val_eq(*v, *v2))
+                    })
+            }
+            // Closures compare by identity only (handled by the fast path).
+            _ => false,
+        }
+    }
+
     fn resolve_string(&mut self, sid: StringId) -> Val {
         if let Some(&idx) = self.string_cache.get(&sid) {
             return Val::ptr(idx);
@@ -784,8 +833,8 @@ impl Vm {
                     Val::UNIT
                 }
             }
-            BinOp::Eq => Val::bool(a == b),
-            BinOp::Ne => Val::bool(a != b),
+            BinOp::Eq => Val::bool(self.val_eq(a, b)),
+            BinOp::Ne => Val::bool(!self.val_eq(a, b)),
             BinOp::Lt => {
                 if a.is_int() && b.is_int() {
                     Val::bool(a.as_int() < b.as_int())
@@ -1969,6 +2018,25 @@ mod tests {
         assert!(run("[> 3 2]").as_bool());
         assert!(!run("[< 3 2]").as_bool());
         assert!(run("[= 1 1]").as_bool());
+    }
+
+    #[test]
+    fn vm_structural_equality() {
+        // Strings compare by content, not by heap identity: two independently
+        // computed strings are equal (this used to be false — pointer equality).
+        assert!(run(r#"[= "ab" [str "a" "b"]]"#).as_bool());
+        assert!(run(r#"[= [str "a" "b"] [str "a" "b"]]"#).as_bool());
+        assert!(!run(r#"[= "ab" "ba"]"#).as_bool());
+        // Aggregates are structural and recursive.
+        assert!(run("[= #[1 2 3] #[1 2 3]]").as_bool());
+        assert!(!run("[= #[1 2] #[1 2 3]]").as_bool());
+        assert!(run("[= #[#[1] #[2]] #[#[1] #[2]]]").as_bool());
+        assert!(run("[= {:a 1 :b 2} {:b 2 :a 1}]").as_bool());
+        assert!(!run("[= {:a 1} {:a 2}]").as_bool());
+        assert!(run("[type T [C Int]] [= [C 1] [C 1]]").as_bool());
+        assert!(!run("[type T [C Int]] [= [C 1] [C 2]]").as_bool());
+        // `!=` is the negation.
+        assert!(run(r#"[!= "ab" [str "a" "c"]]"#).as_bool());
     }
 
     #[test]
