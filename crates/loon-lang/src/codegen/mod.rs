@@ -2393,6 +2393,17 @@ mod tests {
         );
     }
     #[test]
+    fn compile_effect_with_helper_fn_is_valid() {
+        // Regression: effect imports and ordinary functions draw indices from
+        // the same counter but interleave, so the old position-based remap
+        // corrupted both. Both the effect call and the helper must survive.
+        valid(
+            r#"[effect Log [info [String] Unit]]
+               [fn helper [x] [* x x]]
+               [fn main [] [do [Log.info "hi"] [println [helper 7]]]]"#,
+        );
+    }
+    #[test]
     fn compile_effect_declaration_only() {
         // Effect declaration without usage should compile fine
         ok(r#"[effect Fs [read-file [String] String]] [fn main [] 42]"#);
