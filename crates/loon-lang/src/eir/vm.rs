@@ -12,8 +12,88 @@ use std::rc::Rc;
 
 // Persistent collection types — O(log n) clone via structural sharing.
 type ImVec = imbl::Vector<Val>;
-type ImMap = imbl::HashMap<Val, Val>;
 type ImSet = imbl::HashSet<Val>;
+type ImMap = OrdMap;
+
+/// An insertion-ordered persistent map. `keys`, iteration, and display follow
+/// the order keys were first inserted (deterministic), rather than hash order.
+/// Lookup stays O(1) via the inner `HashMap`; an `imbl::Vector` of keys records
+/// order. Both halves are persistent, so clone/share is still cheap. Mirrors the
+/// subset of `imbl::HashMap`'s API the VM uses, so it's a drop-in for the alias.
+#[derive(Debug, Clone, Default)]
+struct OrdMap {
+    map: imbl::HashMap<Val, Val>,
+    order: imbl::Vector<Val>, // keys, insertion order, no duplicates
+}
+
+impl OrdMap {
+    fn new() -> Self {
+        Self::default()
+    }
+    fn len(&self) -> usize {
+        self.order.len()
+    }
+    fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+    fn get(&self, k: &Val) -> Option<&Val> {
+        self.map.get(k)
+    }
+    fn contains_key(&self, k: &Val) -> bool {
+        self.map.contains_key(k)
+    }
+    /// Insert; a brand-new key is appended to the order, an existing key keeps
+    /// its position (only its value updates). Returns the previous value, if any.
+    fn insert(&mut self, k: Val, v: Val) -> Option<Val> {
+        let prev = self.map.insert(k, v);
+        if prev.is_none() {
+            self.order.push_back(k);
+        }
+        prev
+    }
+    fn keys(&self) -> impl Iterator<Item = &Val> + '_ {
+        self.order.iter()
+    }
+    fn values(&self) -> impl Iterator<Item = &Val> + '_ {
+        self.order.iter().map(move |k| self.map.get(k).unwrap())
+    }
+    fn iter(&self) -> impl Iterator<Item = (&Val, &Val)> + '_ {
+        self.order.iter().map(move |k| (k, self.map.get(k).unwrap()))
+    }
+    /// Left-biased union (values already in `self` win), preserving `self`'s
+    /// order and appending `other`'s new keys in their order.
+    fn union(&self, other: Self) -> Self {
+        let mut out = self.clone();
+        for k in other.order.iter() {
+            if !out.map.contains_key(k) {
+                out.insert(*k, *other.map.get(k).unwrap());
+            }
+        }
+        out
+    }
+}
+
+impl FromIterator<(Val, Val)> for OrdMap {
+    fn from_iter<I: IntoIterator<Item = (Val, Val)>>(iter: I) -> Self {
+        let mut m = OrdMap::new();
+        for (k, v) in iter {
+            m.insert(k, v);
+        }
+        m
+    }
+}
+
+impl IntoIterator for OrdMap {
+    type Item = (Val, Val);
+    type IntoIter = std::vec::IntoIter<(Val, Val)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.order
+            .iter()
+            .map(|k| (*k, *self.map.get(k).unwrap()))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+}
 
 // ─── Heap objects ──────────────────────────────────────────────────────────
 
@@ -2057,6 +2137,24 @@ mod tests {
         let v = run("[type A [X Int] [Y]] [type B [P Int] [Q]] \
                      [match [Y] [X n] 1 [Y] 2 [P n] 3 [Q] 4]");
         assert_eq!(v.as_int(), 2);
+    }
+
+    #[test]
+    fn vm_map_insertion_order() {
+        // keys / display follow insertion order deterministically (not hash
+        // order). assoc of an existing key keeps its position; a new key appends.
+        assert_eq!(
+            run_output(r#"[println [keys [assoc [assoc {:x 1} :y 2] :z 3]]]"#),
+            vec!["#[:x :y :z]"]
+        );
+        assert_eq!(
+            run_output(r#"[println [assoc [assoc {:x 1} :y 2] :x 9]]"#),
+            vec!["{:x 9 :y 2}"]
+        );
+        assert_eq!(
+            run_output(r#"[println {:a 1 :b 2 :c 3}]"#),
+            vec!["{:a 1 :b 2 :c 3}"]
+        );
     }
 
     #[test]
