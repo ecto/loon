@@ -16,13 +16,16 @@ Legend: **break?** = backward-incompatible · **effort** S/M/L.
    (recursively), matching the legacy interpreter — see `val_eq` in `eir/vm.rs`.
    Follow-up: the `streq` workaround in `reader.oo` can now be replaced with `=`.
 
-2. **`{…}` string interpolation collides with set/map literals.** You cannot
-   write a literal `{` in a string: `"#{IO}"` becomes `#IO`, and `"#{}"` errors
-   with "unreachable code". Every test that embeds Loon source with a `#{…}`
-   effect set or `{…}` map must assemble braces from `ch-ob`/`ch-cb`. **Fix:**
-   pick an interpolation sigil that doesn't overload braces — e.g. `\(expr)`
-   (Swift-style) or `${…}` — or require `{{`/`\{` to escape. _break? yes ·
-   effort S–M_
+2. **✅ FIXED — interpolation is now `\(expr)` (Swift/Roc-style).** `{…}` used to
+   be interpolation, so a literal `{` in a string needed escaping and brace-heavy
+   text (maps, JSON, embedded Loon source) was painful — the worst fit for a
+   brace-heavy, self-hosting language. Interpolation now uses `\(expr)` (reusing
+   the escape char, matching Roc, which like Loon desugars to string concat), and
+   **bare `{`/`}` are ordinary literal characters** — no escaping. `\{`/`\}`
+   still produce literal braces for back-compat. See `unescape` (lexer) +
+   `desugar_fmt` (parser). Migrated the interpolation tests and `word-freq.oo`;
+   the self-hosted map/set tests dropped their `\{…\}` escaping. (Web-doc prose
+   that teaches `{expr}` still needs a content pass — follow-up.)
 
 3. **String indexing is O(index).** `char-at`/`substring` re-scan from the
    start, so naive scanning is O(n²); the reader works around this by splitting

@@ -15,7 +15,7 @@
   [take 10 ranked]]
 
 [fn format-pair [[word n]]
-  [fmt "{[str word]}: {[str n]}"]]
+  [fmt "\([str word]): \([str n])"]]
 
 ; Read file and process
 [IO.println "=== Word Frequency Counter ==="]
