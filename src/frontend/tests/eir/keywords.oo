@@ -1,0 +1,11 @@
+[fn kind-name [k]
+  [match k
+    :list "list"
+    :vec "vector"
+    :set "set"
+    _ "other"]]
+[fn main []
+  [println [kind-name :vec]]
+  [println [kind-name :set]]
+  [println [kind-name :map]]
+  [println [if [= :a :a] "eq" "neq"]]]

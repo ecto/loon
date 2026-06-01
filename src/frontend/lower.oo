@@ -97,6 +97,7 @@
     [FInt lex _]   [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OInt d lex]]]]
     [FFloat lex _] [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OFloat d lex]]]]
     [FStr v _]     [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OStr d v]]]]
+    [FKw v _]      [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OKw d v]]]]
     [FSym n _ _]   [lower-sym env ls n]
     [FList items _] [lower-list env fns ls items]
     [FVec items _] [lower-vec env fns ls items]
@@ -392,6 +393,7 @@
   [match pat
     [FInt lex _]  [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OInt d lex]]]]
     [FStr v _]    [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OStr d v]]]]
+    [FKw v _]     [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OKw d v]]]]
     [FSym n _ _]  [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OBool d [streq n "true"]]]]]
     _ [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]]]
 

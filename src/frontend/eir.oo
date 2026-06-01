@@ -18,6 +18,7 @@
   [OFloat i64 String]      ; dest <- float literal
   [OStr   i64 String]      ; dest <- string literal
   [OBool  i64 Bool]        ; dest <- bool literal
+  [OKw    i64 String]      ; dest <- keyword literal (:name, stored without colon)
   [OUnit  i64]             ; dest <- ()
   [OPrim  i64 String Vec]  ; dest <- primitive op applied to arg registers
   [OCall  i64 i64 Vec]     ; dest <- call func #idx with arg registers
@@ -69,6 +70,7 @@
     [OFloat d s] [str "r" d " = float " s]
     [OStr d s]   [str "r" d " = str " [ch-quote] s [ch-quote]]
     [OBool d b]  [str "r" d " = bool " [if b "true" "false"]]
+    [OKw d n]    [str "r" d " = :" n]
     [OUnit d]    [str "r" d " = ()"]
     [OPrim d nm args] [str "r" d " = " nm " " [eir-write-regs args]]
     [OCall d fi args] [str "r" d " = call #" fi " " [eir-write-regs args]]

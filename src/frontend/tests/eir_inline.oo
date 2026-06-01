@@ -74,4 +74,11 @@
     "[fn sv [v] [loop [k 0 acc 0] [if [>= k [len v]] acc [recur [+ k 1] [+ acc [nth v k]]]]]] [fn main [] [sv #[3 4 5 6]]]"
     "18"]
 
+  ; ── keywords ──
+  [evals "kw literal"  "[fn main [] :hello]" ":hello"]
+  [evals "kw eq"       "[fn main [] [if [= :a :a] 1 0]]" "1"]
+  [evals "kw neq"      "[fn main [] [if [= :a :b] 1 0]]" "0"]
+  [evals "kw match"    "[fn f [k] [match k :vec \"V\" :set \"S\" _ \"?\"]] [fn main [] [f :set]]" "S"]
+  [evals "kw in vec"   "[fn main [] [join \",\" #[:a :b :c]]]" ":a,:b,:c"]
+
   [println "done"]]

@@ -17,6 +17,7 @@
   [VFloat String]      ; kept as lexeme (no float arithmetic in this slice)
   [VStr String]
   [VBool Bool]
+  [VKw String]         ; keyword (:name, stored without colon)
   [VVec Vec]           ; vector of Vals
   [VAdt String Vec]    ; constructor value: tag + fields
   [VUnit]]
@@ -34,6 +35,7 @@
     [VFloat s] s
     [VStr s]   s
     [VBool b]  [if b "true" "false"]
+    [VKw n]    [str ":" n]
     [VVec xs]  [str "#[" [join " " [map-display-vec xs]] "]"]
     [VAdt t fs] [if [= [len fs] 0] [str "[" t "]"]
                   [str "[" t " " [join " " [map-display-vec fs]] "]"]]
@@ -138,6 +140,7 @@
     [VInt a]  [match y [VInt b] [= a b] _ false]
     [VBool a] [match y [VBool b] [= a b] _ false]
     [VStr a]  [match y [VStr b] [streq a b] _ false]
+    [VKw a]   [match y [VKw b] [streq a b] _ false]
     [VAdt at af] [match y [VAdt bt bf] [if [streq at bt] [vals-eq af bf] false] _ false]
     [VUnit]   [match y [VUnit] true _ false]
     _ false]]
@@ -180,6 +183,7 @@
     [OFloat d lex] [vset regs d [VFloat lex]]
     [OStr d v]     [vset regs d [VStr v]]
     [OBool d b]    [vset regs d [VBool b]]
+    [OKw d n]      [vset regs d [VKw n]]
     [OUnit d]      [vset regs d [VUnit]]
     [OMove d s]    [vset regs d [nth regs s]]
     [OVec d args]  [vset regs d [VVec [gather regs args]]]
