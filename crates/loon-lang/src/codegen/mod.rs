@@ -101,8 +101,13 @@ enum WasmInstruction {
     I64Mul,
     I64GtS,
     I64LtS,
+    I64LeS,
+    I64GeS,
     I64Eqz,
     I64Eq,
+    I64Ne,
+    I64DivS,
+    I64RemS,
     F64Add,
     F64Sub,
     F64Mul,
@@ -172,6 +177,21 @@ fn emit_instruction(f: &mut Function, instr: &WasmInstruction) {
         }
         WasmInstruction::I64Eq => {
             f.instruction(&Instruction::I64Eq);
+        }
+        WasmInstruction::I64Ne => {
+            f.instruction(&Instruction::I64Ne);
+        }
+        WasmInstruction::I64LeS => {
+            f.instruction(&Instruction::I64LeS);
+        }
+        WasmInstruction::I64GeS => {
+            f.instruction(&Instruction::I64GeS);
+        }
+        WasmInstruction::I64DivS => {
+            f.instruction(&Instruction::I64DivS);
+        }
+        WasmInstruction::I64RemS => {
+            f.instruction(&Instruction::I64RemS);
         }
         WasmInstruction::F64Add => {
             f.instruction(&Instruction::F64Add);
@@ -1206,6 +1226,82 @@ impl<'a> FnCtx<'a> {
                     self.instructions.push(WasmInstruction::I64ExtendI32U);
                     return Ok(());
                 }
+                "!=" => {
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.instructions.push(WasmInstruction::I64Ne);
+                    self.instructions.push(WasmInstruction::I64ExtendI32U);
+                    return Ok(());
+                }
+                "<=" => {
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.instructions.push(WasmInstruction::I64LeS);
+                    self.instructions.push(WasmInstruction::I64ExtendI32U);
+                    return Ok(());
+                }
+                ">=" => {
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.instructions.push(WasmInstruction::I64GeS);
+                    self.instructions.push(WasmInstruction::I64ExtendI32U);
+                    return Ok(());
+                }
+                "/" => {
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.instructions.push(WasmInstruction::I64DivS);
+                    return Ok(());
+                }
+                "%" => {
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.instructions.push(WasmInstruction::I64RemS);
+                    return Ok(());
+                }
+                // not: 1 if the argument is falsy (0), else 0.
+                "not" => {
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(WasmInstruction::I64Eqz);
+                    self.instructions.push(WasmInstruction::I64ExtendI32U);
+                    return Ok(());
+                }
+                // and: a truthy ? b : a   (matches the EIR VM; values are i64).
+                "and" => {
+                    let la = self.alloc_local();
+                    let lb = self.alloc_local();
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(WasmInstruction::LocalSet(la));
+                    self.compile_expr(&items[2])?;
+                    self.instructions.push(WasmInstruction::LocalSet(lb));
+                    self.instructions.push(WasmInstruction::LocalGet(la));
+                    self.instructions.push(WasmInstruction::I64Eqz);
+                    self.instructions
+                        .push(WasmInstruction::If(BlockType::Result(ValType::I64)));
+                    self.instructions.push(WasmInstruction::LocalGet(la));
+                    self.instructions.push(WasmInstruction::Else);
+                    self.instructions.push(WasmInstruction::LocalGet(lb));
+                    self.instructions.push(WasmInstruction::End);
+                    return Ok(());
+                }
+                // or: a truthy ? a : b.
+                "or" => {
+                    let la = self.alloc_local();
+                    let lb = self.alloc_local();
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(WasmInstruction::LocalSet(la));
+                    self.compile_expr(&items[2])?;
+                    self.instructions.push(WasmInstruction::LocalSet(lb));
+                    self.instructions.push(WasmInstruction::LocalGet(la));
+                    self.instructions.push(WasmInstruction::I64Eqz);
+                    self.instructions
+                        .push(WasmInstruction::If(BlockType::Result(ValType::I64)));
+                    self.instructions.push(WasmInstruction::LocalGet(lb));
+                    self.instructions.push(WasmInstruction::Else);
+                    self.instructions.push(WasmInstruction::LocalGet(la));
+                    self.instructions.push(WasmInstruction::End);
+                    return Ok(());
+                }
                 "str-len" => {
                     self.compiler.ensure_string_runtime();
                     let rt = self.compiler.string_runtime.clone().unwrap();
@@ -1873,6 +1969,15 @@ mod tests {
         // Printing a computed (non-literal) value emits a runtime itoa + fd_write.
         valid("[fn main [] [println [+ 1 2]]]");
         valid("[fn main [] [println [- 0 42]]]");
+    }
+
+    #[test]
+    fn compile_operators_are_valid() {
+        valid("[fn main [] [println [/ 17 5]]]");
+        valid("[fn main [] [println [% 17 5]]]");
+        valid("[fn main [] [println [if [and [<= 3 3] [>= 4 4]] 1 0]]]");
+        valid("[fn main [] [println [if [or [> 1 2] [!= 3 4]] 1 0]]]");
+        valid("[fn main [] [println [if [not [= 1 2]] 1 0]]]");
     }
     #[test]
     fn compile_hello_world() {
