@@ -30,16 +30,23 @@
 
 ; ── Inference context ───────────────────────────────────────────────────────
 
-[type Ctx [Ctx Subst Vec Vec]]     ; subst, error messages, constructor names
+; Ctx threads: the Subst, error messages, constructor names, and the AMBIENT
+; effect row — the row of effects the expression currently being checked is
+; allowed to perform. Application unifies a callee's latent effect row into the
+; ambient; `handle` introduces a fresh ambient that absorbs the handled effects;
+; a `fn` body runs under its own ambient (closed if annotated with #{…}).
+[type Ctx [Ctx Subst Vec Vec Type]]
 [type IT  [IT Type Ctx]]           ; an inferred type + advanced context
 [type PR  [PR TEnv Ctx]]           ; a pattern's bindings + advanced context
 
-[fn ctx-new [ctors] [Ctx [subst-empty] #[] ctors]]
-[fn ctx-subst [c] [match c [Ctx s _ _] s]]
-[fn ctx-errs  [c] [match c [Ctx _ e _] e]]
-[fn ctx-ctors [c] [match c [Ctx _ _ k] k]]
-[fn ctx-with-subst [c s] [match c [Ctx _ e k] [Ctx s e k]]]
-[fn ctx-err [c msg] [match c [Ctx s e k] [Ctx s [conj e msg] k]]]
+[fn ctx-new [ctors] [Ctx [subst-empty] #[] ctors [TRowEmpty]]]
+[fn ctx-subst [c] [match c [Ctx s _ _ _] s]]
+[fn ctx-errs  [c] [match c [Ctx _ e _ _] e]]
+[fn ctx-ctors [c] [match c [Ctx _ _ k _] k]]
+[fn ctx-ambient [c] [match c [Ctx _ _ _ a] a]]
+[fn ctx-with-subst [c s] [match c [Ctx _ e k a] [Ctx s e k a]]]
+[fn ctx-with-ambient [c a] [match c [Ctx s e k _] [Ctx s e k a]]]
+[fn ctx-err [c msg] [match c [Ctx s e k a] [Ctx s [conj e msg] k a]]]
 [fn ctx-ok? [c] [= [len [ctx-errs c]] 0]]
 
 [fn is-ctor? [c name]
@@ -123,6 +130,18 @@
 ; A stand-in type used where inference cannot proceed; keeps the walk total.
 [fn fresh-placeholder [] [TCon "?" #[]]]
 
+; base.field — currently the dotted name of an effect operation ("Name.op",
+; registered by register-effect). Record-field projection is a later increment.
+[fn infer-dot [env c base fld]
+  [match base
+    [FSym bn _ _]
+    [match [env-lookup env [str bn "." fld]]
+      :none [IT [fresh-placeholder]
+              [ctx-err c [str "unknown operation or field: " bn "." fld]]]
+      sch [match [instantiate [ctx-subst c] sch]
+            [Fr t s] [IT t [ctx-with-subst c s]]]]
+    _ [IT [fresh-placeholder] [ctx-err c "nested dot access unsupported (3c)"]]]]
+
 ; ── The main walk ───────────────────────────────────────────────────────────
 
 [fn infer [env c f]
@@ -192,6 +211,11 @@
         c
         [match [infer env c [nth args k]] [IT _ c2] [recur [+ k 1] c2]]]]]]
 
+; Application: infer the callee and args, then unify the callee against
+; [Fn argtypes ! AMBIENT -> r]. Tying the callee's latent effect row to the
+; ambient is what propagates effects: a callee that performs E forces E into the
+; caller's ambient (effect-polymorphic callees have an open tail, so this adds E
+; rather than closing the row).
 [fn infer-app-general [env c items]
   [match [infer env c [nth items 0]]
     [IT ft c1]
@@ -199,9 +223,7 @@
       [ITS argts c2]
       [match [ctx-fresh c2]
         [IT res c3]
-        [match [ctx-fresh-row c3]
-          [IT eff c4]
-          [IT res [unify! c4 ft [TFn argts eff res]]]]]]]]
+        [IT res [unify! c3 ft [TFn argts [ctx-ambient c3] res]]]]]]]
 
 [type ITS [ITS Vec Ctx]]
 [fn infer-args [env c items]
@@ -218,16 +240,33 @@
     [FList params _] [infer-lambda env c params [vec-rest items 2]]
     _ [IT [fresh-placeholder] [ctx-err c "unsupported fn form (named/multi-arity not in 3b inline)"]]]]
 
+; Anonymous lambdas are effect-polymorphic (open ambient).
 [fn infer-lambda [env c params body]
+  [infer-clause env c params body :open]]
+
+; Infer a fn clause body under its own ambient effect row, then restore the
+; caller's ambient (building a closure performs no effects; the body's effects
+; live in the resulting function type's effect slot). `declared` is :open (infer
+; an open row) or a closed row Type built from a #{…} annotation (the body may
+; perform only those effects — an undeclared one fails to unify).
+[fn infer-clause [env c params body declared]
   [match [bind-params-fresh env c params]
     [PR env2 c1]
-    [match [param-types env2 params]
-      pts
-      [match [infer-seq env2 c1 body]
-        [IT rt c2]
-        [match [ctx-fresh-row c2]
-          [IT eff c3]
-          [IT [TFn pts eff rt] c3]]]]]]
+    [infer-clause2 env2 c1 params body declared [ctx-ambient c1]]]]
+
+[fn infer-clause2 [env2 c1 params body declared outer]
+  [match [clause-ambient c1 declared]
+    [IT amb c1b]
+    [match [infer-seq env2 [ctx-with-ambient c1b amb] body]
+      [IT rt c2]
+      [IT [TFn [param-types env2 params] amb rt]
+          [ctx-with-ambient c2 outer]]]]]
+
+; The body's ambient: a fresh open row, or the declared closed row.
+[fn clause-ambient [c declared]
+  [match declared
+    :open [ctx-fresh-row c]
+    _ [IT declared c]]]
 
 ; Bind each parameter symbol to a fresh monomorphic type var.
 [fn bind-params-fresh [env c params]
@@ -369,19 +408,50 @@
                [if [< k [len fts]] [nth fts k] [fresh-placeholder]]]
         [PR env2 c2] [recur [+ k 1] env2 c2]]]]]
 
-; ── handle / resume (structural for 3b; effect discipline is 3c) ────────────
-; [handle body  [Op.x args] hbody  ...] — type the body and each handler body,
-; unifying handler bodies with the overall result. `resume` is treated as an
-; opaque polymorphic value here.
+; ── handle / resume (effect discipline, D1) ─────────────────────────────────
+; [handle body  [Op.x args] hbody  ...]. The body runs under ambient
+; {handled… | outer}: the handled effects are discharged here, while any other
+; effects (the open tail = the outer ambient) propagate out. Handler bodies run
+; under the outer ambient and all share the result type with the body.
 [fn infer-handle [env c items]
-  [match [infer env c [nth items 1]]
+  [infer-handle2 env c items [ctx-ambient c]]]
+
+[fn infer-handle2 [env c items outer]
+  [match [infer env
+           [ctx-with-ambient c [add-effects [handled-names items] outer]]
+           [nth items 1]]
     [IT bt c1]
-    [loop [i 2 c c1]
-      [if [>= i [len items]]
-        [IT bt c]
-        ; items[i] is the op pattern (FList), items[i+1] the handler body
-        [match [infer-handler-body env c [nth items i] [nth items [+ i 1]]]
-          [IT hb c2] [recur [+ i 2] [unify! c2 bt hb]]]]]]]
+    [handle-arms env [ctx-with-ambient c1 outer] items 2 bt]]]
+
+[fn handle-arms [env c items i bt]
+  [if [>= i [len items]]
+    [IT bt c]
+    [match [infer-handler-body env c [nth items i] [nth items [+ i 1]]]
+      [IT hb c2] [handle-arms env [unify! c2 bt hb] items [+ i 2] bt]]]]
+
+; Extend `tail` with one effect label per handled operation.
+[fn add-effects [names tail]
+  [loop [k 0 row tail]
+    [if [>= k [len names]]
+      row
+      [recur [+ k 1] [TRowExtend [nth names k] [TUnit] row]]]]]
+
+; The handled effect name of each op clause (items 2,4,…): the base of the op
+; pattern head, e.g. IO from [IO.read-file path].
+[fn handled-names [items]
+  [loop [i 2 acc #[]]
+    [if [>= i [len items]]
+      acc
+      [recur [+ i 2] [conj acc [oppat-effect [nth items i]]]]]]]
+
+[fn oppat-effect [pat]
+  [match pat
+    [FList its _]
+    [match [nth its 0]
+      [FDot base _ _] [match base [FSym n _ _] n _ "?"]
+      [FSym n _ _] n
+      _ "?"]
+    _ "?"]]
 
 ; Handler bodies may reference `resume` and the operation's argument names; bind
 ; them all to fresh vars (proper effect-operation typing arrives in 3c).
@@ -418,11 +488,62 @@
     [if [>= k [len forms]]
       [PR env [ctx-new names]]            ; reuse PR to bundle (env, ctx-seed)
       [match [type-decl? [nth forms k]]
-        :no [recur [+ k 1] env names]
         [TD tname ctors]
         [match [register-ctors env names tname ctors]
           [PR env2 _]
-          [recur [+ k 1] env2 [names-append names ctors]]]]]]]
+          [recur [+ k 1] env2 [names-append names ctors]]]
+        :no
+        [match [effect-decl? [nth forms k]]
+          [TD ename ops]
+          [recur [+ k 1] [register-effect env ename ops] names]
+          :no [recur [+ k 1] env names]]]]]]
+
+; [effect Name [op [argtype…] Result] …] — reuse TD to carry (name, op-forms).
+[fn effect-decl? [f]
+  [match f
+    [FList items _]
+    [if [< [len items] 2]
+      :no
+      [match [nth items 0]
+        [FSym h _ _]
+        [if [streq h "effect"]
+          [match [nth items 1] [FSym en _ _] [TD en [vec-rest items 2]] _ :no]
+          :no]
+        _ :no]]
+    _ :no]]
+
+; Register each operation of an effect as "Name.op". Performing the op requires
+; the effect, so its type is [Fn [argtypes] ! {Name | μ} -> Result] with μ a
+; quantified (effect-polymorphic) tail freshened at every call.
+[fn register-effect [env ename ops]
+  [loop [k 0 env env]
+    [if [>= k [len ops]]
+      env
+      [recur [+ k 1] [register-op env ename [nth ops k]]]]]]
+
+[fn register-op [env ename opform]
+  [match opform
+    [FList its _]
+    [match [nth its 0]
+      [FSym opname _ _]
+      [env-extend env [str ename "." opname]
+        [Scheme #[] #[0]
+          [TFn [op-arg-types [nth its 1]]
+               [TRowExtend ename [TUnit] [TRowVar 0]]
+               [op-result its]]]]
+      _ env]
+    _ env]]
+
+; The argument-type list of an op: [argtype…] (an FList/FVec of type forms).
+[fn op-arg-types [f]
+  [match f
+    [FList items _] [parse-field-types items]
+    [FVec items _] [parse-field-types items]
+    _ #[]]]
+
+; The result type of an op clause [op [args] Result]; default Unit if omitted.
+[fn op-result [its]
+  [if [>= [len its] 3] [parse-type-form [nth its 2]] [TUnit]]]
 
 [type TD [TD String Vec] [NOTD]]
 [fn type-decl? [f]
@@ -539,16 +660,36 @@
         [FNDEF name items]
         [recur [+ k 1] [infer-named-fn env c name items]]]]]]
 
-; A named single-arity fn: [fn name [params] (#{eff})? body...].
+; A named single-arity fn: [fn name [params] (#{eff})? body...]. An #{eff} set
+; makes the body's ambient a closed effect row, so performing an undeclared
+; effect is a type error.
 [fn infer-named-fn [env c name items]
   [match [nth items 2]
     [FList params _]
-    [match [infer-lambda env c params [fn-body-forms items]]
+    [match [infer-clause env c params [fn-body-forms items] [fn-declared-eff items]]
       [IT ft c1]
       [match [env-lookup env name]
         [Scheme _ _ nv] [unify! c1 nv ft]
         _ c1]]
     _ [ctx-err c [str "unsupported fn shape (multi-arity deferred): " name]]]]
+
+; The declared effect of a fn: :open, or a closed row from a leading #{…} set.
+[fn fn-declared-eff [items]
+  [if [>= [len items] 4]
+    [match [nth items 3]
+      [FSet effs _] [closed-eff-row effs]
+      _ :open]
+    :open]]
+
+; Build a closed effect row {E1 E2 …} from the effect-name symbols of a #{…} set.
+; Effect rows carry TUnit field types (the label's presence is what matters).
+[fn closed-eff-row [effs]
+  [loop [k 0 row [TRowEmpty]]
+    [if [>= k [len effs]]
+      row
+      [match [nth effs k]
+        [FSym en _ _] [recur [+ k 1] [TRowExtend en [TUnit] row]]
+        _ [recur [+ k 1] row]]]]]
 
 ; Body forms of [fn name [params] …]: skip an optional leading #{effects} set.
 [fn fn-body-forms [items]

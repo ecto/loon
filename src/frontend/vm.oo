@@ -1,0 +1,191 @@
+; Loon self-hosted frontend — Stage 3f: the self-hosted EIR VM.
+;
+; Concatenated after reader.oo + eir.oo + lower.oo. Executes a lowered Module: a
+; register machine that dispatches basic blocks, runs each block's ops against a
+; register file, and follows the terminator. Calls push a new frame (a fresh
+; register file), so recursion works. This is the runtime that makes the backend
+; behaviorally checkable against `loon run` (F1) — see run-eir-diff.sh.
+;
+; Scope matches lower.oo's first slice: int/float/string/bool values, primitive
+; operators, user calls/recursion, if-branching. Multi-shot continuations (D3),
+; closures, collections, and effects are later VM increments.
+
+; ── Runtime values ───────────────────────────────────────────────────────────
+
+[type Val
+  [VInt i64]
+  [VFloat String]      ; kept as lexeme (no float arithmetic in this slice)
+  [VStr String]
+  [VBool Bool]
+  [VVec Vec]           ; vector of Vals
+  [VUnit]]
+
+[fn vint [v] [match v [VInt i] i _ 0]]
+[fn vstr [v] [match v [VStr s] s _ [display v]]]
+[fn vvec [v] [match v [VVec xs] xs _ #[]]]
+[fn truthy [v] [match v [VBool b] b [VUnit] false _ true]]
+
+[fn display [v]
+  [match v
+    [VInt i]   [str i]
+    [VFloat s] s
+    [VStr s]   s
+    [VBool b]  [if b "true" "false"]
+    [VVec xs]  [str "#[" [join " " [map-display-vec xs]] "]"]
+    [VUnit]    "()"]]
+
+[fn map-display-vec [xs]
+  [loop [k 0 acc #[]]
+    [if [>= k [len xs]] acc [recur [+ k 1] [conj acc [display [nth xs k]]]]]]]
+
+[fn display-all [vals]
+  [loop [k 0 acc #[]]
+    [if [>= k [len vals]] [join "" acc]
+      [recur [+ k 1] [conj acc [display [nth vals k]]]]]]]
+
+; ── Integer literal parsing (no string->int builtin exists) ──────────────────
+
+[fn digit-val [c] [index-of "0123456789" c]]
+
+[fn parse-int [s]
+  [let cv [to-chars s]]
+  [let neg [if [> [len cv] 0] [streq [nth cv 0] "-"] false]]
+  [let n
+    [loop [k [if neg 1 0] acc 0]
+      [if [>= k [len cv]] acc
+        [recur [+ k 1] [+ [* acc 10] [digit-val [nth cv k]]]]]]]
+  [if neg [- 0 n] n]]
+
+; ── Register file ─────────────────────────────────────────────────────────────
+
+[fn make-regs [n params]
+  [loop [k 0 acc #[]]
+    [if [>= k n] acc
+      [recur [+ k 1] [conj acc [if [< k [len params]] [nth params k] [VUnit]]]]]]]
+
+[fn vset [v i x]
+  [loop [k 0 acc #[]]
+    [if [>= k [len v]] acc [recur [+ k 1] [conj acc [if [= k i] x [nth v k]]]]]]]
+
+[fn gather [regs args]
+  [loop [k 0 acc #[]]
+    [if [>= k [len args]] acc [recur [+ k 1] [conj acc [nth regs [nth args k]]]]]]]
+
+; ── Primitives ────────────────────────────────────────────────────────────────
+
+[fn arith? [nm] [eir-member nm #["+" "-" "*" "/"]]]
+[fn cmp?   [nm] [eir-member nm #["<" ">" "<=" ">=" "="]]]
+
+[fn coll? [nm]
+  [eir-member nm #["len" "nth" "conj" "join" "split" "index-of" "slice"]]]
+
+[fn apply-prim [nm vals]
+  [if [arith? nm] [apply-arith nm [vint [nth vals 0]] [vint [nth vals 1]]]
+    [if [cmp? nm] [apply-cmp nm vals]
+      [if [coll? nm] [apply-coll nm vals]
+        [if [streq nm "not"] [VBool [not [truthy [nth vals 0]]]]
+          [if [streq nm "println"] [do [println [display [nth vals 0]]] [VUnit]]
+            [if [streq nm "print"] [do [print [display [nth vals 0]]] [VUnit]]
+              [if [streq nm "str"] [VStr [display-all vals]]
+                [VUnit]]]]]]]]]
+
+; Collection / string builtins, delegated to the host builtins on the unwrapped
+; loon values so semantics match `loon run` exactly.
+[fn apply-coll [nm vals]
+  [if [streq nm "len"] [VInt [coll-len [nth vals 0]]]
+    [if [streq nm "nth"] [nth [vvec [nth vals 0]] [vint [nth vals 1]]]
+      [if [streq nm "conj"] [VVec [conj [vvec [nth vals 0]] [nth vals 1]]]
+        [if [streq nm "slice"]
+          [VVec [slice [vvec [nth vals 0]] [vint [nth vals 1]] [vint [nth vals 2]]]]
+          [if [streq nm "join"]
+            [VStr [join [vstr [nth vals 0]] [map-display-vec [vvec [nth vals 1]]]]]
+            [if [streq nm "split"]
+              [VVec [wrap-strs [split [vstr [nth vals 0]] [vstr [nth vals 1]]]]]
+              [if [streq nm "index-of"]
+                [VInt [index-of [vstr [nth vals 0]] [vstr [nth vals 1]]]]
+                [VUnit]]]]]]]]]
+
+[fn coll-len [v]
+  [match v [VVec xs] [len xs] [VStr s] [len s] _ 0]]
+
+; Wrap a host vector of loon strings as a VVec of VStr.
+[fn wrap-strs [xs]
+  [loop [k 0 acc #[]]
+    [if [>= k [len xs]] acc [recur [+ k 1] [conj acc [VStr [nth xs k]]]]]]]
+
+[fn apply-arith [nm a b]
+  [if [streq nm "+"] [VInt [+ a b]]
+    [if [streq nm "-"] [VInt [- a b]]
+      [if [streq nm "*"] [VInt [* a b]]
+        [VInt [/ a b]]]]]]
+
+[fn apply-cmp [nm vals]
+  [let a [vint [nth vals 0]]]
+  [let b [vint [nth vals 1]]]
+  [if [streq nm "<"] [VBool [< a b]]
+    [if [streq nm ">"] [VBool [> a b]]
+      [if [streq nm "<="] [VBool [<= a b]]
+        [if [streq nm ">="] [VBool [>= a b]]
+          [VBool [val-eq [nth vals 0] [nth vals 1]]]]]]]]
+
+[fn val-eq [x y]
+  [match x
+    [VInt a]  [match y [VInt b] [= a b] _ false]
+    [VBool a] [match y [VBool b] [= a b] _ false]
+    [VStr a]  [match y [VStr b] [streq a b] _ false]
+    [VUnit]   [match y [VUnit] true _ false]
+    _ false]]
+
+; ── Execution ─────────────────────────────────────────────────────────────────
+
+[fn exec-func [funcs func args]
+  [match func [Func _ _ nr blocks]
+    [run-blocks funcs blocks [make-regs nr args] 0]]]
+
+[fn run-blocks [funcs blocks regs id]
+  [match [eir-find-block blocks id]
+    :none [VUnit]
+    blk [run-block funcs blocks blk regs]]]
+
+[fn run-block [funcs blocks blk regs]
+  [match blk [Block _ ops term]
+    [run-term funcs blocks term [exec-ops funcs regs ops]]]]
+
+[fn run-term [funcs blocks term regs]
+  [match term
+    [TRet r] [nth regs r]
+    [TBr b] [run-blocks funcs blocks regs b]
+    [TBrIf c a b] [run-blocks funcs blocks regs [if [truthy [nth regs c]] a b]]]]
+
+[fn exec-ops [funcs regs ops]
+  [loop [k 0 regs regs]
+    [if [>= k [len ops]] regs [recur [+ k 1] [exec-op funcs regs [nth ops k]]]]]]
+
+[fn exec-op [funcs regs op]
+  [match op
+    [OInt d lex]   [vset regs d [VInt [parse-int lex]]]
+    [OFloat d lex] [vset regs d [VFloat lex]]
+    [OStr d v]     [vset regs d [VStr v]]
+    [OBool d b]    [vset regs d [VBool b]]
+    [OUnit d]      [vset regs d [VUnit]]
+    [OMove d s]    [vset regs d [nth regs s]]
+    [OVec d args]  [vset regs d [VVec [gather regs args]]]
+    [OPrim d nm args] [vset regs d [apply-prim nm [gather regs args]]]
+    [OCall d fi args] [vset regs d [exec-func funcs [nth funcs fi] [gather regs args]]]]]
+
+; ── Entry points ──────────────────────────────────────────────────────────────
+
+[fn find-main [funcs]
+  [loop [k 0]
+    [if [>= k [len funcs]] :none
+      [match [nth funcs k] [Func nm _ _ _] [if [streq nm "main"] k [recur [+ k 1]]]]]]]
+
+[fn run-module [m]
+  [match m [Module funcs]
+    [match [find-main funcs] :none [VUnit] mi [exec-func funcs [nth funcs mi] #[]]]]]
+
+; Lower a program (vector of Forms) to EIR and run it; returns main's value.
+[fn eir-run [forms] [run-module [lower-program forms]]]
+
+; Read + lower + run a source string.
+[fn eir-run-str [src] [eir-run [read-all src]]]

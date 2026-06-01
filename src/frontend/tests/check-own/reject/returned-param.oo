@@ -1,0 +1,2 @@
+[fn identity [x] x]
+[fn main [] [let name "alice"] [identity name] [println name]]

@@ -1,0 +1,4 @@
+[fn main []
+  [println [join ", " [conj #["a" "b" "c"] "d"]]]
+  [println [len [split "the quick brown fox" " "]]]
+  [println [index-of "hello world" "world"]]]

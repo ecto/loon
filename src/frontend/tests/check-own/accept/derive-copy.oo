@@ -1,0 +1,3 @@
+[derive Copy [type Point [Point Int Int]]]
+[fn take [p] p]
+[fn main [] [let p [Point 1 2]] [take p] [println p]]
