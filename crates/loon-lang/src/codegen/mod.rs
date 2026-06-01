@@ -1550,10 +1550,60 @@ impl<'a> FnCtx<'a> {
                     self.instructions.push(WasmInstruction::I64DivS);
                     return Ok(());
                 }
-                "%" => {
+                "%" | "mod" => {
                     self.compile_expr(&items[1])?;
                     self.compile_expr(&items[2])?;
                     self.instructions.push(WasmInstruction::I64RemS);
+                    return Ok(());
+                }
+                "inc" => {
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(WasmInstruction::I64Const(1));
+                    self.instructions.push(WasmInstruction::I64Add);
+                    return Ok(());
+                }
+                "dec" => {
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(WasmInstruction::I64Const(1));
+                    self.instructions.push(WasmInstruction::I64Sub);
+                    return Ok(());
+                }
+                "abs" => {
+                    // x < 0 ? 0 - x : x
+                    let x = self.alloc_local();
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(WasmInstruction::LocalSet(x));
+                    self.instructions.push(WasmInstruction::LocalGet(x));
+                    self.instructions.push(WasmInstruction::I64Const(0));
+                    self.instructions.push(WasmInstruction::I64LtS);
+                    self.instructions
+                        .push(WasmInstruction::If(BlockType::Result(ValType::I64)));
+                    self.instructions.push(WasmInstruction::I64Const(0));
+                    self.instructions.push(WasmInstruction::LocalGet(x));
+                    self.instructions.push(WasmInstruction::I64Sub);
+                    self.instructions.push(WasmInstruction::Else);
+                    self.instructions.push(WasmInstruction::LocalGet(x));
+                    self.instructions.push(WasmInstruction::End);
+                    return Ok(());
+                }
+                "min" | "max" => {
+                    let a = self.alloc_local();
+                    let b = self.alloc_local();
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(WasmInstruction::LocalSet(a));
+                    self.compile_expr(&items[2])?;
+                    self.instructions.push(WasmInstruction::LocalSet(b));
+                    self.instructions.push(WasmInstruction::LocalGet(a));
+                    self.instructions.push(WasmInstruction::LocalGet(b));
+                    self.instructions.push(WasmInstruction::I64LtS); // a < b
+                    self.instructions
+                        .push(WasmInstruction::If(BlockType::Result(ValType::I64)));
+                    // a < b: min -> a, max -> b
+                    let (then_l, else_l) = if s == "min" { (a, b) } else { (b, a) };
+                    self.instructions.push(WasmInstruction::LocalGet(then_l));
+                    self.instructions.push(WasmInstruction::Else);
+                    self.instructions.push(WasmInstruction::LocalGet(else_l));
+                    self.instructions.push(WasmInstruction::End);
                     return Ok(());
                 }
                 // not: 1 if the argument is falsy (0), else 0.
@@ -1669,6 +1719,25 @@ impl<'a> FnCtx<'a> {
                         .push(WasmInstruction::Call(rt.vec_get_idx));
                     return Ok(());
                 }
+                "first" => {
+                    // first = vec-get v 0
+                    self.compiler.ensure_collections_runtime();
+                    let rt = self.compiler.collections_runtime.clone().unwrap();
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(WasmInstruction::I64Const(0));
+                    self.instructions
+                        .push(WasmInstruction::Call(rt.vec_get_idx));
+                    return Ok(());
+                }
+                "empty?" => {
+                    // len(v) == 0
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(WasmInstruction::I32WrapI64);
+                    self.instructions.push(WasmInstruction::I64Load(3, 0));
+                    self.instructions.push(WasmInstruction::I64Eqz);
+                    self.instructions.push(WasmInstruction::I64ExtendI32U);
+                    return Ok(());
+                }
                 "if" => {
                     self.compile_expr(&items[1])?;
                     self.instructions.push(WasmInstruction::I64Eqz);
@@ -1736,10 +1805,11 @@ impl<'a> FnCtx<'a> {
                     self.compile_expr(&current)?;
                     return Ok(());
                 }
-                "println" => {
+                "println" | "print" => {
+                    let nl = s == "println";
                     if let Some(arg) = items.get(1) {
                         if let ExprKind::Str(s) = &arg.kind {
-                            let msg = format!("{s}\n");
+                            let msg = if nl { format!("{s}\n") } else { s.clone() };
                             let (offset, len) = self.compiler.intern_string(&msg);
                             self.instructions.push(WasmInstruction::I32Const(0));
                             self.instructions
@@ -1758,16 +1828,15 @@ impl<'a> FnCtx<'a> {
                             self.instructions.push(WasmInstruction::I64Const(0));
                             return Ok(());
                         } else if self.expr_is_string(arg) {
-                            // A computed string (e.g. [str a b], interpolation):
-                            // print its bytes followed by a newline.
+                            // A computed string (e.g. [str a b], interpolation).
                             self.compile_expr(arg)?;
-                            self.emit_print_str(true);
+                            self.emit_print_str(nl);
                             return Ok(());
                         } else {
                             // A computed (non-literal) argument: evaluate it to
-                            // an i64 and print it as a decimal line at runtime.
+                            // an i64 and print it as a decimal at runtime.
                             self.compile_expr(arg)?;
-                            self.emit_print_i64(true);
+                            self.emit_print_i64(nl);
                             return Ok(());
                         }
                     }
@@ -2686,6 +2755,13 @@ mod tests {
     #[test]
     fn compile_conj_len_are_valid() {
         valid(r#"[fn main [] [println [len [conj [conj #[] 5] 9]]]]"#);
+    }
+    #[test]
+    fn compile_numeric_and_seq_builtins_are_valid() {
+        valid(r#"[fn main [] [print 5] [print 6] [println 7]]"#);
+        valid(r#"[fn main [] [println [mod 17 5]] [println [inc [dec 10]]]]"#);
+        valid(r#"[fn main [] [println [abs [- 0 5]]] [println [max 3 [min 9 7]]]]"#);
+        valid(r#"[fn main [] [println [if [empty? #[]] 1 0]] [println [first #[7 8 9]]]]"#);
     }
     #[test]
     fn compile_vec_hofs_are_valid() {
