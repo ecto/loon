@@ -1,0 +1,7 @@
+[type Shape [Circle f64] [Rect f64 f64] Point]
+[fn area [s]
+  [match s
+    [Circle r] [* r r]
+    [Rect w h] [* w h]
+    Point      0.0]]
+[fn main [] [area [Circle 5.0]]]

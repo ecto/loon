@@ -1,0 +1,2 @@
+[type Box [Box i64]]
+[fn main [] [Box "nope"]]

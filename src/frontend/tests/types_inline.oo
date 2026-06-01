@@ -1,0 +1,131 @@
+; Stage-3a inline tests. Concatenated after types.oo and run on the EIR VM.
+; Self-contained: no IO, no Forms. Exercises unify (success/clash/occurs), row
+; unification, and generalize/instantiate freshening.
+
+[fn report [name ok]
+  [println [str [if ok "  pass " "  FAIL "] name]]]
+
+; Assert that unifying a and b under a fresh subst succeeds.
+[fn ok-unify [name a b]
+  [match [unify [subst-empty] a b]
+    [UOk _] [report name true]
+    [UErr m _] [do [report name false] [println [str "      " m]]]]]
+
+; Assert that unifying a and b fails (a type error).
+[fn no-unify [name a b]
+  [match [unify [subst-empty] a b]
+    [UOk _] [report name false]
+    [UErr _ _] [report name true]]]
+
+; Small constructors for readability.
+[fn tv [n] [TVar n]]
+[fn rv [n] [TRowVar n]]
+[fn row1 [l t] [TRowExtend l t [TRowEmpty]]]
+[fn row1o [l t r] [TRowExtend l t r]]
+
+[fn main []
+  [println "Stage-3a types — inline tests"]
+
+  ; ── base types ──
+  [ok-unify "Int=Int" [TInt] [TInt]]
+  [no-unify "Int/=Bool" [TInt] [TBool]]
+  [no-unify "Str/=Float" [TStr] [TFloat]]
+
+  ; ── variables ──
+  [ok-unify "var binds to Int" [tv 0] [TInt]]
+  [ok-unify "Int binds to var" [TInt] [tv 0]]
+  [ok-unify "var=var" [tv 0] [tv 1]]
+
+  ; ── occurs check: t0 = [Fn [t0] ! e -> r] must fail ──
+  [no-unify "occurs in fn arg"
+    [tv 0] [TFn #[[tv 0]] [TRowEmpty] [TInt]]]
+  [no-unify "occurs in con arg"
+    [tv 0] [TCon "List" #[[tv 0]]]]
+
+  ; ── constructors ──
+  [ok-unify "List a = List Int (via var)"
+    [TCon "List" #[[tv 0]]] [TCon "List" #[[TInt]]]]
+  [no-unify "List /= Option"
+    [TCon "List" #[[TInt]]] [TCon "Option" #[[TInt]]]]
+  [no-unify "arity mismatch"
+    [TCon "Pair" #[[TInt]]] [TCon "Pair" #[[TInt] [TInt]]]]
+
+  ; ── functions ──
+  [ok-unify "fn unifies, propagates arg"
+    [TFn #[[tv 0]] [TRowEmpty] [tv 0]]
+    [TFn #[[TInt]] [TRowEmpty] [TInt]]]
+  [no-unify "fn arity"
+    [TFn #[[TInt]] [TRowEmpty] [TInt]]
+    [TFn #[[TInt] [TInt]] [TRowEmpty] [TInt]]]
+  [no-unify "fn result clash"
+    [TFn #[[TInt]] [TRowEmpty] [TBool]]
+    [TFn #[[TInt]] [TRowEmpty] [TInt]]]
+
+  ; ── tuples ──
+  [ok-unify "tuple ok" [TTuple #[[tv 0] [TBool]]] [TTuple #[[TInt] [tv 1]]]]
+  [no-unify "tuple len" [TTuple #[[TInt]]] [TTuple #[[TInt] [TInt]]]]
+
+  ; ── rows / records ──
+  [ok-unify "same closed record"
+    [TRecord [row1 "x" [TInt]]] [TRecord [row1 "x" [TInt]]]]
+  [no-unify "record field type clash"
+    [TRecord [row1 "x" [TInt]]] [TRecord [row1 "x" [TBool]]]]
+  [no-unify "closed record missing field"
+    [TRecord [row1 "x" [TInt]]]
+    [TRecord [row1o "x" [TInt] [row1 "y" [TBool]]]]]
+  ; field order should not matter
+  [ok-unify "record field reorder"
+    [TRecord [row1o "x" [TInt] [row1 "y" [TBool]]]]
+    [TRecord [row1o "y" [TBool] [row1 "x" [TInt]]]]]
+  ; open row absorbs the extra field
+  [ok-unify "open row absorbs field"
+    [TRecord [row1o "x" [TInt] [rv 9]]]
+    [TRecord [row1o "x" [TInt] [row1 "y" [TBool]]]]]
+
+  ; ── resolve threads through bindings ──
+  [report "resolve follows chain"
+    [match [unify [subst-empty] [tv 0] [TInt]]
+      [UOk s] [match [resolve s [tv 0]] [TInt] true _ false]
+      _ false]]
+
+  ; ── generalize / instantiate ──
+  ; id : t0 -> t0 generalizes to forall t0. t0 -> t0; two instantiations get
+  ; distinct fresh vars, and each instance still unifies arg with result.
+  [report "generalize quantifies free var"
+    [match [generalize [subst-empty] [env-empty]
+             [TFn #[[tv 0]] [TRowEmpty] [tv 0]]]
+      [Scheme tvs _ _] [= [len tvs] 1]]]
+
+  [report "instantiate freshens (distinct vars)" [instantiate-distinct]]
+
+  ; an env-bound (monomorphic) var is NOT generalized
+  [report "env free var not generalized" [env-free-not-gen]]
+
+  ; env-lookup most-recent-wins
+  [report "env shadowing" [env-shadow]]
+
+  [println "done"]]
+
+; ── helpers for the let-heavy cases ──
+
+; id : forall t0. t0 -> t0; two instantiations must produce alpha-distinct types.
+[fn instantiate-distinct []
+  [let sch [generalize [subst-empty] [env-empty]
+             [TFn #[[tv 0]] [TRowEmpty] [tv 0]]]]
+  [match [instantiate [subst-empty] sch]
+    [Fr t1 s1]
+    [match [instantiate s1 sch]
+      [Fr t2 _]
+      [not [streq [show-type [subst-empty] t1] [show-type s1 t2]]]]]]
+
+[fn env-free-not-gen []
+  [let env [env-bind [env-empty] "x" [tv 0]]]
+  [match [generalize [subst-empty] env [TFn #[[tv 0]] [TRowEmpty] [tv 0]]]
+    [Scheme tvs _ _] [= [len tvs] 0]]]
+
+[fn env-shadow []
+  [let e1 [env-bind [env-empty] "x" [TInt]]]
+  [let e2 [env-bind e1 "x" [TBool]]]
+  [match [env-lookup e2 "x"]
+    [Scheme _ _ t] [match t [TBool] true _ false]
+    _ false]]

@@ -1,0 +1,104 @@
+; Stage-3b inline tests. Concatenated after reader.oo + types.oo + infer.oo.
+; Self-contained (no IO): parses snippets with the reader and runs inference,
+; asserting (a) the inferred type of an expression, and (b) accept/reject of a
+; whole program — the same accept/reject decision `loon check` makes.
+
+[fn report [name ok]
+  [println [str [if ok "  pass " "  FAIL "] name]]]
+
+; The inferred type of the first form of `src` must unify with `expected`,
+; with no inference errors.
+[fn type-is [name src expected]
+  [let f [nth [read-all src] 0]]
+  [match [infer-expr f]
+    [IT t c]
+    [match [unify [ctx-subst c] t expected]
+      [UOk _] [report name [ctx-ok? c]]
+      [UErr m _] [do [report name false]
+                     [println [str "      got " [show-type [ctx-subst c] t]
+                                   " want " [show-type [ctx-subst c] expected]]]]]]]
+
+; Whole-program accept / reject.
+[fn accepts [name src]
+  [let ok [checks? src]]
+  [do [report name ok]
+      [if ok :ok [show-errs src]]]]
+
+[fn rejects [name src]
+  [report name [not [checks? src]]]]
+
+[fn show-errs [src]
+  [let c [check-program [read-all src]]]
+  [loop [k 0]
+    [if [>= k [len [ctx-errs c]]]
+      :done
+      [do [println [str "      err: " [nth [ctx-errs c] k]]]
+          [recur [+ k 1]]]]]]
+
+[fn main []
+  [println "Stage-3b infer — inline tests"]
+
+  ; ── literals ──
+  [type-is "int lit"    "42"      [TInt]]
+  [type-is "float lit"  "3.14"    [TFloat]]
+  [type-is "str lit"    "\"hi\""  [TStr]]
+  [type-is "kw lit"     ":k"      [TKw]]
+  [type-is "true"       "true"    [TBool]]
+
+  ; ── arithmetic & comparison ──
+  [type-is "add"        "[+ 1 2]"        [TInt]]
+  [type-is "nested add" "[+ [* 2 3] 4]"  [TInt]]
+  [type-is "compare"    "[< 1 2]"        [TBool]]
+  [type-is "eq poly"    "[= 1 2]"        [TBool]]
+
+  ; ── if / do ──
+  [type-is "if int"     "[if [< 1 2] 10 20]"  [TInt]]
+  [type-is "do last"    "[do 1 2 3]"          [TInt]]
+
+  ; ── lambda & application ──
+  [type-is "id lambda"
+    "[fn [x] x]"
+    [TFn #[[TVar 100]] [TRowVar 101] [TVar 100]]]
+  [type-is "apply lambda"
+    "[[fn [x] [+ x 1]] 5]"
+    [TInt]]
+
+  ; ── let / let-polymorphism ──
+  ; id is generalized at the let, then used at two different types.
+  [accepts "let-poly id used twice"
+    "[fn main [] [let id [fn [x] x]] [let a [id 1]] [let b [id true]] 0]"]
+
+  ; ── vectors ──
+  [type-is "vec of int"  "#[1 2 3]"      [TCon "Vec" #[[TInt]]]]
+  [type-is "len of vec"  "[len #[1 2]]"  [TInt]]
+  [rejects "heterogeneous vec"
+    "[fn main [] #[1 true]]"]
+
+  ; ── tuples ──
+  [type-is "tuple"  "(1 true)"  [TTuple #[[TInt] [TBool]]]]
+
+  ; ── strings (variadic) ──
+  [type-is "str variadic"  "[str \"a\" 1 true]"  [TStr]]
+
+  ; ── whole programs: accept ──
+  [accepts "hello" "[fn main [] [println \"hi\"]]"]
+  [accepts "fib"
+    "[fn fib [n] [match n 0 0 1 1 n [+ [fib [- n 1]] [fib [- n 2]]]]] [fn main [] [fib 10]]"]
+  [accepts "adt + match"
+    "[type Shape [Circle f64] [Rect f64 f64] Point]
+     [fn area [s] [match s [Circle r] [* r r] [Rect w h] [* w h] Point 0.0]]
+     [fn main [] [area [Circle 5.0]]]"]
+
+  ; ── whole programs: reject ──
+  [rejects "if branch mismatch"
+    "[fn main [] [if true 1 \"two\"]]"]
+  [rejects "call type mismatch"
+    "[fn main [] [+ 1 true]]"]
+  [rejects "unbound symbol"
+    "[fn main [] [frobnicate 3]]"]
+  [rejects "wrong arg type to ctor"
+    "[type Box [Box i64]] [fn main [] [Box \"nope\"]]"]
+  [rejects "match wrong literal type"
+    "[fn f [n] [match n 0 0 \"x\" 1]] [fn main [] [f 3]]"]
+
+  [println "done"]]

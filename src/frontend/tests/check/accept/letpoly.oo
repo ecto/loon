@@ -1,0 +1,5 @@
+[fn main []
+  [let id [fn [x] x]]
+  [let a [id 1]]
+  [let b [id true]]
+  0]
