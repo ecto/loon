@@ -40,6 +40,10 @@ struct Lower<'a> {
     string_map: HashMap<String, StringId>,
     /// Known ADT constructors: name → (tag, arity).
     ctor_map: HashMap<String, (u16, u16)>,
+    /// Next constructor tag. Tags are GLOBALLY unique across all type
+    /// declarations (not reset per type), so a pattern of one type cannot match
+    /// a value of another type that happens to share a per-type ordinal.
+    next_tag: u16,
     /// Evidence in scope: "Effect.op" → Reg holding handler fn ptr.
     evidence_scope: HashMap<String, Reg>,
     /// Function name → FuncId (for direct calls).
@@ -64,6 +68,7 @@ impl<'a> Lower<'a> {
             scopes: vec![HashMap::new()],
             string_map: HashMap::new(),
             ctor_map: HashMap::new(),
+            next_tag: 0,
             evidence_scope: HashMap::new(),
             func_map: HashMap::new(),
             recur_target: None,
@@ -224,7 +229,6 @@ impl<'a> Lower<'a> {
         if args.is_empty() {
             return;
         }
-        let mut tag: u16 = 0;
         for arg in &args[1..] {
             match &arg.kind {
                 ExprKind::List(items) if !items.is_empty() => {
@@ -248,25 +252,27 @@ impl<'a> Lower<'a> {
                                 .count() as u16;
                             let total = if kw_count > 0 { kw_count } else { field_count };
 
+                            let tag = self.next_tag;
+                            self.next_tag += 1;
                             self.ctor_map.insert(name.clone(), (tag, total));
                             self.module.ctors.push(Ctor {
                                 name: name.clone(),
                                 tag,
                                 arity: total,
                             });
-                            tag += 1;
                         }
                     }
                 }
                 ExprKind::Symbol(name) if name.starts_with(char::is_uppercase) => {
                     // Nullary constructor
+                    let tag = self.next_tag;
+                    self.next_tag += 1;
                     self.ctor_map.insert(name.clone(), (tag, 0));
                     self.module.ctors.push(Ctor {
                         name: name.clone(),
                         tag,
                         arity: 0,
                     });
-                    tag += 1;
                 }
                 _ => {} // type params etc
             }
@@ -1637,19 +1643,21 @@ impl<'a> Lower<'a> {
                 }
             }
 
+            // Check for a user-defined function FIRST, so a [fn name …] shadows
+            // a builtin of the same name (e.g. defining `sum` overrides the
+            // builtin `sum`) rather than being silently ignored.
+            if let Some(&func_id) = self.func_map.get(name.as_str()) {
+                let args: Vec<Reg> = arg_exprs.iter().map(|e| self.lower_expr(e)).collect();
+                let r = self.reg();
+                self.emit(Op::Call(r, func_id, args, span));
+                return r;
+            }
+
             // Check for known builtins
             if let Some(built) = self.resolve_builtin(name) {
                 let args: Vec<Reg> = arg_exprs.iter().map(|e| self.lower_expr(e)).collect();
                 let r = self.reg();
                 self.emit(Op::Builtin(r, built, args, span));
-                return r;
-            }
-
-            // Check for known function by name
-            if let Some(&func_id) = self.func_map.get(name.as_str()) {
-                let args: Vec<Reg> = arg_exprs.iter().map(|e| self.lower_expr(e)).collect();
-                let r = self.reg();
-                self.emit(Op::Call(r, func_id, args, span));
                 return r;
             }
         }

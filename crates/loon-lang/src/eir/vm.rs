@@ -2047,6 +2047,27 @@ mod tests {
     }
 
     #[test]
+    fn vm_ctor_tags_globally_unique() {
+        // Constructors of different types must not collide: P (first ctor of B)
+        // and X (first ctor of A) used to share per-type tag 0, so [X n] matched
+        // a P value. Tags are now globally unique.
+        let v = run("[type A [X Int] [Y]] [type B [P Int] [Q]] \
+                     [match [P 5] [X n] 1 [Y] 2 [P n] n [Q] 4]");
+        assert_eq!(v.as_int(), 5);
+        let v = run("[type A [X Int] [Y]] [type B [P Int] [Q]] \
+                     [match [Y] [X n] 1 [Y] 2 [P n] 3 [Q] 4]");
+        assert_eq!(v.as_int(), 2);
+    }
+
+    #[test]
+    fn vm_user_fn_shadows_builtin() {
+        // A user [fn sum …] overrides the builtin `sum` instead of being ignored.
+        assert_eq!(run("[fn sum [x] 99] [sum #[1 2 3]]").as_int(), 99);
+        // Builtins still resolve when not shadowed.
+        assert_eq!(run("[sum #[1 2 3]]").as_int(), 6);
+    }
+
+    #[test]
     fn vm_structural_equality() {
         // Strings compare by content, not by heap identity: two independently
         // computed strings are equal (this used to be false — pointer equality).
