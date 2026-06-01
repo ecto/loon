@@ -47,12 +47,14 @@ Legend: **break?** = backward-incompatible · **effort** S/M/L.
    vs a `[Cons …]` value — and bind garbage. `collect_ctors` now uses a global
    `next_tag` counter, so distinct constructors never collide. See `eir/lower.rs`.
 
-4d. **Maps are unordered (hash order).** `keys`, iteration, and display of a map
-   come back in an unpredictable order — `[assoc [assoc {:x 1} :y 2] :z 3]`
-   prints `{:z 3 :x 1 :y 2}`. This makes map output non-deterministic and
-   annoying to test. The self-hosted VM uses insertion-ordered maps, which are
-   deterministic and (for small maps) what people expect. **Fix:** make the
-   runtime maps insertion-ordered too. _break? maybe · effort M_
+4d. **✅ FIXED — maps are insertion-ordered.** `keys`, iteration, and display
+   used to come back in hash order (non-deterministic): `[assoc [assoc {:x 1}
+   :y 2] :z 3]` printed `{:z 3 :x 1 :y 2}`. The EIR VM's map is now an
+   insertion-ordered persistent map (`OrdMap` in `eir/vm.rs`: an `imbl::HashMap`
+   for O(1) lookup + an `imbl::Vector` of keys for order), so it prints
+   `{:x 1 :y 2 :z 3}` deterministically — matching the self-hosted VM. (The
+   legacy tree-walking interpreter still uses an unordered `imbl::HashMap`; a
+   follow-up could align it.)
 
 5. **`let` is a body statement, not an expression.** `[let x v]` scopes to the
    rest of the enclosing body — clean in sequences, but `[let …]` can't be used
