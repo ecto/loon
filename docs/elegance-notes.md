@@ -34,20 +34,18 @@ Legend: **break?** = backward-incompatible · **effort** S/M/L.
    effects must be declared. **Fix:** either declare everything (with a `prelude`
    of standard effects) or document a fixed built-in set. _break? maybe · S_
 
-4b. **Builtins shadow user `fn` definitions.** Defining `[fn sum …]` does *not*
-   override the builtin `sum` — `[sum xs]` still calls the builtin (discovered
-   when a self-hosted test silently computed against the builtin instead of the
-   user's recursive `sum`). User definitions should win, or at least collide
-   loudly. **Fix:** user `fn` (and `let`) bindings shadow builtins; warn on
-   shadow. _break? yes (subtle) · effort S_
+4b. **✅ FIXED — user `fn` definitions now shadow builtins.** `lower_call`
+   checked the builtin table before user functions, so `[fn sum …]` was silently
+   ignored in favor of the builtin `sum`. It now resolves user functions first;
+   builtins still resolve when not shadowed. (Operators and constructors keep
+   priority.) See `lower_call` in `eir/lower.rs`.
 
-4c. **`match` does not discriminate constructors across different types.** A
-   pattern `[LCtx a b c d]` happily matched a `[VB s i]` value (a different
-   type, even different arity) — match appears to assume the scrutinee has the
-   pattern's type and only discriminates *within* a type. This silently binds
-   garbage when a heterogeneous collection holds values of several types.
-   **Fix:** match should check the constructor's owning type/tag, not just shape.
-   _break? yes (catches latent bugs) · effort M_
+4c. **✅ FIXED — constructor tags are globally unique.** Tags were assigned per
+   type starting at 0, so the first constructor of every type shared tag 0;
+   `match` (which lowers to a runtime tag-equality check) would match a pattern
+   of one type against a value of another with the same ordinal — e.g. `[Some n]`
+   vs a `[Cons …]` value — and bind garbage. `collect_ctors` now uses a global
+   `next_tag` counter, so distinct constructors never collide. See `eir/lower.rs`.
 
 4d. **Maps are unordered (hash order).** `keys`, iteration, and display of a map
    come back in an unpredictable order — `[assoc [assoc {:x 1} :y 2] :z 3]`
