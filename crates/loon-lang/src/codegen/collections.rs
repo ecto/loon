@@ -150,7 +150,7 @@ impl CollectionsRuntime {
         instrs.push(LocalGet(8));
         instrs.push(LocalGet(2));
         instrs.push(I64LtS);
-        instrs.push(I64Eqz);
+        instrs.push(I32Eqz);
         instrs.push(BrIf(1));
 
         // new_data[i] = old_data[i]
@@ -244,7 +244,7 @@ impl CollectionsRuntime {
         instrs.push(LocalGet(1));
         instrs.push(LocalGet(2));
         instrs.push(I64LtS);
-        instrs.push(I64Eqz); // 1 if idx >= len
+        instrs.push(I32Eqz); // 1 if idx >= len
         instrs.push(If(BlockType::Result(ValType::I64)));
         instrs.push(I64Const(0));
         instrs.push(Else);

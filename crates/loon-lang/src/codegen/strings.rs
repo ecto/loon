@@ -116,7 +116,7 @@ impl StringRuntime {
         instrs.push(LocalGet(2));
         instrs.push(LocalGet(3));
         instrs.push(I64Eq);
-        instrs.push(I64Eqz);
+        instrs.push(I32Eqz); // i64.eq yields i32, so negate with i32.eqz
         instrs.push(If(BlockType::Result(ValType::I64)));
         instrs.push(I64Const(0));
         instrs.push(Return);
@@ -162,7 +162,7 @@ impl StringRuntime {
         instrs.push(LocalGet(6));
         instrs.push(LocalGet(2));
         instrs.push(I64LtS);
-        instrs.push(I64Eqz); // now: 1 if i >= len_a
+        instrs.push(I32Eqz); // i64.lt_s yields i32; now: 1 if i >= len_a
         instrs.push(BrIf(1)); // break out of block if i >= len_a
 
         // Load byte at ptr_a + i
@@ -279,7 +279,7 @@ impl StringRuntime {
         instrs.push(LocalGet(8));
         instrs.push(LocalGet(2));
         instrs.push(I64LtS);
-        instrs.push(I64Eqz);
+        instrs.push(I32Eqz);
         instrs.push(BrIf(1));
 
         // store: mem[new_ptr + i] = mem[ptr_a + i]
@@ -317,7 +317,7 @@ impl StringRuntime {
         instrs.push(LocalGet(8));
         instrs.push(LocalGet(3));
         instrs.push(I64LtS);
-        instrs.push(I64Eqz);
+        instrs.push(I32Eqz);
         instrs.push(BrIf(1));
 
         // store: mem[new_ptr + len_a + i] = mem[ptr_b + i]
