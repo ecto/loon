@@ -118,6 +118,9 @@ enum Obj {
         regs: Vec<Val>,
         captures: Vec<Val>,
         perform_dst: u32,
+        /// The handle's handlers, so a continuation resumed AFTER its `handle`
+        /// has exited (an escaping continuation) can re-establish them.
+        prompt_handlers: Vec<DynHandler>,
         used: bool,
     },
 }
@@ -160,6 +163,7 @@ struct Frame {
 // ─── VM ────────────────────────────────────────────────────────────────────
 
 /// Dynamic effect handler entry.
+#[derive(Clone, Debug)]
 struct DynHandler {
     /// String pool index for the effect name.
     effect: StringId,
@@ -449,41 +453,72 @@ impl Vm {
     }
 
     /// Resume a one-shot delimited continuation `k` with value `v`: re-install
-    /// the captured frame segment on top of the stack and continue at the
-    /// perform point with `v` plugged in. The segment's eventual result returns
-    /// into whatever frame the caller left on top (the handler frame for a
-    /// non-tail resume, or the prompt frame for a tail resume). One-shot: errors
-    /// if `k` was already resumed.
-    fn resume_continuation(&mut self, k: Val, v: Val) -> Result<(), VmError> {
-        let (saved, func, block, ip, mut regs, captures, perform_dst) = match self.get_obj(k) {
-            Some(Obj::Continuation { used: true, .. }) => {
-                return Err(VmError::new(VmErrorKind::ContinuationUsed)
-                    .with_span(self.current_span));
-            }
-            Some(Obj::Continuation {
-                saved,
-                func,
-                block,
-                ip,
-                regs,
-                captures,
-                perform_dst,
-                used: false,
-            }) => (
-                saved.clone(),
-                *func,
-                *block,
-                *ip,
-                regs.clone(),
-                captures.clone(),
-                *perform_dst,
-            ),
-            _ => {
-                return Err(VmError::new(VmErrorKind::NotCallable).with_span(self.current_span));
-            }
-        };
+    /// the captured frame segment and continue at the perform point with `v`
+    /// plugged in. One-shot: errors if `k` was already resumed.
+    ///
+    /// `base` distinguishes how the continuation's result is delivered:
+    /// - `Some(dst)` (non-tail resume): push the current (handler) frame as a
+    ///   fresh prompt returning into `dst`, and re-establish the handle's
+    ///   handlers at that prompt. This makes the continuation self-contained, so
+    ///   it works even when resumed after its original `handle` has exited (an
+    ///   escaping continuation, e.g. the function-passing `State`).
+    /// - `None` (tail resume): leave the frame already on top as the return
+    ///   target (the reader's non-escaping tail-resume path).
+    fn resume_continuation(&mut self, k: Val, v: Val, base: Option<u32>) -> Result<(), VmError> {
+        let (saved, func, block, ip, mut regs, captures, perform_dst, prompt_handlers) =
+            match self.get_obj(k) {
+                Some(Obj::Continuation { used: true, .. }) => {
+                    return Err(VmError::new(VmErrorKind::ContinuationUsed)
+                        .with_span(self.current_span));
+                }
+                Some(Obj::Continuation {
+                    saved,
+                    func,
+                    block,
+                    ip,
+                    regs,
+                    captures,
+                    perform_dst,
+                    prompt_handlers,
+                    used: false,
+                }) => (
+                    saved.clone(),
+                    *func,
+                    *block,
+                    *ip,
+                    regs.clone(),
+                    captures.clone(),
+                    *perform_dst,
+                    prompt_handlers.clone(),
+                ),
+                _ => {
+                    return Err(
+                        VmError::new(VmErrorKind::NotCallable).with_span(self.current_span)
+                    );
+                }
+            };
         if let Some(Obj::Continuation { used, .. }) = self.heap.get_mut(k.as_ptr()) {
             *used = true;
+        }
+        if let Some(dst) = base {
+            // Push the handler frame as a fresh prompt and re-establish the
+            // handle's handlers at it, so performs inside the resumed segment
+            // are handled (even though the original `handle` may be gone).
+            self.frames.push(Frame {
+                func: self.func,
+                block: self.block,
+                ip: self.ip,
+                regs: std::mem::take(&mut self.regs),
+                ret_reg: dst,
+                captures: std::mem::take(&mut self.captures),
+            });
+            let prompt = self.frames.len() - 1;
+            for h in prompt_handlers {
+                self.handlers.push(DynHandler {
+                    prompt_depth: prompt,
+                    ..h
+                });
+            }
         }
         for f in saved {
             self.frames.push(f);
@@ -623,7 +658,7 @@ impl Vm {
                         // the resumed body's result returns into the frame already
                         // below it (the prompt frame) — don't push a frame.
                         let v = vals.first().copied().unwrap_or(Val::UNIT);
-                        self.resume_continuation(func_val, v)?;
+                        self.resume_continuation(func_val, v, None)?;
                     } else if let Some(Obj::Closure(fid, caps)) = self.get_obj(func_val).cloned() {
                         let f = &module.funcs[fid.0 as usize];
                         let reg_count = f
@@ -746,18 +781,11 @@ impl Vm {
                 let vals = self.read_regs(args);
                 if matches!(self.get_obj(func_val), Some(Obj::Continuation { .. })) {
                     // Resume a continuation (e.g. `[resume v]` not in tail
-                    // position). Push the current (handler) frame so the
-                    // resumed body's result returns here into `dst`.
+                    // position). resume_continuation pushes the handler frame as
+                    // a fresh prompt (returning into `dst`) and re-establishes
+                    // the handlers, so the continuation is self-contained.
                     let v = vals.first().copied().unwrap_or(Val::UNIT);
-                    self.frames.push(Frame {
-                        func: self.func,
-                        block: self.block,
-                        ip: self.ip,
-                        regs: std::mem::take(&mut self.regs),
-                        ret_reg: dst.0,
-                        captures: std::mem::take(&mut self.captures),
-                    });
-                    self.resume_continuation(func_val, v)?;
+                    self.resume_continuation(func_val, v, Some(dst.0))?;
                 } else if let Some(Obj::Closure(fid, caps)) = self.get_obj(func_val).cloned() {
                     let ret_reg = dst.0;
                     self.call_func_with_captures(fid, &vals, ret_reg, caps)?;
@@ -859,7 +887,15 @@ impl Vm {
                 if let Some((hval, prompt_depth)) = found {
                     // Capture the continuation: every frame above the prompt,
                     // plus the current execution point (already advanced past
-                    // this perform), as a one-shot Obj::Continuation.
+                    // this perform), as a one-shot Obj::Continuation. Snapshot
+                    // this handle's handlers too, so the continuation can
+                    // re-establish them if resumed after the handle exits.
+                    let prompt_handlers: Vec<DynHandler> = self
+                        .handlers
+                        .iter()
+                        .filter(|h| h.prompt_depth == prompt_depth)
+                        .cloned()
+                        .collect();
                     let saved: Vec<Frame> = self.frames.split_off(prompt_depth + 1);
                     let cont = Obj::Continuation {
                         saved,
@@ -869,6 +905,7 @@ impl Vm {
                         regs: std::mem::take(&mut self.regs),
                         captures: std::mem::take(&mut self.captures),
                         perform_dst: dst.0,
+                        prompt_handlers,
                         used: false,
                     };
                     let k = self.alloc(cont);
@@ -2283,6 +2320,34 @@ mod tests {
              [handle [d 5] [E.op v] [+ [resume v] [resume v]]]",
         );
         assert!(r.is_err(), "expected one-shot violation");
+    }
+
+    #[test]
+    fn vm_effect_state_escaping() {
+        // A pure `State` effect via the function-passing encoding: the handlers
+        // return functions and the continuation is resumed AFTER the `handle`
+        // has exited (an escaping continuation). Threads state through get/put.
+        let rs = "[effect State [get [] Int] [put [Int] Unit]] \
+                  [fn run-state [t init] \
+                    [[handle [t] \
+                        [return x]    [fn [s] x] \
+                        [State.get]   [fn [s] [[resume s] s]] \
+                        [State.put n] [fn [s] [[resume 0] n]]] \
+                      init]] ";
+        // get; +1; get; +10; get  threaded from 0 -> 11
+        let counter = format!(
+            "{rs} [fn counter [] [let a [State.get]] [State.put [+ a 1]] \
+             [let b [State.get]] [State.put [+ b 10]] [State.get]] \
+             [run-state counter 0]"
+        );
+        assert_eq!(run(&counter).as_int(), 11);
+        // A recursive stateful loop summing 1..5.
+        let loopsum = format!(
+            "{rs} [fn lp [i] [if [> i 5] [State.get] \
+             [do [State.put [+ [State.get] i]] [lp [+ i 1]]]]] \
+             [fn c [] [lp 1]] [run-state c 0]"
+        );
+        assert_eq!(run(&loopsum).as_int(), 15);
     }
 
     #[test]
