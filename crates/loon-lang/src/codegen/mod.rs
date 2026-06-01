@@ -1523,6 +1523,7 @@ impl<'a> FnCtx<'a> {
         }
         let mut int_arms: Vec<(i64, &Expr)> = Vec::new();
         let mut default_body: Option<&Expr> = None;
+        let mut default_var: Option<String> = None;
         for (pat, body) in parsed {
             match &pat.kind {
                 ExprKind::Int(n) => int_arms.push((*n, body)),
@@ -1530,6 +1531,7 @@ impl<'a> FnCtx<'a> {
                     default_body = Some(body);
                 }
                 ExprKind::Symbol(s) if !s.starts_with(char::is_uppercase) => {
+                    default_var = Some(s.clone()); // bind the scrutinee to this name
                     default_body = Some(body);
                 }
                 _ => return Ok(false),
@@ -1570,6 +1572,13 @@ impl<'a> FnCtx<'a> {
         }
         self.instructions.push(WasmInstruction::End);
         if let Some(body) = default_body {
+            // Bind the catch-all variable (if any) to the scrutinee.
+            if let Some(name) = default_var {
+                let local = self.alloc_local();
+                self.locals.insert(name, local);
+                self.instructions.push(WasmInstruction::LocalGet(scrutinee));
+                self.instructions.push(WasmInstruction::LocalSet(local));
+            }
             self.compile_expr(body)?;
         } else {
             self.instructions.push(WasmInstruction::I64Const(0));
