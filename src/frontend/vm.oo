@@ -17,9 +17,12 @@
   [VFloat String]      ; kept as lexeme (no float arithmetic in this slice)
   [VStr String]
   [VBool Bool]
+  [VVec Vec]           ; vector of Vals
   [VUnit]]
 
 [fn vint [v] [match v [VInt i] i _ 0]]
+[fn vstr [v] [match v [VStr s] s _ [display v]]]
+[fn vvec [v] [match v [VVec xs] xs _ #[]]]
 [fn truthy [v] [match v [VBool b] b [VUnit] false _ true]]
 
 [fn display [v]
@@ -28,7 +31,12 @@
     [VFloat s] s
     [VStr s]   s
     [VBool b]  [if b "true" "false"]
+    [VVec xs]  [str "#[" [join " " [map-display-vec xs]] "]"]
     [VUnit]    "()"]]
+
+[fn map-display-vec [xs]
+  [loop [k 0 acc #[]]
+    [if [>= k [len xs]] acc [recur [+ k 1] [conj acc [display [nth xs k]]]]]]]
 
 [fn display-all [vals]
   [loop [k 0 acc #[]]
@@ -68,14 +76,42 @@
 [fn arith? [nm] [eir-member nm #["+" "-" "*" "/"]]]
 [fn cmp?   [nm] [eir-member nm #["<" ">" "<=" ">=" "="]]]
 
+[fn coll? [nm]
+  [eir-member nm #["len" "nth" "conj" "join" "split" "index-of" "slice"]]]
+
 [fn apply-prim [nm vals]
   [if [arith? nm] [apply-arith nm [vint [nth vals 0]] [vint [nth vals 1]]]
     [if [cmp? nm] [apply-cmp nm vals]
-      [if [streq nm "not"] [VBool [not [truthy [nth vals 0]]]]
-        [if [streq nm "println"] [do [println [display [nth vals 0]]] [VUnit]]
-          [if [streq nm "print"] [do [print [display [nth vals 0]]] [VUnit]]
-            [if [streq nm "str"] [VStr [display-all vals]]
-              [VUnit]]]]]]]]
+      [if [coll? nm] [apply-coll nm vals]
+        [if [streq nm "not"] [VBool [not [truthy [nth vals 0]]]]
+          [if [streq nm "println"] [do [println [display [nth vals 0]]] [VUnit]]
+            [if [streq nm "print"] [do [print [display [nth vals 0]]] [VUnit]]
+              [if [streq nm "str"] [VStr [display-all vals]]
+                [VUnit]]]]]]]]]
+
+; Collection / string builtins, delegated to the host builtins on the unwrapped
+; loon values so semantics match `loon run` exactly.
+[fn apply-coll [nm vals]
+  [if [streq nm "len"] [VInt [coll-len [nth vals 0]]]
+    [if [streq nm "nth"] [nth [vvec [nth vals 0]] [vint [nth vals 1]]]
+      [if [streq nm "conj"] [VVec [conj [vvec [nth vals 0]] [nth vals 1]]]
+        [if [streq nm "slice"]
+          [VVec [slice [vvec [nth vals 0]] [vint [nth vals 1]] [vint [nth vals 2]]]]
+          [if [streq nm "join"]
+            [VStr [join [vstr [nth vals 0]] [map-display-vec [vvec [nth vals 1]]]]]
+            [if [streq nm "split"]
+              [VVec [wrap-strs [split [vstr [nth vals 0]] [vstr [nth vals 1]]]]]
+              [if [streq nm "index-of"]
+                [VInt [index-of [vstr [nth vals 0]] [vstr [nth vals 1]]]]
+                [VUnit]]]]]]]]]
+
+[fn coll-len [v]
+  [match v [VVec xs] [len xs] [VStr s] [len s] _ 0]]
+
+; Wrap a host vector of loon strings as a VVec of VStr.
+[fn wrap-strs [xs]
+  [loop [k 0 acc #[]]
+    [if [>= k [len xs]] acc [recur [+ k 1] [conj acc [VStr [nth xs k]]]]]]]
 
 [fn apply-arith [nm a b]
   [if [streq nm "+"] [VInt [+ a b]]
@@ -133,6 +169,7 @@
     [OBool d b]    [vset regs d [VBool b]]
     [OUnit d]      [vset regs d [VUnit]]
     [OMove d s]    [vset regs d [nth regs s]]
+    [OVec d args]  [vset regs d [VVec [gather regs args]]]
     [OPrim d nm args] [vset regs d [apply-prim nm [gather regs args]]]
     [OCall d fi args] [vset regs d [exec-func funcs [nth funcs fi] [gather regs args]]]]]
 

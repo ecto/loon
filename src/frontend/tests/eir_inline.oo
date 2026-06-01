@@ -39,4 +39,18 @@
   [evals "match str"     "[fn f [s] [match s \"hi\" 1 \"bye\" 2 _ 0]] [fn main [] [f \"bye\"]]" "2"]
   [evals "fib via match" "[fn fib [n] [match n 0 0 1 1 n [+ [fib [- n 1]] [fib [- n 2]]]]] [fn main [] [fib 10]]" "55"]
 
+  ; ── collections + string builtins ──
+  [evals "vec literal"  "[fn main [] #[1 2 3]]" "#[1 2 3]"]
+  [evals "len vec"      "[fn main [] [len #[1 2 3]]]" "3"]
+  [evals "len str"      "[fn main [] [len \"abc\"]]" "3"]
+  [evals "nth"          "[fn main [] [nth #[10 20 30] 1]]" "20"]
+  [evals "conj+join"    "[fn main [] [join \",\" [conj #[\"a\" \"b\"] \"c\"]]]" "a,b,c"]
+  [evals "join"         "[fn main [] [join \"-\" #[\"x\" \"y\" \"z\"]]]" "x-y-z"]
+  [evals "split len"    "[fn main [] [len [split \"a.b.c\" \".\"]]]" "3"]
+  [evals "index-of"     "[fn main [] [index-of \"hello\" \"ll\"]]" "2"]
+  [evals "slice+join"   "[fn main [] [join \",\" [slice #[\"a\" \"b\" \"c\" \"d\"] 1 3]]]" "b,c"]
+  [evals "sum over vec"
+    "[fn sum [v i acc] [if [>= i [len v]] acc [sum v [+ i 1] [+ acc [nth v i]]]]] [fn main [] [sum #[1 2 3 4 5] 0 0]]"
+    "15"]
+
   [println "done"]]

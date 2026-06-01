@@ -21,6 +21,7 @@
   [OUnit  i64]             ; dest <- ()
   [OPrim  i64 String Vec]  ; dest <- primitive op applied to arg registers
   [OCall  i64 i64 Vec]     ; dest <- call func #idx with arg registers
+  [OVec   i64 Vec]         ; dest <- vector built from arg registers
   [OMove  i64 i64]]        ; dest <- src register
 
 [type Term
@@ -46,7 +47,8 @@
 ; The primitive operators the VM implements directly (everything else is a call).
 [fn eir-prim? [h]
   [eir-member h
-    #["+" "-" "*" "/" "<" ">" "<=" ">=" "=" "not" "println" "print" "str"]]]
+    #["+" "-" "*" "/" "<" ">" "<=" ">=" "=" "not" "println" "print" "str"
+      "len" "nth" "conj" "join" "split" "index-of" "slice"]]]
 
 ; Look up a block by id within a func's block vector.
 [fn eir-find-block [blocks id]
@@ -67,6 +69,7 @@
     [OUnit d]    [str "r" d " = ()"]
     [OPrim d nm args] [str "r" d " = " nm " " [eir-write-regs args]]
     [OCall d fi args] [str "r" d " = call #" fi " " [eir-write-regs args]]
+    [OVec d args] [str "r" d " = vec " [eir-write-regs args]]
     [OMove d s]  [str "r" d " = r" s]]]
 
 [fn eir-write-regs [args]

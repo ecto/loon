@@ -81,7 +81,14 @@
     [FStr v _]     [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OStr d v]]]]
     [FSym n _ _]   [lower-sym env ls n]
     [FList items _] [lower-list env fns ls items]
+    [FVec items _] [lower-vec env fns ls items]
     _ [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]]]
+
+; #[…] literal: lower each element, then build a vector from the registers.
+[fn lower-vec [env fns ls items]
+  [match [lower-args env fns ls items]
+    [RPS regs ls1]
+    [match [ls-reg ls1] [RP d ls2] [RP d [ls-emit ls2 [OVec d regs]]]]]]
 
 [fn lower-sym [env ls n]
   [if [streq n "true"]  [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OBool d true]]]]
