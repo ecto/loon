@@ -1,0 +1,9 @@
+[type Opt [Some Int] [None]]
+[fn or-else [o d]
+  [match o
+    [Some n] n
+    [None] d]]
+[fn main []
+  [println [or-else [Some 99] 0]]
+  [println [or-else [None] 7]]
+  [println [Some 5]]]

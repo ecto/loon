@@ -1,0 +1,6 @@
+[fn dump [fs]
+  [loop [k 0]
+    [if [>= k [len fs]] 0
+      [do [println [write-form [nth fs k]]] [recur [+ k 1]]]]]]
+[fn main []
+  [dump [read-all "[fn add [a b] [+ a b]] [let xs #[1 2 3] k :tag]"]]]

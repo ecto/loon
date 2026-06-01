@@ -1,0 +1,8 @@
+[fn range-sum [n]
+  [loop [k 0 acc 0]
+    [if [>= k n]
+      acc
+      [recur [+ k 1] [+ acc k]]]]]
+[fn main []
+  [println [range-sum 10]]
+  [println [range-sum 100]]]

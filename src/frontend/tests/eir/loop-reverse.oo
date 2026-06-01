@@ -1,0 +1,13 @@
+[type Lst [Cons Int Lst] [Nil]]
+[fn rev [xs]
+  [loop [cur xs acc [Nil]]
+    [match cur
+      [Cons h t] [recur t [Cons h acc]]
+      [Nil] acc]]]
+[fn show [xs]
+  [loop [cur xs out #[]]
+    [match cur
+      [Cons h t] [recur t [conj out h]]
+      [Nil] [join "," out]]]]
+[fn main []
+  [println [show [rev [Cons 1 [Cons 2 [Cons 3 [Nil]]]]]]]]

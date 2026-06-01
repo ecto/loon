@@ -1,0 +1,1 @@
+[fn main [] [println [write-form [nth [read-all "[+ 1 [foo :bar 42]]"] 0]]]]

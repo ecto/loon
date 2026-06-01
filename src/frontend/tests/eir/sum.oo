@@ -1,5 +1,5 @@
-[fn sum [v i acc]
+[fn addv [v i acc]
   [if [>= i [len v]]
     acc
-    [sum v [+ i 1] [+ acc [nth v i]]]]]
-[fn main [] [println [sum #[1 2 3 4 5 6 7 8 9 10] 0 0]]]
+    [addv v [+ i 1] [+ acc [nth v i]]]]]
+[fn main [] [println [addv #[1 2 3 4 5 6 7 8 9 10] 0 0]]]

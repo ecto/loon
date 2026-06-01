@@ -53,4 +53,48 @@
     "[fn sum [v i acc] [if [>= i [len v]] acc [sum v [+ i 1] [+ acc [nth v i]]]]] [fn main [] [sum #[1 2 3 4 5] 0 0]]"
     "15"]
 
+  ; ── ADT values + constructor patterns ──
+  [evals "Some unwrap"  "[fn f [o] [match o [Some n] n [None] -1]] [fn main [] [f [Some 42]]]" "42"]
+  [evals "None arm"     "[fn f [o] [match o [Some n] n [None] -1]] [fn main [] [f [None]]]" "-1"]
+  [evals "ctor display" "[fn main [] [Some 7]]" "[Some 7]"]
+  [evals "nullary disp" "[fn main [] [None]]" "[None]"]
+  [evals "two fields"   "[fn fst [p] [match p [Pair a b] a]] [fn main [] [fst [Pair 11 22]]]" "11"]
+  [evals "list sum"
+    "[fn s [xs] [match xs [Cons h t] [+ h [s t]] [Nil] 0]] [fn main [] [s [Cons 1 [Cons 2 [Cons 3 [Nil]]]]]]"
+    "6"]
+  [evals "ctor in body"
+    "[fn box [n] [Some n]] [fn main [] [match [box 5] [Some x] [* x x] [None] 0]]" "25"]
+
+  ; ── loop / recur ──
+  [evals "loop count"  "[fn main [] [loop [k 0 acc 0] [if [>= k 5] acc [recur [+ k 1] [+ acc k]]]]]" "10"]
+  [evals "loop fact"   "[fn main [] [loop [n 5 acc 1] [if [= n 0] acc [recur [- n 1] [* acc n]]]]]" "120"]
+  [evals "loop build"  "[fn main [] [loop [k 0 acc #[]] [if [>= k 3] [len acc] [recur [+ k 1] [conj acc k]]]]]" "3"]
+  [evals "loop swap"   "[fn main [] [loop [a 1 b 10 k 0] [if [>= k 3] [+ a b] [recur b a [+ k 1]]]]]" "11"]
+  [evals "loop in fn"
+    "[fn sv [v] [loop [k 0 acc 0] [if [>= k [len v]] acc [recur [+ k 1] [+ acc [nth v k]]]]]] [fn main [] [sv #[3 4 5 6]]]"
+    "18"]
+
+  ; ── keywords ──
+  [evals "kw literal"  "[fn main [] :hello]" ":hello"]
+  [evals "kw eq"       "[fn main [] [if [= :a :a] 1 0]]" "1"]
+  [evals "kw neq"      "[fn main [] [if [= :a :b] 1 0]]" "0"]
+  [evals "kw match"    "[fn f [k] [match k :vec \"V\" :set \"S\" _ \"?\"]] [fn main [] [f :set]]" "S"]
+  [evals "kw in vec"   "[fn main [] [join \",\" #[:a :b :c]]]" ":a,:b,:c"]
+
+  ; ── effects / handle (tail-resumptive) ──
+  [evals "resume"      "[effect E [op]] [fn u [] [E.op]] [fn main [] [handle [u] [E.op] [resume 42]]]" "42"]
+  [evals "resume arg"  "[effect E [dbl]] [fn u [x] [E.dbl x]] [fn main [] [handle [u 21] [E.dbl n] [resume [* n 2]]]]" "42"]
+  [evals "two ops"     "[effect E [a b]] [fn u [] [+ [E.a] [E.b]]] [fn main [] [handle [u] [E.a] [resume 10] [E.b] [resume 5]]]" "15"]
+  [evals "perform deep"
+    "[effect S [span]] [fn inner [] [S.span]] [fn outer [] [inner]] [fn main [] [handle [outer] [S.span] [resume 7]]]" "7"]
+
+  ; ── closures ──
+  [evals "capture"    "[fn main [] [let n 10] [let f [fn [x] [+ x n]]] [f 5]]" "15"]
+  [evals "higher-ord" "[fn ap2 [f x] [f [f x]]] [fn main [] [ap2 [fn [y] [* y 3]] 2]]" "18"]
+  [evals "curry"      "[fn main [] [let mk [fn [a] [fn [b] [+ a b]]]] [[mk 100] 7]]" "107"]
+  [evals "identity"   "[fn main [] [let id [fn [x] x]] [id 42]]" "42"]
+  [evals "map-like"
+    "[fn vmap [f xs] [loop [k 0 acc #[]] [if [>= k [len xs]] acc [recur [+ k 1] [conj acc [f [nth xs k]]]]]]] [fn main [] [join \",\" [vmap [fn [x] [* x x]] #[1 2 3 4]]]]"
+    "1,4,9,16"]
+
   [println "done"]]

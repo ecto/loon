@@ -1,0 +1,12 @@
+[fn vmap [f xs]
+  [loop [k 0 acc #[]]
+    [if [>= k [len xs]] acc [recur [+ k 1] [conj acc [f [nth xs k]]]]]]]
+[fn vfilter [p xs]
+  [loop [k 0 acc #[]]
+    [if [>= k [len xs]] acc
+      [recur [+ k 1] [if [p [nth xs k]] [conj acc [nth xs k]] acc]]]]]
+[fn adder [n] [fn [x] [+ x n]]]
+[fn main []
+  [println [join "," [vmap [fn [x] [* x 10]] #[1 2 3]]]]
+  [println [join "," [vfilter [fn [x] [> x 2]] #[1 2 3 4 5]]]]
+  [println [[adder 100] 23]]]
