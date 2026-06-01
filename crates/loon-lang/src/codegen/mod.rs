@@ -102,6 +102,14 @@ struct FunctionBody {
     instructions: Vec<WasmInstruction>,
 }
 
+/// How a higher-order-function argument is invoked per element.
+enum FnRepr {
+    /// A named top-level function — called directly by index.
+    Named(u32),
+    /// A closure value held in a local — called via the table (env + args).
+    Closure(u32),
+}
+
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 enum WasmInstruction {
@@ -1124,7 +1132,11 @@ impl Compiler {
         }
         let mut mem = MemorySection::new();
         mem.memory(MemoryType {
-            minimum: 1,
+            // 256 pages (16 MiB). The bump allocator never frees and vectors
+            // are copy-on-write (O(n²) for repeated push), so one 64 KiB page
+            // is exhausted by even modest loops; this gives realistic programs
+            // headroom without a memory.grow path.
+            minimum: 256,
             maximum: None,
             memory64: false,
             shared: false,
@@ -1797,19 +1809,26 @@ impl<'a> FnCtx<'a> {
                     self.instructions.push(WasmInstruction::Br(depth.max(0) as u32));
                     return Ok(());
                 }
-                "map" | "filter" => {
+                "map" | "filter" | "each" => {
+                    // Thread-last: [op f coll] — apply f to each element.
                     if items.len() >= 3 {
-                        if let ExprKind::List(li) = &items[1].kind {
-                            if !li.is_empty() {
-                                if let ExprKind::Symbol(fs) = &li[0].kind {
-                                    if fs == "fn" {
-                                        return self.compile_hof_lambda(s, &li[1..], &items[2..]);
-                                    }
-                                }
-                            }
-                        }
+                        return self.compile_vec_hof(s, &items[1], &items[2]);
                     }
-                    return Err(format!("codegen: {s} requires a lambda literal argument."));
+                    return Err(format!("codegen: {s} requires a function and a collection"));
+                }
+                "fold" => {
+                    // [fold init f coll] — left fold; f takes (acc, elem).
+                    if items.len() >= 4 {
+                        return self.compile_fold(&items[1], &items[2], &items[3]);
+                    }
+                    return Err("codegen: fold requires init, function, collection".into());
+                }
+                "range" => {
+                    // [range a b] — vector of a, a+1, …, b-1.
+                    if items.len() >= 3 {
+                        return self.compile_range(&items[1], &items[2]);
+                    }
+                    return Err("codegen: range requires start and end".into());
                 }
                 "type" | "use" | "effect" => {
                     self.instructions.push(WasmInstruction::I64Const(0));
@@ -2066,92 +2085,6 @@ impl<'a> FnCtx<'a> {
         }
         Ok(())
     }
-    fn compile_hof_lambda(
-        &mut self,
-        hof_name: &str,
-        lambda_args: &[Expr],
-        _hof_rest: &[Expr],
-    ) -> Result<(), String> {
-        if lambda_args.is_empty() {
-            return Err("lambda requires params".into());
-        }
-        let params = match &lambda_args[0].kind {
-            ExprKind::List(items) => items
-                .iter()
-                .filter_map(|p| {
-                    if let ExprKind::Symbol(s) = &p.kind {
-                        Some(s.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>(),
-            _ => return Err("lambda params must be a list".into()),
-        };
-        let body = &lambda_args[1..];
-        let free = capture::free_vars(&params, body);
-        let mut captures: Vec<(String, u32)> = Vec::new();
-        for name in &free {
-            if let Some(&idx) = self.locals.get(name) {
-                captures.push((name.clone(), idx));
-            }
-        }
-        let lname = format!("__lambda_{}", self.compiler.lambda_counter);
-        self.compiler.lambda_counter += 1;
-        let mut all_params: Vec<String> = captures.iter().map(|(n, _)| n.clone()).collect();
-        all_params.extend(params.clone());
-        let idx = self.compiler.next_fn_idx;
-        self.compiler.fn_map.insert(
-            lname,
-            FnDef {
-                func_idx: idx,
-                arity: all_params.len(),
-                is_closure: false,
-            },
-        );
-        self.compiler.next_fn_idx += 1;
-        let mut lctx = FnCtx {
-            locals: HashMap::new(),
-            local_count: all_params.len() as u32,
-            instructions: Vec::new(),
-            compiler: self.compiler,
-            loop_starts: Vec::new(),
-            loop_vars: Vec::new(),
-        };
-        for (i, p) in all_params.iter().enumerate() {
-            lctx.locals.insert(p.clone(), i as u32);
-        }
-        for expr in body {
-            lctx.compile_expr(expr)?;
-        }
-        let linstrs = lctx.instructions.clone();
-        let llc = lctx.local_count;
-        drop(lctx);
-        self.compiler.push_function(
-            idx,
-            FunctionBody {
-                params: vec![ValType::I64; all_params.len()],
-                results: vec![ValType::I64],
-                locals: if llc > all_params.len() as u32 {
-                    vec![ValType::I64; (llc - all_params.len() as u32) as usize]
-                } else {
-                    vec![]
-                },
-                instructions: linstrs,
-            },
-        );
-        match hof_name {
-            "map" | "filter" => {
-                for (_, li) in &captures {
-                    self.instructions.push(WasmInstruction::LocalGet(*li));
-                }
-                self.instructions.push(WasmInstruction::I64Const(0));
-                self.instructions.push(WasmInstruction::Call(idx));
-            }
-            _ => return Err(format!("codegen: HOF '{hof_name}' not supported")),
-        }
-        Ok(())
-    }
     fn compile_closure(&mut self, args: &[Expr]) -> Result<(), String> {
         if args.is_empty() {
             return Err("closure requires params".into());
@@ -2250,6 +2183,257 @@ impl<'a> FnCtx<'a> {
             self.instructions.push(WasmInstruction::LocalGet(el));
             self.instructions.push(WasmInstruction::I64Or);
         }
+        Ok(())
+    }
+    /// Resolve a HOF function argument to something callable per element: a
+    /// named top-level function (called directly) or a closure value held in a
+    /// local (called via the table). Lambda literals are compiled to a closure
+    /// value first.
+    fn prepare_fn_arg(&mut self, f: &Expr) -> Result<FnRepr, String> {
+        match &f.kind {
+            ExprKind::List(items)
+                if matches!(items.first().map(|e| &e.kind), Some(ExprKind::Symbol(s)) if s == "fn") =>
+            {
+                self.compile_closure(&items[1..])?;
+                let l = self.alloc_local();
+                self.instructions.push(WasmInstruction::LocalSet(l));
+                Ok(FnRepr::Closure(l))
+            }
+            ExprKind::Symbol(name) => {
+                if let Some(def) = self.compiler.fn_map.get(name).cloned() {
+                    if def.is_closure {
+                        if let Some(&l) = self.locals.get(name) {
+                            return Ok(FnRepr::Closure(l));
+                        }
+                    }
+                    Ok(FnRepr::Named(def.func_idx))
+                } else if let Some(&l) = self.locals.get(name) {
+                    Ok(FnRepr::Closure(l))
+                } else {
+                    Err(format!("codegen: HOF function '{name}' not found"))
+                }
+            }
+            _ => Err("codegen: HOF requires a function argument".into()),
+        }
+    }
+    /// Emit a single-argument application of `f` to the value in local `eloc`,
+    /// leaving the result on the stack.
+    fn emit_apply1(&mut self, f: &FnRepr, eloc: u32) {
+        use WasmInstruction as W;
+        match f {
+            FnRepr::Named(idx) => {
+                self.instructions.push(W::LocalGet(eloc));
+                self.instructions.push(W::Call(*idx));
+            }
+            FnRepr::Closure(cl) => {
+                // env = cl & 0xffffffff; ti = cl >> 32
+                self.instructions.push(W::LocalGet(*cl));
+                self.instructions.push(W::I64Const(0xFFFF_FFFF));
+                self.instructions.push(W::I64And);
+                self.instructions.push(W::LocalGet(eloc));
+                self.instructions.push(W::LocalGet(*cl));
+                self.instructions.push(W::I64Const(32));
+                self.instructions.push(W::I64ShrU);
+                self.instructions.push(W::I32WrapI64);
+                let ty = self.get_or_create_indirect_type(2);
+                self.instructions.push(W::CallIndirect(ty));
+            }
+        }
+    }
+    /// Load `len` (offset 0) and `data_ptr` (offset 16) of the vector held in
+    /// `vloc` into freshly allocated locals, returning (len_local, data_local).
+    fn emit_vec_header(&mut self, vloc: u32) -> (u32, u32) {
+        use WasmInstruction as W;
+        let nloc = self.alloc_local();
+        self.instructions.push(W::LocalGet(vloc));
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalSet(nloc));
+        let dloc = self.alloc_local();
+        self.instructions.push(W::LocalGet(vloc));
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 16));
+        self.instructions.push(W::LocalSet(dloc));
+        (nloc, dloc)
+    }
+    fn compile_vec_hof(&mut self, kind: &str, f: &Expr, coll: &Expr) -> Result<(), String> {
+        use WasmInstruction as W;
+        self.compiler.ensure_collections_runtime();
+        let rt = self.compiler.collections_runtime.clone().unwrap();
+        self.compile_expr(coll)?;
+        let vloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(vloc));
+        let fr = self.prepare_fn_arg(f)?;
+        let (nloc, dloc) = self.emit_vec_header(vloc);
+        let rloc = self.alloc_local();
+        if kind == "map" || kind == "filter" {
+            self.instructions.push(W::Call(rt.vec_new_idx));
+            self.instructions.push(W::LocalSet(rloc));
+        }
+        let iloc = self.alloc_local();
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(iloc));
+        let eloc = self.alloc_local();
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        // if i >= n break
+        self.instructions.push(W::LocalGet(iloc));
+        self.instructions.push(W::LocalGet(nloc));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // elem = data[i]
+        self.instructions.push(W::LocalGet(dloc));
+        self.instructions.push(W::LocalGet(iloc));
+        self.instructions.push(W::I64Const(8));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalSet(eloc));
+        match kind {
+            "each" => {
+                self.emit_apply1(&fr, eloc);
+                self.instructions.push(W::Drop);
+            }
+            "map" => {
+                self.instructions.push(W::LocalGet(rloc));
+                self.emit_apply1(&fr, eloc);
+                self.instructions.push(W::Call(rt.vec_push_idx));
+                self.instructions.push(W::LocalSet(rloc));
+            }
+            "filter" => {
+                self.emit_apply1(&fr, eloc);
+                self.instructions.push(W::I64Eqz); // 1 if falsy
+                self.instructions.push(W::If(BlockType::Empty));
+                // then: falsy → skip
+                self.instructions.push(W::Else);
+                self.instructions.push(W::LocalGet(rloc));
+                self.instructions.push(W::LocalGet(eloc));
+                self.instructions.push(W::Call(rt.vec_push_idx));
+                self.instructions.push(W::LocalSet(rloc));
+                self.instructions.push(W::End);
+            }
+            _ => unreachable!(),
+        }
+        // i++
+        self.instructions.push(W::LocalGet(iloc));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(iloc));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End); // loop
+        self.instructions.push(W::End); // block
+        match kind {
+            "map" | "filter" => self.instructions.push(W::LocalGet(rloc)),
+            // `each` is run for effect; yield the source collection so it can
+            // sit mid-pipe.
+            _ => self.instructions.push(W::LocalGet(vloc)),
+        }
+        Ok(())
+    }
+    fn compile_fold(&mut self, init: &Expr, f: &Expr, coll: &Expr) -> Result<(), String> {
+        use WasmInstruction as W;
+        self.compiler.ensure_collections_runtime();
+        self.compile_expr(coll)?;
+        let vloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(vloc));
+        let fr = self.prepare_fn_arg(f)?;
+        let accloc = self.alloc_local();
+        self.compile_expr(init)?;
+        self.instructions.push(W::LocalSet(accloc));
+        let (nloc, dloc) = self.emit_vec_header(vloc);
+        let iloc = self.alloc_local();
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(iloc));
+        let eloc = self.alloc_local();
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(iloc));
+        self.instructions.push(W::LocalGet(nloc));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // elem = data[i]
+        self.instructions.push(W::LocalGet(dloc));
+        self.instructions.push(W::LocalGet(iloc));
+        self.instructions.push(W::I64Const(8));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalSet(eloc));
+        // acc = f(acc, elem)
+        self.emit_apply2(&fr, accloc, eloc);
+        self.instructions.push(W::LocalSet(accloc));
+        self.instructions.push(W::LocalGet(iloc));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(iloc));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        self.instructions.push(W::LocalGet(accloc));
+        Ok(())
+    }
+    /// Two-argument application of `f` to (`a`, `b`) locals, result on stack.
+    fn emit_apply2(&mut self, f: &FnRepr, a: u32, b: u32) {
+        use WasmInstruction as W;
+        match f {
+            FnRepr::Named(idx) => {
+                self.instructions.push(W::LocalGet(a));
+                self.instructions.push(W::LocalGet(b));
+                self.instructions.push(W::Call(*idx));
+            }
+            FnRepr::Closure(cl) => {
+                self.instructions.push(W::LocalGet(*cl));
+                self.instructions.push(W::I64Const(0xFFFF_FFFF));
+                self.instructions.push(W::I64And);
+                self.instructions.push(W::LocalGet(a));
+                self.instructions.push(W::LocalGet(b));
+                self.instructions.push(W::LocalGet(*cl));
+                self.instructions.push(W::I64Const(32));
+                self.instructions.push(W::I64ShrU);
+                self.instructions.push(W::I32WrapI64);
+                let ty = self.get_or_create_indirect_type(3);
+                self.instructions.push(W::CallIndirect(ty));
+            }
+        }
+    }
+    fn compile_range(&mut self, a: &Expr, b: &Expr) -> Result<(), String> {
+        use WasmInstruction as W;
+        self.compiler.ensure_collections_runtime();
+        let rt = self.compiler.collections_runtime.clone().unwrap();
+        let iloc = self.alloc_local();
+        self.compile_expr(a)?;
+        self.instructions.push(W::LocalSet(iloc));
+        let bloc = self.alloc_local();
+        self.compile_expr(b)?;
+        self.instructions.push(W::LocalSet(bloc));
+        let rloc = self.alloc_local();
+        self.instructions.push(W::Call(rt.vec_new_idx));
+        self.instructions.push(W::LocalSet(rloc));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(iloc));
+        self.instructions.push(W::LocalGet(bloc));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // r = vec_push(r, i)
+        self.instructions.push(W::LocalGet(rloc));
+        self.instructions.push(W::LocalGet(iloc));
+        self.instructions.push(W::Call(rt.vec_push_idx));
+        self.instructions.push(W::LocalSet(rloc));
+        // i++
+        self.instructions.push(W::LocalGet(iloc));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(iloc));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        self.instructions.push(W::LocalGet(rloc));
         Ok(())
     }
     fn compile_closure_call_local(&mut self, name: &str, call_args: &[Expr]) -> Result<(), String> {
@@ -2427,6 +2611,18 @@ mod tests {
         // A closure that captures a free variable: the env-pointer was left on
         // the stack by a stray LocalTee, leaving 2 values where 1 was expected.
         valid(r#"[fn adder [n] [fn [x] [+ x n]]] [fn main [] [let f [adder 10]] [println [f 5]]]"#);
+    }
+    #[test]
+    fn compile_vec_hofs_are_valid() {
+        // range + map/filter/each/fold over vectors, with both lambda-literal
+        // and named-function arguments, applied per element via the table.
+        valid(r#"[fn main [] [each [fn [x] [println x]] [range 0 4]]]"#);
+        valid(r#"[fn sq [x] [* x x]] [fn main [] [each [fn [x] [println x]] [map sq [range 1 5]]]]"#);
+        valid(r#"[fn main [] [each [fn [x] [println x]] [filter [fn [x] [> x 2]] [range 0 6]]]]"#);
+        valid(r#"[fn main [] [println [fold 0 [fn [acc x] [+ acc x]] [range 1 11]]]]"#);
+        valid(
+            r#"[fn main [] [pipe [range 0 4] [map [fn [x] [* x 10]]] [each [fn [x] [println x]]]]]"#,
+        );
     }
     #[test]
     fn compile_vector_literal_is_valid() {
