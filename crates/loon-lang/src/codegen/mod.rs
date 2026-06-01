@@ -1578,107 +1578,122 @@ impl<'a> FnCtx<'a> {
         Ok(true)
     }
     fn compile_match_arms_ifelse(&mut self, scrutinee: u32, arms: &[Expr]) -> Result<(), String> {
+        // Right-nested if/else chain, each `if` producing an i64:
+        //   t1; if {b1} else { t2; if {b2} else { … default } } …
+        // Every conditional arm opens one `if (Result I64)` and its `else`; a
+        // wildcard / variable arm is the innermost else and ends the chain. All
+        // opened `if`s are closed with `End` at the end (this is what makes
+        // multi-arm and ADT matches produce valid wasm).
+        let mut open = 0u32;
+        let mut have_default = false;
         let mut i = 0;
-        let mut first = true;
         while i + 1 < arms.len() {
             let pattern = &arms[i];
             let body = &arms[i + 1];
-            match &pattern.kind {
-                ExprKind::Symbol(s) if s == "_" => {
-                    if !first {
-                        self.instructions.push(WasmInstruction::Else);
-                    }
-                    self.compile_expr(body)?;
-                    if !first {
-                        self.instructions.push(WasmInstruction::End);
-                    }
-                    return Ok(());
+
+            // A `_` or a plain variable (not a nullary constructor) is a
+            // catch-all default: bind it (if named), compile its body, stop.
+            let is_default = match &pattern.kind {
+                ExprKind::Symbol(s) => {
+                    s == "_"
+                        || !matches!(
+                            self.compiler.adt_constructors.get(s.as_str()),
+                            Some((_, 0))
+                        )
                 }
+                _ => false,
+            };
+            if is_default {
+                if let ExprKind::Symbol(name) = &pattern.kind {
+                    if name != "_" {
+                        let local = self.alloc_local();
+                        self.locals.insert(name.clone(), local);
+                        self.instructions.push(WasmInstruction::LocalGet(scrutinee));
+                        self.instructions.push(WasmInstruction::LocalSet(local));
+                    }
+                }
+                self.compile_expr(body)?;
+                have_default = true;
+                break;
+            }
+
+            // A constructor pattern with fields: open the `if`, then bind fields
+            // inside it before compiling the body.
+            if let ExprKind::List(pat_items) = &pattern.kind {
+                let cn = match pat_items.first().map(|e| &e.kind) {
+                    Some(ExprKind::Symbol(s)) => s.clone(),
+                    _ => return Err("match: malformed constructor pattern".into()),
+                };
+                let tag = self
+                    .compiler
+                    .adt_constructors
+                    .get(cn.as_str())
+                    .map(|(t, _)| *t)
+                    .ok_or_else(|| format!("match: unknown constructor '{cn}'"))?;
+                self.instructions.push(WasmInstruction::LocalGet(scrutinee));
+                self.instructions.push(WasmInstruction::I32WrapI64);
+                self.instructions.push(WasmInstruction::I64Load(3, 0));
+                self.instructions.push(WasmInstruction::I64Const(tag as i64));
+                self.instructions.push(WasmInstruction::I64Eq);
+                self.instructions
+                    .push(WasmInstruction::If(BlockType::Result(ValType::I64)));
+                for (fi, fp) in pat_items[1..].iter().enumerate() {
+                    if let ExprKind::Symbol(fn_) = &fp.kind {
+                        if fn_ != "_" {
+                            let local = self.alloc_local();
+                            self.locals.insert(fn_.clone(), local);
+                            self.instructions.push(WasmInstruction::LocalGet(scrutinee));
+                            self.instructions.push(WasmInstruction::I32WrapI64);
+                            self.instructions
+                                .push(WasmInstruction::I64Load(3, (8 + fi * 8) as u32));
+                            self.instructions.push(WasmInstruction::LocalSet(local));
+                        }
+                    }
+                }
+                self.compile_expr(body)?;
+                self.instructions.push(WasmInstruction::Else);
+                open += 1;
+                i += 2;
+                continue;
+            }
+
+            // A literal int or a nullary constructor: emit the test, then the
+            // shared open-if / body / else below.
+            match &pattern.kind {
                 ExprKind::Int(n) => {
                     self.instructions.push(WasmInstruction::LocalGet(scrutinee));
                     self.instructions.push(WasmInstruction::I64Const(*n));
                     self.instructions.push(WasmInstruction::I64Eq);
-                    self.instructions
-                        .push(WasmInstruction::If(BlockType::Result(ValType::I64)));
-                    self.compile_expr(body)?;
-                    first = false;
-                    i += 2;
-                    continue;
                 }
                 ExprKind::Symbol(name) => {
-                    if let Some((tag, 0)) =
-                        self.compiler.adt_constructors.get(name.as_str()).cloned()
-                    {
-                        self.instructions.push(WasmInstruction::LocalGet(scrutinee));
-                        self.instructions.push(WasmInstruction::I32WrapI64);
-                        self.instructions.push(WasmInstruction::I64Load(3, 0));
-                        self.instructions
-                            .push(WasmInstruction::I64Const(tag as i64));
-                        self.instructions.push(WasmInstruction::I64Eq);
-                        self.instructions
-                            .push(WasmInstruction::If(BlockType::Result(ValType::I64)));
-                        self.compile_expr(body)?;
-                        first = false;
-                        i += 2;
-                        continue;
-                    }
-                    if !first {
-                        self.instructions.push(WasmInstruction::Else);
-                    }
-                    let local = self.alloc_local();
-                    self.locals.insert(name.clone(), local);
+                    let tag = self
+                        .compiler
+                        .adt_constructors
+                        .get(name.as_str())
+                        .map(|(t, _)| *t)
+                        .unwrap_or(0);
                     self.instructions.push(WasmInstruction::LocalGet(scrutinee));
-                    self.instructions.push(WasmInstruction::LocalSet(local));
-                    self.compile_expr(body)?;
-                    if !first {
-                        self.instructions.push(WasmInstruction::End);
-                    }
-                    return Ok(());
+                    self.instructions.push(WasmInstruction::I32WrapI64);
+                    self.instructions.push(WasmInstruction::I64Load(3, 0));
+                    self.instructions.push(WasmInstruction::I64Const(tag as i64));
+                    self.instructions.push(WasmInstruction::I64Eq);
                 }
-                ExprKind::List(pat_items) if !pat_items.is_empty() => {
-                    if let ExprKind::Symbol(cn) = &pat_items[0].kind {
-                        if let Some((tag, _)) =
-                            self.compiler.adt_constructors.get(cn.as_str()).cloned()
-                        {
-                            self.instructions.push(WasmInstruction::LocalGet(scrutinee));
-                            self.instructions.push(WasmInstruction::I32WrapI64);
-                            self.instructions.push(WasmInstruction::I64Load(3, 0));
-                            self.instructions
-                                .push(WasmInstruction::I64Const(tag as i64));
-                            self.instructions.push(WasmInstruction::I64Eq);
-                            self.instructions
-                                .push(WasmInstruction::If(BlockType::Result(ValType::I64)));
-                            for (fi, fp) in pat_items[1..].iter().enumerate() {
-                                if let ExprKind::Symbol(fn_) = &fp.kind {
-                                    if fn_ != "_" {
-                                        let local = self.alloc_local();
-                                        self.locals.insert(fn_.clone(), local);
-                                        self.instructions
-                                            .push(WasmInstruction::LocalGet(scrutinee));
-                                        self.instructions.push(WasmInstruction::I32WrapI64);
-                                        self.instructions
-                                            .push(WasmInstruction::I64Load(3, (8 + fi * 8) as u32));
-                                        self.instructions.push(WasmInstruction::LocalSet(local));
-                                    }
-                                }
-                            }
-                            self.compile_expr(body)?;
-                            first = false;
-                            i += 2;
-                            continue;
-                        }
-                    }
-                }
-                _ => {}
+                _ => return Err("match: unsupported pattern".into()),
             }
+            self.instructions
+                .push(WasmInstruction::If(BlockType::Result(ValType::I64)));
+            self.compile_expr(body)?;
+            self.instructions.push(WasmInstruction::Else);
+            open += 1;
             i += 2;
         }
-        if !first {
-            self.instructions.push(WasmInstruction::Else);
+        // Innermost else holds the default (a catch-all body was already
+        // compiled above; otherwise fall back to unit).
+        if !have_default {
             self.instructions.push(WasmInstruction::I64Const(0));
+        }
+        for _ in 0..open {
             self.instructions.push(WasmInstruction::End);
-        } else {
-            self.instructions.push(WasmInstruction::I64Const(0));
         }
         Ok(())
     }
@@ -1985,6 +2000,14 @@ mod tests {
         valid("[fn main [] [let x 5] [let y 6] [println [* x y]]]");
         valid("[fn main [] [println 7] [println 8] [println 9]]");
         valid("[fn g [a] [let b [* a 2]] [+ b 1]] [fn main [] [println [g 10]]]");
+    }
+
+    #[test]
+    fn compile_match_is_valid() {
+        valid("[type O [Some Int] [None]] [fn main [] [println [match [Some 5] [Some n] n [None] 0]]]");
+        valid("[type C [R] [G] [B]] [fn f [c] [match c [R] 1 [G] 2 [B] 3]] [fn main [] [println [f [B]]]]");
+        valid("[type L [Cons Int L] [Nil]] [fn s [xs] [match xs [Cons h t] [+ h [s t]] [Nil] 0]] \
+               [fn main [] [println [s [Cons 10 [Cons 20 [Nil]]]]]]");
     }
 
     #[test]
