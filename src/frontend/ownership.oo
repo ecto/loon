@@ -1,0 +1,549 @@
+; Loon self-hosted frontend — Stage 3d: ownership / borrow checker.
+;
+; Concatenated after reader.oo (it only needs the Form AST; it is independent of
+; the type checker). Reproduces crates/loon-lang/src/check/ownership.rs: a
+; dataflow pass that tracks each binding through Alive → Moved / MutBorrowed and
+; reports use-after-move (E0300), mutation of an immutable binding (E0301), and a
+; second mutable borrow (E0302).
+;
+; Oracle note: unlike the type checker, ownership is NOT run by `loon check` or
+; `loon run` — the Rust OwnershipChecker is invoked only on the interactive
+; tutorial/REPL path (run_code_live in loon-cli). There is therefore no file
+; oracle to differential against; the gate is a Loon-only conformance suite that
+; mirrors ownership.rs's own unit tests (its de-facto specification).
+;
+; Two phases (matching the Rust pass):
+;   1. param-mode inference — analyse each fn body to classify every parameter
+;      as Borrow / MutBorrow / Move (escalation only ever increases). The
+;      analysis is local: a parameter passed to a user/unknown function is
+;      conservatively treated as Move.
+;   2. dataflow walk — track binding states across top-level statements and each
+;      fn body; at a call site, consult the callee's inferred param modes.
+;
+; Approximation (documented deferral): Copy-ness without full type info is read
+; structurally from the bound value (literals; constructors of [derive Copy]
+; types), where ownership.rs consults the inferred type of each expression.
+
+; ── Helpers ─────────────────────────────────────────────────────────────────
+
+[fn own-vec-rest [v i]
+  [loop [k i acc #[]]
+    [if [>= k [len v]] acc [recur [+ k 1] [conj acc [nth v k]]]]]]
+
+[fn member-streq [x xs]
+  [loop [k 0]
+    [if [>= k [len xs]] false
+      [if [streq x [nth xs k]] true [recur [+ k 1]]]]]]
+
+; Builtins that only borrow their arguments (never move them).
+[fn borrow-builtin? [h]
+  [member-streq h
+    #["println" "print" "str" "len" "nth" "get" "contains?" "empty?"
+      "+" "-" "*" "/" ">" "<" ">=" "<=" "=" "not" "and" "or"]]]
+
+[fn special-form? [h]
+  [member-streq h #["let" "if" "match" "do" "fn" "handle" "quote"]]]
+
+[fn mutator? [h] [if [streq h "push!"] true [streq h "set!"]]]
+
+; Param-mode lattice Borrow < MutBorrow < Move.
+[fn mode-rank [m]
+  [if [= m :borrow] 0 [if [= m :mutborrow] 1 2]]]
+[fn mode-max [a b] [if [> [mode-rank b] [mode-rank a]] b a]]
+
+; ── Context (constant during the walk) ──────────────────────────────────────
+
+[type FM   [FM String Vec]]          ; a fn's name + its param-mode vector
+[type CT   [CT String String]]       ; constructor name -> declaring type name
+[type OCtx [OCtx Vec Vec Vec]]       ; fn-modes, copy-type names, ctor->type map
+
+[fn octx-fnmodes [o] [match o [OCtx f _ _] f]]
+[fn octx-copy    [o] [match o [OCtx _ c _] c]]
+[fn octx-ctors   [o] [match o [OCtx _ _ k] k]]
+
+; The mode of argument `i` of function `h` (default Move for unknown functions).
+[fn fnmode-arg [octx h i]
+  [loop [k 0]
+    [if [>= k [len [octx-fnmodes octx]]]
+      :move
+      [match [nth [octx-fnmodes octx] k]
+        [FM nm modes]
+        [if [streq nm h]
+          [if [< i [len modes]] [nth modes i] :move]
+          [recur [+ k 1]]]]]]]
+
+[fn copy-type? [octx name] [member-streq name [octx-copy octx]]]
+
+[fn ctor-type [octx cn]
+  [loop [k 0]
+    [if [>= k [len [octx-ctors octx]]]
+      :none
+      [match [nth [octx-ctors octx] k]
+        [CT c t] [if [streq c cn] t [recur [+ k 1]]]]]]]
+
+; ── Ownership state ─────────────────────────────────────────────────────────
+
+[type OBind [OBind String Keyword Bool Bool]]  ; name, state, is-copy, is-mut
+[type OS    [OS Vec Vec OCtx]]                  ; bindings, errors, context
+
+[fn os-binds [s] [match s [OS b _ _] b]]
+[fn os-errs  [s] [match s [OS _ e _] e]]
+[fn os-octx  [s] [match s [OS _ _ o] o]]
+[fn os-ok?   [s] [= [len [os-errs s]] 0]]
+[fn os-err [s m] [match s [OS b e o] [OS b [conj e m] o]]]
+
+; Reset the binding scope (entering a fn body / the top level), keeping errors
+; and context.
+[fn os-scope [s binds] [match s [OS _ e o] [OS binds e o]]]
+
+[fn os-add [s name is-copy is-mut]
+  [match s [OS b e o] [OS [conj b [OBind name :alive is-copy is-mut]] e o]]]
+
+[fn ob-find [binds name]
+  [loop [k [- [len binds] 1]]                  ; most recent wins
+    [if [< k 0] :none
+      [match [nth binds k]
+        [OBind n _ _ _] [if [streq n name] [nth binds k] [recur [- k 1]]]]]]]
+
+; Replace the state of the most-recent binding named `name`.
+[fn os-set-state [s name st]
+  [match s [OS b e o]
+    [OS [set-state-vec b name st] e o]]]
+
+[fn set-state-vec [binds name st]
+  [loop [k [- [len binds] 1] done false acc binds]
+    [if [< k 0] acc
+      [match [nth acc k]
+        [OBind n _ ic im]
+        [if [if [not done] [streq n name] false]
+          [vset acc k [OBind n st ic im]]
+          [recur [- k 1] done acc]]]]]]
+
+[fn vset [v i x]
+  [loop [k 0 acc #[]]
+    [if [>= k [len v]] acc [recur [+ k 1] [conj acc [if [= k i] x [nth v k]]]]]]]
+
+; ── State transitions (the three diagnostics) ───────────────────────────────
+
+; Read a binding: error iff it has been moved (E0300).
+[fn use-binding [s name]
+  [match [ob-find [os-binds s] name]
+    :none s
+    [OBind _ st _ _]
+    [if [= st :moved]
+      [os-err s [str "use of moved value '" name "'"]]
+      s]]]
+
+; Move a binding: Copy values never move; moving an already-moved value is
+; use-after-move (E0300); otherwise transition Alive -> Moved.
+[fn move-binding [s name]
+  [match [ob-find [os-binds s] name]
+    :none s
+    [OBind _ st ic _]
+    [if ic s
+      [if [= st :moved]
+        [os-err s [str "use of moved value '" name "'"]]
+        [os-set-state s name :moved]]]]]
+
+; Mutably borrow: requires [let mut ...] (E0301); a second mutable borrow is
+; E0302; otherwise transition to MutBorrowed.
+[fn mut-borrow [s name]
+  [match [ob-find [os-binds s] name]
+    :none s
+    [OBind _ st _ im]
+    [if [not im]
+      [os-err s [str "cannot mutably borrow immutable binding '" name "'"]]
+      [if [= st :mutborrowed]
+        [os-err s [str "cannot borrow '" name "' as mutable more than once"]]
+        [os-set-state s name :mutborrowed]]]]]
+
+; ── Dataflow walk ───────────────────────────────────────────────────────────
+
+[fn own-expr [s f]
+  [match f
+    [FSym n _ _] [use-binding s n]
+    [FList items _] [own-list s items]
+    [FVec items _] [own-args s items]
+    [FSet items _] [own-args s items]
+    [FTuple items _] [own-args s items]
+    [FMap items _] [own-args s items]
+    [FDot base _ _] [own-expr s base]
+    [FQuery x _] [own-expr s x]
+    _ s]]                                       ; literals: no ownership effect
+
+; In the dataflow walk a collection literal READS its elements (it does not move
+; them). Collection-store only matters for param-mode classification, where it
+; signals that a parameter escapes — see cls-coll.
+
+[fn own-list [s items]
+  [if [= [len items] 0] s
+    [match [nth items 0]
+      [FSym h _ _]
+      [if [special-form? h] [own-special s h items]
+        [if [mutator? h] [own-mutate s items]
+          [if [borrow-builtin? h] [own-args s [own-vec-rest items 1]]
+            [own-call s h [own-vec-rest items 1]]]]]
+      _ [own-args s items]]]]
+
+; Borrow each argument (read).
+[fn own-args [s args]
+  [loop [k 0 s s]
+    [if [>= k [len args]] s [recur [+ k 1] [own-expr s [nth args k]]]]]]
+
+; A call to a user/unknown function: each bare-symbol argument is consumed
+; according to the callee's inferred param mode.
+[fn own-call [s h args]
+  [loop [k 0 s s]
+    [if [>= k [len args]] s
+      [recur [+ k 1]
+        [match [nth args k]
+          [FSym n _ _] [apply-mode s [fnmode-arg [os-octx s] h k] n]
+          other [own-expr s other]]]]]]
+
+[fn apply-mode [s mode name]
+  [if [= mode :move] [move-binding s name]
+    [if [= mode :mutborrow] [mut-borrow s name]
+      [use-binding s name]]]]
+
+; push!/set!: the first argument is mutably borrowed; the rest are read.
+[fn own-mutate [s items]
+  [if [< [len items] 2] s
+    [own-args
+      [match [nth items 1]
+        [FSym n _ _] [mut-borrow s n]
+        other [own-expr s other]]
+      [own-vec-rest items 2]]]]
+
+[fn own-special [s h items]
+  [if [streq h "let"] [own-let s items]
+    [if [streq h "do"] [own-seq s [own-vec-rest items 1]]
+      [if [streq h "if"] [own-if s items]
+        [if [streq h "match"] [own-match s items]
+          [if [streq h "fn"] [own-lambda s items]
+            [if [streq h "handle"] [own-handle s items]
+              s]]]]]]]              ; quote: inert
+
+; [let name val] / [let mut name val]
+[fn own-let [s items]
+  [if [if [>= [len items] 4]
+        [match [nth items 1] [FSym m _ _] [streq m "mut"] _ false]
+        false]
+    [own-let-bind s [nth items 2] [nth items 3] true]
+    [if [>= [len items] 3]
+      [own-let-bind s [nth items 1] [nth items 2] false]
+      s]]]
+
+[fn own-let-bind [s namef valf is-mut]
+  [match namef
+    [FSym name _ _]
+    [os-add [own-expr s valf] name [value-copy? [os-octx s] valf] is-mut]
+    _ [own-expr s valf]]]
+
+; Branches are analysed in sequence (a sound over-approximation for the
+; conformance cases; full per-arm state merging is a later refinement).
+[fn own-if [s items]
+  [loop [k 1 s s]
+    [if [>= k [len items]] s [recur [+ k 1] [own-expr s [nth items k]]]]]]
+
+[fn own-match [s items]
+  [if [< [len items] 2] s
+    [own-match-arms [own-expr s [nth items 1]] items 2]]]
+
+[fn own-match-arms [s items i]
+  [if [>= i [len items]] s
+    ; items[i] is a pattern (binds names), items[i+1] the result
+    [own-match-arms [own-expr [bind-pattern s [nth items i]] [nth items [+ i 1]]]
+                    items [+ i 2]]]]
+
+; Pattern bindings become fresh alive (non-copy, immutable) bindings.
+[fn bind-pattern [s pat]
+  [match pat
+    [FSym n _ _]
+    [if [member-streq n #["_" "true" "false"]] s [os-add s n false false]]
+    [FList its _]
+    [loop [k 1 s s]
+      [if [>= k [len its]] s [recur [+ k 1] [bind-pattern s [nth its k]]]]]
+    _ s]]
+
+; A nested lambda's body is analysed in a fresh scope with its params bound;
+; outer binding states are not threaded through (closures are not move-tracked
+; here, matching ownership.rs).
+[fn own-lambda [s items]
+  [if [< [len items] 3] s
+    [match [nth items 1]
+      [FList params _]
+      [os-scope
+        [own-seq [os-scope s [params-binds params]] [own-vec-rest items 2]]
+        [os-binds s]]
+      _ s]]]
+
+[fn own-handle [s items]
+  [loop [k 1 s s]
+    [if [>= k [len items]] s [recur [+ k 1] [own-expr s [nth items k]]]]]]
+
+; A statement sequence (body / do / top level).
+[fn own-seq [s forms]
+  [loop [k 0 s s]
+    [if [>= k [len forms]] s [recur [+ k 1] [own-expr s [nth forms k]]]]]]
+
+; ── Copy-ness of a bound value (structural approximation) ────────────────────
+
+[fn value-copy? [octx val]
+  [match val
+    [FInt _ _] true
+    [FFloat _ _] true
+    [FKw _ _] true
+    [FStr _ _] false
+    [FSym n _ _] [member-streq n #["true" "false"]]
+    [FList items _]
+    [if [= [len items] 0] false
+      [match [nth items 0]
+        [FSym cn _ _]
+        [match [ctor-type octx cn] :none false t [copy-type? octx t]]
+        _ false]]
+    _ false]]
+
+; ── Phase 1: param-mode inference ───────────────────────────────────────────
+
+[fn classify-param [name forms octx]
+  [loop [k 0 mode :borrow]
+    [if [>= k [len forms]] mode
+      [recur [+ k 1]
+        [mode-max mode
+          [cls name [nth forms k] [= k [- [len forms] 1]] octx]]]]]]
+
+[fn cls [name f tail octx]
+  [match f
+    [FSym n _ _] [if [streq n name] [if tail :move :borrow] :borrow]
+    [FList items _] [cls-list name items tail octx]
+    [FVec items _] [cls-coll name items octx]
+    [FSet items _] [cls-coll name items octx]
+    [FTuple items _] [cls-coll name items octx]
+    [FMap items _] [cls-coll name items octx]
+    [FDot base _ _] [cls name base false octx]
+    _ :borrow]]
+
+; Any bare occurrence of the param inside a collection literal is a Move.
+[fn cls-coll [name items octx]
+  [loop [k 0 mode :borrow]
+    [if [>= k [len items]] mode
+      [recur [+ k 1]
+        [mode-max mode
+          [match [nth items k]
+            [FSym n _ _] [if [streq n name] :move :borrow]
+            other [cls name other false octx]]]]]]]
+
+[fn cls-list [name items tail octx]
+  [if [= [len items] 0] :borrow
+    [match [nth items 0]
+      [FSym h _ _]
+      [if [streq h "let"] [cls-let name items octx]
+        [if [streq h "do"] [cls-tail-seq name [own-vec-rest items 1] tail octx]
+          [if [streq h "if"] [cls-if name items tail octx]
+            [if [streq h "match"] [cls-match name items tail octx]
+              [if [mutator? h] [cls-mutate name items octx]
+                [if [borrow-builtin? h] [cls-args name [own-vec-rest items 1] octx]
+                  [if [special-form? h] [cls-args name [own-vec-rest items 1] octx]
+                    [cls-usercall name [own-vec-rest items 1] octx]]]]]]]]
+      _ [cls-args name items octx]]]]
+
+; Arguments to a borrowing context: a bare param stays Borrow; nested forms are
+; classified in non-tail position.
+[fn cls-args [name args octx]
+  [loop [k 0 mode :borrow]
+    [if [>= k [len args]] mode
+      [recur [+ k 1] [mode-max mode [cls name [nth args k] false octx]]]]]]
+
+; Arguments to a user/unknown function: a bare param escalates to Move.
+[fn cls-usercall [name args octx]
+  [loop [k 0 mode :borrow]
+    [if [>= k [len args]] mode
+      [recur [+ k 1]
+        [mode-max mode
+          [match [nth args k]
+            [FSym n _ _] [if [streq n name] :move :borrow]
+            other [cls name other false octx]]]]]]]
+
+; push!/set!: the first arg, if the param, is a MutBorrow.
+[fn cls-mutate [name items octx]
+  [mode-max
+    [if [>= [len items] 2]
+      [match [nth items 1] [FSym n _ _] [if [streq n name] :mutborrow :borrow] _ :borrow]
+      :borrow]
+    [cls-args name [own-vec-rest items 2] octx]]]
+
+[fn cls-let [name items octx]
+  [if [>= [len items] 4]
+    [match [nth items 1] [FSym m _ _]
+      [if [streq m "mut"] [cls name [nth items 3] false octx]
+        [cls name [nth items 2] false octx]]
+      _ [cls name [nth items 2] false octx]]
+    [if [>= [len items] 3] [cls name [nth items 2] false octx] :borrow]]]
+
+[fn cls-if [name items tail octx]
+  [mode-max [cls name [nth items 1] false octx]
+    [cls-tail-each name [own-vec-rest items 2] tail octx]]]
+
+[fn cls-match [name items tail octx]
+  [if [< [len items] 2] :borrow
+    [mode-max [cls name [nth items 1] false octx]
+      [cls-match-results name items tail octx]]]]
+
+; Results (every other form from index 3) are in tail position.
+[fn cls-match-results [name items tail octx]
+  [loop [i 3 mode :borrow]
+    [if [>= i [len items]] mode
+      [recur [+ i 2] [mode-max mode [cls name [nth items i] tail octx]]]]]]
+
+[fn cls-tail-each [name forms tail octx]
+  [loop [k 0 mode :borrow]
+    [if [>= k [len forms]] mode
+      [recur [+ k 1] [mode-max mode [cls name [nth forms k] tail octx]]]]]]
+
+; A sequence whose last element inherits the enclosing tail position.
+[fn cls-tail-seq [name forms tail octx]
+  [loop [k 0 mode :borrow]
+    [if [>= k [len forms]] mode
+      [recur [+ k 1]
+        [mode-max mode
+          [cls name [nth forms k] [if [= k [- [len forms] 1]] tail false] octx]]]]]]
+
+; ── Program setup ───────────────────────────────────────────────────────────
+
+[fn fn-def? [f]
+  [match f
+    [FList items _]
+    [if [< [len items] 3] :no
+      [match [nth items 0] [FSym h _ _]
+        [if [streq h "fn"] items :no] _ :no]]
+    _ :no]]
+
+; Collect [type …] constructor→type entries and [derive Copy [type …]] names.
+[type Setup [Setup Vec Vec]]              ; ctor->type entries, copy-type names
+
+[fn collect-setup [forms]
+  [loop [k 0 ctors #[] copies #["Int" "Float" "Bool" "Keyword"]]
+    [if [>= k [len forms]]
+      [Setup ctors copies]
+      [match [type-decl-form [nth forms k]]
+        [Setup c2 _]
+        [recur [+ k 1] [vappend ctors c2] copies]
+        :no
+        [match [derive-copy-name [nth forms k]]
+          :none [recur [+ k 1] ctors copies]
+          tn [recur [+ k 1]
+               [vappend ctors [ctor-entries [type-name-ctors [nth forms k]] tn]]
+               [conj copies tn]]]]]]]
+
+[fn vappend [a b]
+  [loop [k 0 acc a] [if [>= k [len b]] acc [recur [+ k 1] [conj acc [nth b k]]]]]]
+
+; A bare [type Name …]: return its ctor→type entries (Setup carrier), else :no.
+[fn type-decl-form [f]
+  [match f
+    [FList items _]
+    [if [< [len items] 2] :no
+      [match [nth items 0] [FSym h _ _]
+        [if [streq h "type"]
+          [match [nth items 1] [FSym tn _ _]
+            [Setup [ctor-entries [own-vec-rest items 2] tn] #[]] _ :no]
+          :no]
+        _ :no]]
+    _ :no]]
+
+[fn ctor-entries [ctorforms tname]
+  [loop [k 0 acc #[]]
+    [if [>= k [len ctorforms]] acc
+      [recur [+ k 1]
+        [match [nth ctorforms k]
+          [FSym cn _ _] [conj acc [CT cn tname]]
+          [FList its _] [match [nth its 0] [FSym cn _ _] [conj acc [CT cn tname]] _ acc]
+          _ acc]]]]]
+
+; [derive Copy [type Name …]] → Name, else :none.
+[fn derive-copy-name [f]
+  [match f
+    [FList items _]
+    [if [< [len items] 3] :none
+      [match [nth items 0] [FSym h _ _]
+        [if [streq h "derive"]
+          [match [nth items 1] [FSym d _ _]
+            [if [streq d "Copy"] [inner-type-name [nth items 2]] :none] _ :none]
+          :none]
+        _ :none]]
+    _ :none]]
+
+[fn inner-type-name [f]
+  [match f [FList its _]
+    [if [>= [len its] 2] [match [nth its 1] [FSym tn _ _] tn _ :none] :none]
+    _ :none]]
+
+[fn type-name-ctors [f]
+  [match f
+    [FList items _]                       ; [derive Copy [type Name ctors…]]
+    [match [nth items 2] [FList its _] [own-vec-rest its 2] _ #[]]
+    _ #[]]]
+
+; Param-mode vector for one fn def.
+[fn fn-param-modes [items octx]
+  [match [nth items 2]
+    [FList params _]
+    [loop [k 0 acc #[]]
+      [if [>= k [len params]] acc
+        [match [nth params k]
+          [FSym pn _ _]
+          [recur [+ k 1] [conj acc [classify-param pn [own-vec-rest items 3] octx]]]
+          _ [recur [+ k 1] [conj acc :move]]]]]
+    _ #[]]]
+
+; Parameters of a fn as fresh alive bindings (non-copy, immutable).
+[fn params-binds [params]
+  [loop [k 0 acc #[]]
+    [if [>= k [len params]] acc
+      [match [nth params k]
+        [FSym pn _ _] [recur [+ k 1] [conj acc [OBind pn :alive false false]]]
+        _ [recur [+ k 1] acc]]]]]
+
+; ── Top-level entry ─────────────────────────────────────────────────────────
+
+[fn own-program [forms]
+  [match [collect-setup forms]
+    [Setup ctors copies]
+    [own-run forms [OCtx [collect-fnmodes forms [OCtx #[] copies ctors]] copies ctors]]]]
+
+[fn collect-fnmodes [forms octx0]
+  [loop [k 0 acc #[]]
+    [if [>= k [len forms]] acc
+      [match [fn-def? [nth forms k]]
+        :no [recur [+ k 1] acc]
+        items
+        [match [nth items 1] [FSym nm _ _]
+          [recur [+ k 1] [conj acc [FM nm [fn-param-modes items octx0]]]]
+          _ [recur [+ k 1] acc]]]]]]
+
+; Walk each fn body in its own scope, then the top-level statements.
+[fn own-run [forms octx]
+  [own-toplevel
+    [loop [k 0 s [OS #[] #[] octx]]
+      [if [>= k [len forms]] s
+        [match [fn-def? [nth forms k]]
+          :no [recur [+ k 1] s]
+          items [recur [+ k 1] [own-fn-body s items]]]]]
+    forms]]
+
+[fn own-fn-body [s items]
+  [match [nth items 2]
+    [FList params _]
+    [os-scope [own-seq [os-scope s [params-binds params]] [own-vec-rest items 3]]
+              [os-binds s]]
+    _ s]]
+
+[fn own-toplevel [s forms]
+  [loop [k 0 s [os-scope s #[]]]
+    [if [>= k [len forms]] s
+      [match [fn-def? [nth forms k]]
+        :no [recur [+ k 1] [own-expr s [nth forms k]]]
+        _ [recur [+ k 1] s]]]]]
+
+; Does a program (source string) pass the ownership check?
+[fn owns? [src] [os-ok? [own-program [read-all src]]]]

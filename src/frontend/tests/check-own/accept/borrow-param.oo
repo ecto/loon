@@ -1,0 +1,2 @@
+[fn greet [name] [println name]]
+[fn main [] [let name "alice"] [greet name] [println name]]

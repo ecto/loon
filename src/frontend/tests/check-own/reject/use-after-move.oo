@@ -1,0 +1,2 @@
+[fn take [s] s]
+[fn main [] [let name "alice"] [take name] [println name]]

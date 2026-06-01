@@ -1,0 +1,43 @@
+; Stage-3d inline tests. Concatenated after reader.oo + ownership.oo. Mirrors the
+; ownership.rs unit tests (its de-facto spec) and the behaviors verified against
+; the now-ownership-enabled `loon check`. Self-contained (no IO).
+
+[fn report [name ok] [println [str [if ok "  pass " "  FAIL "] name]]]
+[fn accepts [name src] [report name [owns? src]]]
+[fn rejects [name src] [report name [not [owns? src]]]]
+
+[fn main []
+  [println "Stage-3d ownership — inline tests"]
+
+  ; ── use-after-move (E0300) ──
+  [rejects "use after move"
+    "[fn take [s] s] [fn main [] [let name \"alice\"] [take name] [println name]]"]
+  [rejects "returned param moves"
+    "[fn identity [x] x] [fn main [] [let name \"alice\"] [identity name] [println name]]"]
+  [rejects "non-copy move"
+    "[fn consume [v] v] [fn main [] [let v #[1 2 3]] [consume v] [println v]]"]
+  [rejects "move then move"
+    "[fn take [s] s] [fn main [] [let v #[1 2 3]] [take v] [take v]]"]
+
+  ; ── copy types are exempt ──
+  [accepts "copy use after take (Int)"
+    "[fn take [s] s] [fn main [] [let x 42] [take x] [println x]]"]
+  [accepts "derive Copy exempt"
+    "[derive Copy [type Point [Point Int Int]]] [fn take [p] p]
+     [fn main [] [let p [Point 1 2]] [take p] [println p]]"]
+
+  ; ── borrowing builtins do not move ──
+  [accepts "borrow param (println)"
+    "[fn greet [name] [println name]] [fn main [] [let name \"alice\"] [greet name] [println name]]"]
+  [accepts "store in collection then use"
+    "[fn main [] [let v #[1 2 3]] [let w #[v]] [println v]]"]
+
+  ; ── mutable borrow (E0301 / E0302) ──
+  [accepts "push mutable"
+    "[fn main [] [let mut v #[1 2 3]] [push! v 4]]"]
+  [rejects "push immutable (E0301)"
+    "[fn main [] [let v #[1 2 3]] [push! v 4]]"]
+  [rejects "double mutable borrow (E0302)"
+    "[fn main [] [let mut v #[1 2 3]] [push! v 4] [push! v 5]]"]
+
+  [println "done"]]

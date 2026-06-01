@@ -337,7 +337,15 @@ fn check_file(path: &PathBuf) {
         Ok(exprs) => {
             let base_dir = path.parent().unwrap_or(std::path::Path::new("."));
             let mut checker = loon_lang::check::Checker::with_base_dir(base_dir);
-            let errors = checker.check_program(&exprs);
+            let mut errors = checker.check_program(&exprs);
+            // Ownership check runs after type checking, on the expanded
+            // program, using the inferred types so Copy types are recognized.
+            if errors.is_empty() {
+                use loon_lang::check::ownership::OwnershipChecker;
+                let mut own = OwnershipChecker::with_type_info(&checker.type_of, &checker.subst)
+                    .with_derived_copy_types(&checker.derived_copy_types);
+                errors = own.check_program(&checker.expanded_program);
+            }
             if errors.is_empty() {
                 println!("{}", "OK — no type errors".green().bold());
             } else {

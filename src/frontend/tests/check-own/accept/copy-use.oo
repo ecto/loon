@@ -1,0 +1,2 @@
+[fn take [s] s]
+[fn main [] [let x 42] [take x] [println x]]
