@@ -1,0 +1,5 @@
+[fn main []
+  [let a 3]
+  [let b [* a a]]
+  [let c [+ b 1]]
+  [println c]]

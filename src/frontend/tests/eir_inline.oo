@@ -1,0 +1,34 @@
+; Stage-3e/3f inline tests. Concatenated after reader.oo + eir.oo + lower.oo +
+; vm.oo. Validates lowering well-formedness (3e) and VM execution (3f) on a
+; self-contained set of subset programs.
+
+[fn report [name ok] [println [str [if ok "  pass " "  FAIL "] name]]]
+[fn run1 [src] [display [eir-run-str src]]]
+[fn evals [name src want] [report name [streq [run1 src] want]]]
+[fn wf [name src] [report name [eir-wf? [lower-program [read-all src]]]]]
+
+[fn main []
+  [println "Stage-3e/3f EIR backend — inline tests"]
+
+  ; ── lowering well-formedness ──
+  [wf "wf arith"  "[fn main [] [+ 1 2]]"]
+  [wf "wf if"     "[fn main [] [if [< 1 2] 1 2]]"]
+  [wf "wf fib"    "[fn fib [n] [if [< n 2] n [+ [fib [- n 1]] [fib [- n 2]]]]] [fn main [] [fib 5]]"]
+
+  ; ── VM execution (value of main) ──
+  [evals "literal"   "[fn main [] 42]" "42"]
+  [evals "arith"     "[fn main [] [- [* 6 7] 0]]" "42"]
+  [evals "nested"    "[fn main [] [- [* 10 10] [+ 1 2]]]" "97"]
+  [evals "neg lit"   "[fn main [] [+ -5 7]]" "2"]
+  [evals "if true"   "[fn main [] [if [< 1 2] 111 222]]" "111"]
+  [evals "if false"  "[fn main [] [if [> 1 2] 111 222]]" "222"]
+  [evals "let"       "[fn main [] [let x 5] [let y 6] [* x y]]" "30"]
+  [evals "shadow"    "[fn main [] [let x 1] [let x 2] x]" "2"]
+  [evals "bool eq"   "[fn main [] [if [= 3 3] 1 0]]" "1"]
+  [evals "not"       "[fn main [] [if [not [< 2 1]] 7 8]]" "7"]
+  [evals "str"       "[fn main [] [str \"a\" \"b\" \"c\"]]" "abc"]
+  [evals "call"      "[fn dbl [n] [* n 2]] [fn main [] [dbl 21]]" "42"]
+  [evals "recursion" "[fn fib [n] [if [< n 2] n [+ [fib [- n 1]] [fib [- n 2]]]]] [fn main [] [fib 10]]" "55"]
+  [evals "factorial" "[fn fact [n] [if [< n 2] 1 [* n [fact [- n 1]]]]] [fn main [] [fact 5]]" "120"]
+
+  [println "done"]]

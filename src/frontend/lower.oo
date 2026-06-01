@@ -1,0 +1,213 @@
+; Loon self-hosted frontend — Stage 3e: lowering Forms -> EIR.
+;
+; Concatenated after reader.oo + eir.oo. Lowers the (checker-validated) Form AST
+; into the flat register IR. Covered subset (the first end-to-end backend slice,
+; validated behaviorally by vm.oo against `loon run`): integer/float/string/bool
+; literals, variables, `let`/`do` sequences, `if`, primitive operators, and
+; user-function calls (including recursion). `match`, closures, collections, and
+; effects are later backend increments.
+;
+; The builder state LS is threaded functionally (no mutation): a fresh-register
+; counter, a fresh-block counter, the completed blocks, and the block currently
+; being filled (its id + ops). Control flow is emitted by finishing the current
+; block with a terminator and starting a new one.
+
+; ── Builder state ───────────────────────────────────────────────────────────
+
+[type LS  [LS i64 i64 Vec i64 Vec]]   ; next-reg, next-block, blocks, cur-id, cur-ops
+[type RP  [RP i64 LS]]                 ; an int result (reg/block id) + state
+[type RPS [RPS Vec LS]]                ; a vector of regs + state
+
+[fn ls-init [nparams] [LS nparams 1 #[] 0 #[]]]   ; entry block is id 0
+[fn ls-nregs [ls] [match ls [LS nr _ _ _ _] nr]]
+[fn ls-blocks [ls] [match ls [LS _ _ bl _ _] bl]]
+
+[fn ls-reg [ls]
+  [match ls [LS nr nb bl ci co] [RP nr [LS [+ nr 1] nb bl ci co]]]]
+
+[fn ls-block [ls]
+  [match ls [LS nr nb bl ci co] [RP nb [LS nr [+ nb 1] bl ci co]]]]
+
+[fn ls-emit [ls op]
+  [match ls [LS nr nb bl ci co] [LS nr nb bl ci [conj co op]]]]
+
+; Finish the current block with `term` (push it to the completed list).
+[fn ls-finish [ls term]
+  [match ls [LS nr nb bl ci co] [LS nr nb [conj bl [Block ci co term]] ci co]]]
+
+; Start filling a fresh block `bid` (empty ops).
+[fn ls-start [ls bid]
+  [match ls [LS nr nb bl _ _] [LS nr nb bl bid #[]]]]
+
+; ── Lexical environment (name -> register) ───────────────────────────────────
+
+[type VB [VB String i64]]
+[fn lenv-lookup [env name]
+  [loop [k [- [len env] 1]]
+    [if [< k 0] -1
+      [match [nth env k] [VB n r] [if [streq n name] r [recur [- k 1]]]]]]]
+
+; ── Function table (name -> index, in definition order) ──────────────────────
+
+[type FE [FE String i64]]
+[fn build-fntab [forms]
+  [loop [k 0 idx 0 acc #[]]
+    [if [>= k [len forms]] acc
+      [match [lower-fn-def? [nth forms k]]
+        :no [recur [+ k 1] idx acc]
+        items
+        [match [nth items 1] [FSym nm _ _]
+          [recur [+ k 1] [+ idx 1] [conj acc [FE nm idx]]]
+          _ [recur [+ k 1] idx acc]]]]]]
+
+[fn fn-index [fns name]
+  [loop [k 0]
+    [if [>= k [len fns]] -1
+      [match [nth fns k] [FE n i] [if [streq n name] i [recur [+ k 1]]]]]]]
+
+[fn lower-fn-def? [f]
+  [match f
+    [FList items _]
+    [if [< [len items] 3] :no
+      [match [nth items 0] [FSym h _ _] [if [streq h "fn"] items :no] _ :no]]
+    _ :no]]
+
+; ── Expression lowering ──────────────────────────────────────────────────────
+
+[fn lower-expr [env fns ls f]
+  [match f
+    [FInt lex _]   [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OInt d lex]]]]
+    [FFloat lex _] [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OFloat d lex]]]]
+    [FStr v _]     [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OStr d v]]]]
+    [FSym n _ _]   [lower-sym env ls n]
+    [FList items _] [lower-list env fns ls items]
+    _ [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]]]
+
+[fn lower-sym [env ls n]
+  [if [streq n "true"]  [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OBool d true]]]]
+    [if [streq n "false"] [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OBool d false]]]]
+      [lower-var env ls n]]]]
+
+[fn lower-var [env ls n]
+  [let r [lenv-lookup env n]]
+  [if [< r 0]
+    [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]   ; unbound: unit
+    [RP r ls]]]                                                      ; reuse the binding's reg
+
+[fn lower-list [env fns ls items]
+  [if [= [len items] 0]
+    [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]
+    [match [nth items 0]
+      [FSym h _ _]
+      [if [streq h "if"] [lower-if env fns ls items]
+        [if [streq h "do"] [lower-seq env fns ls [eir-vec-rest items 1]]
+          [if [streq h "let"] [lower-seq env fns ls #[[FList items [Span 0 0]]]]  ; bare let-expr
+            [lower-call env fns ls h [eir-vec-rest items 1]]]]]
+      _ [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]]]]
+
+; A call to a primitive or a user function.
+[fn lower-call [env fns ls h args]
+  [match [lower-args env fns ls args]
+    [RPS regs ls1]
+    [match [ls-reg ls1]
+      [RP d ls2]
+      [if [eir-prim? h]
+        [RP d [ls-emit ls2 [OPrim d h regs]]]
+        [RP d [ls-emit ls2 [OCall d [fn-index fns h] regs]]]]]]]
+
+[fn lower-args [env fns ls items]
+  [loop [k 0 ls ls acc #[]]
+    [if [>= k [len items]]
+      [RPS acc ls]
+      [match [lower-expr env fns ls [nth items k]]
+        [RP r ls2] [recur [+ k 1] ls2 [conj acc r]]]]]]
+
+; if: evaluate the condition, branch to then/else blocks each writing the result
+; register, then join. Registers are mutable in the VM frame, so a shared result
+; register across the two arms needs no phi node.
+[fn lower-if [env fns ls items]
+  [match [lower-expr env fns ls [nth items 1]]
+    [RP cr ls1]
+    [match [ls-block ls1] [RP thenb ls2]
+    [match [ls-block ls2] [RP elseb ls3]
+    [match [ls-block ls3] [RP joinb ls4]
+    [match [ls-reg ls4]   [RP dest ls5]
+      [lower-if2 env fns
+        [ls-start [ls-finish ls5 [TBrIf cr thenb elseb]] thenb]
+        items dest thenb elseb joinb]]]]]]]
+
+[fn lower-if2 [env fns ls items dest thenb elseb joinb]
+  [match [lower-expr env fns ls [nth items 2]]
+    [RP tr ls6]
+    [lower-if3 env fns
+      [ls-start [ls-finish [ls-emit ls6 [OMove dest tr]] [TBr joinb]] elseb]
+      items dest joinb]]]
+
+[fn lower-if3 [env fns ls items dest joinb]
+  [match [if [>= [len items] 4]
+            [lower-expr env fns ls [nth items 3]]
+            [match [ls-reg ls] [RP u ls9] [RP u [ls-emit ls9 [OUnit u]]]]]
+    [RP er ls7]
+    [RP dest [ls-start [ls-finish [ls-emit ls7 [OMove dest er]] [TBr joinb]] joinb]]]]
+
+; A statement sequence: `let`s extend the environment; the value is the last
+; form's register.
+[fn lower-seq [env fns ls forms]
+  [loop [k 0 env env ls ls last -1]
+    [if [>= k [len forms]]
+      [lower-seq-end ls last]
+      [match [seq-let [nth forms k]]
+        [SLET name valf]
+        [match [lower-expr env fns ls valf]
+          [RP r ls2] [recur [+ k 1] [conj env [VB name r]] ls2 r]]
+        :no
+        [match [lower-expr env fns ls [nth forms k]]
+          [RP r ls2] [recur [+ k 1] env ls2 r]]]]]]
+
+[fn lower-seq-end [ls last]
+  [if [< last 0]
+    [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]
+    [RP last ls]]]
+
+[type SLET [SLET String Form] [NOSLET]]
+[fn seq-let [f]
+  [match f
+    [FList items _]
+    [if [< [len items] 3] :no
+      [match [nth items 0] [FSym h _ _]
+        [if [streq h "let"]
+          [match [nth items 1] [FSym n _ _] [SLET n [nth items 2]] _ :no]
+          :no]
+        _ :no]]
+    _ :no]]
+
+; ── Function & program lowering ──────────────────────────────────────────────
+
+[fn lower-fn [fns items]
+  [match [nth items 1] [FSym name _ _]
+    [match [nth items 2] [FList params _]
+      [lower-fn-body fns name params [eir-vec-rest items 3]]
+      _ [Func name 0 0 #[]]]
+    _ [Func "?" 0 0 #[]]]]
+
+[fn lower-fn-body [fns name params body]
+  [match [lower-seq [params-env params] fns [ls-init [len params]] body]
+    [RP rreg ls]
+    [match [ls-finish ls [TRet rreg]]
+      ls2 [Func name [len params] [ls-nregs ls2] [ls-blocks ls2]]]]]
+
+[fn params-env [params]
+  [loop [k 0 acc #[]]
+    [if [>= k [len params]] acc
+      [match [nth params k]
+        [FSym pn _ _] [recur [+ k 1] [conj acc [VB pn k]]]
+        _ [recur [+ k 1] acc]]]]]
+
+[fn lower-program [forms]
+  [let fns [build-fntab forms]]
+  [Module
+    [loop [k 0 acc #[]]
+      [if [>= k [len forms]] acc
+        [match [lower-fn-def? [nth forms k]]
+          :no [recur [+ k 1] acc]
+          items [recur [+ k 1] [conj acc [lower-fn fns items]]]]]]]]

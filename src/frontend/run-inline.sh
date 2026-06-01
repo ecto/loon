@@ -30,7 +30,9 @@ case "$mode" in
           driver="$root/src/frontend/tests/effects_inline.oo" ;;
   own)    libs=("$root/src/frontend/reader.oo" "$root/src/frontend/ownership.oo")
           driver="$root/src/frontend/tests/ownership_inline.oo" ;;
-  *) echo "usage: $0 {read|expand|types|infer|effects|own} [loon-binary]" >&2; exit 2 ;;
+  eir)    libs=("$root/src/frontend/reader.oo" "$root/src/frontend/eir.oo" "$root/src/frontend/lower.oo" "$root/src/frontend/vm.oo")
+          driver="$root/src/frontend/tests/eir_inline.oo" ;;
+  *) echo "usage: $0 {read|expand|types|infer|effects|own|eir} [loon-binary]" >&2; exit 2 ;;
 esac
 
 prog="$(mktemp /tmp/loon-inline.XXXXXX.oo)"

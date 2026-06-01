@@ -1,0 +1,141 @@
+; Loon self-hosted frontend — Stage 3e: EIR (the flat register IR).
+;
+; Concatenated after reader.oo. Defines the intermediate representation the
+; checker-validated program is lowered to (lower.oo) and that the self-hosted VM
+; executes (vm.oo). It is a faithful re-design of the Rust EIR (flat basic blocks
+; of register ops ending in a terminator), not a byte-identical reproduction —
+; the fixpoint target is behavioral (F1/F2), not identical IR (F3 is excluded).
+;
+; A Module is a vector of Funcs; a Func is a register machine with a fixed
+; number of registers and a vector of basic Blocks; each Block is a straight-line
+; sequence of Ops ending in a Term(inator). Control flow is only ever a
+; terminator (Br / BrIf / Ret), so the IR is genuinely flat.
+
+; ── IR data types ───────────────────────────────────────────────────────────
+
+[type Op
+  [OInt   i64 String]      ; dest <- integer literal (lexeme, parsed by the VM)
+  [OFloat i64 String]      ; dest <- float literal
+  [OStr   i64 String]      ; dest <- string literal
+  [OBool  i64 Bool]        ; dest <- bool literal
+  [OUnit  i64]             ; dest <- ()
+  [OPrim  i64 String Vec]  ; dest <- primitive op applied to arg registers
+  [OCall  i64 i64 Vec]     ; dest <- call func #idx with arg registers
+  [OMove  i64 i64]]        ; dest <- src register
+
+[type Term
+  [TRet  i64]              ; return register
+  [TBr   i64]              ; jump to block id
+  [TBrIf i64 i64 i64]]     ; if reg then-block else-block
+
+[type Block [Block i64 Vec Term]]        ; id, ops, terminator
+[type Func  [Func String i64 i64 Vec]]   ; name, n-params, n-regs, blocks
+[type Module [Module Vec]]               ; funcs
+
+; ── Shared helpers (backend concat has no expander/types) ────────────────────
+
+[fn eir-vec-rest [v i]
+  [loop [k i acc #[]]
+    [if [>= k [len v]] acc [recur [+ k 1] [conj acc [nth v k]]]]]]
+
+[fn eir-member [x xs]
+  [loop [k 0]
+    [if [>= k [len xs]] false
+      [if [streq x [nth xs k]] true [recur [+ k 1]]]]]]
+
+; The primitive operators the VM implements directly (everything else is a call).
+[fn eir-prim? [h]
+  [eir-member h
+    #["+" "-" "*" "/" "<" ">" "<=" ">=" "=" "not" "println" "print" "str"]]]
+
+; Look up a block by id within a func's block vector.
+[fn eir-find-block [blocks id]
+  [loop [k 0]
+    [if [>= k [len blocks]]
+      :none
+      [match [nth blocks k]
+        [Block bid _ _] [if [= bid id] [nth blocks k] [recur [+ k 1]]]]]]]
+
+; ── Writer (debug / well-formedness aid) ─────────────────────────────────────
+
+[fn eir-write-op [op]
+  [match op
+    [OInt d s]   [str "r" d " = int " s]
+    [OFloat d s] [str "r" d " = float " s]
+    [OStr d s]   [str "r" d " = str " [ch-quote] s [ch-quote]]
+    [OBool d b]  [str "r" d " = bool " [if b "true" "false"]]
+    [OUnit d]    [str "r" d " = ()"]
+    [OPrim d nm args] [str "r" d " = " nm " " [eir-write-regs args]]
+    [OCall d fi args] [str "r" d " = call #" fi " " [eir-write-regs args]]
+    [OMove d s]  [str "r" d " = r" s]]]
+
+[fn eir-write-regs [args]
+  [loop [k 0 acc #[]]
+    [if [>= k [len args]]
+      [join " " acc]
+      [recur [+ k 1] [conj acc [str "r" [nth args k]]]]]]]
+
+[fn eir-write-term [t]
+  [match t
+    [TRet r] [str "ret r" r]
+    [TBr b]  [str "br b" b]
+    [TBrIf c a b] [str "brif r" c " b" a " b" b]]]
+
+[fn eir-write-func [f]
+  [match f
+    [Func name np nr blocks]
+    [str "fn " name " (params=" np " regs=" nr ")\n"
+      [loop [k 0 acc #[]]
+        [if [>= k [len blocks]]
+          [join "\n" acc]
+          [recur [+ k 1] [conj acc [eir-write-block [nth blocks k]]]]]]]]]
+
+[fn eir-write-block [b]
+  [match b
+    [Block id ops term]
+    [str "  b" id ":\n"
+      [loop [k 0 acc #[]]
+        [if [>= k [len ops]]
+          [str [join "\n" acc] [if [= [len ops] 0] "" "\n"] "    " [eir-write-term term]]
+          [recur [+ k 1] [conj acc [str "    " [eir-write-op [nth ops k]]]]]]]]]]
+
+[fn eir-write-module [m]
+  [match m [Module funcs]
+    [loop [k 0 acc #[]]
+      [if [>= k [len funcs]]
+        [join "\n\n" acc]
+        [recur [+ k 1] [conj acc [eir-write-func [nth funcs k]]]]]]]]
+
+; ── Well-formedness: every branch target exists; every callee index is valid ─
+
+[fn eir-wf? [m]
+  [match m [Module funcs]
+    [loop [k 0]
+      [if [>= k [len funcs]] true
+        [if [wf-func? [nth funcs k] [len funcs]] [recur [+ k 1]] false]]]]]
+
+[fn wf-func? [f nfuncs]
+  [match f [Func _ _ _ blocks]
+    [loop [k 0]
+      [if [>= k [len blocks]] true
+        [if [wf-block? [nth blocks k] blocks nfuncs] [recur [+ k 1]] false]]]]]
+
+[fn wf-block? [b blocks nfuncs]
+  [match b [Block _ ops term]
+    [if [wf-ops? ops nfuncs] [wf-term? term blocks] false]]]
+
+[fn wf-ops? [ops nfuncs]
+  [loop [k 0]
+    [if [>= k [len ops]] true
+      [match [nth ops k]
+        [OCall _ fi _] [if [if [>= fi 0] [< fi nfuncs] false] [recur [+ k 1]] false]
+        _ [recur [+ k 1]]]]]]
+
+[fn wf-term? [t blocks]
+  [match t
+    [TRet _] true
+    [TBr b] [block-exists? blocks b]
+    [TBrIf _ a b] [if [block-exists? blocks a] [block-exists? blocks b] false]]]
+
+[fn block-exists? [blocks id]
+  [match [eir-find-block blocks id] :none false _ true]]

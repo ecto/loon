@@ -1,0 +1,2 @@
+[fn greet [n] [str "hi #" n]]
+[fn main [] [println [greet 7]]]
