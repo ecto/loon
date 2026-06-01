@@ -962,10 +962,13 @@ impl Compiler {
         };
         let mut body_start = 2;
         if body_start < args.len() {
-            if let ExprKind::Symbol(s) = &args[body_start].kind {
-                if s == "/" {
-                    body_start += 2;
-                }
+            match &args[body_start].kind {
+                // `[fn f [..] / Ret …]` return-type annotation.
+                ExprKind::Symbol(s) if s == "/" => body_start += 2,
+                // `[fn f [..] #{E1 E2} …]` effect-row annotation: skip it (the
+                // backend tracks effects via imports, not the declared row).
+                ExprKind::Set(_) | ExprKind::Map(_) => body_start += 1,
+                _ => {}
             }
         }
         let is_main = name == "main";
@@ -1876,6 +1879,17 @@ impl<'a> FnCtx<'a> {
                 "type" | "use" | "effect" => {
                     self.instructions.push(WasmInstruction::I64Const(0));
                     return Ok(());
+                }
+                "handle" | "resume" | "try" => {
+                    // Delimited continuations need to capture and resume a stack
+                    // segment, which standalone wasm can't express without a
+                    // whole-program CPS/trampoline transform. These run on the
+                    // EIR VM (`loon run`) for now. Effect *operations*
+                    // (`E.op …`) still compile to host imports.
+                    return Err(format!(
+                        "codegen: '{s}' (delimited continuations) is not supported by the \
+                         wasm backend yet; run it on the VM with `loon run`"
+                    ));
                 }
                 name => {
                     if let Some((tag, arity)) = self.compiler.adt_constructors.get(name).cloned() {
