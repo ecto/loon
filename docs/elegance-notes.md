@@ -49,6 +49,13 @@ Legend: **break?** = backward-incompatible · **effort** S/M/L.
    **Fix:** match should check the constructor's owning type/tag, not just shape.
    _break? yes (catches latent bugs) · effort M_
 
+4d. **Maps are unordered (hash order).** `keys`, iteration, and display of a map
+   come back in an unpredictable order — `[assoc [assoc {:x 1} :y 2] :z 3]`
+   prints `{:z 3 :x 1 :y 2}`. This makes map output non-deterministic and
+   annoying to test. The self-hosted VM uses insertion-ordered maps, which are
+   deterministic and (for small maps) what people expect. **Fix:** make the
+   runtime maps insertion-ordered too. _break? maybe · effort M_
+
 5. **`let` is a body statement, not an expression.** `[let x v]` scopes to the
    rest of the enclosing body — clean in sequences, but `[let …]` can't be used
    as a sub-expression (the lowerer/inferrer special-case it). **Consider:** a
