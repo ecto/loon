@@ -1,0 +1,8 @@
+[fn decide [src] [if [owns? src] "ok" "bad"]]
+[fn main []
+  [println [decide "[fn take [s] s] [fn main [] [let name \"alice\"] [take name] [println name]]"]]
+  [println [decide "[fn greet [name] [println name]] [fn main [] [let name \"alice\"] [greet name] [println name]]"]]
+  [println [decide "[fn main [] [let mut v #[1 2 3]] [push! v 4]]"]]
+  [println [decide "[fn main [] [let v #[1 2 3]] [push! v 4]]"]]
+  [println [decide "[fn consume [v] v] [fn main [] [let v #[1 2 3]] [consume v] [println v]]"]]
+  [println [decide "[fn main [] [let x 42] [let take [fn [s] s]] x]"]]]
