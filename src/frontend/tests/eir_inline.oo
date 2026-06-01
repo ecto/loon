@@ -31,4 +31,12 @@
   [evals "recursion" "[fn fib [n] [if [< n 2] n [+ [fib [- n 1]] [fib [- n 2]]]]] [fn main [] [fib 10]]" "55"]
   [evals "factorial" "[fn fact [n] [if [< n 2] 1 [* n [fact [- n 1]]]]] [fn main [] [fact 5]]" "120"]
 
+  ; ── match (literal + var/wildcard patterns) ──
+  [evals "match int lit" "[fn f [n] [match n 0 \"zero\" 1 \"one\" n \"many\"]] [fn main [] [f 1]]" "one"]
+  [evals "match var arm" "[fn f [n] [match n 0 \"zero\" 1 \"one\" n \"many\"]] [fn main [] [f 7]]" "many"]
+  [evals "match binds"   "[fn f [n] [match n 0 100 m [* m m]]] [fn main [] [f 9]]" "81"]
+  [evals "match wildcard" "[fn f [n] [match n 0 \"z\" _ \"nz\"]] [fn main [] [f 5]]" "nz"]
+  [evals "match str"     "[fn f [s] [match s \"hi\" 1 \"bye\" 2 _ 0]] [fn main [] [f \"bye\"]]" "2"]
+  [evals "fib via match" "[fn fib [n] [match n 0 0 1 1 n [+ [fib [- n 1]] [fib [- n 2]]]]] [fn main [] [fib 10]]" "55"]
+
   [println "done"]]

@@ -100,9 +100,10 @@
     [match [nth items 0]
       [FSym h _ _]
       [if [streq h "if"] [lower-if env fns ls items]
-        [if [streq h "do"] [lower-seq env fns ls [eir-vec-rest items 1]]
-          [if [streq h "let"] [lower-seq env fns ls #[[FList items [Span 0 0]]]]  ; bare let-expr
-            [lower-call env fns ls h [eir-vec-rest items 1]]]]]
+        [if [streq h "match"] [lower-match env fns ls items]
+          [if [streq h "do"] [lower-seq env fns ls [eir-vec-rest items 1]]
+            [if [streq h "let"] [lower-seq env fns ls #[[FList items [Span 0 0]]]]  ; bare let-expr
+              [lower-call env fns ls h [eir-vec-rest items 1]]]]]]
       _ [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]]]]
 
 ; A call to a primitive or a user function.
@@ -149,6 +150,76 @@
             [match [ls-reg ls] [RP u ls9] [RP u [ls-emit ls9 [OUnit u]]]]]
     [RP er ls7]
     [RP dest [ls-start [ls-finish [ls-emit ls7 [OMove dest er]] [TBr joinb]] joinb]]]]
+
+; match: [match scrut p1 r1 p2 r2 …]. Lowered to a linear chain of equality
+; tests. Each literal arm compares the scrutinee to the literal and branches to
+; its body or the next test; a variable/wildcard arm always matches (binding the
+; name to the scrutinee register) and is terminal. All arm bodies write a shared
+; result register and jump to a common join block.
+; Subset: literal (int/str/bool) and variable/wildcard patterns. Constructor
+; patterns need ADT values in the VM — a later increment.
+[fn lower-match [env fns ls items]
+  [match [lower-expr env fns ls [nth items 1]]
+    [RP sreg ls1]
+    [match [ls-block ls1] [RP joinb ls2]
+    [match [ls-reg ls2]   [RP dest ls3]
+      [lower-arms env fns ls3 items 2 sreg dest joinb]]]]]
+
+[fn lower-arms [env fns ls items i sreg dest joinb]
+  [if [>= i [len items]]
+    ; arms exhausted with no catch-all: default to () and fall to join.
+    [RP dest [ls-start [ls-finish [ls-emit ls [OUnit dest]] [TBr joinb]] joinb]]
+    [if [pat-var? [nth items i]]
+      [lower-arm-var env fns ls [nth items i] [nth items [+ i 1]] sreg dest joinb]
+      [lower-arm-lit env fns ls items i sreg dest joinb]]]]
+
+; A variable/wildcard arm: bind (unless "_") and lower the body; terminal.
+[fn lower-arm-var [env fns ls pat result sreg dest joinb]
+  [match [lower-expr [bind-pat-var env pat sreg] fns ls result]
+    [RP rr ls1]
+    [RP dest [ls-start [ls-finish [ls-emit ls1 [OMove dest rr]] [TBr joinb]] joinb]]]]
+
+[fn bind-pat-var [env pat sreg]
+  [match pat
+    [FSym n _ _] [if [streq n "_"] env [conj env [VB n sreg]]]
+    _ env]]
+
+; A literal arm: compare scrutinee to the literal; branch body vs next test.
+[fn lower-arm-lit [env fns ls items i sreg dest joinb]
+  [match [lower-pat-literal ls [nth items i]]
+    [RP litreg ls1]
+    [match [ls-reg ls1] [RP cmp ls2]
+      [lower-arm-lit2 env fns [ls-emit ls2 [OPrim cmp "=" #[sreg litreg]]]
+        items i cmp sreg dest joinb]]]]
+
+[fn lower-arm-lit2 [env fns ls items i cmp sreg dest joinb]
+  [match [ls-block ls] [RP bodyb ls1]
+  [match [ls-block ls1] [RP nextb ls2]
+    [lower-arm-lit3 env fns
+      [ls-start [ls-finish ls2 [TBrIf cmp bodyb nextb]] bodyb]
+      items i nextb sreg dest joinb]]]]
+
+[fn lower-arm-lit3 [env fns ls items i nextb sreg dest joinb]
+  [match [lower-expr env fns ls [nth items [+ i 1]]]
+    [RP rr ls1]
+    [lower-arms env fns
+      [ls-start [ls-finish [ls-emit ls1 [OMove dest rr]] [TBr joinb]] nextb]
+      items [+ i 2] sreg dest joinb]]]
+
+; Load a literal pattern into a fresh register (int/str/bool).
+[fn lower-pat-literal [ls pat]
+  [match pat
+    [FInt lex _]  [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OInt d lex]]]]
+    [FStr v _]    [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OStr d v]]]]
+    [FSym n _ _]  [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OBool d [streq n "true"]]]]]
+    _ [match [ls-reg ls] [RP d ls1] [RP d [ls-emit ls1 [OUnit d]]]]]]
+
+; A pattern that matches any value (and may bind): a bare symbol other than the
+; bool literals.
+[fn pat-var? [pat]
+  [match pat
+    [FSym n _ _] [if [streq n "true"] false [if [streq n "false"] false true]]
+    _ false]]
 
 ; A statement sequence: `let`s extend the environment; the value is the last
 ; form's register.
