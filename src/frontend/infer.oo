@@ -1,0 +1,574 @@
+; Loon self-hosted frontend — Stage 3b: type inference over Forms.
+;
+; Concatenated after reader.oo + types.oo. Walks the surface Form AST and
+; drives the HM primitives in types.oo (unify / generalize / instantiate / rows)
+; to assign types, accepting or rejecting a program exactly as `loon check` does
+; for the constructs covered here.
+;
+; Threaded state is a `Ctx` (no mutation, as everywhere in the frontend):
+;   * the `Subst` (fresh-var counter + bindings),
+;   * a vector of error messages (a program type-checks iff this is empty),
+;   * the set of data-constructor names (so a bare capitalized symbol in a
+;     pattern is read as a nullary constructor, not a binder).
+; Every `infer*` returns an `IT` (type + advanced Ctx); unification failures are
+; recorded into the Ctx rather than thrown, so checking continues and reports as
+; many errors as the oracle would surface in one pass.
+;
+; Covered now: literals, symbols (let-polymorphism via generalize/instantiate),
+; lambdas, `let`/`do` sequences, `if`, application (with a fresh effect-row per
+; call — effect *discipline* lands in 3c), `match` (literal / wildcard / binder
+; / constructor patterns), `[type …]` constructor registration, and top-level
+; `fn` defs (single-arity, self-recursive). Deferred: trait bounds, generics
+; with explicit type parameters, multi-arity overloading, dimensions — these are
+; iterated toward full-corpus differential parity in later 3b increments.
+
+; ── Small helpers ───────────────────────────────────────────────────────────
+; vec-rest lives in expander.oo (not in this concat set), so define it locally.
+[fn vec-rest [v i]
+  [loop [k i acc #[]]
+    [if [>= k [len v]] acc [recur [+ k 1] [conj acc [nth v k]]]]]]
+
+; ── Inference context ───────────────────────────────────────────────────────
+
+[type Ctx [Ctx Subst Vec Vec]]     ; subst, error messages, constructor names
+[type IT  [IT Type Ctx]]           ; an inferred type + advanced context
+[type PR  [PR TEnv Ctx]]           ; a pattern's bindings + advanced context
+
+[fn ctx-new [ctors] [Ctx [subst-empty] #[] ctors]]
+[fn ctx-subst [c] [match c [Ctx s _ _] s]]
+[fn ctx-errs  [c] [match c [Ctx _ e _] e]]
+[fn ctx-ctors [c] [match c [Ctx _ _ k] k]]
+[fn ctx-with-subst [c s] [match c [Ctx _ e k] [Ctx s e k]]]
+[fn ctx-err [c msg] [match c [Ctx s e k] [Ctx s [conj e msg] k]]]
+[fn ctx-ok? [c] [= [len [ctx-errs c]] 0]]
+
+[fn is-ctor? [c name]
+  [loop [k 0]
+    [if [>= k [len [ctx-ctors c]]]
+      false
+      [if [streq [nth [ctx-ctors c] k] name] true [recur [+ k 1]]]]]]
+
+; Mint a fresh type variable, returning it with the advanced context.
+[fn ctx-fresh [c]
+  [match [fresh [ctx-subst c]] [Fr t s] [IT t [ctx-with-subst c s]]]]
+
+[fn ctx-fresh-row [c]
+  [match [fresh-row [ctx-subst c]] [Fr t s] [IT t [ctx-with-subst c s]]]]
+
+; Unify, recording any failure as an error (the refined subst is kept either
+; way, so dependent inference still makes progress).
+[fn unify! [c a b]
+  [match [unify [ctx-subst c] a b]
+    [UOk s] [ctx-with-subst c s]
+    [UErr m s] [ctx-err [ctx-with-subst c s] m]]]
+
+; ── Prelude ─────────────────────────────────────────────────────────────────
+; A small built-in environment. Polymorphic builtins are hand-written schemes
+; with low quantified ids (instantiate freshens them per use). Variadic builtins
+; (str/println/print) are handled structurally in `infer-app`, not here.
+
+[fn mono [params result]
+  [Scheme #[] #[0] [TFn params [TRowVar 0] result]]]           ; one fresh row
+
+[fn poly1 [mk]
+  ; mk receives the quantified type var (id 0); row id 1 is its effect row.
+  [Scheme #[0] #[1] [mk [TVar 0]]]]
+
+; Numeric ops are polymorphic over one type (an approximation of the Num trait
+; bound, deferred): [a a -> a] accepts Int and Float arithmetic alike, yet still
+; rejects mixing (e.g. [+ 1 true] forces true : Int and fails).
+[fn num2 []
+  [Scheme #[0] #[1] [TFn #[[TVar 0] [TVar 0]] [TRowVar 1] [TVar 0]]]]
+[fn cmp2 []
+  [Scheme #[0] #[1] [TFn #[[TVar 0] [TVar 0]] [TRowVar 1] [TBool]]]]
+
+[fn prelude []
+  [let e [env-empty]]
+  [let e [env-extend e "+" [num2]]]
+  [let e [env-extend e "-" [num2]]]
+  [let e [env-extend e "*" [num2]]]
+  [let e [env-extend e "/" [num2]]]
+  [let e [env-extend e "<" [cmp2]]]
+  [let e [env-extend e ">" [cmp2]]]
+  [let e [env-extend e "<=" [cmp2]]]
+  [let e [env-extend e ">=" [cmp2]]]
+  [let e [env-extend e "not" [mono #[[TBool]] [TBool]]]]
+  ; = : forall a. [a a -> Bool]
+  [let e [env-extend e "="
+           [Scheme #[0] #[1] [TFn #[[TVar 0] [TVar 0]] [TRowVar 1] [TBool]]]]]
+  ; len : forall a. [(Vec a) -> Int]
+  [let e [env-extend e "len"
+           [Scheme #[0] #[1] [TFn #[[TCon "Vec" #[[TVar 0]]]] [TRowVar 1] [TInt]]]]]
+  ; nth : forall a. [(Vec a) Int -> a]
+  [let e [env-extend e "nth"
+           [Scheme #[0] #[1]
+             [TFn #[[TCon "Vec" #[[TVar 0]]] [TInt]] [TRowVar 1] [TVar 0]]]]]
+  ; conj : forall a. [(Vec a) a -> (Vec a)]
+  [let e [env-extend e "conj"
+           [Scheme #[0] #[1]
+             [TFn #[[TCon "Vec" #[[TVar 0]]] [TVar 0]] [TRowVar 1]
+               [TCon "Vec" #[[TVar 0]]]]]]]
+  e]
+
+; ── Literals & symbols ──────────────────────────────────────────────────────
+
+[fn infer-sym [env c name]
+  [if [streq name "true"] [IT [TBool] c]
+    [if [streq name "false"] [IT [TBool] c]
+      [match [env-lookup env name]
+        :none [IT [fresh-placeholder] [ctx-err c [str "unbound symbol: " name]]]
+        sch [match [instantiate [ctx-subst c] sch]
+              [Fr t s] [IT t [ctx-with-subst c s]]]]]]]
+
+; A stand-in type used where inference cannot proceed; keeps the walk total.
+[fn fresh-placeholder [] [TCon "?" #[]]]
+
+; ── The main walk ───────────────────────────────────────────────────────────
+
+[fn infer [env c f]
+  [match f
+    [FInt _ _]   [IT [TInt] c]
+    [FFloat _ _] [IT [TFloat] c]
+    [FStr _ _]   [IT [TStr] c]
+    [FKw _ _]    [IT [TKw] c]
+    [FSym n _ _] [infer-sym env c n]
+    [FVec items _] [infer-vec env c items]
+    [FTuple items _] [infer-tuple env c items]
+    [FList items sp] [infer-list env c items sp]
+    [FDot base fld sp] [infer-dot env c base fld]
+    _ [IT [fresh-placeholder] c]]]
+
+; Vector literal: all elements share one element type. #[] -> (Vec a) fresh.
+[fn infer-vec [env c items]
+  [match [ctx-fresh c]
+    [IT elem c1]
+    [IT [TCon "Vec" #[elem]]
+      [loop [k 0 c c1]
+        [if [>= k [len items]]
+          c
+          [match [infer env c [nth items k]]
+            [IT it c2] [recur [+ k 1] [unify! c2 elem it]]]]]]]]
+
+[fn infer-tuple [env c items]
+  [loop [k 0 c c acc #[]]
+    [if [>= k [len items]]
+      [IT [TTuple acc] c]
+      [match [infer env c [nth items k]]
+        [IT it c2] [recur [+ k 1] c2 [conj acc it]]]]]]
+
+; `[...]` is either a special form (fn/let/if/do/match/handle/quote) or an
+; application. The head symbol selects.
+[fn infer-list [env c items sp]
+  [if [= [len items] 0]
+    [IT [TUnit] c]
+    [match [nth items 0]
+      [FSym h _ _]
+      [if [streq h "fn"] [infer-fn env c items]
+        [if [streq h "if"] [infer-if env c items]
+          [if [streq h "do"] [infer-do env c [vec-rest items 1]]
+            [if [streq h "let"] [infer-app env c items]     ; bare let-expr: rare; treat as app of unbound -> handled in seq
+              [if [streq h "match"] [infer-match env c items]
+                [if [streq h "handle"] [infer-handle env c items]
+                  [if [streq h "quote"] [IT [fresh-placeholder] c]
+                    [infer-app env c items]]]]]]]]
+      _ [infer-app env c items]]]]
+
+; Application: infer head and args, then unify head with [Fn argtypes ! e -> r].
+; str/println/print are variadic builtins handled specially.
+[fn infer-app [env c items]
+  [match [nth items 0]
+    [FSym h _ _]
+    [if [streq h "str"] [infer-variadic env c [vec-rest items 1] [TStr]]
+      [if [if [streq h "println"] true [streq h "print"]]
+        [infer-variadic env c [vec-rest items 1] [TUnit]]
+        [infer-app-general env c items]]]
+    _ [infer-app-general env c items]]]
+
+; Infer each argument (for its effects/consistency), return a fixed result type.
+[fn infer-variadic [env c args result]
+  [IT result
+    [loop [k 0 c c]
+      [if [>= k [len args]]
+        c
+        [match [infer env c [nth args k]] [IT _ c2] [recur [+ k 1] c2]]]]]]
+
+[fn infer-app-general [env c items]
+  [match [infer env c [nth items 0]]
+    [IT ft c1]
+    [match [infer-args env c1 [vec-rest items 1]]
+      [ITS argts c2]
+      [match [ctx-fresh c2]
+        [IT res c3]
+        [match [ctx-fresh-row c3]
+          [IT eff c4]
+          [IT res [unify! c4 ft [TFn argts eff res]]]]]]]]
+
+[type ITS [ITS Vec Ctx]]
+[fn infer-args [env c items]
+  [loop [k 0 c c acc #[]]
+    [if [>= k [len items]]
+      [ITS acc c]
+      [match [infer env c [nth items k]]
+        [IT t c2] [recur [+ k 1] c2 [conj acc t]]]]]]
+
+; Lambda: [fn [params] body...]  (anonymous; no name slot).
+[fn infer-fn [env c items]
+  ; items = [fn <params-or-name> ...]; anonymous lambda has a param list at idx 1.
+  [match [nth items 1]
+    [FList params _] [infer-lambda env c params [vec-rest items 2]]
+    _ [IT [fresh-placeholder] [ctx-err c "unsupported fn form (named/multi-arity not in 3b inline)"]]]]
+
+[fn infer-lambda [env c params body]
+  [match [bind-params-fresh env c params]
+    [PR env2 c1]
+    [match [param-types env2 params]
+      pts
+      [match [infer-seq env2 c1 body]
+        [IT rt c2]
+        [match [ctx-fresh-row c2]
+          [IT eff c3]
+          [IT [TFn pts eff rt] c3]]]]]]
+
+; Bind each parameter symbol to a fresh monomorphic type var.
+[fn bind-params-fresh [env c params]
+  [loop [k 0 env env c c]
+    [if [>= k [len params]]
+      [PR env c]
+      [match [nth params k]
+        [FSym pn _ _]
+        [match [ctx-fresh c]
+          [IT pv c2] [recur [+ k 1] [env-bind env pn pv] c2]]
+        _ [recur [+ k 1] env c]]]]]
+
+; The (resolved-later) types of the parameters as bound in env.
+[fn param-types [env params]
+  [loop [k 0 acc #[]]
+    [if [>= k [len params]]
+      acc
+      [match [nth params k]
+        [FSym pn _ _]
+        [match [env-lookup env pn]
+          [Scheme _ _ t] [recur [+ k 1] [conj acc t]]
+          _ [recur [+ k 1] [conj acc [fresh-placeholder]]]]
+        _ [recur [+ k 1] [conj acc [fresh-placeholder]]]]]]]
+
+; A body sequence: `let` statements extend the env (generalizing for let-poly);
+; the value of the sequence is the last form's type.
+[fn infer-seq [env c forms]
+  [loop [k 0 env env c c last [TUnit]]
+    [if [>= k [len forms]]
+      [IT last c]
+      [match [as-let [nth forms k]]
+        [LET name val]
+        [match [infer env c val]
+          [IT vt c2]
+          [recur [+ k 1]
+            [env-extend env name [generalize [ctx-subst c2] env vt]]
+            c2 [TUnit]]]
+        :no
+        [match [infer env c [nth forms k]]
+          [IT t c2] [recur [+ k 1] env c2 t]]]]]]
+
+; Recognize `[let name val]`; otherwise :no.
+[type LET [LET String Form] [NOLET]]
+[fn as-let [f]
+  [match f
+    [FList items _]
+    [if [< [len items] 3]
+      :no
+      [match [nth items 0]
+        [FSym h _ _]
+        [if [streq h "let"]
+          [match [nth items 1] [FSym n _ _] [LET n [nth items 2]] _ :no]
+          :no]
+        _ :no]]
+    _ :no]]
+
+; if: condition is Bool; the two branches share the result type.
+[fn infer-if [env c items]
+  [match [infer env c [nth items 1]]
+    [IT ct c1]
+    [match [unify! c1 ct [TBool]]
+      c2
+      [match [infer env c2 [nth items 2]]
+        [IT tt c3]
+        [if [>= [len items] 4]
+          [match [infer env c3 [nth items 3]]
+            [IT et c4] [IT tt [unify! c4 tt et]]]
+          [IT [TUnit] [unify! c3 tt [TUnit]]]]]]]]
+
+[fn infer-do [env c forms] [infer-seq env c forms]]
+
+; ── Pattern matching ────────────────────────────────────────────────────────
+; match: [match scrut p1 r1 p2 r2 ...]. Every pattern is typed against the
+; scrutinee type; every result is unified to one branch type.
+[fn infer-match [env c items]
+  [match [infer env c [nth items 1]]
+    [IT st c1]
+    [match [ctx-fresh c1]
+      [IT bt c2]
+      [infer-arms env c2 items 2 st bt]]]]
+
+[fn infer-arms [env c items i st bt]
+  [if [>= i [len items]]
+    [IT bt c]
+    [match [infer-pattern env c [nth items i] st]
+      [PR penv c1]
+      [match [infer penv c1 [nth items [+ i 1]]]
+        [IT rt c2]
+        [infer-arms env [unify! c2 bt rt] items [+ i 2] st bt]]]]]
+
+; Type a pattern against the scrutinee type, returning extended bindings.
+[fn infer-pattern [env c pat st]
+  [match pat
+    [FInt _ _]   [PR env [unify! c st [TInt]]]
+    [FFloat _ _] [PR env [unify! c st [TFloat]]]
+    [FStr _ _]   [PR env [unify! c st [TStr]]]
+    [FKw _ _]    [PR env [unify! c st [TKw]]]
+    [FSym n _ _] [pattern-sym env c n st]
+    [FList items _] [pattern-ctor env c items st]
+    _ [PR env c]]]
+
+; A bare symbol pattern: "_" is a wildcard, a known constructor is a nullary
+; constructor pattern, anything else binds the scrutinee.
+[fn pattern-sym [env c n st]
+  [if [streq n "_"] [PR env c]
+    [if [streq n "true"] [PR env [unify! c st [TBool]]]
+      [if [streq n "false"] [PR env [unify! c st [TBool]]]
+        [if [is-ctor? c n]
+          [match [env-lookup env n]
+            [Scheme _ _ _]
+            [match [instantiate [ctx-subst c] [env-lookup env n]]
+              [Fr ct s] [PR env [unify! [ctx-with-subst c s] st ct]]]
+            :none [PR env [ctx-err c [str "unknown constructor: " n]]]]
+          [PR [env-bind env n st] c]]]]]]
+
+; A constructor application pattern: [Ctor sub1 sub2 ...].
+[fn pattern-ctor [env c items st]
+  [match [nth items 0]
+    [FSym cn _ _]
+    [match [env-lookup env cn]
+      :none [PR env [ctx-err c [str "unknown constructor in pattern: " cn]]]
+      sch
+      [match [instantiate [ctx-subst c] sch]
+        [Fr ct s]
+        ; ct should be [Fn [field-types] ! e -> ResultType]
+        [match ct
+          [TFn fts _ res]
+          [bind-subpatterns env [unify! [ctx-with-subst c s] st res]
+            [vec-rest items 1] fts]
+          _ [PR env [ctx-err [ctx-with-subst c s]
+                      [str "not a constructor: " cn]]]]]]
+    _ [PR env c]]]
+
+[fn bind-subpatterns [env c subs fts]
+  [loop [k 0 env env c c]
+    [if [>= k [len subs]]
+      [PR env c]
+      [match [infer-pattern env c [nth subs k]
+               [if [< k [len fts]] [nth fts k] [fresh-placeholder]]]
+        [PR env2 c2] [recur [+ k 1] env2 c2]]]]]
+
+; ── handle / resume (structural for 3b; effect discipline is 3c) ────────────
+; [handle body  [Op.x args] hbody  ...] — type the body and each handler body,
+; unifying handler bodies with the overall result. `resume` is treated as an
+; opaque polymorphic value here.
+[fn infer-handle [env c items]
+  [match [infer env c [nth items 1]]
+    [IT bt c1]
+    [loop [i 2 c c1]
+      [if [>= i [len items]]
+        [IT bt c]
+        ; items[i] is the op pattern (FList), items[i+1] the handler body
+        [match [infer-handler-body env c [nth items i] [nth items [+ i 1]]]
+          [IT hb c2] [recur [+ i 2] [unify! c2 bt hb]]]]]]]
+
+; Handler bodies may reference `resume` and the operation's argument names; bind
+; them all to fresh vars (proper effect-operation typing arrives in 3c).
+[fn infer-handler-body [env c oppat body]
+  [match [bind-op-args env c oppat]
+    [PR env1 c1]
+    [match [ctx-fresh c1]
+      [IT rv c2]
+      [match [ctx-fresh c2]
+        [IT rr c3]
+        [infer [env-bind env1 "resume" [TFn #[rv] [TRowEmpty] rr]] c3 body]]]]]
+
+; Bind the argument symbols of an op pattern [Op.name a b ...] to fresh vars.
+[fn bind-op-args [env c oppat]
+  [match oppat
+    [FList items _]
+    [loop [k 1 env env c c]
+      [if [>= k [len items]]
+        [PR env c]
+        [match [nth items k]
+          [FSym n _ _]
+          [match [ctx-fresh c] [IT v c2] [recur [+ k 1] [env-bind env n v] c2]]
+          _ [recur [+ k 1] env c]]]]
+    _ [PR env c]]]
+
+; ── Constructor registration from [type …] ──────────────────────────────────
+; [type Name [Ctor t1 t2] ... NullaryCtor]. Registers each constructor as a
+; function (or value, if nullary) returning (TCon Name). Type parameters are
+; not modelled yet (3b deferral): field type symbols resolve to base types or
+; opaque TCons.
+
+[fn collect-type-decls [forms]
+  [loop [k 0 env [prelude] names #[]]
+    [if [>= k [len forms]]
+      [PR env [ctx-new names]]            ; reuse PR to bundle (env, ctx-seed)
+      [match [type-decl? [nth forms k]]
+        :no [recur [+ k 1] env names]
+        [TD tname ctors]
+        [match [register-ctors env names tname ctors]
+          [PR env2 _]
+          [recur [+ k 1] env2 [names-append names ctors]]]]]]]
+
+[type TD [TD String Vec] [NOTD]]
+[fn type-decl? [f]
+  [match f
+    [FList items _]
+    [if [< [len items] 2]
+      :no
+      [match [nth items 0]
+        [FSym h _ _]
+        [if [streq h "type"]
+          [match [nth items 1] [FSym tn _ _] [TD tn [vec-rest items 2]] _ :no]
+          :no]
+        _ :no]]
+    _ :no]]
+
+; Names of all constructors declared by a [type] (for the ctor-name set).
+[fn names-append [acc ctors]
+  [loop [k 0 acc acc]
+    [if [>= k [len ctors]]
+      acc
+      [recur [+ k 1] [conj acc [ctor-name [nth ctors k]]]]]]]
+
+[fn ctor-name [cf]
+  [match cf
+    [FSym n _ _] n
+    [FList items _] [match [nth items 0] [FSym n _ _] n _ "?"]
+    _ "?"]]
+
+[fn register-ctors [env names tname ctors]
+  [loop [k 0 env env]
+    [if [>= k [len ctors]]
+      [PR env [ctx-new names]]
+      [recur [+ k 1] [register-one env tname [nth ctors k]]]]]]
+
+[fn register-one [env tname cf]
+  [let result [TCon tname #[]]]
+  [match cf
+    [FSym n _ _] [env-extend env n [Scheme #[] #[] result]]   ; nullary value
+    [FList items _]
+    [match [nth items 0]
+      [FSym n _ _]
+      [env-extend env n
+        [Scheme #[] #[0]
+          [TFn [parse-field-types [vec-rest items 1]] [TRowVar 0] result]]]
+      _ env]
+    _ env]]
+
+[fn parse-field-types [forms]
+  [loop [k 0 acc #[]]
+    [if [>= k [len forms]]
+      acc
+      [recur [+ k 1] [conj acc [parse-type-form [nth forms k]]]]]]]
+
+; Map a type Form to a Type. Base names are recognized; other capitalized names
+; become nullary TCons; anything else is an opaque TCon by its written name.
+[fn parse-type-form [f]
+  [match f
+    [FSym n _ _]
+    [if [streq n "i64"] [TInt]
+      [if [streq n "int"] [TInt]
+        [if [streq n "f64"] [TFloat]
+          [if [streq n "float"] [TFloat]
+            [if [streq n "Bool"] [TBool]
+              [if [if [streq n "Str"] true [streq n "String"]] [TStr]
+                [TCon n #[]]]]]]]]
+    [FList items _]
+    [match [nth items 0]
+      [FSym n _ _] [TCon n [parse-field-types [vec-rest items 1]]]
+      _ [fresh-placeholder]]
+    _ [fresh-placeholder]]]
+
+; ── Top-level program inference ─────────────────────────────────────────────
+; 1) register constructors; 2) pre-bind every fn name to a fresh var (mutual
+; recursion); 3) infer each fn body and unify with its name's var.
+
+[fn fn-def? [f]
+  [match f
+    [FList items _]
+    [if [< [len items] 3]
+      :no
+      [match [nth items 0]
+        [FSym h _ _]
+        [if [streq h "fn"]
+          [match [nth items 1] [FSym n _ _] [FNDEF n items] _ :no]
+          :no]
+        _ :no]]
+    _ :no]]
+
+[type FNDEF [FNDEF String Vec] [NOFN]]
+
+[fn infer-program [forms]
+  [match [collect-type-decls forms]
+    [PR env0 c0]
+    [match [prebind-fns env0 c0 forms]
+      [PR env1 c1]
+      [infer-fn-bodies env1 c1 forms]]]]
+
+[fn prebind-fns [env c forms]
+  [loop [k 0 env env c c]
+    [if [>= k [len forms]]
+      [PR env c]
+      [match [fn-def? [nth forms k]]
+        :no [recur [+ k 1] env c]
+        [FNDEF name _]
+        [match [ctx-fresh c]
+          [IT fv c2] [recur [+ k 1] [env-bind env name fv] c2]]]]]]
+
+[fn infer-fn-bodies [env c forms]
+  [loop [k 0 c c]
+    [if [>= k [len forms]]
+      c
+      [match [fn-def? [nth forms k]]
+        :no [recur [+ k 1] c]
+        [FNDEF name items]
+        [recur [+ k 1] [infer-named-fn env c name items]]]]]]
+
+; A named single-arity fn: [fn name [params] (#{eff})? body...].
+[fn infer-named-fn [env c name items]
+  [match [nth items 2]
+    [FList params _]
+    [match [infer-lambda env c params [fn-body-forms items]]
+      [IT ft c1]
+      [match [env-lookup env name]
+        [Scheme _ _ nv] [unify! c1 nv ft]
+        _ c1]]
+    _ [ctx-err c [str "unsupported fn shape (multi-arity deferred): " name]]]]
+
+; Body forms of [fn name [params] …]: skip an optional leading #{effects} set.
+[fn fn-body-forms [items]
+  [if [>= [len items] 4]
+    [match [nth items 3]
+      [FSet _ _] [vec-rest items 4]
+      _ [vec-rest items 3]]
+    [vec-rest items 3]]]
+
+; ── Entry points ────────────────────────────────────────────────────────────
+
+; Infer a whole program (vector of Forms); returns the final Ctx.
+[fn check-program [forms] [infer-program forms]]
+
+; Does a program (source string) type-check? (reader errors count as failure.)
+[fn checks? [src]
+  [let forms [read-all src]]
+  [ctx-ok? [check-program forms]]]
+
+; Infer a single expression Form under the prelude; returns IT.
+[fn infer-expr [f]
+  [match [collect-type-decls #[]]
+    [PR env c] [infer env c f]]]
