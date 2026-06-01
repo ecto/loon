@@ -1404,6 +1404,19 @@ impl<'a> FnCtx<'a> {
                 }
                 self.compile_call(items)
             }
+            ExprKind::Vec(items) => {
+                // #[a b c] desugars to vec-new + a vec-push per element.
+                self.compiler.ensure_collections_runtime();
+                let rt = self.compiler.collections_runtime.clone().unwrap();
+                self.instructions
+                    .push(WasmInstruction::Call(rt.vec_new_idx));
+                for item in items {
+                    self.compile_expr(item)?;
+                    self.instructions
+                        .push(WasmInstruction::Call(rt.vec_push_idx));
+                }
+                Ok(())
+            }
             _ => Err(format!("codegen: unsupported expression: {:?}", expr.kind)),
         }
     }
@@ -2414,6 +2427,12 @@ mod tests {
         // A closure that captures a free variable: the env-pointer was left on
         // the stack by a stray LocalTee, leaving 2 values where 1 was expected.
         valid(r#"[fn adder [n] [fn [x] [+ x n]]] [fn main [] [let f [adder 10]] [println [f 5]]]"#);
+    }
+    #[test]
+    fn compile_vector_literal_is_valid() {
+        // #[a b c] desugars to vec-new + vec-push chain; #[] is the empty vec.
+        valid(r#"[fn main [] [println [vec-get #[10 20 30] 2]]]"#);
+        valid(r#"[fn main [] [println [vec-get [vec-push #[] 99] 0]]]"#);
     }
     #[test]
     fn compile_multi_arity_is_valid() {
