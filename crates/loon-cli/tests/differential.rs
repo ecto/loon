@@ -145,6 +145,10 @@ const SUPPORTED: &[&str] = &[
     // Tail-resumptive algebraic effect handlers (`handle`/`resume`).
     "effects.oo",
     "user-effects.oo",
+    // The standard `State` handler compiled as a mutable cell (its
+    // continuation-passing definition), with functions-as-values and
+    // computed-callee calls `[[handle …] init]`.
+    "state.oo",
     // Dimensional units (compile-time; `unit`/`magnitude` are runtime
     // identities), a `Const` value, and a tail-resumptive Physics handler.
     "physics.oo",
@@ -196,10 +200,6 @@ fn bench_collections_matches_interpreter() {
 /// The interpreter, by contrast, must run them — proving the program itself is
 /// valid and the boundary is a backend gap, not a broken sample.
 const UNSUPPORTED: &[(&str, &str)] = &[
-    // `state.oo` resumes a captured continuation *after* `handle` returns
-    // (escaping, multi-shot) — its handler desugars to a call form the
-    // tail-resumptive backend does not recognize.
-    ("state.oo", "unsupported call form"),
     // (bench-collections.oo reaches full parity but is verified by the
     // `#[ignore]`d `bench_collections_matches_interpreter` test below: its
     // `map-insert` does an O(n²) linear-scan dedup over 100K keys (~70s), so it

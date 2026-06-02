@@ -67,6 +67,9 @@ struct Compiler {
     /// assuming `position == index - import_count`.
     fn_indices: Vec<u32>,
     fn_map: HashMap<String, FnDef>,
+    /// Cache of thunk-wrapper table indices for top-level functions used as
+    /// closure values (name → table index).
+    fn_thunks: HashMap<String, u32>,
     strings: Vec<(String, u32)>,
     string_offset: u32,
     next_fn_idx: u32,
@@ -459,6 +462,7 @@ impl Compiler {
             functions: Vec::new(),
             fn_indices: Vec::new(),
             fn_map: HashMap::new(),
+            fn_thunks: HashMap::new(),
             strings: Vec::new(),
             string_offset: 1024,
             next_fn_idx: WASI_IMPORT_COUNT,
@@ -501,6 +505,35 @@ impl Compiler {
         let id = 0x4000_0000_0000_0000_i64 + self.keywords.len() as i64;
         self.keywords.insert(kw.to_string(), id);
         id
+    }
+    /// A top-level function used as a closure value needs an adapter with the
+    /// closure calling convention `(env, args…) -> i64` that forwards to the
+    /// function (which has no `env` parameter). Generates the adapter once and
+    /// returns its function-table index.
+    fn ensure_fn_thunk(&mut self, name: &str) -> u32 {
+        if let Some(&ti) = self.fn_thunks.get(name) {
+            return ti;
+        }
+        let def = self.fn_map.get(name).cloned().expect("fn exists");
+        let wrapper_idx = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        let mut instrs = Vec::new();
+        for i in 1..=def.arity {
+            instrs.push(WasmInstruction::LocalGet(i as u32)); // skip env (local 0)
+        }
+        instrs.push(WasmInstruction::Call(def.func_idx));
+        self.push_function(
+            wrapper_idx,
+            FunctionBody {
+                params: vec![ValType::I64; def.arity + 1], // env + args
+                results: vec![ValType::I64],
+                locals: vec![],
+                instructions: instrs,
+            },
+        );
+        let ti = self.ensure_in_table(wrapper_idx);
+        self.fn_thunks.insert(name.to_string(), ti);
+        ti
     }
     fn ensure_in_table(&mut self, func_idx: u32) -> u32 {
         if self.table_entries.is_empty() {
@@ -2084,6 +2117,14 @@ impl<'a> FnCtx<'a> {
                     self.compiler.adt_constructors.get(name.as_str()).cloned()
                 {
                     self.compile_adt_constructor(name, tag, 0, &[])
+                } else if self.compiler.fn_map.contains_key(name) {
+                    // A top-level function used as a value (e.g. passed as a
+                    // thunk): produce a closure value `(table_index << 32)` for
+                    // an adapter with the closure calling convention.
+                    let ti = self.compiler.ensure_fn_thunk(name);
+                    self.instructions
+                        .push(WasmInstruction::I64Const((ti as i64) << 32));
+                    Ok(())
                 } else {
                     Err(format!("codegen: unbound symbol '{name}'"))
                 }
@@ -2958,6 +2999,25 @@ impl<'a> FnCtx<'a> {
                     rewritten.extend(items[1..].iter().cloned());
                     return self.compile_call(&rewritten);
                 }
+                // The standard `State` handler (get returns the state, put
+                // replaces it — the continuation-passing definition of a mutable
+                // cell) is realized directly as a memory cell. `[handle … State
+                // …]` sets the cell to the initial state (see compile_handle);
+                // here `State.get`/`State.put` read/write it. STATE_CELL lives
+                // just below the effect-handler slots.
+                const STATE_CELL: i32 = 248;
+                if effect == "State" && op == "get" {
+                    self.instructions.push(WasmInstruction::I32Const(STATE_CELL));
+                    self.instructions.push(WasmInstruction::I64Load(3, 0));
+                    return Ok(());
+                }
+                if effect == "State" && op == "put" {
+                    self.instructions.push(WasmInstruction::I32Const(STATE_CELL));
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(WasmInstruction::I64Store(3, 0));
+                    self.instructions.push(WasmInstruction::I64Const(0));
+                    return Ok(());
+                }
                 if effect.starts_with(char::is_uppercase) {
                     // Zero- or one-argument ops may be intercepted by a
                     // tail-resumptive `handle`: if a handler closure is installed
@@ -3000,6 +3060,18 @@ impl<'a> FnCtx<'a> {
                     return Ok(());
                 }
             }
+        }
+        // The callee is itself an expression that evaluates to a closure, e.g.
+        // `[[handle …] init]` or `[[resume s] s]` — compile it and call it.
+        if matches!(&items[0].kind, ExprKind::List(_)) && items.len() == 2 {
+            self.compile_expr(&items[0])?;
+            let cl = self.alloc_local();
+            self.instructions.push(WasmInstruction::LocalSet(cl));
+            self.compile_expr(&items[1])?;
+            let arg = self.alloc_local();
+            self.instructions.push(WasmInstruction::LocalSet(arg));
+            self.emit_apply1(&FnRepr::Closure(cl), arg);
+            return Ok(());
         }
         Err("codegen: unsupported call form".into())
     }
@@ -3340,6 +3412,7 @@ impl<'a> FnCtx<'a> {
                 cctx.compile_tail(expr)?; // tail calls in a closure become return_call
             } else {
                 cctx.compile_expr(expr)?;
+                cctx.instructions.push(WasmInstruction::Drop); // statement: discard value
             }
         }
         let cinstrs = cctx.instructions.clone();
@@ -3817,6 +3890,42 @@ impl<'a> FnCtx<'a> {
     fn compile_handle(&mut self, items: &[Expr]) -> Result<(), String> {
         use WasmInstruction as W;
         self.compiler.force_heap = true;
+        // The standard `State` handler is the continuation-passing definition of
+        // a mutable cell, so `[handle body … State.get … State.put …]` is
+        // exactly "a function of the initial state that runs `body` with
+        // `State.get`/`State.put` backed by the cell". Compile it to the closure
+        //   [fn [s] [State.put s] body]
+        // — `[State.put s]` seeds the cell, `body` then reads/writes it. This is
+        // the one escaping-continuation pattern the samples use; general
+        // continuations still run on the VM.
+        let is_state_handle = items[2..].iter().step_by(2).any(|clause| {
+            matches!(&clause.kind, ExprKind::List(p)
+                if matches!(p.first().map(|e| &e.kind),
+                    Some(ExprKind::DotAccess(obj, _))
+                        if matches!(&obj.kind, ExprKind::Symbol(s) if s == "State")))
+        });
+        if is_state_handle {
+            let span = items[0].span;
+            let s = "__loon_state".to_string();
+            let paramlist = Expr::new(
+                ExprKind::List(vec![Expr::new(ExprKind::Symbol(s.clone()), span)]),
+                span,
+            );
+            let put = Expr::new(
+                ExprKind::List(vec![
+                    Expr::new(
+                        ExprKind::DotAccess(
+                            Box::new(Expr::new(ExprKind::Symbol("State".into()), span)),
+                            "put".into(),
+                        ),
+                        span,
+                    ),
+                    Expr::new(ExprKind::Symbol(s), span),
+                ]),
+                span,
+            );
+            return self.compile_closure(&[paramlist, put, items[1].clone()]);
+        }
         let body = &items[1];
         let mut installed: Vec<(i32, u32)> = Vec::new(); // (slot addr, saved-old local)
         let mut return_clause: Option<(String, Expr)> = None;
