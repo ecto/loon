@@ -2675,9 +2675,11 @@ impl<'a> FnCtx<'a> {
                     return self.compile_handle(items);
                 }
                 "try" => {
-                    // `try` needs general (multi-shot/escaping) continuations,
-                    // which standalone wasm can't express without a whole-program
-                    // CPS transform. Runs on the VM via `loon run`.
+                    // `try` (and the `tco-stress` program generally) drives
+                    // recursion to 100K–1M depth, which standalone wasm cannot
+                    // run without guaranteed tail-call elimination, and its
+                    // escaping handlers need a full continuation transform.
+                    // Runs on the VM via `loon run`.
                     return Err(
                         "codegen: 'try' (delimited continuations) is not supported by the \
                          wasm backend yet; run it on the VM with `loon run`"
