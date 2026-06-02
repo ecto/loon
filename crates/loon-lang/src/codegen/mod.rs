@@ -2242,6 +2242,13 @@ impl<'a> FnCtx<'a> {
                     }
                     return Err("codegen: fold requires init, function, collection".into());
                 }
+                "update" => {
+                    // [update m k f] — assoc m k (f (get m k)).
+                    if items.len() >= 4 {
+                        return self.compile_update(&items[1], &items[2], &items[3]);
+                    }
+                    return Err("codegen: update requires a map, key, and function".into());
+                }
                 "range" => {
                     // [range a b] — vector of a, a+1, …, b-1.
                     if items.len() >= 3 {
@@ -2762,6 +2769,36 @@ impl<'a> FnCtx<'a> {
         }
         Ok(())
     }
+    /// `[update m k f]` — a new map with `k` bound to `f` applied to its
+    /// current value (0 if absent, per `map_get`).
+    fn compile_update(&mut self, m: &Expr, k: &Expr, f: &Expr) -> Result<(), String> {
+        use WasmInstruction as W;
+        self.compiler.ensure_maps_runtime();
+        let mr = self.compiler.maps_runtime.clone().unwrap();
+        self.compile_expr(m)?;
+        let mloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(mloc));
+        self.compile_expr(k)?;
+        let kloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(kloc));
+        let fr = self.prepare_fn_arg(f)?;
+        // cur = map_get(m, k)
+        self.instructions.push(W::LocalGet(mloc));
+        self.instructions.push(W::LocalGet(kloc));
+        self.instructions.push(W::Call(mr.map_get_idx));
+        let eloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(eloc));
+        // newval = f(cur)
+        self.emit_apply1(&fr, eloc);
+        let vloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(vloc));
+        // map_assoc(m, k, newval)
+        self.instructions.push(W::LocalGet(mloc));
+        self.instructions.push(W::LocalGet(kloc));
+        self.instructions.push(W::LocalGet(vloc));
+        self.instructions.push(W::Call(mr.map_assoc_idx));
+        Ok(())
+    }
     fn compile_fold(&mut self, init: &Expr, f: &Expr, coll: &Expr) -> Result<(), String> {
         use WasmInstruction as W;
         self.compiler.ensure_collections_runtime();
@@ -3197,6 +3234,12 @@ mod tests {
     fn compile_split_is_valid() {
         valid(r#"[fn main [] [println [len [split "a b c" " "]]]]"#);
         valid(r#"[fn main [] [println [str "first=" [first [split "x,y,z" ","]]]]]"#);
+    }
+    #[test]
+    fn compile_update_is_valid() {
+        valid(
+            r#"[fn main [] [let m [update {} "a" [fn [n] [+ [or n 0] 1]]]] [println [get m "a"]]]"#,
+        );
     }
     #[test]
     fn compile_map_operations_are_valid() {
