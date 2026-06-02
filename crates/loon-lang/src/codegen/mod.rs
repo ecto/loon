@@ -2453,6 +2453,63 @@ impl<'a> FnCtx<'a> {
                     self.instructions.push(WasmInstruction::Call(rt.map_keys_idx));
                     return Ok(());
                 }
+                "take" => {
+                    // [take n v] -> new vector of the first min(n, len) elems.
+                    self.compiler.ensure_collections_runtime();
+                    let rt = self.compiler.collections_runtime.clone().unwrap();
+                    use WasmInstruction as W;
+                    let nl = self.alloc_local();
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(W::LocalSet(nl));
+                    self.compile_expr(&items[2])?;
+                    let vl = self.alloc_local();
+                    self.instructions.push(W::LocalSet(vl));
+                    let (len, d) = self.emit_vec_header(vl);
+                    // limit = min(n, len)
+                    let lim = self.alloc_local();
+                    self.instructions.push(W::LocalGet(nl));
+                    self.instructions.push(W::LocalGet(len));
+                    self.instructions.push(W::I64LtS);
+                    self.instructions
+                        .push(W::If(BlockType::Result(ValType::I64)));
+                    self.instructions.push(W::LocalGet(nl));
+                    self.instructions.push(W::Else);
+                    self.instructions.push(W::LocalGet(len));
+                    self.instructions.push(W::End);
+                    self.instructions.push(W::LocalSet(lim));
+                    self.instructions.push(W::Call(rt.vec_new_idx));
+                    let rl = self.alloc_local();
+                    self.instructions.push(W::LocalSet(rl));
+                    let iv = self.alloc_local();
+                    self.instructions.push(W::I64Const(0));
+                    self.instructions.push(W::LocalSet(iv));
+                    self.instructions.push(W::Block(BlockType::Empty));
+                    self.instructions.push(W::Loop(BlockType::Empty));
+                    self.instructions.push(W::LocalGet(iv));
+                    self.instructions.push(W::LocalGet(lim));
+                    self.instructions.push(W::I64LtS);
+                    self.instructions.push(W::I32Eqz);
+                    self.instructions.push(W::BrIf(1));
+                    self.instructions.push(W::LocalGet(rl));
+                    self.instructions.push(W::LocalGet(d));
+                    self.instructions.push(W::LocalGet(iv));
+                    self.instructions.push(W::I64Const(8));
+                    self.instructions.push(W::I64Mul);
+                    self.instructions.push(W::I64Add);
+                    self.instructions.push(W::I32WrapI64);
+                    self.instructions.push(W::I64Load(3, 0));
+                    self.instructions.push(W::Call(rt.vec_push_idx));
+                    self.instructions.push(W::LocalSet(rl));
+                    self.instructions.push(W::LocalGet(iv));
+                    self.instructions.push(W::I64Const(1));
+                    self.instructions.push(W::I64Add);
+                    self.instructions.push(W::LocalSet(iv));
+                    self.instructions.push(W::Br(0));
+                    self.instructions.push(W::End);
+                    self.instructions.push(W::End);
+                    self.instructions.push(W::LocalGet(rl));
+                    return Ok(());
+                }
                 "first" => {
                     // first = vec-get v 0
                     self.compiler.ensure_collections_runtime();
@@ -3574,6 +3631,11 @@ mod tests {
     #[test]
     fn compile_conj_len_are_valid() {
         valid(r#"[fn main [] [println [len [conj [conj #[] 5] 9]]]]"#);
+    }
+    #[test]
+    fn compile_take_is_valid() {
+        valid(r#"[fn main [] [println [len [take 3 #[10 20 30 40 50]]]]]"#);
+        valid(r#"[fn main [] [println [len [take 9 #[1 2]]]]]"#);
     }
     #[test]
     fn compile_str_stringifies_ints() {
