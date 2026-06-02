@@ -69,19 +69,24 @@ params are float, propagated through call sites. Synthesized nodes (desugared
 - `pipe` (thread-last).
 - Multi-arity functions (`[fn f ([x] …) ([x y] …)]`) — each clause is its own
   function, resolved by argument count.
-- Effect **operations**: `E.op args` lowers to a host-provided WASM import
-  (`loon:effects/<effect>`); effect-row annotations on functions are ignored.
+- **Effects**: `E.op args` checks a dynamic handler stack first and falls back
+  to a host import (`loon:effects/<effect>`). **Tail-resumptive `handle`**
+  works — `[handle body [E.op p] hbody … [return x] rbody]` installs handlers
+  for the body's dynamic extent; `[resume v]` (in tail position) makes the op
+  return `v`. Handlers are dynamically scoped (intercept ops through calls and
+  nest correctly).
 - Dead-code elimination (`tree_shake`) and a relocating function-index pass so
   imports and `_start` stay correct.
 
 ## What does *not* compile yet (use `loon run`)
 
-- **Delimited continuations** — `handle` / `resume` / `try`. Capturing and
-  resuming a stack segment needs a whole-program CPS / trampoline transform the
-  backend doesn't do. Effect *operations* still compile (to imports); only the
-  handlers don't.
-- **Nested *named* local functions** (`[fn build [..] …]` inside a body) and
-  **sets** (`#{…}`) as data.
+- **Non-tail / escaping / multi-shot continuations** — `resume` used anywhere
+  but tail position (the function-returning `State` pattern in
+  `samples/state.oo`), and **abort-style `try`** (`tco-stress.oo`), which needs a
+  non-local exit across calls. The tail-resumptive tier above is the boundary;
+  the rest needs reified continuations (CPS / a trampoline, or wasm exceptions
+  for abort). The VM implements all of these.
+- **Sets** (`#{…}`) as data.
 - **Heterogeneous / fully-dynamic values.** The string-vs-pointer
   self-description used for map keys, `empty?`, and `str` covers homogeneous
   data; a genuinely mixed collection (or printing an arbitrary value of unknown
