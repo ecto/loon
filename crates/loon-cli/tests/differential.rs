@@ -54,7 +54,12 @@ fn run(sample: &str, wasm: bool) -> Run {
 /// Run an inline program through a chosen backend, returning trimmed stdout.
 fn run_src(src: &str, args: &[&str]) -> String {
     use std::io::Write;
-    let dir = std::env::temp_dir().join(format!("loon-diff-{}", std::process::id()));
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Unique per call so parallel tests (and the three backends within a test)
+    // never share a source file.
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("loon-diff-{}-{}", std::process::id(), n));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("prog.oo");
     std::fs::File::create(&path)
@@ -70,31 +75,31 @@ fn run_src(src: &str, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// Documents a *known EIR VM bug* uncovered while building the wasm map stdlib:
-/// the VM (`loon run`, the differential oracle) keys maps by object handle, so
-/// two structurally-equal strings built separately count as distinct keys. The
-/// legacy tree-walking interpreter and the wasm backend both treat them as
-/// equal (the correct behaviour). This is why `word-count.oo` cannot reach
-/// output parity on wasm: the VM does not aggregate split-produced words.
-///
-/// When the VM is fixed to use structural key equality, this test will fail and
-/// should be updated (the `vm` value will become "1").
+/// Regression: all three backends treat structurally-equal strings as the same
+/// map key. The EIR VM used to key maps by object handle, so two separately
+/// built equal strings (e.g. words from `split`) counted as distinct keys and
+/// were not aggregated; the VM now interns string objects by content, matching
+/// the legacy interpreter and the wasm backend. This is what makes
+/// `word-count.oo` aggregate correctly on every backend.
 #[test]
-fn vm_map_keys_are_handle_identity_not_structural() {
+fn map_keys_use_structural_equality_on_all_backends() {
     let src = r#"[fn main []
         [let m [assoc [assoc {} [str "a" "b"] 1] [str "a" "b"] 2]]
         [println [len m]]]"#;
-    let vm = run_src(src, &[]);
-    let legacy = run_src(src, &["--legacy"]);
-    let wasm = run_src(src, &["--wasm"]);
-    assert_eq!(legacy, "1", "legacy interpreter should dedup equal string keys");
-    assert_eq!(wasm, "1", "wasm backend should dedup equal string keys");
-    assert_eq!(
-        vm, "2",
-        "KNOWN BUG: the EIR VM keys maps by handle, not structural equality; \
-         if this now reports 1 the VM was fixed — update this test and revisit \
-         word-count.oo parity"
-    );
+    assert_eq!(run_src(src, &[]), "1", "EIR VM should dedup equal string keys");
+    assert_eq!(run_src(src, &["--legacy"]), "1", "legacy should dedup");
+    assert_eq!(run_src(src, &["--wasm"]), "1", "wasm should dedup");
+}
+
+/// Regression: `take`/`drop` clamp their count to the collection length instead
+/// of panicking when it exceeds the length (the VM previously panicked inside
+/// `imbl::Vector::split_off`).
+#[test]
+fn take_drop_clamp_past_end_on_vm() {
+    let take = r#"[fn main [] [println [len [take 99 [range 0 4]]]]]"#;
+    let drop = r#"[fn main [] [println [len [drop 99 [range 0 4]]]]]"#;
+    assert_eq!(run_src(take, &[]), "4");
+    assert_eq!(run_src(drop, &[]), "0");
 }
 
 /// Samples the wasm backend fully supports: must run on both backends and
@@ -150,12 +155,8 @@ const UNSUPPORTED: &[(&str, &str)] = &[
     ("types.oo", "floating-point"),
     // Collection / string stdlib builtins not yet ported to codegen.
     ("bench-collections.oo", "unknown function 'cons'"),
-    // word-count compiles further now (split/filter/fold/update/take all land);
-    // its next codegen gap is `sort-by`. Note: even once that lands, word-count
-    // cannot reach *output* parity, because the EIR VM (the differential oracle)
-    // keys maps by object handle rather than structural equality, so
-    // split-produced duplicate words are not aggregated there. See the
-    // `vm_map_keys_are_handle_identity_not_structural` regression test.
+    // word-count compiles through split/filter/fold/update/take; its remaining
+    // codegen gap is `sort-by` (plus tuple-destructuring lambda params).
     ("word-count.oo", "unknown function 'sort-by'"),
     ("word-freq.oo", "lowercase"),
 ];
