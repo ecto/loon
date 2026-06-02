@@ -112,6 +112,9 @@ const SUPPORTED: &[&str] = &[
     "pipeline.oo",
     "multi-arity.oo",
     "word-count.oo",
+    // No `main` and only `[test]` blocks: a no-op under `loon run`, and now a
+    // no-op (empty main) on wasm too.
+    "test-suite.oo",
 ];
 
 #[test]
@@ -186,30 +189,32 @@ fn unsupported_samples_reject_cleanly() {
 }
 
 /// `test-suite.oo` is a definitions-only file: top-level `fn`s plus `test`
-/// blocks, but no `main`. The wasm backend's only entry point is `main`, so it
-/// is not runnable as wasm — but it must still compile to a *valid* module and
-/// fail cleanly, not miscompile.
+/// blocks, but no `main`. Under `loon run` this is a no-op (functions/tests are
+/// defined, nothing runs at top level); the wasm backend synthesizes an empty
+/// `main` so it is a no-op there too — running cleanly with no output.
 ///
 /// Regression guard: codegen used to leave the (unreachable) functions in the
 /// module with stale provisional indices when there was no `main`, emitting a
-/// module wasmtime rejected at translation time. Now tree-shaking prunes them
-/// to a valid empty module. Because `loon run --wasm` validates the module via
-/// `wasmtime::Module::new` *before* looking for an entry, reaching the
-/// "no _start or main" error proves the emitted wasm is valid.
+/// module wasmtime rejected at translation time. Tree-shaking prunes them so
+/// the module is valid; this test ensures it runs (not "translation"/"codegen"
+/// rejected) and produces no output, matching the interpreter.
 #[test]
-fn definitions_only_file_compiles_valid_but_has_no_entry() {
-    // The interpreter accepts it (defines fns/tests, runs nothing at top level).
+fn definitions_only_file_runs_as_noop_on_wasm() {
     let interp = run("test-suite.oo", false);
     assert!(interp.ok, "interpreter failed for test-suite.oo:\n{}", interp.stderr);
 
     let wasm = run("test-suite.oo", true);
-    assert!(!wasm.ok, "expected no-entry failure, but wasm run succeeded");
     assert!(
-        wasm.stderr.contains("no _start or main"),
-        "expected a clean no-entry error (which implies a valid module), got:\n{}",
+        wasm.ok,
+        "test-suite.oo should run as a no-op on wasm, got:\n{}",
         wasm.stderr
     );
-    // Specifically must NOT be the old miscompile or a codegen rejection.
+    assert_eq!(
+        wasm.stdout.trim(),
+        interp.stdout.trim(),
+        "definitions-only file should produce the same (empty) output on both backends"
+    );
+    // Must not be the old miscompile or a codegen rejection.
     assert!(
         !wasm.stderr.contains("translation") && !wasm.stderr.contains("codegen"),
         "test-suite.oo should compile to valid wasm, not crash/reject:\n{}",

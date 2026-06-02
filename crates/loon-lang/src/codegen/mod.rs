@@ -572,10 +572,12 @@ impl Compiler {
             .filter(|e| Self::is_toplevel_statement(e))
             .cloned()
             .collect();
-        if stmts.is_empty() {
-            return None;
-        }
-        let span = stmts[0].span;
+        // A file with no `main` and no top-level statements — a library, or a
+        // file containing only `[test …]` blocks — is a no-op under `loon run`
+        // (which produces no output). Synthesize an empty `main` so the wasm
+        // backend still has an entry point and matches that behaviour, rather
+        // than failing with "no main export".
+        let span = stmts.first().map(|s| s.span).unwrap_or(crate::syntax::Span::ZERO);
         let mut main_items = vec![
             Expr::new(ExprKind::Symbol("fn".into()), span),
             Expr::new(ExprKind::Symbol("main".into()), span),
