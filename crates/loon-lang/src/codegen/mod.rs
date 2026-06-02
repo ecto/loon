@@ -1681,6 +1681,109 @@ impl<'a> FnCtx<'a> {
         }
         self.instructions.push(W::I64Const(0));
     }
+    /// Emit a WASI fd_write of `len` bytes at memory address `addr` to stdout,
+    /// using the iovec scratch at mem[0..8]. Leaves nothing on the stack.
+    fn emit_fd_write_buf(&mut self, addr: i32, len: i32) {
+        use WasmInstruction as W;
+        self.instructions.push(W::I32Const(0));
+        self.instructions.push(W::I32Const(addr));
+        self.instructions.push(W::I32Store(2, 0));
+        self.instructions.push(W::I32Const(4));
+        self.instructions.push(W::I32Const(len));
+        self.instructions.push(W::I32Store(2, 0));
+        self.instructions.push(W::I32Const(1)); // stdout
+        self.instructions.push(W::I32Const(0)); // iovec
+        self.instructions.push(W::I32Const(1)); // count
+        self.instructions.push(W::I32Const(8)); // nwritten
+        self.instructions.push(W::Call(0));
+        self.instructions.push(W::Drop);
+    }
+    /// Consume an i64 holding f64 bits and print it as `[-]int.dddddd` (six
+    /// fixed fractional digits), optionally with a newline. Leaves UNIT.
+    fn emit_print_f64(&mut self, newline: bool) {
+        use WasmInstruction as W;
+        const FB: i32 = 600; // scratch: '.', six digits, then newline byte
+        let bits = self.alloc_local();
+        let ip = self.alloc_local();
+        let fr = self.alloc_local();
+        let dg = self.alloc_local();
+        self.instructions.push(W::LocalSet(bits));
+        // sign: if fv < 0 { print '-'; fv = -fv }
+        self.instructions.push(W::LocalGet(bits));
+        self.instructions.push(W::F64ReinterpretI64);
+        self.instructions.push(W::F64Const(0.0));
+        self.instructions.push(W::F64Lt);
+        self.instructions.push(W::If(BlockType::Empty));
+        self.instructions.push(W::I32Const(FB));
+        self.instructions.push(W::I32Const(45)); // '-'
+        self.instructions.push(W::I32Store8(0, 0));
+        self.emit_fd_write_buf(FB, 1);
+        self.instructions.push(W::F64Const(0.0));
+        self.instructions.push(W::LocalGet(bits));
+        self.instructions.push(W::F64ReinterpretI64);
+        self.instructions.push(W::F64Sub);
+        self.instructions.push(W::I64ReinterpretF64);
+        self.instructions.push(W::LocalSet(bits));
+        self.instructions.push(W::End);
+        // integer part = trunc(fv); print it with no newline (drop its UNIT).
+        self.instructions.push(W::LocalGet(bits));
+        self.instructions.push(W::F64ReinterpretI64);
+        self.instructions.push(W::I64TruncF64S);
+        self.instructions.push(W::LocalSet(ip));
+        self.instructions.push(W::LocalGet(ip));
+        self.emit_print_i64(false);
+        self.instructions.push(W::Drop);
+        // fractional part = fv - (ip as f64)
+        self.instructions.push(W::LocalGet(bits));
+        self.instructions.push(W::F64ReinterpretI64);
+        self.instructions.push(W::LocalGet(ip));
+        self.instructions.push(W::F64ConvertI64S);
+        self.instructions.push(W::F64Sub);
+        self.instructions.push(W::I64ReinterpretF64);
+        self.instructions.push(W::LocalSet(fr));
+        // buffer[0] = '.'
+        self.instructions.push(W::I32Const(FB));
+        self.instructions.push(W::I32Const(46));
+        self.instructions.push(W::I32Store8(0, 0));
+        // six fractional digits
+        for k in 0..6i32 {
+            // t = frac * 10 ; keep its bits in `fr`
+            self.instructions.push(W::LocalGet(fr));
+            self.instructions.push(W::F64ReinterpretI64);
+            self.instructions.push(W::F64Const(10.0));
+            self.instructions.push(W::F64Mul);
+            self.instructions.push(W::I64ReinterpretF64);
+            self.instructions.push(W::LocalSet(fr));
+            // digit = trunc(t)
+            self.instructions.push(W::LocalGet(fr));
+            self.instructions.push(W::F64ReinterpretI64);
+            self.instructions.push(W::I64TruncF64S);
+            self.instructions.push(W::LocalSet(dg));
+            // buffer[1+k] = '0' + digit
+            self.instructions.push(W::I32Const(FB + 1 + k));
+            self.instructions.push(W::I64Const(48));
+            self.instructions.push(W::LocalGet(dg));
+            self.instructions.push(W::I64Add);
+            self.instructions.push(W::I32WrapI64);
+            self.instructions.push(W::I32Store8(0, 0));
+            // frac = t - digit
+            self.instructions.push(W::LocalGet(fr));
+            self.instructions.push(W::F64ReinterpretI64);
+            self.instructions.push(W::LocalGet(dg));
+            self.instructions.push(W::F64ConvertI64S);
+            self.instructions.push(W::F64Sub);
+            self.instructions.push(W::I64ReinterpretF64);
+            self.instructions.push(W::LocalSet(fr));
+        }
+        self.emit_fd_write_buf(FB, 7); // '.' + 6 digits
+        if newline {
+            self.instructions.push(W::I32Const(FB + 8));
+            self.instructions.push(W::I32Const(10));
+            self.instructions.push(W::I32Store8(0, 0));
+            self.emit_fd_write_buf(FB + 8, 1);
+        }
+        self.instructions.push(W::I64Const(0));
+    }
     /// Whether an expression statically produces a string value. The value
     /// model is untagged (every value is a raw i64), so `println` can only
     /// pick the string-printing path when it can prove the argument is a
@@ -2292,6 +2395,10 @@ impl<'a> FnCtx<'a> {
                             // A computed string (e.g. [str a b], interpolation).
                             self.compile_expr(arg)?;
                             self.emit_print_str(nl);
+                            return Ok(());
+                        } else if self.expr_is_float(arg) {
+                            self.compile_expr(arg)?;
+                            self.emit_print_f64(nl);
                             return Ok(());
                         } else {
                             // A computed (non-literal) argument: evaluate it to
@@ -3217,6 +3324,15 @@ mod tests {
     #[test]
     fn compile_conj_len_are_valid() {
         valid(r#"[fn main [] [println [len [conj [conj #[] 5] 9]]]]"#);
+    }
+    #[test]
+    fn compile_floats_are_valid() {
+        // Float literals, arithmetic, comparison, and println (incl. through a
+        // function body whose param the checker generalizes).
+        valid(r#"[fn main [] [println 3.14] [println [+ 1.5 2.0]]]"#);
+        valid(r#"[fn main [] [println [if [< 1.5 2.5] 1 0]]]"#);
+        valid(r#"[fn area [r] [* [* 3.14 r] r]] [fn main [] [println [area 2.0]]]"#);
+        valid(r#"[fn add [a b] [+ a b]] [fn main [] [println [if [= [add 1.5 2.0] 3.5] 1 0]]]"#);
     }
     #[test]
     fn compile_char_at_is_valid() {
