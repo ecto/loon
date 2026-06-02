@@ -93,6 +93,9 @@ struct Compiler {
     /// string. Lets `println` pick the string-printing path for calls, since
     /// the untagged value model offers no runtime check.
     string_fns: std::collections::HashSet<String>,
+    /// Distinct keyword literals interned to unique i64 ids (for `=` and use as
+    /// enum-like tags). Ids start high to avoid colliding with small ints.
+    keywords: HashMap<String, i64>,
 }
 
 struct FunctionBody {
@@ -393,7 +396,18 @@ impl Compiler {
             effect_import_defs: Vec::new(),
             effect_registry: crate::effects::EffectRegistry::new(),
             string_fns: std::collections::HashSet::new(),
+            keywords: HashMap::new(),
         }
+    }
+    /// Intern a keyword to a stable, unique i64 id (high range to avoid
+    /// colliding with ordinary integer values under structural `=`).
+    fn intern_keyword(&mut self, kw: &str) -> i64 {
+        if let Some(&id) = self.keywords.get(kw) {
+            return id;
+        }
+        let id = 0x4000_0000_0000_0000_i64 + self.keywords.len() as i64;
+        self.keywords.insert(kw.to_string(), id);
+        id
     }
     fn ensure_in_table(&mut self, func_idx: u32) -> u32 {
         if let Some(&ti) = self.table_map.get(&func_idx) {
@@ -1421,6 +1435,11 @@ impl<'a> FnCtx<'a> {
                 Err("codegen: floating-point values are not supported by the wasm \
                      backend yet; run with `loon run`"
                     .into())
+            }
+            ExprKind::Keyword(k) => {
+                let id = self.compiler.intern_keyword(k);
+                self.instructions.push(WasmInstruction::I64Const(id));
+                Ok(())
             }
             ExprKind::Bool(b) => {
                 self.instructions
@@ -2755,6 +2774,15 @@ mod tests {
     #[test]
     fn compile_conj_len_are_valid() {
         valid(r#"[fn main [] [println [len [conj [conj #[] 5] 9]]]]"#);
+    }
+    #[test]
+    fn compile_keywords_are_valid() {
+        // Keywords intern to unique i64 ids; `=` compares them.
+        valid(r#"[fn main [] [println [if [= :a :a] 1 0]] [println [if [= :a :b] 1 0]]]"#);
+        valid(
+            r#"[fn k [n] [if [> n 0] :pos :neg]]
+               [fn main [] [println [if [= [k 5] :pos] 1 0]]]"#,
+        );
     }
     #[test]
     fn compile_numeric_and_seq_builtins_are_valid() {
