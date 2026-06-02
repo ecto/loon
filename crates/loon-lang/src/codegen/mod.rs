@@ -1798,6 +1798,78 @@ impl<'a> FnCtx<'a> {
                     }
                     return Ok(());
                 }
+                "when" => {
+                    // [when c body…] -> [if c [do body…] 0]
+                    let cond = items[1].clone();
+                    let mut body = vec![Expr::new(
+                        ExprKind::Symbol("do".into()),
+                        items[0].span,
+                    )];
+                    body.extend(items[2..].iter().cloned());
+                    let do_expr = Expr::new(ExprKind::List(body), items[0].span);
+                    let zero = Expr::new(ExprKind::Int(0), items[0].span);
+                    let if_expr = Expr::new(
+                        ExprKind::List(vec![
+                            Expr::new(ExprKind::Symbol("if".into()), items[0].span),
+                            cond,
+                            do_expr,
+                            zero,
+                        ]),
+                        items[0].span,
+                    );
+                    return self.compile_expr(&if_expr);
+                }
+                "unless" => {
+                    // [unless c body…] -> [if c 0 [do body…]]
+                    let cond = items[1].clone();
+                    let mut body = vec![Expr::new(
+                        ExprKind::Symbol("do".into()),
+                        items[0].span,
+                    )];
+                    body.extend(items[2..].iter().cloned());
+                    let do_expr = Expr::new(ExprKind::List(body), items[0].span);
+                    let zero = Expr::new(ExprKind::Int(0), items[0].span);
+                    let if_expr = Expr::new(
+                        ExprKind::List(vec![
+                            Expr::new(ExprKind::Symbol("if".into()), items[0].span),
+                            cond,
+                            zero,
+                            do_expr,
+                        ]),
+                        items[0].span,
+                    );
+                    return self.compile_expr(&if_expr);
+                }
+                "cond" => {
+                    // [cond c1 v1 c2 v2 … :else vd] -> right-nested ifs.
+                    let sp = items[0].span;
+                    let clauses = &items[1..];
+                    // Build from the back.
+                    let mut acc = Expr::new(ExprKind::Int(0), sp);
+                    let mut i = clauses.len();
+                    while i >= 2 {
+                        let cond = &clauses[i - 2];
+                        let val = &clauses[i - 1];
+                        // `:else` (or `true`) is an unconditional default.
+                        let is_default = matches!(&cond.kind, ExprKind::Keyword(k) if k == "else")
+                            || matches!(&cond.kind, ExprKind::Bool(true));
+                        acc = if is_default {
+                            val.clone()
+                        } else {
+                            Expr::new(
+                                ExprKind::List(vec![
+                                    Expr::new(ExprKind::Symbol("if".into()), sp),
+                                    cond.clone(),
+                                    val.clone(),
+                                    acc,
+                                ]),
+                                sp,
+                            )
+                        };
+                        i -= 2;
+                    }
+                    return self.compile_expr(&acc);
+                }
                 "pipe" => {
                     // Thread-last: [pipe x s1 s2 …] feeds the running value in
                     // as the final argument of each step. Desugar to nested
@@ -2774,6 +2846,11 @@ mod tests {
     #[test]
     fn compile_conj_len_are_valid() {
         valid(r#"[fn main [] [println [len [conj [conj #[] 5] 9]]]]"#);
+    }
+    #[test]
+    fn compile_when_unless_cond_are_valid() {
+        valid(r#"[fn main [] [when [> 5 3] [println 1]] [unless [> 3 5] [println 2]]]"#);
+        valid(r#"[fn main [] [println [cond [> 1 2] 10 [< 1 2] 20 :else 30]]]"#);
     }
     #[test]
     fn compile_keywords_are_valid() {
