@@ -56,6 +56,9 @@ params are float, propagated through call sites. Synthesized nodes (desugared
 - Vectors: `#[…]` literals, `vec-new`/`vec-push`/`conj`/`vec-get`/`len`/`first`/
   `empty?`, and the higher-order functions `range`, `map`, `filter`, `each`,
   `fold` (the function argument may be a lambda literal or a named function).
+- Maps: `{:k v …}` literals and `assoc`/`get`/`contains?`/`keys` — keys
+  compare structurally per their static type (keyword/int by value, **string by
+  content**, incl. computed keys). `split` (one-char separator), `cons`.
 - Keywords (`:foo`), `when`/`unless`/`cond`.
 - `pipe` (thread-last).
 - Multi-arity functions (`[fn f ([x] …) ([x y] …)]`) — each clause is its own
@@ -71,9 +74,16 @@ params are float, propagated through call sites. Synthesized nodes (desugared
   resuming a stack segment needs a whole-program CPS / trampoline transform the
   backend doesn't do. Effect *operations* still compile (to imports); only the
   handlers don't.
-- **Maps / sets** as data (`{…}`, `#{…}` literals and their stdlib), and the
-  string-processing stdlib (`split`, `lowercase`, …). These need polymorphic
-  (string-keyed) equality, which the untagged model can't dispatch yet.
+- **Fully polymorphic values** — when a value's type can't be recovered
+  statically (e.g. a generic accumulator threaded through `fold`, or a
+  heterogeneous collection), codegen can't pick the right comparison/print path.
+  Concretely: a string-keyed map built by a generic function passed to a HOF
+  won't compare keys by content. This is the residue that needs real value
+  **tags** (or full monomorphization); the type-directed pass handles everything
+  whose type is statically evident.
+- **Sets** (`#{…}`) as data, and the rest of the string/seq stdlib
+  (`lowercase`, `sort-by`, `take`, `update`, `entries`, tuple-destructuring
+  lambda params).
 
 These run on the EIR VM, which implements the full language including one-shot
 delimited continuations (see `samples/state.oo`).
