@@ -2429,6 +2429,36 @@ impl<'a> FnCtx<'a> {
                     self.instructions.push(WasmInstruction::Call(rt.map_set_idx));
                     return Ok(());
                 }
+                "update" => {
+                    // [update m k f] = assoc m k (f (get m k)).
+                    self.compiler.ensure_map_runtime();
+                    let rt = self.compiler.map_runtime.clone().unwrap();
+                    let fr = self.prepare_fn_arg(&items[3])?;
+                    let ml = self.alloc_local();
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(WasmInstruction::LocalSet(ml));
+                    let kl = self.alloc_local();
+                    self.compile_expr(&items[2])?;
+                    self.instructions.push(WasmInstruction::LocalSet(kl));
+                    // cur = map_get(m, k, 0)
+                    let curl = self.alloc_local();
+                    self.instructions.push(WasmInstruction::LocalGet(ml));
+                    self.instructions.push(WasmInstruction::LocalGet(kl));
+                    self.instructions.push(WasmInstruction::I64Const(0));
+                    self.instructions.push(WasmInstruction::Call(rt.map_get_idx));
+                    self.instructions.push(WasmInstruction::LocalSet(curl));
+                    // newv = f(cur)
+                    let newv = self.alloc_local();
+                    self.emit_apply1(&fr, curl);
+                    self.instructions.push(WasmInstruction::LocalSet(newv));
+                    // map_set(m, k, newv, 0)
+                    self.instructions.push(WasmInstruction::LocalGet(ml));
+                    self.instructions.push(WasmInstruction::LocalGet(kl));
+                    self.instructions.push(WasmInstruction::LocalGet(newv));
+                    self.instructions.push(WasmInstruction::I64Const(0));
+                    self.instructions.push(WasmInstruction::Call(rt.map_set_idx));
+                    return Ok(());
+                }
                 "get" => {
                     // [get m k] — map lookup (UNIT if absent).
                     self.compiler.ensure_map_runtime();
@@ -3635,6 +3665,14 @@ mod tests {
     #[test]
     fn compile_conj_len_are_valid() {
         valid(r#"[fn main [] [println [len [conj [conj #[] 5] 9]]]]"#);
+    }
+    #[test]
+    fn compile_update_is_valid() {
+        valid(r#"[fn main [] [println [get [update {:a 5} :a [fn [n] [+ n 10]]] :a]]]"#);
+        valid(
+            r#"[fn bump [m k] [update m k [fn [n] [+ [or n 0] 1]]]]
+               [fn main [] [println [get [fold {} bump [split "a b a" " "]] "a"]]]"#,
+        );
     }
     #[test]
     fn compile_take_is_valid() {
