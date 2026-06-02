@@ -49,6 +49,7 @@ fn samples_compile_to_valid_wasm() {
         "bench-collections.oo",
         "effects.oo",
         "user-effects.oo",
+        "tco-stress.oo",
     ] {
         let bytes = compile_sample(name);
         assert_valid_wasm(name, &bytes);

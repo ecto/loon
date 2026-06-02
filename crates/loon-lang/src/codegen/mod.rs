@@ -119,6 +119,9 @@ struct Compiler {
     /// a `call_indirect` for the handler-closure path even when a program has no
     /// closures of its own, and `call_indirect` requires a table.
     force_table: bool,
+    /// Whether the program uses abort (`Fail.fail`/`try`), which lowers to a
+    /// WASM exception: a `fail` tag carrying the i64 fail value.
+    uses_exceptions: bool,
     used_wasi_imports: Option<Vec<u32>>,
     /// Effect imports: "Effect.op" → import function index
     effect_imports: HashMap<String, u32>,
@@ -236,6 +239,10 @@ enum WasmInstruction {
     Br(u32),
     BrIf(u32),
     BrTable(Vec<u32>, u32),
+    /// Exception support (abort): throw the `fail` tag (index 0), and a
+    /// try_table whose single catch routes the `fail` tag to `catch_label`.
+    Throw,
+    TryTable { catch_label: u32 },
 }
 
 fn emit_instruction(f: &mut Function, instr: &WasmInstruction) {
@@ -475,6 +482,18 @@ fn emit_instruction(f: &mut Function, instr: &WasmInstruction) {
                 *default,
             ));
         }
+        WasmInstruction::Throw => {
+            f.instruction(&Instruction::Throw(0)); // the `fail` tag
+        }
+        WasmInstruction::TryTable { catch_label } => {
+            f.instruction(&Instruction::TryTable(
+                BlockType::Result(ValType::I64),
+                std::borrow::Cow::Owned(vec![Catch::One {
+                    tag: 0,
+                    label: *catch_label,
+                }]),
+            ));
+        }
     }
 }
 
@@ -503,6 +522,7 @@ impl Compiler {
             compiled_modules: std::collections::HashSet::new(),
             force_heap: false,
             force_table: false,
+            uses_exceptions: false,
             used_wasi_imports: None,
             effect_imports: HashMap::new(),
             effect_import_defs: Vec::new(),
@@ -1564,6 +1584,11 @@ impl Compiler {
                 .ty()
                 .function(vec![ValType::I64; *arity], vec![ValType::I64]);
         }
+        // Type for the `fail` exception tag: (i64) -> ().
+        let fail_type_idx = types.len();
+        if self.uses_exceptions {
+            types.ty().function(vec![ValType::I64], vec![]);
+        }
         module.section(&types);
         let wasi_defs: [(u32, &str, u32); 6] = [
             (0, "fd_write", 0),
@@ -1634,6 +1659,15 @@ impl Compiler {
             page_size_log2: None,
         });
         module.section(&mem);
+        // Tag section (id 13) goes between memory and global.
+        if self.uses_exceptions {
+            let mut tags = TagSection::new();
+            tags.tag(TagType {
+                kind: TagKind::Exception,
+                func_type_idx: fail_type_idx,
+            });
+            module.section(&tags);
+        }
         if self.force_heap || !self.table_entries.is_empty() || !self.adt_constructors.is_empty() {
             let mut g = GlobalSection::new();
             g.global(
@@ -3105,13 +3139,28 @@ impl<'a> FnCtx<'a> {
                     return self.compile_handle(&items[1..]);
                 }
                 "try" => {
-                    // Abort-style `try` needs non-local unwind across calls,
-                    // which standalone wasm can't express without exceptions or
-                    // a CPS transform. Run on the VM.
-                    return Err("codegen: 'try' (delimited continuations) is not \
-                                supported by the wasm backend yet; run it on the VM \
-                                with `loon run`"
-                        .into());
+                    // [try expr handler] — run expr; if it raises `fail`
+                    // (Fail.fail), apply handler to the failure value. Lowers to
+                    // a wasm exception try_table.
+                    use WasmInstruction as W;
+                    self.compiler.uses_exceptions = true;
+                    let fr = self.prepare_fn_arg(&items[2])?;
+                    self.instructions
+                        .push(W::Block(BlockType::Result(ValType::I64))); // $done
+                    self.instructions
+                        .push(W::Block(BlockType::Result(ValType::I64))); // $onfail
+                    // The catch label is resolved in the context enclosing the
+                    // try_table, so $onfail is label 0 here.
+                    self.instructions.push(W::TryTable { catch_label: 0 }); // catch fail -> $onfail
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(W::End); // try_table
+                    self.instructions.push(W::Br(1)); // normal: result -> $done
+                    self.instructions.push(W::End); // $onfail: fail value on stack
+                    let fv = self.alloc_local();
+                    self.instructions.push(W::LocalSet(fv));
+                    self.emit_apply1(&fr, fv); // handler(failval) -> $done
+                    self.instructions.push(W::End); // $done
+                    return Ok(());
                 }
                 name => {
                     if let Some((tag, arity)) = self.compiler.adt_constructors.get(name).cloned() {
@@ -3155,6 +3204,19 @@ impl<'a> FnCtx<'a> {
     /// resumptive); otherwise fall back to the host import.
     fn emit_effect_op(&mut self, effect: &str, op: &str, args: &[Expr]) -> Result<(), String> {
         use WasmInstruction as W;
+        // Abort: `Fail.fail v` raises the `fail` exception (caught by `try`).
+        if effect == "Fail" && op == "fail" {
+            self.compiler.uses_exceptions = true;
+            if let Some(a) = args.first() {
+                self.compile_expr(a)?;
+            } else {
+                self.instructions.push(WasmInstruction::I64Const(0));
+            }
+            self.instructions.push(WasmInstruction::Throw);
+            // Unreachable after throw, but keep the "leaves i64" contract.
+            self.instructions.push(WasmInstruction::I64Const(0));
+            return Ok(());
+        }
         let key = format!("{effect}.{op}");
         let op_id = self.compiler.intern_effect_op(&key);
         let import_idx = self.compiler.get_or_create_effect_import(effect, op);
@@ -4757,6 +4819,21 @@ mod tests {
         assert!(
             wasm_str.contains("read-file"),
             "should contain effect op name"
+        );
+    }
+    #[test]
+    fn compile_try_abort_is_valid() {
+        // Abort via wasm exceptions: Fail.fail raises, try catches & handles.
+        valid(
+            r#"[effect Fail [fail [Int] Int]]
+               [fn risky [n] [if [> n 5] [Fail.fail n] n]]
+               [fn main [] [println [try [risky 10] [fn [msg] [+ msg 100]]]]]"#,
+        );
+        // Recursive abort handling (the tco-stress pattern).
+        valid(
+            r#"[effect Fail [fail [Int] Int]]
+               [fn down [n] [if [= n 0] 999 [try [Fail.fail n] [fn [m] [down [- m 1]]]]]]
+               [fn main [] [println [down 5]]]"#,
         );
     }
     #[test]
