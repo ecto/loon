@@ -469,7 +469,68 @@ impl Compiler {
             vec_get_idx: g,
         });
     }
+    /// Is this top-level form a runnable statement (as opposed to a definition
+    /// like `fn`/`type`/`use`/`effect`)? Bare literals and non-definition lists
+    /// count as statements.
+    fn is_toplevel_statement(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::List(items) => match items.first().map(|x| &x.kind) {
+                Some(ExprKind::Symbol(s)) => {
+                    // `test` registers a test; like other definitions it is not
+                    // run by `loon run`, so it never becomes a `main` statement.
+                    !matches!(s.as_str(), "fn" | "type" | "use" | "effect" | "test")
+                }
+                _ => true,
+            },
+            _ => true,
+        }
+    }
+
+    /// If the program defines no `main` but has top-level statements, build a
+    /// synthetic `[fn main [] <statements…>]` from them (preserving order).
+    fn synthesize_main(exprs: &[Expr]) -> Option<Expr> {
+        let has_main = exprs.iter().any(|e| {
+            matches!(&e.kind, ExprKind::List(items)
+                if items.len() >= 2
+                && matches!(&items[0].kind, ExprKind::Symbol(s) if s == "fn")
+                && matches!(&items[1].kind, ExprKind::Symbol(n) if n == "main"))
+        });
+        if has_main {
+            return None;
+        }
+        let stmts: Vec<Expr> = exprs
+            .iter()
+            .filter(|e| Self::is_toplevel_statement(e))
+            .cloned()
+            .collect();
+        if stmts.is_empty() {
+            return None;
+        }
+        let span = stmts[0].span;
+        let mut main_items = vec![
+            Expr::new(ExprKind::Symbol("fn".into()), span),
+            Expr::new(ExprKind::Symbol("main".into()), span),
+            Expr::new(ExprKind::List(Vec::new()), span),
+        ];
+        main_items.extend(stmts);
+        Some(Expr::new(ExprKind::List(main_items), span))
+    }
+
     fn compile_program(&mut self, exprs: &[Expr]) -> Result<(), String> {
+        // A program with no explicit `[fn main]` but with top-level statements
+        // (e.g. a bench script that is a sequence of `[let …]`/`[println …]`)
+        // runs those statements in order — matching the interpreter, which
+        // evaluates top-level forms. Synthesize `[fn main [] <statements…>]` so
+        // the wasm backend has an entry point. Definition forms (fn/type/use/
+        // effect) stay where they are.
+        let augmented: Vec<Expr>;
+        let exprs: &[Expr] = match Self::synthesize_main(exprs) {
+            Some(main) => {
+                augmented = exprs.iter().cloned().chain(std::iter::once(main)).collect();
+                &augmented
+            }
+            None => exprs,
+        };
         // Pass 0: collect [effect ...] declarations
         for expr in exprs {
             if let ExprKind::List(items) = &expr.kind {
@@ -3016,6 +3077,14 @@ mod tests {
     #[test]
     fn compile_string_str_alias() {
         ok(r#"[fn main [] [str "foo" "bar"]]"#);
+    }
+    #[test]
+    fn synthesizes_main_from_toplevel_statements() {
+        // No explicit `main`: the top-level statements become the entry point.
+        valid(r#"[let x 5] [println [* x 2]]"#);
+        // A `test` block is a definition, not a statement: with nothing else to
+        // run, no `main` is synthesized (stays a valid, entry-less module).
+        valid(r#"[fn f [n] [str "x" n]] [test t [] [assert-eq [f 1] "x1"]]"#);
     }
     #[test]
     fn compile_match_br_table() {
