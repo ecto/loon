@@ -44,6 +44,7 @@ fn samples_compile_to_valid_wasm() {
         "pipeline.oo",
         "multi-arity.oo",
         "types.oo",
+        "word-count.oo",
     ] {
         let bytes = compile_sample(name);
         assert_valid_wasm(name, &bytes);

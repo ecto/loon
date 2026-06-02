@@ -1904,13 +1904,37 @@ impl<'a> FnCtx<'a> {
     /// Display — covers ints/bools/keywords; floats fall here too and render
     /// their integer value, a known rough edge).
     fn compile_as_string(&mut self, expr: &Expr) -> Result<(), String> {
+        use WasmInstruction as W;
         if self.expr_is_string(expr) {
             return self.compile_expr(expr);
         }
         self.compiler.ensure_string_runtime();
         let its = self.compiler.string_runtime.clone().unwrap().int_to_str_idx;
+        // Statically-known non-string (int/bool/keyword): render via int_to_str.
+        if let Some(ty) = self.compiler.node_type(expr) {
+            if !matches!(ty, Type::Var(_)) {
+                self.compile_expr(expr)?;
+                self.instructions.push(W::Call(its));
+                return Ok(());
+            }
+        }
+        // Unknown static type (e.g. a destructured binding): self-describing —
+        // if the value looks like a string pointer at runtime use it directly,
+        // else stringify as an integer.
+        let x = self.alloc_local();
         self.compile_expr(expr)?;
-        self.instructions.push(WasmInstruction::Call(its));
+        self.instructions.push(W::LocalSet(x));
+        self.instructions.push(W::LocalGet(x));
+        self.instructions.push(W::I64Const(32));
+        self.instructions.push(W::I64ShrU);
+        self.instructions.push(W::I64Const(1024));
+        self.instructions.push(W::I64GeS);
+        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+        self.instructions.push(W::LocalGet(x));
+        self.instructions.push(W::Else);
+        self.instructions.push(W::LocalGet(x));
+        self.instructions.push(W::Call(its));
+        self.instructions.push(W::End);
         Ok(())
     }
     /// Whether an expression is statically of float type. Trusts the checker's
@@ -2570,12 +2594,35 @@ impl<'a> FnCtx<'a> {
                     return Ok(());
                 }
                 "empty?" => {
-                    // len(v) == 0
+                    // Self-describing: a string value packs its length in the
+                    // low 32 bits (high bits = ptr >= 1024); a vector value is a
+                    // small header address (high bits 0). So check string length
+                    // for the former and the vector's len field for the latter.
+                    use WasmInstruction as W;
+                    let x = self.alloc_local();
                     self.compile_expr(&items[1])?;
-                    self.instructions.push(WasmInstruction::I32WrapI64);
-                    self.instructions.push(WasmInstruction::I64Load(3, 0));
-                    self.instructions.push(WasmInstruction::I64Eqz);
-                    self.instructions.push(WasmInstruction::I64ExtendI32U);
+                    self.instructions.push(W::LocalSet(x));
+                    self.instructions.push(W::LocalGet(x));
+                    self.instructions.push(W::I64Const(32));
+                    self.instructions.push(W::I64ShrU);
+                    self.instructions.push(W::I64Const(1024));
+                    self.instructions.push(W::I64GeS); // i32: looks like a string
+                    self.instructions
+                        .push(W::If(BlockType::Result(ValType::I64)));
+                    // string: (x & 0xffffffff) == 0
+                    self.instructions.push(W::LocalGet(x));
+                    self.instructions.push(W::I64Const(0xFFFF_FFFF));
+                    self.instructions.push(W::I64And);
+                    self.instructions.push(W::I64Eqz);
+                    self.instructions.push(W::I64ExtendI32U);
+                    self.instructions.push(W::Else);
+                    // vector/map: mem[addr].len == 0
+                    self.instructions.push(W::LocalGet(x));
+                    self.instructions.push(W::I32WrapI64);
+                    self.instructions.push(W::I64Load(3, 0));
+                    self.instructions.push(W::I64Eqz);
+                    self.instructions.push(W::I64ExtendI32U);
+                    self.instructions.push(W::End);
                     return Ok(());
                 }
                 "if" => {
@@ -2865,6 +2912,15 @@ impl<'a> FnCtx<'a> {
                         return self.compile_fold(&items[1], &items[2], &items[3]);
                     }
                     return Err("codegen: fold requires init, function, collection".into());
+                }
+                "sort-by" => {
+                    // [sort-by f order coll] — sort coll by integer key f(elem).
+                    if items.len() >= 4 {
+                        let order_desc =
+                            matches!(&items[2].kind, ExprKind::Keyword(k) if k == "desc");
+                        return self.compile_sort_by(&items[1], order_desc, &items[3]);
+                    }
+                    return Err("codegen: sort-by requires function, order, collection".into());
                 }
                 "range" => {
                     // [range a b] — vector of a, a+1, …, b-1.
@@ -3491,6 +3547,208 @@ impl<'a> FnCtx<'a> {
             }
         }
     }
+    /// `[sort-by f order coll]` — stable-ish insertion sort of `coll` by the key
+    /// `f(elem)` (an integer key), ascending unless `order` is `:desc`. Keys are
+    /// precomputed once into a scratch array, then the element array is sorted.
+    fn compile_sort_by(
+        &mut self,
+        f: &Expr,
+        order_desc: bool,
+        coll: &Expr,
+    ) -> Result<(), String> {
+        use WasmInstruction as W;
+        self.compiler.ensure_collections_runtime();
+        let rt = self.compiler.collections_runtime.clone().unwrap();
+        let fr = self.prepare_fn_arg(f)?;
+        self.compile_expr(coll)?;
+        let vl = self.alloc_local();
+        self.instructions.push(W::LocalSet(vl));
+        let (n, data) = self.emit_vec_header(vl);
+        // elems = alloc n*8 ; keys = alloc n*8  (heap offsets as i64)
+        let elems = self.alloc_local();
+        let keys = self.alloc_local();
+        for slot in [elems, keys] {
+            self.instructions.push(W::GlobalGet(0));
+            self.instructions.push(W::I64ExtendI32U);
+            self.instructions.push(W::LocalSet(slot));
+            self.instructions.push(W::GlobalGet(0));
+            self.instructions.push(W::LocalGet(n));
+            self.instructions.push(W::I64Const(8));
+            self.instructions.push(W::I64Mul);
+            self.instructions.push(W::I32WrapI64);
+            self.instructions.push(W::I32Add);
+            self.instructions.push(W::GlobalSet(0));
+        }
+        let iv = self.alloc_local();
+        let eloc = self.alloc_local();
+        // copy elems[i] = data[i]; keys[i] = f(elems[i])
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(iv));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(iv));
+        self.instructions.push(W::LocalGet(n));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // el = data[i]
+        self.instructions.push(W::LocalGet(data));
+        self.instructions.push(W::LocalGet(iv));
+        self.instructions.push(W::I64Const(8));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalSet(eloc));
+        // elems[i] = el
+        self.instructions.push(W::LocalGet(elems));
+        self.instructions.push(W::LocalGet(iv));
+        self.instructions.push(W::I64Const(8));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::LocalGet(eloc));
+        self.instructions.push(W::I64Store(3, 0));
+        // keys[i] = f(el)
+        self.instructions.push(W::LocalGet(keys));
+        self.instructions.push(W::LocalGet(iv));
+        self.instructions.push(W::I64Const(8));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+        self.emit_apply1(&fr, eloc);
+        self.instructions.push(W::I64Store(3, 0));
+        self.instructions.push(W::LocalGet(iv));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(iv));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        // insertion sort: for i in 1..n { ek=elems[i]; kk=keys[i]; j=i-1;
+        //   while j>=0 && cmp(keys[j], kk) { shift; j-- } place }
+        let jv = self.alloc_local();
+        let ek = self.alloc_local();
+        let kk = self.alloc_local();
+        let addr = self.alloc_local(); // scratch addr (i64)
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::LocalSet(iv));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(iv));
+        self.instructions.push(W::LocalGet(n));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // ek = elems[i]; kk = keys[i]
+        let load_at = |s: &mut Vec<WasmInstruction>, base: u32, idx: u32| {
+            s.push(W::LocalGet(base));
+            s.push(W::LocalGet(idx));
+            s.push(W::I64Const(8));
+            s.push(W::I64Mul);
+            s.push(W::I64Add);
+            s.push(W::I32WrapI64);
+            s.push(W::I64Load(3, 0));
+        };
+        load_at(&mut self.instructions, elems, iv);
+        self.instructions.push(W::LocalSet(ek));
+        load_at(&mut self.instructions, keys, iv);
+        self.instructions.push(W::LocalSet(kk));
+        // j = i - 1
+        self.instructions.push(W::LocalGet(iv));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Sub);
+        self.instructions.push(W::LocalSet(jv));
+        // inner while
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        // cond: j >= 0
+        self.instructions.push(W::LocalGet(jv));
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::I64GeS); // i32
+        // && cmp(keys[j], kk)
+        load_at(&mut self.instructions, keys, jv);
+        self.instructions.push(W::LocalSet(addr)); // reuse addr to hold keys[j]
+        self.instructions.push(W::LocalGet(addr));
+        self.instructions.push(W::LocalGet(kk));
+        if order_desc {
+            self.instructions.push(W::I64LtS); // keys[j] < kk -> move (larger first)
+        } else {
+            self.instructions.push(W::I64GtS); // keys[j] > kk
+        }
+        self.instructions.push(W::I32And);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1)); // exit inner when cond false
+        // elems[j+1] = elems[j]; keys[j+1] = keys[j]
+        for base in [elems, keys] {
+            // dest addr = base + (j+1)*8
+            self.instructions.push(W::LocalGet(base));
+            self.instructions.push(W::LocalGet(jv));
+            self.instructions.push(W::I64Const(1));
+            self.instructions.push(W::I64Add);
+            self.instructions.push(W::I64Const(8));
+            self.instructions.push(W::I64Mul);
+            self.instructions.push(W::I64Add);
+            self.instructions.push(W::I32WrapI64);
+            // value = base[j]
+            load_at(&mut self.instructions, base, jv);
+            self.instructions.push(W::I64Store(3, 0));
+        }
+        // j--
+        self.instructions.push(W::LocalGet(jv));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Sub);
+        self.instructions.push(W::LocalSet(jv));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        // place: elems[j+1] = ek ; keys[j+1] = kk
+        for (base, val) in [(elems, ek), (keys, kk)] {
+            self.instructions.push(W::LocalGet(base));
+            self.instructions.push(W::LocalGet(jv));
+            self.instructions.push(W::I64Const(1));
+            self.instructions.push(W::I64Add);
+            self.instructions.push(W::I64Const(8));
+            self.instructions.push(W::I64Mul);
+            self.instructions.push(W::I64Add);
+            self.instructions.push(W::I32WrapI64);
+            self.instructions.push(W::LocalGet(val));
+            self.instructions.push(W::I64Store(3, 0));
+        }
+        self.instructions.push(W::LocalGet(iv));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(iv));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        // build result vector from sorted elems
+        self.instructions.push(W::Call(rt.vec_new_idx));
+        let rl = self.alloc_local();
+        self.instructions.push(W::LocalSet(rl));
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(iv));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(iv));
+        self.instructions.push(W::LocalGet(n));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        self.instructions.push(W::LocalGet(rl));
+        load_at(&mut self.instructions, elems, iv);
+        self.instructions.push(W::Call(rt.vec_push_idx));
+        self.instructions.push(W::LocalSet(rl));
+        self.instructions.push(W::LocalGet(iv));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(iv));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        self.instructions.push(W::LocalGet(rl));
+        Ok(())
+    }
     fn compile_range(&mut self, a: &Expr, b: &Expr) -> Result<(), String> {
         use WasmInstruction as W;
         self.compiler.ensure_collections_runtime();
@@ -3715,6 +3973,14 @@ mod tests {
     #[test]
     fn compile_conj_len_are_valid() {
         valid(r#"[fn main [] [println [len [conj [conj #[] 5] 9]]]]"#);
+    }
+    #[test]
+    fn compile_sort_by_is_valid() {
+        valid(r#"[fn id [x] x] [fn main [] [each [fn [x] [println x]] [sort-by id :asc #[3 1 2]]]]"#);
+        valid(
+            r#"[fn main [] [each [fn [[k v]] [println v]]
+                 [sort-by [fn [[_ n]] n] :desc [entries {:a 1 :b 2}]]]]"#,
+        );
     }
     #[test]
     fn compile_entries_and_destructuring_are_valid() {
