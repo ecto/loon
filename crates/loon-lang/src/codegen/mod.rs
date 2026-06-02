@@ -2325,6 +2325,17 @@ impl<'a> FnCtx<'a> {
         // Check for DotAccess head (Effect.op pattern)
         if let ExprKind::DotAccess(obj, op) = &items[0].kind {
             if let ExprKind::Symbol(effect) = &obj.kind {
+                // `IO.println` writes a line to stdout exactly like the
+                // `println` builtin — lower it to the same inline WASI path
+                // rather than an (unlinked) effect import, so IO-printing
+                // programs run on wasm. (`IO.print` is left alone: the VM emits
+                // nothing for it, so lowering it would diverge.)
+                if effect == "IO" && op == "println" {
+                    let mut rewritten = Vec::with_capacity(items.len());
+                    rewritten.push(Expr::new(ExprKind::Symbol("println".into()), items[0].span));
+                    rewritten.extend(items[1..].iter().cloned());
+                    return self.compile_call(&rewritten);
+                }
                 if effect.starts_with(char::is_uppercase) {
                     let import_idx = self.compiler.get_or_create_effect_import(effect, op);
                     for arg in &items[1..] {
