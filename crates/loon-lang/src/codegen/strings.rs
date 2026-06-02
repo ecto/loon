@@ -20,6 +20,8 @@ pub struct StringRuntime {
     pub str_len_idx: u32,
     /// WASM function index for str_eq
     pub str_eq_idx: u32,
+    /// WASM function index for str_substring
+    pub str_substring_idx: u32,
 }
 
 #[allow(dead_code)]
@@ -116,8 +118,8 @@ impl StringRuntime {
         instrs.push(LocalGet(2));
         instrs.push(LocalGet(3));
         instrs.push(I64Eq);
-        instrs.push(I64Eqz);
-        instrs.push(If(BlockType::Result(ValType::I64)));
+        instrs.push(I32Eqz); // i64.eq yields i32, so negate with i32.eqz
+        instrs.push(If(BlockType::Empty)); // then-arm returns, nothing falls through
         instrs.push(I64Const(0));
         instrs.push(Return);
         instrs.push(End);
@@ -162,7 +164,7 @@ impl StringRuntime {
         instrs.push(LocalGet(6));
         instrs.push(LocalGet(2));
         instrs.push(I64LtS);
-        instrs.push(I64Eqz); // now: 1 if i >= len_a
+        instrs.push(I32Eqz); // i64.lt_s yields i32; now: 1 if i >= len_a
         instrs.push(BrIf(1)); // break out of block if i >= len_a
 
         // Load byte at ptr_a + i
@@ -209,6 +211,89 @@ impl StringRuntime {
                 ValType::I64, // 3: len_b
                 ValType::I64, // 4: ptr_a
                 ValType::I64, // 5: ptr_b
+                ValType::I64, // 6: i
+            ],
+            instructions: instrs,
+        }
+    }
+
+    /// Generate `str_substring(s: i64, start: i64, end: i64) -> i64`.
+    /// Returns a freshly allocated packed string with bytes `[start, end)` of
+    /// `s`. No bounds checking (callers/typing are expected to keep it sane).
+    pub(super) fn gen_str_substring() -> FunctionBody {
+        // Params: 0 = s, 1 = start, 2 = end
+        // Locals: 3 = src_ptr, 4 = new_len, 5 = new_ptr, 6 = i
+        let mut instrs = Vec::new();
+
+        // src_ptr = (s >> 32) + start
+        instrs.push(LocalGet(0));
+        instrs.push(I64Const(32));
+        instrs.push(I64ShrU);
+        instrs.push(LocalGet(1));
+        instrs.push(I64Add);
+        instrs.push(LocalSet(3));
+
+        // new_len = end - start
+        instrs.push(LocalGet(2));
+        instrs.push(LocalGet(1));
+        instrs.push(I64Sub);
+        instrs.push(LocalSet(4));
+
+        // Allocate new_len bytes: new_ptr = heap_ptr; heap_ptr += new_len
+        instrs.push(GlobalGet(0));
+        instrs.push(I64ExtendI32U);
+        instrs.push(LocalSet(5));
+        instrs.push(GlobalGet(0));
+        instrs.push(LocalGet(4));
+        instrs.push(I32WrapI64);
+        instrs.push(I32Add);
+        instrs.push(GlobalSet(0));
+
+        // Copy: for i in 0..new_len: new_ptr[i] = src_ptr[i]
+        instrs.push(I64Const(0));
+        instrs.push(LocalSet(6));
+        instrs.push(Block(BlockType::Empty));
+        instrs.push(Loop(BlockType::Empty));
+        instrs.push(LocalGet(6));
+        instrs.push(LocalGet(4));
+        instrs.push(I64LtS);
+        instrs.push(I32Eqz);
+        instrs.push(BrIf(1));
+        // dest addr = new_ptr + i
+        instrs.push(LocalGet(5));
+        instrs.push(LocalGet(6));
+        instrs.push(I64Add);
+        instrs.push(I32WrapI64);
+        // src byte = mem[src_ptr + i]
+        instrs.push(LocalGet(3));
+        instrs.push(LocalGet(6));
+        instrs.push(I64Add);
+        instrs.push(I32WrapI64);
+        instrs.push(I32Load8U(0, 0));
+        instrs.push(I32Store8(0, 0));
+        // i++
+        instrs.push(LocalGet(6));
+        instrs.push(I64Const(1));
+        instrs.push(I64Add);
+        instrs.push(LocalSet(6));
+        instrs.push(Br(0));
+        instrs.push(End); // loop
+        instrs.push(End); // block
+
+        // return (new_ptr << 32) | new_len
+        instrs.push(LocalGet(5));
+        instrs.push(I64Const(32));
+        instrs.push(I64Shl);
+        instrs.push(LocalGet(4));
+        instrs.push(I64Or);
+
+        FunctionBody {
+            params: vec![ValType::I64, ValType::I64, ValType::I64],
+            results: vec![ValType::I64],
+            locals: vec![
+                ValType::I64, // 3: src_ptr
+                ValType::I64, // 4: new_len
+                ValType::I64, // 5: new_ptr
                 ValType::I64, // 6: i
             ],
             instructions: instrs,
@@ -279,7 +364,7 @@ impl StringRuntime {
         instrs.push(LocalGet(8));
         instrs.push(LocalGet(2));
         instrs.push(I64LtS);
-        instrs.push(I64Eqz);
+        instrs.push(I32Eqz);
         instrs.push(BrIf(1));
 
         // store: mem[new_ptr + i] = mem[ptr_a + i]
@@ -317,7 +402,7 @@ impl StringRuntime {
         instrs.push(LocalGet(8));
         instrs.push(LocalGet(3));
         instrs.push(I64LtS);
-        instrs.push(I64Eqz);
+        instrs.push(I32Eqz);
         instrs.push(BrIf(1));
 
         // store: mem[new_ptr + len_a + i] = mem[ptr_b + i]
