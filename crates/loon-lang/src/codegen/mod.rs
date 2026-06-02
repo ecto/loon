@@ -4,11 +4,31 @@ pub mod collections;
 #[allow(clippy::vec_init_then_push)]
 pub mod strings;
 
-use crate::ast::{Expr, ExprKind};
+use crate::ast::{Expr, ExprKind, NodeId};
+use crate::types::Type;
 use collections::CollectionsRuntime;
 use std::collections::HashMap;
 use strings::StringRuntime;
 use wasm_encoder::*;
+
+/// Run the type checker over an (already macro-expanded) program and return a
+/// map from each node to its *resolved* type. Codegen consults this to make
+/// type-directed decisions (e.g. how to print a value) rather than re-deriving
+/// the information from syntax. Type errors are ignored here — the checker is a
+/// separate front door (`loon check`); unresolved nodes simply fall back to the
+/// untyped path.
+fn infer_node_types(exprs: &[Expr], base_dir: Option<&std::path::Path>) -> HashMap<NodeId, Type> {
+    let mut checker = match base_dir {
+        Some(dir) => crate::check::Checker::with_base_dir(dir),
+        None => crate::check::Checker::new(),
+    };
+    let _ = checker.check_program(exprs);
+    checker
+        .type_of
+        .iter()
+        .map(|(id, ty)| (*id, checker.resolve(ty)))
+        .collect()
+}
 
 /// Compile a Loon program to WASM bytes.
 pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, String> {
@@ -17,6 +37,7 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, String> {
     let expanded = expander.expand_program(exprs)?;
 
     let mut compiler = Compiler::new();
+    compiler.node_types = infer_node_types(&expanded, None);
     compiler.compile_program(&expanded)?;
     compiler.tree_shake();
     Ok(compiler.finish())
@@ -30,6 +51,7 @@ pub fn compile_with_imports(exprs: &[Expr], base_dir: &std::path::Path) -> Resul
 
     let mut compiler = Compiler::new();
     compiler.base_dir = Some(base_dir.to_path_buf());
+    compiler.node_types = infer_node_types(&expanded, Some(base_dir));
     compiler.compile_program(&expanded)?;
     compiler.tree_shake();
     Ok(compiler.finish())
@@ -96,6 +118,10 @@ struct Compiler {
     /// Distinct keyword literals interned to unique i64 ids (for `=` and use as
     /// enum-like tags). Ids start high to avoid colliding with small ints.
     keywords: HashMap<String, i64>,
+    /// Resolved type of each AST node (from the checker). Lets codegen make
+    /// type-directed choices instead of guessing from syntax. Synthesized nodes
+    /// (desugared `pipe`/`when`/… ) are absent and fall back to the untyped path.
+    node_types: HashMap<NodeId, Type>,
 }
 
 struct FunctionBody {
@@ -397,7 +423,12 @@ impl Compiler {
             effect_registry: crate::effects::EffectRegistry::new(),
             string_fns: std::collections::HashSet::new(),
             keywords: HashMap::new(),
+            node_types: HashMap::new(),
         }
+    }
+    /// The resolved type of an AST node, if the checker inferred one.
+    fn node_type(&self, expr: &Expr) -> Option<&Type> {
+        self.node_types.get(&expr.id)
     }
     /// Intern a keyword to a stable, unique i64 id (high range to avoid
     /// colliding with ordinary integer values under structural `=`).
@@ -1423,6 +1454,11 @@ impl<'a> FnCtx<'a> {
     /// pick the string-printing path when it can prove the argument is a
     /// string at compile time.
     fn expr_is_string(&self, expr: &Expr) -> bool {
+        // Type-directed: trust the checker's resolved type when it has one.
+        if let Some(ty) = self.compiler.node_type(expr) {
+            return matches!(ty, Type::Str);
+        }
+        // Fallback for synthesized nodes (desugared forms) the checker never saw.
         Compiler::expr_returns_string(expr, &self.compiler.string_fns)
     }
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), String> {
