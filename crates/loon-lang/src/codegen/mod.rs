@@ -3197,7 +3197,29 @@ impl<'a> FnCtx<'a> {
                 }
             }
         }
-        Err("codegen: unsupported call form".into())
+        // Computed head: the head expression evaluates to a closure value, which
+        // we call through the table (currying / functions returned from calls,
+        // e.g. `[[adder 10] 5]`).
+        {
+            use WasmInstruction as W;
+            let cl = self.alloc_local();
+            self.compile_expr(&items[0])?;
+            self.instructions.push(W::LocalSet(cl));
+            // env = cl & 0xffffffff
+            self.instructions.push(W::LocalGet(cl));
+            self.instructions.push(W::I64Const(0xFFFF_FFFF));
+            self.instructions.push(W::I64And);
+            for arg in &items[1..] {
+                self.compile_expr(arg)?;
+            }
+            self.instructions.push(W::LocalGet(cl));
+            self.instructions.push(W::I64Const(32));
+            self.instructions.push(W::I64ShrU);
+            self.instructions.push(W::I32WrapI64);
+            let ty = self.get_or_create_indirect_type(1 + (items.len() - 1));
+            self.instructions.push(W::CallIndirect(ty));
+            Ok(())
+        }
     }
     /// Compile an effect operation `Effect.op args`. If a matching handler is
     /// installed on the dynamic handler stack at runtime, call it (tail-
