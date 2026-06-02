@@ -9,6 +9,11 @@ This is a second backend alongside the EIR VM (`loon run`, the default) and the
 optional Cranelift JIT (`--features native`). It lives in
 `crates/loon-lang/src/codegen/`.
 
+All 16 sample programs (`samples/*.oo`) compile to valid standalone wasm,
+covering the whole language — arithmetic/floats, ADTs, closures + first-class
+functions, strings/maps/vectors and their stdlib, and the full effect system
+(tail-resumptive handlers, abort/`try`, and escaping/multi-shot continuations).
+
 ## Value model
 
 Every value is a raw **i64** (untagged):
@@ -80,24 +85,26 @@ params are float, propagated through call sites. Synthesized nodes (desugared
 - **Abort / `try`**: `Fail.fail v` and `[try expr handler]` lower to the WASM
   exception proposal (a `fail` tag; `throw` / `try_table` catch), so abort
   unwinds correctly across calls — including recursive abort handling.
+- **Escaping / multi-shot continuations** (e.g. the pure `State` effect, where
+  a handler clause returns a function and `resume` is a reified continuation
+  used non-tail): a gated source-to-source **CPS + handler-passing transform**
+  (`codegen/cps.rs`) rewrites such programs into ordinary closures the backend
+  compiles. Continuations become plain closures, so they're multi-shot-capable.
+  Fires only on programs with an escaping handle, so nothing else is affected.
 - Dead-code elimination (`tree_shake`) and a relocating function-index pass so
   imports and `_start` stay correct.
 
-## What does *not* compile yet (use `loon run`)
+## Known limitations
 
-- **Non-tail / escaping / multi-shot continuations** — `resume` used anywhere
-  but tail position, i.e. the continuation reified as a first-class value (the
-  function-returning `State` pattern in `samples/state.oo`, where a handler
-  clause returns `[fn [s] [[resume s] s]]`). This is the one remaining tier and
-  needs reified continuations: a whole-program CPS/trampoline transform, or the
-  wasm stack-switching proposal (unsupported by current runtimes). Tail-resume
-  and abort (above) are the boundary. The VM implements the full set.
-- **Sets** (`#{…}`) as data.
+- **Sets** (`#{…}`) as data are not yet a runtime structure.
 - **Heterogeneous / fully-dynamic values.** The string-vs-pointer
   self-description used for map keys, `empty?`, and `str` covers homogeneous
   data; a genuinely mixed collection (or printing an arbitrary value of unknown
   type) would still need real value **tags**. Almost everything whose type is
   statically evident, or whose runtime shape is self-describing, works today.
+
+All 16 samples compile to valid standalone wasm; this is no longer a
+VM-only-feature boundary but a small set of data-representation edges.
 
 These run on the EIR VM, which implements the full language including one-shot
 delimited continuations (see `samples/state.oo`).
