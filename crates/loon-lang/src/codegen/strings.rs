@@ -24,6 +24,8 @@ pub struct StringRuntime {
     pub str_substring_idx: u32,
     /// WASM function index for int_to_str
     pub int_to_str_idx: u32,
+    /// WASM function index for lowercase
+    pub lowercase_idx: u32,
 }
 
 #[allow(dead_code)]
@@ -410,6 +412,87 @@ impl StringRuntime {
         i.push(I64Const(32));
         i.push(I64Shl);
         i.push(LocalGet(3));
+        i.push(I64Or);
+        FunctionBody {
+            params: vec![ValType::I64],
+            results: vec![ValType::I64],
+            locals: vec![ValType::I64; 5],
+            instructions: i,
+        }
+    }
+
+    /// Generate `lowercase(s) -> i64` — a fresh packed string with ASCII
+    /// `A`–`Z` lowercased.
+    pub(super) fn gen_lowercase() -> FunctionBody {
+        // Params: 0=s ; Locals: 1=sptr, 2=len, 3=dst, 4=i, 5=b
+        let mut i = Vec::new();
+        i.push(LocalGet(0));
+        i.push(I64Const(32));
+        i.push(I64ShrU);
+        i.push(LocalSet(1));
+        i.push(LocalGet(0));
+        i.push(I64Const(0xFFFF_FFFF));
+        i.push(I64And);
+        i.push(LocalSet(2));
+        // dst = heap ; heap += len
+        i.push(GlobalGet(0));
+        i.push(I64ExtendI32U);
+        i.push(LocalSet(3));
+        i.push(GlobalGet(0));
+        i.push(LocalGet(2));
+        i.push(I32WrapI64);
+        i.push(I32Add);
+        i.push(GlobalSet(0));
+        i.push(I64Const(0));
+        i.push(LocalSet(4));
+        i.push(Block(BlockType::Empty));
+        i.push(Loop(BlockType::Empty));
+        i.push(LocalGet(4));
+        i.push(LocalGet(2));
+        i.push(I64LtS);
+        i.push(I32Eqz);
+        i.push(BrIf(1));
+        // b = mem[sptr + i]
+        i.push(LocalGet(1));
+        i.push(LocalGet(4));
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(I32Load8U(0, 0));
+        i.push(I64ExtendI32U);
+        i.push(LocalSet(5));
+        // if 65 <= b <= 90: b += 32
+        i.push(LocalGet(5));
+        i.push(I64Const(65));
+        i.push(I64GeS);
+        i.push(LocalGet(5));
+        i.push(I64Const(90));
+        i.push(I64LeS);
+        i.push(I32And);
+        i.push(If(BlockType::Empty));
+        i.push(LocalGet(5));
+        i.push(I64Const(32));
+        i.push(I64Add);
+        i.push(LocalSet(5));
+        i.push(End);
+        // mem[dst + i] = b
+        i.push(LocalGet(3));
+        i.push(LocalGet(4));
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(LocalGet(5));
+        i.push(I32WrapI64);
+        i.push(I32Store8(0, 0));
+        i.push(LocalGet(4));
+        i.push(I64Const(1));
+        i.push(I64Add);
+        i.push(LocalSet(4));
+        i.push(Br(0));
+        i.push(End);
+        i.push(End);
+        i.push(LocalGet(3));
+        i.push(I64Const(32));
+        i.push(I64Shl);
+        i.push(LocalGet(2));
         i.push(I64Or);
         FunctionBody {
             params: vec![ValType::I64],

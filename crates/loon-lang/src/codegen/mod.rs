@@ -544,12 +544,16 @@ impl Compiler {
         let its = self.next_fn_idx;
         self.next_fn_idx += 1;
         self.push_function(its, StringRuntime::gen_int_to_str());
+        let lc = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(lc, StringRuntime::gen_lowercase());
         self.string_runtime = Some(StringRuntime {
             str_concat_idx: c,
             str_len_idx: l,
             str_eq_idx: e,
             str_substring_idx: sub,
             int_to_str_idx: its,
+            lowercase_idx: lc,
         });
     }
     fn ensure_collections_runtime(&mut self) {
@@ -964,7 +968,7 @@ impl Compiler {
                 if let ExprKind::Symbol(h) = &items[0].kind {
                     let argc = items.len() - 1;
                     match h.as_str() {
-                        "str" | "str-concat" | "substring" => true,
+                        "str" | "str-concat" | "substring" | "lowercase" => true,
                         "do" => items
                             .last()
                             .is_some_and(|e| Self::is_str_static(e, strs, string_fns)),
@@ -2319,6 +2323,14 @@ impl<'a> FnCtx<'a> {
                     }
                     return Ok(());
                 }
+                "lowercase" => {
+                    self.compiler.ensure_string_runtime();
+                    let rt = self.compiler.string_runtime.clone().unwrap();
+                    self.compile_expr(&items[1])?;
+                    self.instructions
+                        .push(WasmInstruction::Call(rt.lowercase_idx));
+                    return Ok(());
+                }
                 "substring" => {
                     // [substring s start end] -> new packed string.
                     self.compiler.ensure_string_runtime();
@@ -3357,7 +3369,26 @@ impl<'a> FnCtx<'a> {
                 } else if let Some(&l) = self.locals.get(name) {
                     Ok(FnRepr::Closure(l))
                 } else {
-                    Err(format!("codegen: HOF function '{name}' not found"))
+                    // A builtin (or otherwise non-fn symbol) used as a HOF value:
+                    // wrap it in a unary lambda `[fn [g] [name g]]` and compile
+                    // that closure, so e.g. `[map lowercase coll]` works.
+                    let sp = f.span;
+                    let g = "__hof_arg".to_string();
+                    let params = Expr::new(
+                        ExprKind::List(vec![Expr::new(ExprKind::Symbol(g.clone()), sp)]),
+                        sp,
+                    );
+                    let body = Expr::new(
+                        ExprKind::List(vec![
+                            Expr::new(ExprKind::Symbol(name.clone()), sp),
+                            Expr::new(ExprKind::Symbol(g), sp),
+                        ]),
+                        sp,
+                    );
+                    self.compile_closure(&[params, body])?;
+                    let l = self.alloc_local();
+                    self.instructions.push(WasmInstruction::LocalSet(l));
+                    Ok(FnRepr::Closure(l))
                 }
             }
             _ => Err("codegen: HOF requires a function argument".into()),
@@ -3973,6 +4004,12 @@ mod tests {
     #[test]
     fn compile_conj_len_are_valid() {
         valid(r#"[fn main [] [println [len [conj [conj #[] 5] 9]]]]"#);
+    }
+    #[test]
+    fn compile_lowercase_and_builtin_hof_are_valid() {
+        valid(r#"[fn main [] [println [lowercase "Hello WORLD"]]]"#);
+        valid(r#"[fn main [] [each [fn [w] [println w]] [map lowercase [split "A B" " "]]]]"#);
+        valid(r#"[fn main [] [each [fn [x] [println x]] [map inc #[1 2 3]]]]"#);
     }
     #[test]
     fn compile_sort_by_is_valid() {
