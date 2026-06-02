@@ -179,8 +179,10 @@ fn supported_samples_match_interpreter() {
 /// The interpreter, by contrast, must run them — proving the program itself is
 /// valid and the boundary is a backend gap, not a broken sample.
 const UNSUPPORTED: &[(&str, &str)] = &[
-    // `try` and escaping/multi-shot continuations need a full continuation
-    // transform (tail-resumptive `handle` is supported — see effects.oo).
+    // Deep named/mutual recursion now runs (proper tail calls), but tco-stress
+    // also needs `try`, keyword/bool `str` formatting, and — for output parity —
+    // a fix to an EIR VM bug where `try` under recursion returns `()` instead of
+    // the handler result (`:done`); the legacy interpreter returns `:done`.
     ("tco-stress.oo", "delimited continuations"),
     // `state.oo` resumes a captured continuation *after* `handle` returns
     // (escaping, multi-shot) — its handler desugars to a call form the
