@@ -134,24 +134,34 @@ fn unsupported_samples_reject_cleanly() {
     }
 }
 
-/// KNOWN BUG (tracked, not yet fixed): codegen *accepts* `test-suite.oo` and
-/// emits a module that wasmtime rejects at translation time ("WebAssembly
-/// translation error") — instead of either running it or rejecting it cleanly
-/// at compile time like every other unsupported sample. Surfaced by the
-/// differential sweep. Remove `#[ignore]` once codegen either compiles it
-/// correctly (then it belongs in SUPPORTED) or rejects it cleanly (then it
-/// belongs in UNSUPPORTED).
+/// `test-suite.oo` is a definitions-only file: top-level `fn`s plus `test`
+/// blocks, but no `main`. The wasm backend's only entry point is `main`, so it
+/// is not runnable as wasm — but it must still compile to a *valid* module and
+/// fail cleanly, not miscompile.
+///
+/// Regression guard: codegen used to leave the (unreachable) functions in the
+/// module with stale provisional indices when there was no `main`, emitting a
+/// module wasmtime rejected at translation time. Now tree-shaking prunes them
+/// to a valid empty module. Because `loon run --wasm` validates the module via
+/// `wasmtime::Module::new` *before* looking for an entry, reaching the
+/// "no _start or main" error proves the emitted wasm is valid.
 #[test]
-#[ignore = "known miscompile: emits invalid wasm; see comment"]
-fn test_suite_should_not_miscompile() {
+fn definitions_only_file_compiles_valid_but_has_no_entry() {
+    // The interpreter accepts it (defines fns/tests, runs nothing at top level).
     let interp = run("test-suite.oo", false);
-    assert!(interp.ok, "interpreter failed for test-suite.oo");
+    assert!(interp.ok, "interpreter failed for test-suite.oo:\n{}", interp.stderr);
 
     let wasm = run("test-suite.oo", true);
+    assert!(!wasm.ok, "expected no-entry failure, but wasm run succeeded");
     assert!(
-        wasm.ok,
-        "wasm backend failed for test-suite.oo:\n{}",
+        wasm.stderr.contains("no _start or main"),
+        "expected a clean no-entry error (which implies a valid module), got:\n{}",
         wasm.stderr
     );
-    assert_eq!(interp.stdout, wasm.stdout, "stdout diverged for test-suite.oo");
+    // Specifically must NOT be the old miscompile or a codegen rejection.
+    assert!(
+        !wasm.stderr.contains("translation") && !wasm.stderr.contains("codegen"),
+        "test-suite.oo should compile to valid wasm, not crash/reject:\n{}",
+        wasm.stderr
+    );
 }

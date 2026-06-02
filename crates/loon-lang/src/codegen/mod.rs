@@ -650,20 +650,24 @@ impl Compiler {
         }
     }
     fn tree_shake(&mut self) {
-        let main_idx = match self.fn_map.get("main") {
-            Some(def) => def.func_idx,
-            None => return,
-        };
         // Map provisional func index → position in `self.functions`. Only
         // compiled functions (not imports) have a body to traverse.
         let mut id_to_pos: HashMap<u32, usize> = HashMap::new();
         for (pos, &id) in self.fn_indices.iter().enumerate() {
             id_to_pos.insert(id, pos);
         }
+        // `main` is the only entry point, so reachability is seeded from it.
+        // With no main — a file of bare definitions or `test` blocks — nothing
+        // is reachable and every compiled function is pruned, yielding a valid
+        // (empty) module. Bailing out instead would leave functions behind with
+        // stale provisional indices that `finish` mis-references, producing
+        // invalid wasm.
         let mut reachable = std::collections::HashSet::new();
         let mut queue = std::collections::VecDeque::new();
-        reachable.insert(main_idx);
-        queue.push_back(main_idx);
+        if let Some(def) = self.fn_map.get("main") {
+            reachable.insert(def.func_idx);
+            queue.push_back(def.func_idx);
+        }
         while let Some(idx) = queue.pop_front() {
             let pos = match id_to_pos.get(&idx) {
                 Some(&p) => p,
