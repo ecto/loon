@@ -84,6 +84,8 @@ struct Compiler {
     collections_runtime: Option<CollectionsRuntime>,
     maps_runtime: Option<MapsRuntime>,
     split_idx: Option<u32>,
+    lowercase_idx: Option<u32>,
+    uppercase_idx: Option<u32>,
     base_dir: Option<std::path::PathBuf>,
     compiled_modules: std::collections::HashSet<std::path::PathBuf>,
     force_heap: bool,
@@ -402,6 +404,8 @@ impl Compiler {
             collections_runtime: None,
             maps_runtime: None,
             split_idx: None,
+            lowercase_idx: None,
+            uppercase_idx: None,
             base_dir: None,
             compiled_modules: std::collections::HashSet::new(),
             force_heap: false,
@@ -536,6 +540,23 @@ impl Compiler {
             StringRuntime::gen_split(sr.str_substring_idx, cr.vec_new_idx, cr.vec_push_idx),
         );
         self.split_idx = Some(idx);
+        idx
+    }
+    fn ensure_str_case(&mut self, upper: bool) -> u32 {
+        if let Some(idx) = if upper { self.uppercase_idx } else { self.lowercase_idx } {
+            return idx;
+        }
+        // Allocates a new string from the bump heap, so the memory + heap-ptr
+        // global must be emitted even if nothing else forces them.
+        self.force_heap = true;
+        let idx = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(idx, StringRuntime::gen_str_case(upper));
+        if upper {
+            self.uppercase_idx = Some(idx);
+        } else {
+            self.lowercase_idx = Some(idx);
+        }
         idx
     }
     /// Is this top-level form a runnable statement (as opposed to a definition
@@ -762,7 +783,7 @@ impl Compiler {
             ExprKind::Str(_) => true,
             ExprKind::List(items) => match items.first().map(|e| &e.kind) {
                 Some(ExprKind::Symbol(s)) => match s.as_str() {
-                    "str" | "str-concat" | "substring" => true,
+                    "str" | "str-concat" | "substring" | "lowercase" | "uppercase" => true,
                     "do" => items.last().is_some_and(|e| Self::expr_returns_string(e, fns)),
                     "if" => {
                         items.len() >= 4
@@ -1939,6 +1960,12 @@ impl<'a> FnCtx<'a> {
                     self.instructions.push(WasmInstruction::Call(split_idx));
                     return Ok(());
                 }
+                "lowercase" | "uppercase" => {
+                    let idx = self.compiler.ensure_str_case(s == "uppercase");
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(WasmInstruction::Call(idx));
+                    return Ok(());
+                }
                 "len" | "count" | "vec-len" => {
                     self.compile_expr(&items[1])?;
                     self.emit_seq_len();
@@ -2727,6 +2754,10 @@ impl<'a> FnCtx<'a> {
                     Ok(FnRepr::Named(def.func_idx))
                 } else if let Some(&l) = self.locals.get(name) {
                     Ok(FnRepr::Closure(l))
+                } else if name == "lowercase" || name == "uppercase" {
+                    // Unary string builtins usable as HOF arguments, e.g.
+                    // `[map lowercase words]`.
+                    Ok(FnRepr::Named(self.compiler.ensure_str_case(name == "uppercase")))
                 } else {
                     Err(format!("codegen: HOF function '{name}' not found"))
                 }
@@ -3590,6 +3621,12 @@ mod tests {
     fn compile_sort_by_is_valid() {
         valid(r#"[fn main [] [println [len [sort-by [fn [x] x] #[3 1 2]]]]]"#);
         valid(r#"[fn main [] [println [len [sort-by [fn [[_ n]] n] :desc [entries {}]]]]]"#);
+    }
+    #[test]
+    fn compile_lowercase_uppercase_are_valid() {
+        valid(r#"[fn main [] [println [lowercase "ABc"]]]"#);
+        valid(r#"[fn main [] [println [uppercase "abC"]]]"#);
+        valid(r#"[fn main [] [println [len [map lowercase #["A" "B"]]]]]"#);
     }
     #[test]
     fn compile_string_len_and_empty_are_valid() {

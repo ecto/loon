@@ -593,6 +593,98 @@ impl StringRuntime {
         }
     }
 
+    /// Generate `lowercase`/`uppercase` (`upper` selects which): copy the
+    /// string, mapping ASCII letters to the chosen case. Other bytes pass
+    /// through unchanged.
+    pub(super) fn gen_str_case(upper: bool) -> FunctionBody {
+        // param 0 = s; locals 1=src_ptr 2=len 3=new_ptr 4=i 5=byte (all i64)
+        let (lo, hi, delta_op): (i64, i64, fn() -> WasmInstruction) = if upper {
+            (97, 122, || I64Sub) // a..z → -32
+        } else {
+            (65, 90, || I64Add) // A..Z → +32
+        };
+        let mut i = Vec::new();
+        i.push(LocalGet(0));
+        i.push(I64Const(32));
+        i.push(I64ShrU);
+        i.push(LocalSet(1));
+        i.push(LocalGet(0));
+        i.push(I64Const(0xFFFFFFFF));
+        i.push(I64And);
+        i.push(LocalSet(2));
+        // new_ptr = heap; heap += len
+        i.push(GlobalGet(0));
+        i.push(I64ExtendI32U);
+        i.push(LocalSet(3));
+        i.push(GlobalGet(0));
+        i.push(LocalGet(2));
+        i.push(I32WrapI64);
+        i.push(I32Add);
+        i.push(GlobalSet(0));
+        i.push(I64Const(0));
+        i.push(LocalSet(4));
+        i.push(Block(BlockType::Empty));
+        i.push(Loop(BlockType::Empty));
+        i.push(LocalGet(4));
+        i.push(LocalGet(2));
+        i.push(I64LtS);
+        i.push(I32Eqz);
+        i.push(BrIf(1));
+        // byte = mem[src_ptr + i]  (load i32, widen to i64)
+        i.push(LocalGet(1));
+        i.push(LocalGet(4));
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(I32Load8U(0, 0));
+        i.push(I64ExtendI32U);
+        i.push(LocalSet(5));
+        // if lo <= byte <= hi: byte = byte ± 32
+        // (i64 comparisons each yield an i32 0/1; sum == 2 means both held —
+        // there is no i32 `and` in the instruction set.)
+        i.push(LocalGet(5));
+        i.push(I64Const(lo));
+        i.push(I64GeS);
+        i.push(LocalGet(5));
+        i.push(I64Const(hi));
+        i.push(I64LeS);
+        i.push(I32Add);
+        i.push(I32Const(2));
+        i.push(I32Eq);
+        i.push(If(BlockType::Empty));
+        i.push(LocalGet(5));
+        i.push(I64Const(32));
+        i.push(delta_op());
+        i.push(LocalSet(5));
+        i.push(End);
+        // mem[new_ptr + i] = byte
+        i.push(LocalGet(3));
+        i.push(LocalGet(4));
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(LocalGet(5));
+        i.push(I32WrapI64);
+        i.push(I32Store8(0, 0));
+        i.push(LocalGet(4));
+        i.push(I64Const(1));
+        i.push(I64Add);
+        i.push(LocalSet(4));
+        i.push(Br(0));
+        i.push(End);
+        i.push(End);
+        // return (new_ptr << 32) | len
+        i.push(LocalGet(3));
+        i.push(I64Const(32));
+        i.push(I64Shl);
+        i.push(LocalGet(2));
+        i.push(I64Or);
+        FunctionBody {
+            params: vec![ValType::I64],
+            results: vec![ValType::I64],
+            locals: vec![ValType::I64; 5],
+            instructions: i,
+        }
+    }
+
     /// Generate `split(s, sep) -> i64` — a vector of the substrings of `s`
     /// separated by `sep`. Consecutive/leading/trailing separators yield empty
     /// segments (matching the interpreter); the final segment is always pushed.
