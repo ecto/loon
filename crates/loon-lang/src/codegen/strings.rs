@@ -574,12 +574,29 @@ impl StringRuntime {
     /// the high 32 bits, so any value ≥ 2^32 is already a string; anything
     /// smaller (including negatives) is treated as an integer.
     pub(super) fn gen_to_str(int_to_str_idx: u32) -> FunctionBody {
+        // A packed string is `(ptr << 32) | len` with `ptr` a real heap address,
+        // so a *valid* string always has `ptr < heap_ptr` (global 0). A large
+        // integer can also be ≥ 2³², but its high half is normally well past the
+        // heap pointer — use that to tell a big int from a string pointer rather
+        // than reading it as one (which would fault).
         let mut instrs = Vec::new();
         instrs.push(LocalGet(0));
         instrs.push(I64Const(0x1_0000_0000));
         instrs.push(I64GeS);
         instrs.push(If(BlockType::Result(ValType::I64)));
+        // ptr = value >> 32; is it a live heap address (< heap_ptr)?
         instrs.push(LocalGet(0));
+        instrs.push(I64Const(32));
+        instrs.push(I64ShrU);
+        instrs.push(GlobalGet(0));
+        instrs.push(I64ExtendI32U);
+        instrs.push(I64LtS);
+        instrs.push(If(BlockType::Result(ValType::I64)));
+        instrs.push(LocalGet(0)); // a real string — pass through
+        instrs.push(Else);
+        instrs.push(LocalGet(0)); // a large integer
+        instrs.push(Call(int_to_str_idx));
+        instrs.push(End);
         instrs.push(Else);
         instrs.push(LocalGet(0));
         instrs.push(Call(int_to_str_idx));

@@ -80,6 +80,9 @@ struct Compiler {
     /// Names of functions whose result is a float (computed by a pre-pass), so
     /// call sites can be classified by `expr_is_float`.
     float_return_fns: std::collections::HashSet<String>,
+    /// Functions whose result is a boolean (greatest-fixpoint pass), so call
+    /// sites format as `true`/`false`.
+    bool_return_fns: std::collections::HashSet<String>,
     /// Dynamic effect-handler slots: each `Effect.op` used in a `handle` gets a
     /// small id; the current handler closure for it lives at memory offset
     /// `HANDLER_BASE + id*8` (0 = no handler installed). Enables tail-resumptive
@@ -464,6 +467,7 @@ impl Compiler {
             adt_constructors: HashMap::new(),
             adt_float_fields: HashMap::new(),
             float_return_fns: std::collections::HashSet::new(),
+            bool_return_fns: std::collections::HashSet::new(),
             handler_op_ids: HashMap::new(),
             uses_handlers: false,
             adt_types: Vec::new(),
@@ -738,6 +742,7 @@ impl Compiler {
         // With ADT field float-ness known, determine which functions return a
         // float so call sites classify correctly.
         self.compute_float_return_fns(exprs);
+        self.compute_bool_return_fns(exprs);
         self.uses_handlers = exprs.iter().any(Self::contains_handle);
         #[allow(clippy::possible_missing_else)]
         for expr in exprs {
@@ -1231,6 +1236,68 @@ impl Compiler {
         }
         saw_arm
     }
+    /// Static boolean classifier: comparisons, `not`/`and`/`or`, boolean
+    /// literals, `if`/`do` whose results are boolean, and calls to
+    /// boolean-returning functions. Used so `str`/`println` format `0`/`1` as
+    /// `false`/`true` (the untagged value model can't tell them apart at run
+    /// time).
+    fn expr_is_bool(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Bool(_) => true,
+            ExprKind::List(items) => match items.first().map(|e| &e.kind) {
+                Some(ExprKind::Symbol(op)) => match op.as_str() {
+                    "<" | ">" | "<=" | ">=" | "=" | "!=" | "not" | "and" | "or" | "empty?" => true,
+                    "do" => items.last().is_some_and(|e| self.expr_is_bool(e)),
+                    "if" => {
+                        items.len() >= 4
+                            && self.expr_is_bool(&items[2])
+                            && self.expr_is_bool(&items[3])
+                    }
+                    name => self.bool_return_fns.contains(name),
+                },
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    /// Greatest-fixpoint pass populating `bool_return_fns`: assume every
+    /// function returns a boolean, then drop any whose result expression is not
+    /// boolean under the current assumptions. (A least fixpoint can't seed
+    /// mutually recursive predicates like `is-even`/`is-odd`.)
+    fn compute_bool_return_fns(&mut self, exprs: &[Expr]) {
+        let defs: Vec<(String, Expr)> = exprs
+            .iter()
+            .filter_map(|e| {
+                let ExprKind::List(items) = &e.kind else {
+                    return None;
+                };
+                if !matches!(items.first().map(|i| &i.kind), Some(ExprKind::Symbol(s)) if s == "fn")
+                {
+                    return None;
+                }
+                let name = match items.get(1).map(|i| &i.kind) {
+                    Some(ExprKind::Symbol(n)) => n.clone(),
+                    _ => return None,
+                };
+                items.last().map(|body| (name, body.clone()))
+            })
+            .collect();
+        for (name, _) in &defs {
+            self.bool_return_fns.insert(name.clone());
+        }
+        loop {
+            let mut changed = false;
+            for (name, body) in &defs {
+                if self.bool_return_fns.contains(name) && !self.expr_is_bool(body) {
+                    self.bool_return_fns.remove(name);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
     /// Fixpoint pass populating `float_return_fns`: a function returns a float
     /// when its result expression is float (ignoring float-typed parameters,
     /// which the samples in scope don't rely on).
@@ -1266,11 +1333,13 @@ impl Compiler {
             }
         }
     }
-    /// Whether `expr` contains a `handle` form anywhere within it.
+    /// Whether `expr` contains a `handle` or `try` form anywhere within it
+    /// (both install effect handlers in op slots).
     fn contains_handle(expr: &Expr) -> bool {
         match &expr.kind {
             ExprKind::List(items) => {
-                matches!(items.first().map(|e| &e.kind), Some(ExprKind::Symbol(s)) if s == "handle")
+                matches!(items.first().map(|e| &e.kind),
+                    Some(ExprKind::Symbol(s)) if s == "handle" || s == "try")
                     || items.iter().any(Self::contains_handle)
             }
             ExprKind::Tuple(items) | ExprKind::Vec(items) | ExprKind::Set(items) => {
@@ -1639,11 +1708,12 @@ impl Compiler {
         }
         let mut mem = MemorySection::new();
         mem.memory(MemoryType {
-            // 256 pages (16 MiB). The bump allocator never frees and vectors
-            // are copy-on-write (O(n²) for repeated push), so one 64 KiB page
-            // is exhausted by even modest loops; this gives realistic programs
-            // headroom without a memory.grow path.
-            minimum: 256,
+            // 16384 pages (1 GiB). The bump allocator never frees and vectors
+            // are copy-on-write (O(n²) for repeated push), so building even a
+            // 10K-element vector touches hundreds of MiB. wasmtime maps the
+            // initial size lazily (zero-fill on demand), so small programs pay
+            // nothing; this avoids needing a memory.grow path in the allocator.
+            minimum: 16384,
             maximum: None,
             memory64: false,
             shared: false,
@@ -1894,6 +1964,34 @@ impl<'a> FnCtx<'a> {
     fn expr_is_float(&self, expr: &Expr) -> bool {
         self.compiler.expr_is_float(expr, &self.float_locals)
     }
+    /// Push the packed string `"true"`/`"false"` for an i64 boolean on the
+    /// stack.
+    fn emit_bool_to_str(&mut self) {
+        use WasmInstruction as W;
+        let (to, tl) = self.compiler.intern_string("true");
+        let (fo, fl) = self.compiler.intern_string("false");
+        self.instructions.push(W::I64Eqz);
+        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+        self.instructions
+            .push(W::I64Const(((fo as i64) << 32) | fl as i64));
+        self.instructions.push(W::Else);
+        self.instructions
+            .push(W::I64Const(((to as i64) << 32) | tl as i64));
+        self.instructions.push(W::End);
+    }
+    /// Compile one `str` argument: booleans format as `true`/`false`, floats via
+    /// the host formatter, everything else through `to_str`.
+    fn compile_str_arg(&mut self, arg: &Expr) -> Result<(), String> {
+        if self.compiler.expr_is_bool(arg) {
+            self.compile_expr(arg)?;
+            self.emit_bool_to_str();
+            return Ok(());
+        }
+        let to_str = self.compiler.string_runtime.clone().unwrap().to_str_idx;
+        self.compile_expr(arg)?;
+        self.instructions.push(WasmInstruction::Call(to_str));
+        Ok(())
+    }
     /// Compile `e` and leave an f64 on the stack: reinterpret if it is already
     /// float bits, else convert an integer.
     fn compile_operand_f64(&mut self, e: &Expr) -> Result<(), String> {
@@ -1952,8 +2050,15 @@ impl<'a> FnCtx<'a> {
                 Ok(())
             }
             ExprKind::Keyword(k) => {
-                let id = self.compiler.intern_keyword(k);
-                self.instructions.push(WasmInstruction::I64Const(id));
+                // Represent a keyword as the interned packed string `":name"`.
+                // Interning dedups, so two occurrences of the same keyword pack
+                // to the same i64 — `=`/`match`/map-key comparisons (all `i64.eq`
+                // / structural) still work — and `str` prints `:name` instead of
+                // reading an opaque id as a bad pointer.
+                let with_colon = format!(":{k}");
+                let (offset, len) = self.compiler.intern_string(&with_colon);
+                let packed = ((offset as i64) << 32) | (len as i64);
+                self.instructions.push(WasmInstruction::I64Const(packed));
                 Ok(())
             }
             ExprKind::Bool(b) => {
@@ -2296,13 +2401,9 @@ impl<'a> FnCtx<'a> {
                     }
                     self.compiler.ensure_string_runtime();
                     let rt = self.compiler.string_runtime.clone().unwrap();
-                    self.compile_expr(&args[0])?;
-                    self.instructions
-                        .push(WasmInstruction::Call(rt.to_str_idx));
+                    self.compile_str_arg(&args[0])?;
                     for arg in &args[1..] {
-                        self.compile_expr(arg)?;
-                        self.instructions
-                            .push(WasmInstruction::Call(rt.to_str_idx));
+                        self.compile_str_arg(arg)?;
                         self.instructions
                             .push(WasmInstruction::Call(rt.str_concat_idx));
                     }
@@ -2782,16 +2883,7 @@ impl<'a> FnCtx<'a> {
                     return self.compile_handle(items);
                 }
                 "try" => {
-                    // `try` (and the `tco-stress` program generally) drives
-                    // recursion to 100K–1M depth, which standalone wasm cannot
-                    // run without guaranteed tail-call elimination, and its
-                    // escaping handlers need a full continuation transform.
-                    // Runs on the VM via `loon run`.
-                    return Err(
-                        "codegen: 'try' (delimited continuations) is not supported by the \
-                         wasm backend yet; run it on the VM with `loon run`"
-                            .into(),
-                    );
+                    return self.compile_try(items);
                 }
                 name => {
                     if let Some((tag, arity)) = self.compiler.adt_constructors.get(name).cloned() {
@@ -3211,8 +3303,12 @@ impl<'a> FnCtx<'a> {
                 }
             }
         }
-        for expr in body {
-            cctx.compile_expr(expr)?;
+        for (i, expr) in body.iter().enumerate() {
+            if i + 1 == body.len() {
+                cctx.compile_tail(expr)?; // tail calls in a closure become return_call
+            } else {
+                cctx.compile_expr(expr)?;
+            }
         }
         let cinstrs = cctx.instructions.clone();
         let clc = cctx.local_count;
@@ -3572,6 +3668,45 @@ impl<'a> FnCtx<'a> {
         self.instructions.push(W::Br(0));
         self.instructions.push(W::End);
         self.instructions.push(W::End);
+        self.instructions.push(W::LocalGet(result));
+        Ok(())
+    }
+    /// `[try body handler]` — run `body`; if it performs `Fail.fail`, the
+    /// `handler` function receives the failure value and its result becomes the
+    /// `try`'s result. Compiled as a single-clause tail-resumptive `handle` for
+    /// `Fail.fail`: install the handler closure in `Fail.fail`'s slot for the
+    /// body's dynamic extent (correct when the failing op is in tail position,
+    /// which `try` desugaring guarantees).
+    fn compile_try(&mut self, items: &[Expr]) -> Result<(), String> {
+        use WasmInstruction as W;
+        if items.len() < 3 {
+            return Err("codegen: try requires a body and a handler".into());
+        }
+        self.compiler.force_heap = true;
+        let addr = self.compiler.handler_slot_addr("Fail.fail");
+        match &items[2].kind {
+            ExprKind::List(hitems)
+                if matches!(hitems.first().map(|e| &e.kind), Some(ExprKind::Symbol(s)) if s == "fn") =>
+            {
+                self.compile_closure(&hitems[1..])?;
+            }
+            _ => return Err("codegen: try handler must be a function".into()),
+        }
+        let htmp = self.alloc_local();
+        self.instructions.push(W::LocalSet(htmp));
+        let save = self.alloc_local();
+        self.instructions.push(W::I32Const(addr));
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalSet(save));
+        self.instructions.push(W::I32Const(addr));
+        self.instructions.push(W::LocalGet(htmp));
+        self.instructions.push(W::I64Store(3, 0));
+        self.compile_expr(&items[1])?;
+        let result = self.alloc_local();
+        self.instructions.push(W::LocalSet(result));
+        self.instructions.push(W::I32Const(addr));
+        self.instructions.push(W::LocalGet(save));
+        self.instructions.push(W::I64Store(3, 0));
         self.instructions.push(W::LocalGet(result));
         Ok(())
     }

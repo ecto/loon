@@ -148,6 +148,10 @@ const SUPPORTED: &[&str] = &[
     // Dimensional units (compile-time; `unit`/`magnitude` are runtime
     // identities), a `Const` value, and a tail-resumptive Physics handler.
     "physics.oo",
+    // TCO stress: proper tail calls (named/mutual/through if-do-when-match) +
+    // `try` (Fail handler) + keyword/bool `str` formatting; runs on a large
+    // stack with a 1 GiB heap for the O(n²) vector build.
+    "tco-stress.oo",
 ];
 
 #[test]
@@ -179,11 +183,6 @@ fn supported_samples_match_interpreter() {
 /// The interpreter, by contrast, must run them — proving the program itself is
 /// valid and the boundary is a backend gap, not a broken sample.
 const UNSUPPORTED: &[(&str, &str)] = &[
-    // Deep named/mutual recursion now runs (proper tail calls), but tco-stress
-    // also needs `try`, keyword/bool `str` formatting, and — for output parity —
-    // a fix to an EIR VM bug where `try` under recursion returns `()` instead of
-    // the handler result (`:done`); the legacy interpreter returns `:done`.
-    ("tco-stress.oo", "delimited continuations"),
     // `state.oo` resumes a captured continuation *after* `handle` returns
     // (escaping, multi-shot) — its handler desugars to a call form the
     // tail-resumptive backend does not recognize.

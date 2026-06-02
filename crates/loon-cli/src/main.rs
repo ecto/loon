@@ -269,11 +269,25 @@ fn run_file_wasm(path: &PathBuf) {
         }
     };
 
+    // Run the module on a thread with a large stack. Most deep recursion is
+    // proper-tail-call optimized (O(1) stack), but a few patterns — e.g. a
+    // deeply recursive `try` whose handler recurses — still grow the native
+    // stack; a generous stack keeps them from overflowing.
+    let run = move || run_wasm_module(wasm_bytes);
+    let handle = std::thread::Builder::new()
+        .stack_size(1024 * 1024 * 1024)
+        .spawn(run)
+        .expect("spawn wasm execution thread");
+    handle.join().expect("wasm execution thread panicked");
+}
+
+fn run_wasm_module(wasm_bytes: Vec<u8>) {
     // Enable the WebAssembly tail-call proposal so the codegen's `return_call`
     // instructions (proper tail calls for named/mutual recursion) run in O(1)
-    // stack.
+    // stack. Raise the wasm stack limit to match the large native stack above.
     let mut config = wasmtime::Config::new();
     config.wasm_tail_call(true);
+    config.max_wasm_stack(900 * 1024 * 1024);
     let engine = wasmtime::Engine::new(&config).unwrap_or_else(|e| {
         eprintln!("{}: {e}", "wasmtime error".red().bold());
         std::process::exit(1);
