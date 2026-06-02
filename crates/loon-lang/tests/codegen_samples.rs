@@ -43,6 +43,7 @@ fn samples_compile_to_valid_wasm() {
         "compiled-fib.oo",
         "pipeline.oo",
         "multi-arity.oo",
+        "types.oo",
     ] {
         let bytes = compile_sample(name);
         assert_valid_wasm(name, &bytes);

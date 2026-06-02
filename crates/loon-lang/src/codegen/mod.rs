@@ -737,6 +737,21 @@ impl Compiler {
                         "do" => items
                             .last()
                             .is_some_and(|x| Self::is_float_static(x, floats, float_fns)),
+                        "match" if argc >= 3 => {
+                            // Arms are (pat, body) pairs from items[2..]. A
+                            // well-typed match has all arms the same type, so
+                            // any float arm body means the whole match is float
+                            // (this also sees through pattern-bound vars that
+                            // are themselves untracked, e.g. ADT float fields).
+                            let mut i = 3;
+                            while i < items.len() {
+                                if Self::is_float_static(&items[i], floats, float_fns) {
+                                    return true;
+                                }
+                                i += 2;
+                            }
+                            false
+                        }
                         _ => {
                             float_fns.contains(h.as_str())
                                 || float_fns.contains(&format!("{h}#{argc}"))
