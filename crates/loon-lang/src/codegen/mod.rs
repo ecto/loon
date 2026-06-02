@@ -1167,10 +1167,21 @@ impl Compiler {
                         }
                         "let" => items.last().is_some_and(|e| self.expr_is_float(e, floats)),
                         "match" => self.match_is_float(items, floats),
+                        // Dimensioned quantities carry a float magnitude.
+                        "unit" | "magnitude" => {
+                            items.get(1).is_some_and(|e| self.expr_is_float(e, floats))
+                        }
                         name => self.float_return_fns.contains(name),
                     },
+                    // Physics constants (`Const.c`, …) are floats.
+                    ExprKind::DotAccess(obj, _) => {
+                        matches!(&obj.kind, ExprKind::Symbol(ns) if ns == "Const")
+                    }
                     _ => false,
                 }
+            }
+            ExprKind::DotAccess(obj, _) => {
+                matches!(&obj.kind, ExprKind::Symbol(ns) if ns == "Const")
             }
             _ => false,
         }
@@ -1947,7 +1958,21 @@ impl<'a> FnCtx<'a> {
                     Err(format!("codegen: unbound symbol '{name}'"))
                 }
             }
-            ExprKind::DotAccess(_, _) => {
+            ExprKind::DotAccess(obj, field) => {
+                // Physics constants used as values, e.g. `Const.c`.
+                if let ExprKind::Symbol(ns) = &obj.kind {
+                    if ns == "Const" {
+                        let v: f64 = match field.as_str() {
+                            "c" => 299_792_458.0,
+                            "pi" => std::f64::consts::PI,
+                            "e" => std::f64::consts::E,
+                            _ => 0.0,
+                        };
+                        self.instructions.push(WasmInstruction::F64Const(v));
+                        self.instructions.push(WasmInstruction::I64ReinterpretF64);
+                        return Ok(());
+                    }
+                }
                 Err("codegen: dot access not supported as expression".into())
             }
             ExprKind::List(items) if items.is_empty() => {
@@ -2261,6 +2286,11 @@ impl<'a> FnCtx<'a> {
                     self.compile_expr(&items[1])?;
                     self.instructions.push(WasmInstruction::Call(idx));
                     return Ok(());
+                }
+                "unit" | "magnitude" => {
+                    // Dimensions are compile-time only; at runtime both are the
+                    // identity on the underlying numeric value.
+                    return self.compile_expr(&items[1]);
                 }
                 "len" | "count" | "vec-len" => {
                     self.compile_expr(&items[1])?;
@@ -2696,12 +2726,12 @@ impl<'a> FnCtx<'a> {
                     return self.compile_call(&rewritten);
                 }
                 if effect.starts_with(char::is_uppercase) {
-                    // One-argument ops may be intercepted by a tail-resumptive
-                    // `handle`: if a handler closure is installed in this op's
-                    // slot, call it; otherwise fall back to the host import.
-                    // Only programs that use `handle` get this (table-using)
-                    // dispatch — others call the import directly.
-                    if items.len() == 2 && self.compiler.uses_handlers {
+                    // Zero- or one-argument ops may be intercepted by a
+                    // tail-resumptive `handle`: if a handler closure is installed
+                    // in this op's slot, call it; otherwise fall back to the host
+                    // import. Only programs that use `handle` get this
+                    // (table-using) dispatch — others call the import directly.
+                    if (items.len() == 1 || items.len() == 2) && self.compiler.uses_handlers {
                         use WasmInstruction as W;
                         let addr = self.compiler.handler_slot_addr(&format!("{effect}.{op}"));
                         let h = self.alloc_local();
@@ -2712,14 +2742,20 @@ impl<'a> FnCtx<'a> {
                         self.instructions.push(W::If(BlockType::Result(ValType::I64)));
                         // No handler installed → default host import.
                         let import_idx = self.compiler.get_or_create_effect_import(effect, op);
-                        self.compile_expr(&items[1])?;
+                        for arg in &items[1..] {
+                            self.compile_expr(arg)?;
+                        }
                         self.instructions.push(W::Call(import_idx));
                         self.instructions.push(W::Else);
-                        // Handler installed → call it with the operation argument.
-                        self.compile_expr(&items[1])?;
-                        let arg = self.alloc_local();
-                        self.instructions.push(W::LocalSet(arg));
-                        self.emit_apply1(&FnRepr::Closure(h), arg);
+                        // Handler installed → call it with the operation args.
+                        if items.len() == 2 {
+                            self.compile_expr(&items[1])?;
+                            let arg = self.alloc_local();
+                            self.instructions.push(W::LocalSet(arg));
+                            self.emit_apply1(&FnRepr::Closure(h), arg);
+                        } else {
+                            self.emit_apply0(h);
+                        }
                         self.instructions.push(W::End);
                         return Ok(());
                     }
@@ -3154,6 +3190,19 @@ impl<'a> FnCtx<'a> {
             }
         }
     }
+    /// Invoke a zero-argument closure (just its env), leaving the result.
+    fn emit_apply0(&mut self, cl: u32) {
+        use WasmInstruction as W;
+        self.instructions.push(W::LocalGet(cl));
+        self.instructions.push(W::I64Const(0xFFFF_FFFF));
+        self.instructions.push(W::I64And);
+        self.instructions.push(W::LocalGet(cl));
+        self.instructions.push(W::I64Const(32));
+        self.instructions.push(W::I64ShrU);
+        self.instructions.push(W::I32WrapI64);
+        let ty = self.get_or_create_indirect_type(1);
+        self.instructions.push(W::CallIndirect(ty));
+    }
     /// Load `len` (offset 0) and `data_ptr` (offset 16) of the vector held in
     /// `vloc` into freshly allocated locals, returning (len_local, data_local).
     fn emit_vec_header(&mut self, vloc: u32) -> (u32, u32) {
@@ -3429,15 +3478,10 @@ impl<'a> FnCtx<'a> {
                     Some(ExprKind::DotAccess(obj, op)) => {
                         if let ExprKind::Symbol(eff) = &obj.kind {
                             let addr = self.compiler.handler_slot_addr(&format!("{eff}.{op}"));
-                            let param = match pitems.get(1).map(|e| &e.kind) {
-                                Some(ExprKind::Symbol(p)) => p.clone(),
-                                _ => "_".to_string(),
-                            };
+                            // The handler closure takes the operation's parameters
+                            // (zero or more), matching the call site.
                             let paramlist = Expr::new(
-                                ExprKind::List(vec![Expr::new(
-                                    ExprKind::Symbol(param),
-                                    pat.span,
-                                )]),
+                                ExprKind::List(pitems[1..].to_vec()),
                                 pat.span,
                             );
                             // Build + store the handler closure, save old slot.

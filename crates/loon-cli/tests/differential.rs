@@ -145,6 +145,9 @@ const SUPPORTED: &[&str] = &[
     // Tail-resumptive algebraic effect handlers (`handle`/`resume`).
     "effects.oo",
     "user-effects.oo",
+    // Dimensional units (compile-time; `unit`/`magnitude` are runtime
+    // identities), a `Const` value, and a tail-resumptive Physics handler.
+    "physics.oo",
 ];
 
 #[test]
@@ -183,9 +186,6 @@ const UNSUPPORTED: &[(&str, &str)] = &[
     // (escaping, multi-shot) — its handler desugars to a call form the
     // tail-resumptive backend does not recognize.
     ("state.oo", "unsupported call form"),
-    // Dimensional units + a Physics effect handler (continuations); floats
-    // themselves are supported now (see types.oo in SUPPORTED).
-    ("physics.oo", "unknown function 'unit'"),
     // Collection / string stdlib builtins not yet ported to codegen.
     // (bench-collections additionally builds 100K-element vectors, which the
     // copy-on-write vector representation cannot do in reasonable time/space.)
