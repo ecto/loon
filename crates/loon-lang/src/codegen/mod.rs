@@ -610,6 +610,9 @@ impl Compiler {
             entries_idx,
             MapRuntime::gen_map_entries(cr.vec_new_idx, cr.vec_push_idx),
         );
+        let merge_idx = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(merge_idx, MapRuntime::gen_map_merge(set_idx));
         self.map_runtime = Some(MapRuntime {
             map_new_idx: new_idx,
             map_set_idx: set_idx,
@@ -617,6 +620,7 @@ impl Compiler {
             map_has_idx: has_idx,
             map_keys_idx: keys_idx,
             map_entries_idx: entries_idx,
+            map_merge_idx: merge_idx,
         });
     }
     fn ensure_split_runtime(&mut self) -> u32 {
@@ -2606,6 +2610,15 @@ impl<'a> FnCtx<'a> {
                         .push(WasmInstruction::Call(rt.map_entries_idx));
                     return Ok(());
                 }
+                "merge" => {
+                    self.compiler.ensure_map_runtime();
+                    let rt = self.compiler.map_runtime.clone().unwrap();
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.instructions
+                        .push(WasmInstruction::Call(rt.map_merge_idx));
+                    return Ok(());
+                }
                 "take" => {
                     // [take n v] -> new vector of the first min(n, len) elems.
                     self.compiler.ensure_collections_runtime();
@@ -4179,6 +4192,13 @@ mod tests {
         valid(r#"[fn main [] [println [len [entries {:a 1 :b 2 :c 3}]]]]"#);
         valid(r#"[fn main [] [each [fn [[k v]] [println v]] [entries {:a 10 :b 20}]]]"#);
         valid(r#"[fn main [] [each [fn [[_ v]] [println v]] [entries {:x 7}]]]"#);
+    }
+    #[test]
+    fn compile_merge_is_valid() {
+        valid(
+            r#"[fn main [] [let m [merge {:a 1 :b 2} {:b 9 :c 3}]]
+               [println [get m :a]] [println [get m :b]] [println [get m :c]]]"#,
+        );
     }
     #[test]
     fn compile_update_is_valid() {

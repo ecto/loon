@@ -27,6 +27,7 @@ pub struct MapRuntime {
     pub map_has_idx: u32,
     pub map_keys_idx: u32,
     pub map_entries_idx: u32,
+    pub map_merge_idx: u32,
 }
 
 impl MapRuntime {
@@ -495,6 +496,65 @@ impl MapRuntime {
             params: vec![ValType::I64],
             results: vec![ValType::I64],
             locals: vec![ValType::I64; 5],
+            instructions: i,
+        }
+    }
+
+    /// `map_merge(a, b, map_set) -> i64` — `a` with every entry of `b` inserted
+    /// on top (so `b` wins on conflicts), preserving order.
+    pub(super) fn gen_map_merge(map_set: u32) -> FunctionBody {
+        // Params: 0=a, 1=b ; Locals: 2=acc, 3=len, 4=data, 5=i
+        let mut i = Vec::new();
+        i.push(LocalGet(0));
+        i.push(LocalSet(2));
+        i.push(LocalGet(1));
+        i.push(I32WrapI64);
+        i.push(I64Load(3, 0));
+        i.push(LocalSet(3));
+        i.push(LocalGet(1));
+        i.push(I32WrapI64);
+        i.push(I64Load(3, 16));
+        i.push(LocalSet(4));
+        i.push(I64Const(0));
+        i.push(LocalSet(5));
+        i.push(Block(BlockType::Empty));
+        i.push(Loop(BlockType::Empty));
+        i.push(LocalGet(5));
+        i.push(LocalGet(3));
+        i.push(I64LtS);
+        i.push(I32Eqz);
+        i.push(BrIf(1));
+        // acc = map_set(acc, data[i*16], data[i*16+8], 0)
+        i.push(LocalGet(2));
+        i.push(LocalGet(4));
+        i.push(LocalGet(5));
+        i.push(I64Const(16));
+        i.push(I64Mul);
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(I64Load(3, 0));
+        i.push(LocalGet(4));
+        i.push(LocalGet(5));
+        i.push(I64Const(16));
+        i.push(I64Mul);
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(I64Load(3, 8));
+        i.push(I64Const(0));
+        i.push(Call(map_set));
+        i.push(LocalSet(2));
+        i.push(LocalGet(5));
+        i.push(I64Const(1));
+        i.push(I64Add);
+        i.push(LocalSet(5));
+        i.push(Br(0));
+        i.push(End);
+        i.push(End);
+        i.push(LocalGet(2));
+        FunctionBody {
+            params: vec![ValType::I64, ValType::I64],
+            results: vec![ValType::I64],
+            locals: vec![ValType::I64; 4],
             instructions: i,
         }
     }
