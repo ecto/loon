@@ -50,7 +50,9 @@ params are float, propagated through call sites. Synthesized nodes (desugared
   growth), and `loop`/`recur`.
 - ADTs: `[type …]`, constructors, and `match` (int / nullary-ctor / field-binding
   arms, compiled to an if/else chain or a br_table).
-- Closures, including captures, and passing functions as values.
+- Closures (with captures); **first-class functions** — a bare top-level
+  function name is a value, and a computed function value can be applied
+  (`[[adder 10] 5]`, currying / functions returned from calls).
 - Strings: literals, variadic `str`/`str-concat` (which **stringifies non-string
   args** — type-directed Display via `int_to_str`), `str-len`, `str-eq`,
   `substring`, `char-at`, `lowercase`, `split`, and `println` of a computed
