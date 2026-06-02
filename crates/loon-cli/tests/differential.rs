@@ -139,6 +139,9 @@ const SUPPORTED: &[&str] = &[
     // No `main` and only `[test]` blocks: a no-op under `loon run`, and now a
     // no-op (empty main) on wasm too.
     "test-suite.oo",
+    // Floating-point: f64 literals/arithmetic, ADT f64 fields, float-returning
+    // functions, and VM-matching float formatting.
+    "types.oo",
 ];
 
 #[test]
@@ -178,9 +181,9 @@ const UNSUPPORTED: &[(&str, &str)] = &[
     // call form the backend does not recognize. (Nicer would be the explicit
     // "delimited continuations" message — see continuations support work.)
     ("state.oo", "unsupported call form"),
-    // Floating-point arithmetic (the value model is untagged i64).
-    ("physics.oo", "floating-point"),
-    ("types.oo", "floating-point"),
+    // Dimensional units + a Physics effect handler (continuations); floats
+    // themselves are supported now (see types.oo in SUPPORTED).
+    ("physics.oo", "unknown function 'unit'"),
     // Collection / string stdlib builtins not yet ported to codegen.
     // (bench-collections additionally builds 100K-element vectors, which the
     // copy-on-write vector representation cannot do in reasonable time/space.)

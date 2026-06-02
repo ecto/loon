@@ -279,6 +279,26 @@ fn run_file_wasm(path: &PathBuf) {
     };
 
     let mut linker = wasmtime::Linker::new(&engine);
+    // Host formatter for floats: the wasm value model is untagged i64, so floats
+    // arrive as their bit pattern; format with the same Display as the VM and
+    // write a line to stdout.
+    linker
+        .func_wrap(
+            "loon:rt",
+            "print-f64",
+            |_caller: wasmtime::Caller<'_, WasiCtx>, bits: i64| -> i64 {
+                use std::io::Write;
+                let v = f64::from_bits(bits as u64);
+                let mut out = std::io::stdout().lock();
+                let _ = writeln!(out, "{v}");
+                let _ = out.flush();
+                0
+            },
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("{}: failed to link print-f64: {e}", "wasmtime error".red().bold());
+            std::process::exit(1);
+        });
     // Host implementation of the `IO.read-file` effect: read the path string
     // from guest memory, read the file, copy its bytes into the guest heap
     // (bumping the exported `heap_ptr` global), and return a packed
