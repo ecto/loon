@@ -50,6 +50,7 @@ fn samples_compile_to_valid_wasm() {
         "effects.oo",
         "user-effects.oo",
         "tco-stress.oo",
+        "state.oo",
     ] {
         let bytes = compile_sample(name);
         assert_valid_wasm(name, &bytes);

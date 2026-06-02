@@ -1,4 +1,5 @@
 mod capture;
+mod cps;
 #[allow(clippy::vec_init_then_push)]
 pub mod collections;
 #[allow(clippy::vec_init_then_push)]
@@ -37,7 +38,12 @@ fn infer_node_types(exprs: &[Expr], base_dir: Option<&std::path::Path>) -> HashM
 pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, String> {
     // Macro expansion phase
     let mut expander = crate::macros::MacroExpander::new();
-    let expanded = expander.expand_program(exprs)?;
+    let mut expanded = expander.expand_program(exprs)?;
+    // Escaping effect handlers: CPS-transform the program first (gated, so other
+    // programs are untouched).
+    if cps::needs_cps(&expanded) {
+        expanded = cps::transform(&expanded);
+    }
 
     let mut compiler = Compiler::new();
     compiler.node_types = infer_node_types(&expanded, None);
@@ -50,7 +56,10 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, String> {
 pub fn compile_with_imports(exprs: &[Expr], base_dir: &std::path::Path) -> Result<Vec<u8>, String> {
     // Macro expansion phase
     let mut expander = crate::macros::MacroExpander::new();
-    let expanded = expander.expand_program(exprs)?;
+    let mut expanded = expander.expand_program(exprs)?;
+    if cps::needs_cps(&expanded) {
+        expanded = cps::transform(&expanded);
+    }
 
     let mut compiler = Compiler::new();
     compiler.base_dir = Some(base_dir.to_path_buf());
@@ -4866,6 +4875,23 @@ mod tests {
         assert!(
             wasm_str.contains("read-file"),
             "should contain effect op name"
+        );
+    }
+    #[test]
+    fn compile_escaping_continuations_are_valid() {
+        // Escaping/multi-shot continuations (the State effect): a handler clause
+        // returns a function of state, `resume` is a reified continuation used
+        // non-tail. Compiled via the CPS transform.
+        valid(
+            r#"[effect State [get [] Int] [put [Int] Unit]]
+               [fn run-state [thunk init]
+                 [[handle [thunk]
+                     [return x]    [fn [s] x]
+                     [State.get]   [fn [s] [[resume s] s]]
+                     [State.put n] [fn [s] [[resume 0] n]]]
+                   init]]
+               [fn counter [] [let a [State.get]] [State.put [+ a 1]] [State.get]]
+               [fn main [] [println [run-state counter 0]]]"#,
         );
     }
     #[test]
