@@ -118,6 +118,13 @@ enum FnRepr {
     Closure(u32),
 }
 
+/// A closure parameter: a plain binding or a positional destructuring pattern
+/// (`[k v]`), where `None` entries (`_`) ignore that slot.
+enum ClosureParam {
+    Simple(String),
+    Destructure(Vec<Option<String>>),
+}
+
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 enum WasmInstruction {
@@ -2533,21 +2540,45 @@ impl<'a> FnCtx<'a> {
         if args.is_empty() {
             return Err("closure requires params".into());
         }
-        let params = match &args[0].kind {
-            ExprKind::List(items) => items
-                .iter()
-                .filter_map(|p| {
-                    if let ExprKind::Symbol(s) = &p.kind {
-                        Some(s.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>(),
+        // Each parameter is either a plain symbol or a positional destructuring
+        // pattern `[a b …]` (used for `[k v]` map entries), where `_` ignores a
+        // slot. A destructuring param still occupies exactly one argument slot.
+        let raw_params = match &args[0].kind {
+            ExprKind::List(items) => items,
             _ => return Err("closure params must be a list".into()),
         };
+        let mut params: Vec<ClosureParam> = Vec::new();
+        for p in raw_params {
+            match &p.kind {
+                ExprKind::Symbol(s) => params.push(ClosureParam::Simple(s.clone())),
+                ExprKind::List(subs) => {
+                    let names = subs
+                        .iter()
+                        .map(|e| match &e.kind {
+                            ExprKind::Symbol(s) if s != "_" => Some(s.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    params.push(ClosureParam::Destructure(names));
+                }
+                _ => {
+                    return Err("closure param must be a symbol or destructuring list".into());
+                }
+            }
+        }
         let body = &args[1..];
-        let free = capture::free_vars(&params, body);
+        // All names bound by params (including destructured sub-names) are
+        // excluded from the free-variable set.
+        let mut bound: Vec<String> = Vec::new();
+        for p in &params {
+            match p {
+                ClosureParam::Simple(s) => bound.push(s.clone()),
+                ClosureParam::Destructure(names) => {
+                    bound.extend(names.iter().flatten().cloned());
+                }
+            }
+        }
+        let free = capture::free_vars(&bound, body);
         let mut captures: Vec<(String, u32)> = Vec::new();
         for name in &free {
             if let Some(&idx) = self.locals.get(name) {
@@ -2578,7 +2609,9 @@ impl<'a> FnCtx<'a> {
         };
         cctx.locals.insert("__env_ptr".to_string(), 0);
         for (i, p) in params.iter().enumerate() {
-            cctx.locals.insert(p.clone(), (i + 1) as u32);
+            if let ClosureParam::Simple(s) = p {
+                cctx.locals.insert(s.clone(), (i + 1) as u32);
+            }
         }
         for (ci, (cn, _)) in captures.iter().enumerate() {
             let l = cctx.alloc_local();
@@ -2588,6 +2621,26 @@ impl<'a> FnCtx<'a> {
             cctx.instructions
                 .push(WasmInstruction::I64Load(3, (ci * 8) as u32));
             cctx.instructions.push(WasmInstruction::LocalSet(l));
+        }
+        // Bind destructured sub-names by loading positional elements from the
+        // pair/tuple in the param slot (vectors store data ptr at offset 16).
+        for (i, p) in params.iter().enumerate() {
+            if let ClosureParam::Destructure(names) = p {
+                let slot = (i + 1) as u32;
+                for (j, name) in names.iter().enumerate() {
+                    let Some(name) = name else { continue };
+                    let l = cctx.alloc_local();
+                    cctx.instructions.push(WasmInstruction::LocalGet(slot));
+                    cctx.instructions.push(WasmInstruction::I32WrapI64);
+                    cctx.instructions.push(WasmInstruction::I64Load(3, 16));
+                    cctx.instructions.push(WasmInstruction::I64Const((j * 8) as i64));
+                    cctx.instructions.push(WasmInstruction::I64Add);
+                    cctx.instructions.push(WasmInstruction::I32WrapI64);
+                    cctx.instructions.push(WasmInstruction::I64Load(3, 0));
+                    cctx.instructions.push(WasmInstruction::LocalSet(l));
+                    cctx.locals.insert(name.clone(), l);
+                }
+            }
         }
         for expr in body {
             cctx.compile_expr(expr)?;
@@ -3296,6 +3349,14 @@ mod tests {
     fn compile_split_is_valid() {
         valid(r#"[fn main [] [println [len [split "a b c" " "]]]]"#);
         valid(r#"[fn main [] [println [str "first=" [first [split "x,y,z" ","]]]]]"#);
+    }
+    #[test]
+    fn compile_destructuring_params_are_valid() {
+        valid(
+            r#"[fn main [] [each [fn [[word n]] [println [str word ": " n]]]
+                 [entries [assoc [assoc {} "a" 5] "b" 7]]]]"#,
+        );
+        valid(r#"[fn main [] [println [len [map [fn [[_ n]] n] [entries {}]]]]]"#);
     }
     #[test]
     fn compile_take_is_valid() {
