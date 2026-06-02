@@ -139,78 +139,51 @@ impl MapsRuntime {
         val_eq_idx: u32,
         pair_idx: u32,
     ) -> FunctionBody {
-        // locals: 3=len 4=i 5=new 6=found 7=p
+        // Find the key first: append a new pair (amortized O(1) via the deque)
+        // when absent, and rebuild the pair-vector only on an in-place update.
+        // locals: 3=len 4=i 5=found_idx 6=p 7=new 8=j
         let mut i = Vec::new();
-        i.push(LocalGet(0));
-        i.push(I32WrapI64);
-        i.push(I64Load(3, 0));
-        i.push(LocalSet(3));
-        i.push(Call(vec_new_idx));
-        i.push(LocalSet(5));
-        i.push(I64Const(0));
-        i.push(LocalSet(6));
-        i.push(I64Const(0));
-        i.push(LocalSet(4));
-        i.push(Block(BlockType::Empty));
-        i.push(Loop(BlockType::Empty));
-        i.push(LocalGet(4));
-        i.push(LocalGet(3));
-        i.push(I64LtS);
-        i.push(I32Eqz);
-        i.push(BrIf(1));
-        // p = vec_get(m, i)
-        i.push(LocalGet(0));
-        i.push(LocalGet(4));
-        i.push(Call(vec_get_idx));
-        i.push(LocalSet(7));
-        // if val_eq(key(p), k)
-        i.push(LocalGet(7));
-        i.push(I64Const(0));
-        i.push(Call(vec_get_idx));
-        i.push(LocalGet(1));
-        i.push(Call(val_eq_idx));
-        i.push(I64Eqz);
-        i.push(I32Eqz);
+        i.push(LocalGet(0)); i.push(I32WrapI64); i.push(I64Load(3, 0)); i.push(LocalSet(3));
+        i.push(I64Const(-1)); i.push(LocalSet(5));
+        i.push(I64Const(0)); i.push(LocalSet(4));
+        i.push(Block(BlockType::Empty)); i.push(Loop(BlockType::Empty));
+        i.push(LocalGet(4)); i.push(LocalGet(3)); i.push(I64LtS); i.push(I32Eqz); i.push(BrIf(1));
+        i.push(LocalGet(0)); i.push(LocalGet(4)); i.push(Call(vec_get_idx)); i.push(LocalSet(6));
+        i.push(LocalGet(6)); i.push(I64Const(0)); i.push(Call(vec_get_idx));
+        i.push(LocalGet(1)); i.push(Call(val_eq_idx));
+        i.push(I64Eqz); i.push(I32Eqz);
         i.push(If(BlockType::Empty));
-        // new = vec_push(new, pair(k, v)); found = 1
-        i.push(LocalGet(5));
-        i.push(LocalGet(1));
-        i.push(LocalGet(2));
-        i.push(Call(pair_idx));
-        i.push(Call(vec_push_idx));
-        i.push(LocalSet(5));
-        i.push(I64Const(1));
-        i.push(LocalSet(6));
-        i.push(Else);
-        // new = vec_push(new, p)
-        i.push(LocalGet(5));
-        i.push(LocalGet(7));
-        i.push(Call(vec_push_idx));
-        i.push(LocalSet(5));
+        i.push(LocalGet(4)); i.push(LocalSet(5));
+        i.push(Br(2));
         i.push(End);
-        i.push(LocalGet(4));
-        i.push(I64Const(1));
-        i.push(I64Add);
-        i.push(LocalSet(4));
+        i.push(LocalGet(4)); i.push(I64Const(1)); i.push(I64Add); i.push(LocalSet(4));
         i.push(Br(0));
-        i.push(End);
-        i.push(End);
-        // if !found: new = vec_push(new, pair(k, v))
-        i.push(LocalGet(6));
-        i.push(I64Eqz);
+        i.push(End); i.push(End);
+        i.push(LocalGet(5)); i.push(I64Const(0)); i.push(I64GeS);
+        i.push(If(BlockType::Result(ValType::I64)));
+        // rebuild (update at found_idx)
+        i.push(Call(vec_new_idx)); i.push(LocalSet(7));
+        i.push(I64Const(0)); i.push(LocalSet(8));
+        i.push(Block(BlockType::Empty)); i.push(Loop(BlockType::Empty));
+        i.push(LocalGet(8)); i.push(LocalGet(3)); i.push(I64LtS); i.push(I32Eqz); i.push(BrIf(1));
+        i.push(LocalGet(8)); i.push(LocalGet(5)); i.push(I64Eq);
         i.push(If(BlockType::Empty));
-        i.push(LocalGet(5));
-        i.push(LocalGet(1));
-        i.push(LocalGet(2));
-        i.push(Call(pair_idx));
-        i.push(Call(vec_push_idx));
-        i.push(LocalSet(5));
+        i.push(LocalGet(7)); i.push(LocalGet(1)); i.push(LocalGet(2)); i.push(Call(pair_idx)); i.push(Call(vec_push_idx)); i.push(LocalSet(7));
+        i.push(Else);
+        i.push(LocalGet(7)); i.push(LocalGet(0)); i.push(LocalGet(8)); i.push(Call(vec_get_idx)); i.push(Call(vec_push_idx)); i.push(LocalSet(7));
         i.push(End);
-        i.push(LocalGet(5));
+        i.push(LocalGet(8)); i.push(I64Const(1)); i.push(I64Add); i.push(LocalSet(8));
+        i.push(Br(0));
+        i.push(End); i.push(End);
+        i.push(LocalGet(7));
+        i.push(Else);
+        // append (key absent) — amortized O(1)
+        i.push(LocalGet(0)); i.push(LocalGet(1)); i.push(LocalGet(2)); i.push(Call(pair_idx)); i.push(Call(vec_push_idx));
+        i.push(End);
         FunctionBody {
             params: vec![ValType::I64, ValType::I64, ValType::I64],
             results: vec![ValType::I64],
-            locals: vec![ValType::I64; 5], // 3,4,5,6,7
+            locals: vec![ValType::I64; 6],
             instructions: i,
         }
     }

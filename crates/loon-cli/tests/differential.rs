@@ -187,10 +187,14 @@ const UNSUPPORTED: &[(&str, &str)] = &[
     // (escaping, multi-shot) — its handler desugars to a call form the
     // tail-resumptive backend does not recognize.
     ("state.oo", "unsupported call form"),
-    // Collection / string stdlib builtins not yet ported to codegen.
-    // (bench-collections additionally builds 100K-element vectors, which the
-    // copy-on-write vector representation cannot do in reasonable time/space.)
-    ("bench-collections.oo", "unknown function 'cons'"),
+    // (bench-collections.oo is intentionally absent: it now *compiles and runs*
+    // — vec-append/vec-prepend/map-insert/map-lookup all produce correct
+    // results — but its 100K-element microbenchmarks need persistent O(log n)
+    // collections that the VM has and the wasm backend doesn't: `map-insert`'s
+    // linear-scan dedup is O(n²) (~minute), and `clone-mutate` copies a 100K
+    // vector 1000× (memory). A hash-indexed map and structurally-shared vectors
+    // would make it practical. It is neither SUPPORTED nor a clean codegen
+    // rejection, so it is tracked here only in this note.)
 ];
 
 #[test]

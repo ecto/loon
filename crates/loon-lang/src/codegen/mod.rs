@@ -2112,6 +2112,17 @@ impl<'a> FnCtx<'a> {
             ExprKind::List(items) => {
                 if let ExprKind::Symbol(s) = &items[0].kind {
                     if s == "fn" {
+                        // A *named* nested fn `[fn name [params] body…]` binds a
+                        // closure to `name` in the enclosing scope; a bare
+                        // `[fn [params] body…]` is an anonymous lambda value.
+                        if let Some(ExprKind::Symbol(name)) = items.get(1).map(|e| &e.kind) {
+                            let name = name.clone();
+                            self.compile_closure(&items[2..])?;
+                            let local = self.alloc_local();
+                            self.locals.insert(name, local);
+                            self.instructions.push(WasmInstruction::LocalTee(local));
+                            return Ok(());
+                        }
                         return self.compile_closure(&items[1..]);
                     }
                 }
@@ -2852,6 +2863,13 @@ impl<'a> FnCtx<'a> {
                         return self.compile_group_by(&items[1], &items[2]);
                     }
                     return Err("codegen: group-by requires a function and a collection".into());
+                }
+                "merge" => {
+                    // [merge a b] — a with b's entries assoc'd in.
+                    if items.len() >= 3 {
+                        return self.compile_merge(&items[1], &items[2]);
+                    }
+                    return Err("codegen: merge requires two maps".into());
                 }
                 "range" => {
                     // [range a b] — vector of a, a+1, …, b-1.
@@ -3608,6 +3626,70 @@ impl<'a> FnCtx<'a> {
         self.instructions.push(W::End);
         self.instructions.push(W::End);
         self.instructions.push(W::LocalGet(rloc));
+        Ok(())
+    }
+    /// `[merge a b]` — `a` with every `[k v]` entry of `b` assoc'd in.
+    fn compile_merge(&mut self, a: &Expr, b: &Expr) -> Result<(), String> {
+        use WasmInstruction as W;
+        self.compiler.ensure_maps_runtime();
+        let mr = self.compiler.maps_runtime.clone().unwrap();
+        self.compile_expr(a)?;
+        let result = self.alloc_local();
+        self.instructions.push(W::LocalSet(result));
+        self.compile_expr(b)?;
+        let bvec = self.alloc_local();
+        self.instructions.push(W::LocalSet(bvec));
+        let (n, d) = self.emit_vec_header(bvec);
+        let i = self.alloc_local();
+        let pair = self.alloc_local();
+        let pdata = self.alloc_local();
+        let k = self.alloc_local();
+        let v = self.alloc_local();
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::LocalGet(n));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // pair = data[i]
+        self.instructions.push(W::LocalGet(d));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(8));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalSet(pair));
+        // pdata = pair.data_ptr; k = pdata[0]; v = pdata[1]
+        self.instructions.push(W::LocalGet(pair));
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 16));
+        self.instructions.push(W::LocalSet(pdata));
+        self.instructions.push(W::LocalGet(pdata));
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalSet(k));
+        self.instructions.push(W::LocalGet(pdata));
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 8));
+        self.instructions.push(W::LocalSet(v));
+        // result = map_assoc(result, k, v)
+        self.instructions.push(W::LocalGet(result));
+        self.instructions.push(W::LocalGet(k));
+        self.instructions.push(W::LocalGet(v));
+        self.instructions.push(W::Call(mr.map_assoc_idx));
+        self.instructions.push(W::LocalSet(result));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        self.instructions.push(W::LocalGet(result));
         Ok(())
     }
     /// `[group-by f coll]` — a map from each key `f` returns to the vector of
