@@ -999,10 +999,6 @@ impl Compiler {
         }
     }
     fn tree_shake(&mut self) {
-        let main_idx = match self.fn_map.get("main") {
-            Some(def) => def.func_idx,
-            None => return,
-        };
         // Map provisional func index → position in `self.functions`. Only
         // compiled functions (not imports) have a body to traverse.
         let mut id_to_pos: HashMap<u32, usize> = HashMap::new();
@@ -1011,8 +1007,23 @@ impl Compiler {
         }
         let mut reachable = std::collections::HashSet::new();
         let mut queue = std::collections::VecDeque::new();
-        reachable.insert(main_idx);
-        queue.push_back(main_idx);
+        // Root the reachability at `main`. With no `main` (e.g. a top-level
+        // script or a library module), keep *all* functions — we can't prune,
+        // but this pass also performs the essential index relocation, so it
+        // must still run to keep Call targets / `_start` consistent.
+        match self.fn_map.get("main") {
+            Some(def) => {
+                reachable.insert(def.func_idx);
+                queue.push_back(def.func_idx);
+            }
+            None => {
+                for &id in &self.fn_indices {
+                    if reachable.insert(id) {
+                        queue.push_back(id);
+                    }
+                }
+            }
+        }
         while let Some(idx) = queue.pop_front() {
             let pos = match id_to_pos.get(&idx) {
                 Some(&p) => p,
@@ -1315,16 +1326,15 @@ impl Compiler {
             for clause in &args[1..] {
                 if let ExprKind::Tuple(parts) = &clause.kind {
                     if let Some(ExprKind::List(params)) = parts.first().map(|e| &e.kind) {
-                        let names = Self::param_names(params);
-                        let key = format!("{name}#{}", names.len());
-                        self.compile_fn_body(&key, false, &names, &parts[1..])?;
+                        let key = format!("{name}#{}", params.len());
+                        self.compile_fn_body(&key, false, params, &parts[1..])?;
                     }
                 }
             }
             return Ok(());
         }
-        let params = match &args[1].kind {
-            ExprKind::List(items) => Self::param_names(items),
+        let params: Vec<Expr> = match &args[1].kind {
+            ExprKind::List(items) => items.clone(),
             _ => return Err("defn params must be a list".into()),
         };
         let mut body_start = 2;
@@ -1345,9 +1355,10 @@ impl Compiler {
         &mut self,
         key: &str,
         is_main: bool,
-        params: &[String],
+        param_exprs: &[Expr],
         body: &[Expr],
     ) -> Result<(), String> {
+        let arity = param_exprs.len();
         // Params known to be float/string (from the fixpoint) seed the locals.
         let float_locals: std::collections::HashSet<String> = self
             .float_params
@@ -1361,7 +1372,7 @@ impl Compiler {
             .unwrap_or_default();
         let mut ctx = FnCtx {
             locals: HashMap::new(),
-            local_count: params.len() as u32,
+            local_count: arity as u32,
             instructions: Vec::new(),
             compiler: self,
             loop_starts: Vec::new(),
@@ -1369,8 +1380,32 @@ impl Compiler {
             float_locals,
             string_locals,
         };
-        for (i, p) in params.iter().enumerate() {
-            ctx.locals.insert(p.clone(), i as u32);
+        // Bind params positionally; a list/tuple-pattern param destructures the
+        // (pair) argument via vec-get into named locals (`_` is a wildcard).
+        for (i, p) in param_exprs.iter().enumerate() {
+            match &p.kind {
+                ExprKind::Symbol(s) => {
+                    ctx.locals.insert(s.clone(), i as u32);
+                }
+                ExprKind::List(sub) | ExprKind::Tuple(sub) => {
+                    ctx.compiler.ensure_collections_runtime();
+                    let vget = ctx.compiler.collections_runtime.clone().unwrap().vec_get_idx;
+                    for (j, e) in sub.iter().enumerate() {
+                        if let ExprKind::Symbol(s) = &e.kind {
+                            if s == "_" {
+                                continue;
+                            }
+                            let l = ctx.alloc_local();
+                            ctx.instructions.push(WasmInstruction::LocalGet(i as u32));
+                            ctx.instructions.push(WasmInstruction::I64Const(j as i64));
+                            ctx.instructions.push(WasmInstruction::Call(vget));
+                            ctx.instructions.push(WasmInstruction::LocalSet(l));
+                            ctx.locals.insert(s.clone(), l);
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
         // Self-tail-recursion: a `recur` in the body (not inside a nested
         // `loop`) rebinds the params and jumps to the top. Wrap the body in a
@@ -1380,7 +1415,7 @@ impl Compiler {
             ctx.instructions
                 .push(WasmInstruction::Loop(BlockType::Result(ValType::I64)));
             ctx.loop_starts.push(ctx.instructions.len());
-            ctx.loop_vars.push((0..params.len() as u32).collect());
+            ctx.loop_vars.push((0..arity as u32).collect());
         }
         // Compile each body expression; every one leaves an i64 on the stack,
         // so drop all but the last (a statement sequence keeps only its final
@@ -1396,8 +1431,8 @@ impl Compiler {
             ctx.loop_starts.pop();
             ctx.loop_vars.pop();
         }
-        let extra_locals = if ctx.local_count > params.len() as u32 {
-            vec![ValType::I64; (ctx.local_count - params.len() as u32) as usize]
+        let extra_locals = if ctx.local_count > arity as u32 {
+            vec![ValType::I64; (ctx.local_count - arity as u32) as usize]
         } else {
             vec![]
         };
@@ -1410,7 +1445,7 @@ impl Compiler {
         self.push_function(
             func_idx,
             FunctionBody {
-                params: vec![ValType::I64; params.len()],
+                params: vec![ValType::I64; arity],
                 results: if is_main { vec![] } else { vec![ValType::I64] },
                 locals: extra_locals,
                 instructions: instrs,
@@ -2059,6 +2094,20 @@ impl<'a> FnCtx<'a> {
             }
             ExprKind::Vec(items) => {
                 // #[a b c] desugars to vec-new + a vec-push per element.
+                self.compiler.ensure_collections_runtime();
+                let rt = self.compiler.collections_runtime.clone().unwrap();
+                self.instructions
+                    .push(WasmInstruction::Call(rt.vec_new_idx));
+                for item in items {
+                    self.compile_expr(item)?;
+                    self.instructions
+                        .push(WasmInstruction::Call(rt.vec_push_idx));
+                }
+                Ok(())
+            }
+            ExprKind::Tuple(items) => {
+                // (a b …) — represented like a vector so destructuring and
+                // pair access (vec-get) work uniformly.
                 self.compiler.ensure_collections_runtime();
                 let rt = self.compiler.collections_runtime.clone().unwrap();
                 self.instructions
@@ -2925,6 +2974,14 @@ impl<'a> FnCtx<'a> {
                     }
                     return Err("codegen: fold requires init, function, collection".into());
                 }
+                "group-by" => {
+                    // [group-by f coll] -> map from f(elem) to a vector of the
+                    // elements with that key.
+                    if items.len() >= 3 {
+                        return self.compile_group_by(&items[1], &items[2]);
+                    }
+                    return Err("codegen: group-by requires function, collection".into());
+                }
                 "sort-by" => {
                     // [sort-by f order coll] — sort coll by integer key f(elem).
                     if items.len() >= 4 {
@@ -3778,6 +3835,78 @@ impl<'a> FnCtx<'a> {
         self.instructions.push(W::End);
         self.instructions.push(W::End);
         self.instructions.push(W::LocalGet(rl));
+        Ok(())
+    }
+    fn compile_group_by(&mut self, f: &Expr, coll: &Expr) -> Result<(), String> {
+        use WasmInstruction as W;
+        self.compiler.ensure_map_runtime();
+        let mr = self.compiler.map_runtime.clone().unwrap();
+        let cr = self.compiler.collections_runtime.clone().unwrap();
+        let fr = self.prepare_fn_arg(f)?;
+        self.compile_expr(coll)?;
+        let vl = self.alloc_local();
+        self.instructions.push(W::LocalSet(vl));
+        let (n, data) = self.emit_vec_header(vl);
+        let ml = self.alloc_local();
+        self.instructions.push(W::Call(mr.map_new_idx));
+        self.instructions.push(W::LocalSet(ml));
+        let iv = self.alloc_local();
+        let eloc = self.alloc_local();
+        let kloc = self.alloc_local();
+        let vecloc = self.alloc_local();
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(iv));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(iv));
+        self.instructions.push(W::LocalGet(n));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // elem = data[i]
+        self.instructions.push(W::LocalGet(data));
+        self.instructions.push(W::LocalGet(iv));
+        self.instructions.push(W::I64Const(8));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalSet(eloc));
+        // k = f(elem)
+        self.emit_apply1(&fr, eloc);
+        self.instructions.push(W::LocalSet(kloc));
+        // cur = map_get(m, k, 0); vec = (cur == 0 ? vec_new() : cur)
+        self.instructions.push(W::LocalGet(ml));
+        self.instructions.push(W::LocalGet(kloc));
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::Call(mr.map_get_idx));
+        self.instructions.push(W::LocalSet(vecloc));
+        self.instructions.push(W::LocalGet(vecloc));
+        self.instructions.push(W::I64Eqz);
+        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+        self.instructions.push(W::Call(cr.vec_new_idx));
+        self.instructions.push(W::Else);
+        self.instructions.push(W::LocalGet(vecloc));
+        self.instructions.push(W::End);
+        // vec2 = vec_push(vec, elem)
+        self.instructions.push(W::LocalGet(eloc));
+        self.instructions.push(W::Call(cr.vec_push_idx));
+        self.instructions.push(W::LocalSet(vecloc));
+        // m = map_set(m, k, vec2, 0)
+        self.instructions.push(W::LocalGet(ml));
+        self.instructions.push(W::LocalGet(kloc));
+        self.instructions.push(W::LocalGet(vecloc));
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::Call(mr.map_set_idx));
+        self.instructions.push(W::LocalSet(ml));
+        self.instructions.push(W::LocalGet(iv));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(iv));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        self.instructions.push(W::LocalGet(ml));
         Ok(())
     }
     fn compile_range(&mut self, a: &Expr, b: &Expr) -> Result<(), String> {
