@@ -78,6 +78,21 @@ impl Backend for WasmBackend {
     }
 }
 
+/// Compile Loon source straight through to a WASM binary via the EIR:
+/// parse → check → lower → `WasmBackend`. The front-end mirrors `eval_eir`
+/// so the EIR WASM backend sees exactly the same lowered module the VM runs.
+///
+/// This is the entry point for the experimental `--wasm2` path while the EIR
+/// backend is brought to parity with the legacy direct `codegen/` backend.
+pub fn compile_src(src: &str) -> Result<Vec<u8>, String> {
+    let exprs = crate::parser::parse(src).map_err(|e| format!("parse error: {}", e.message))?;
+    let mut checker = crate::check::Checker::new();
+    let _errors = checker.check_program(&exprs);
+    let module = crate::eir::lower::lower(&checker);
+    let mut backend = WasmBackend;
+    backend.compile(&module).map_err(|e| e.to_string())
+}
+
 // ─── Compilation context ──────────────────────────────────────────────────
 
 struct CompileCtx<'a> {
