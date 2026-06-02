@@ -111,6 +111,7 @@ const SUPPORTED: &[&str] = &[
     "compiled-fib.oo",
     "pipeline.oo",
     "multi-arity.oo",
+    "word-count.oo",
 ];
 
 #[test]
@@ -155,9 +156,6 @@ const UNSUPPORTED: &[(&str, &str)] = &[
     ("types.oo", "floating-point"),
     // Collection / string stdlib builtins not yet ported to codegen.
     ("bench-collections.oo", "unknown function 'cons'"),
-    // word-count compiles through split/filter/fold/update/take; its remaining
-    // codegen gap is `sort-by` (plus tuple-destructuring lambda params).
-    ("word-count.oo", "unknown function 'sort-by'"),
     ("word-freq.oo", "lowercase"),
 ];
 

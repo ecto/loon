@@ -1938,10 +1938,8 @@ impl<'a> FnCtx<'a> {
                     return Ok(());
                 }
                 "len" | "count" | "vec-len" => {
-                    // Vector length lives at header offset 0.
                     self.compile_expr(&items[1])?;
-                    self.instructions.push(WasmInstruction::I32WrapI64);
-                    self.instructions.push(WasmInstruction::I64Load(3, 0));
+                    self.emit_seq_len();
                     return Ok(());
                 }
                 "vec-get" => {
@@ -1964,10 +1962,9 @@ impl<'a> FnCtx<'a> {
                     return Ok(());
                 }
                 "empty?" => {
-                    // len(v) == 0
+                    // len(v) == 0, handling both strings and vectors/maps.
                     self.compile_expr(&items[1])?;
-                    self.instructions.push(WasmInstruction::I32WrapI64);
-                    self.instructions.push(WasmInstruction::I64Load(3, 0));
+                    self.emit_seq_len();
                     self.instructions.push(WasmInstruction::I64Eqz);
                     self.instructions.push(WasmInstruction::I64ExtendI32U);
                     return Ok(());
@@ -2269,6 +2266,17 @@ impl<'a> FnCtx<'a> {
                         return self.compile_take(&items[1], &items[2]);
                     }
                     return Err("codegen: take requires a count and a collection".into());
+                }
+                "sort-by" => {
+                    // [sort-by f coll] or [sort-by f :desc coll].
+                    if items.len() >= 3 {
+                        let keyfn = &items[1];
+                        let coll = items.last().unwrap();
+                        let desc = items.len() >= 4
+                            && matches!(&items[2].kind, ExprKind::Keyword(k) if k == "desc");
+                        return self.compile_sort_by(keyfn, coll, desc);
+                    }
+                    return Err("codegen: sort-by requires a function and a collection".into());
                 }
                 "type" | "use" | "effect" => {
                     self.instructions.push(WasmInstruction::I64Const(0));
@@ -2914,6 +2922,213 @@ impl<'a> FnCtx<'a> {
         self.instructions.push(W::LocalGet(rloc));
         Ok(())
     }
+    /// `[sort-by f coll]` / `[sort-by f :desc coll]` — a stable sort of `coll`
+    /// by the integer key `f` returns for each element. Matches the EIR VM:
+    /// the key function is evaluated once per element, the sort is stable, and
+    /// comparison is by integer key (`:desc` reverses). Implemented as an
+    /// insertion sort over a scratch buffer of interleaved (key, value) i64
+    /// pairs — fine for the small collections this targets.
+    fn compile_sort_by(&mut self, keyfn: &Expr, coll: &Expr, desc: bool) -> Result<(), String> {
+        use WasmInstruction as W;
+        self.compiler.ensure_collections_runtime();
+        let rt = self.compiler.collections_runtime.clone().unwrap();
+        self.compile_expr(coll)?;
+        let vloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(vloc));
+        let fr = self.prepare_fn_arg(keyfn)?;
+        let (nloc, dloc) = self.emit_vec_header(vloc);
+        // base = heap_ptr; heap_ptr += n * 16 (scratch for n (key,val) pairs)
+        let base = self.alloc_local();
+        self.instructions.push(W::GlobalGet(0));
+        self.instructions.push(W::I64ExtendI32U);
+        self.instructions.push(W::LocalSet(base));
+        self.instructions.push(W::GlobalGet(0));
+        self.instructions.push(W::LocalGet(nloc));
+        self.instructions.push(W::I64Const(16));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I32Add);
+        self.instructions.push(W::GlobalSet(0));
+        let i = self.alloc_local();
+        let e = self.alloc_local();
+        // address helper: push (base + idx*stride + off) as i32
+        // (emitted inline below since closures can't borrow self here)
+        // ── fill: scratch[i] = (f(data[i]), data[i]) ──
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::LocalGet(nloc));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // e = data[i]
+        self.instructions.push(W::LocalGet(dloc));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(8));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalSet(e));
+        // scratch[i].key = f(e)
+        self.emit_pair_addr(base, i);
+        self.emit_apply1(&fr, e);
+        self.instructions.push(W::I64Store(3, 0));
+        // scratch[i].val = e
+        self.emit_pair_addr(base, i);
+        self.instructions.push(W::LocalGet(e));
+        self.instructions.push(W::I64Store(3, 8));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        // ── insertion sort (stable) ──
+        let j = self.alloc_local();
+        let key_i = self.alloc_local();
+        let val_i = self.alloc_local();
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::LocalGet(nloc));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // key_i = scratch[i].key; val_i = scratch[i].val
+        self.emit_pair_addr(base, i);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalSet(key_i));
+        self.emit_pair_addr(base, i);
+        self.instructions.push(W::I64Load(3, 8));
+        self.instructions.push(W::LocalSet(val_i));
+        // j = i - 1
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Sub);
+        self.instructions.push(W::LocalSet(j));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        // if j < 0 break
+        self.instructions.push(W::LocalGet(j));
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::BrIf(1));
+        // if not (scratch[j].key {>|<} key_i) break  — strict, so equal stays (stable)
+        self.emit_pair_addr(base, j);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalGet(key_i));
+        self.instructions
+            .push(if desc { W::I64LtS } else { W::I64GtS });
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // scratch[j+1] = scratch[j]  (shift the larger/smaller element right)
+        self.emit_pair_addr_succ(base, j); // dst = scratch[j+1]
+        self.emit_pair_addr(base, j); // src = scratch[j]
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::I64Store(3, 0));
+        self.emit_pair_addr_succ(base, j);
+        self.emit_pair_addr(base, j);
+        self.instructions.push(W::I64Load(3, 8));
+        self.instructions.push(W::I64Store(3, 8));
+        // j--
+        self.instructions.push(W::LocalGet(j));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Sub);
+        self.instructions.push(W::LocalSet(j));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        // scratch[j+1] = (key_i, val_i)
+        self.emit_pair_addr_succ(base, j);
+        self.instructions.push(W::LocalGet(key_i));
+        self.instructions.push(W::I64Store(3, 0));
+        self.emit_pair_addr_succ(base, j);
+        self.instructions.push(W::LocalGet(val_i));
+        self.instructions.push(W::I64Store(3, 8));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        // ── build result vector from sorted values ──
+        let r = self.alloc_local();
+        self.instructions.push(W::Call(rt.vec_new_idx));
+        self.instructions.push(W::LocalSet(r));
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::LocalGet(nloc));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        self.instructions.push(W::LocalGet(r));
+        self.emit_pair_addr(base, i);
+        self.instructions.push(W::I64Load(3, 8));
+        self.instructions.push(W::Call(rt.vec_push_idx));
+        self.instructions.push(W::LocalSet(r));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        self.instructions.push(W::LocalGet(r));
+        Ok(())
+    }
+    /// Consume a sequence value on the stack and leave its length (i64). A
+    /// packed string (value ≥ 2³², pointer in the high bits) carries its length
+    /// in the low 32 bits; a vector/map is a heap pointer whose length lives at
+    /// header offset 0.
+    fn emit_seq_len(&mut self) {
+        use WasmInstruction as W;
+        let v = self.alloc_local();
+        self.instructions.push(W::LocalSet(v));
+        self.instructions.push(W::LocalGet(v));
+        self.instructions.push(W::I64Const(0x1_0000_0000));
+        self.instructions.push(W::I64GeS);
+        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+        self.instructions.push(W::LocalGet(v));
+        self.instructions.push(W::I64Const(0xFFFF_FFFF));
+        self.instructions.push(W::I64And);
+        self.instructions.push(W::Else);
+        self.instructions.push(W::LocalGet(v));
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::End);
+    }
+    /// Push `(base + idx*16)` as an i32 address (the start of pair `idx`).
+    fn emit_pair_addr(&mut self, base: u32, idx: u32) {
+        use WasmInstruction as W;
+        self.instructions.push(W::LocalGet(base));
+        self.instructions.push(W::LocalGet(idx));
+        self.instructions.push(W::I64Const(16));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+    }
+    /// Push `(base + (idx+1)*16)` as an i32 address (pair `idx+1`).
+    fn emit_pair_addr_succ(&mut self, base: u32, idx: u32) {
+        use WasmInstruction as W;
+        self.instructions.push(W::LocalGet(base));
+        self.instructions.push(W::LocalGet(idx));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I64Const(16));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+    }
     fn compile_fold(&mut self, init: &Expr, f: &Expr, coll: &Expr) -> Result<(), String> {
         use WasmInstruction as W;
         self.compiler.ensure_collections_runtime();
@@ -3357,6 +3572,16 @@ mod tests {
                  [entries [assoc [assoc {} "a" 5] "b" 7]]]]"#,
         );
         valid(r#"[fn main [] [println [len [map [fn [[_ n]] n] [entries {}]]]]]"#);
+    }
+    #[test]
+    fn compile_sort_by_is_valid() {
+        valid(r#"[fn main [] [println [len [sort-by [fn [x] x] #[3 1 2]]]]]"#);
+        valid(r#"[fn main [] [println [len [sort-by [fn [[_ n]] n] :desc [entries {}]]]]]"#);
+    }
+    #[test]
+    fn compile_string_len_and_empty_are_valid() {
+        valid(r#"[fn main [] [println [len "hello"]]]"#);
+        valid(r#"[fn main [] [println [if [empty? "hi"] 1 0]]]"#);
     }
     #[test]
     fn compile_take_is_valid() {
