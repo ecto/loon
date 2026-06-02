@@ -189,6 +189,12 @@ pub struct Vm {
     output: Vec<String>,
     /// String constants resolved to heap indices.
     string_cache: HashMap<StringId, usize>,
+    /// Interns string *objects* by content, so structurally-equal strings share
+    /// a single heap slot (and thus a single `Val`). This makes handle-keyed
+    /// containers (maps, sets, `group-by`) treat equal strings as equal keys,
+    /// matching `val_eq` / the legacy interpreter. Strings are immutable, so
+    /// sharing is sound.
+    str_interner: HashMap<String, usize>,
     /// Dynamic effect handler stack.
     handlers: Vec<DynHandler>,
     /// Pre-allocated identity closure for `resume`.
@@ -232,6 +238,7 @@ impl Vm {
             ip: 0,
             output: Vec::new(),
             string_cache: HashMap::new(),
+            str_interner: HashMap::new(),
             handlers: Vec::new(),
             resume_closure: Val::UNIT, // set in run()
             current_span: Span::ZERO,
@@ -306,6 +313,17 @@ impl Vm {
         Val::ptr(idx)
     }
 
+    /// Allocate a string, interning by content so equal strings share one
+    /// heap slot (and `Val`). See `str_interner`.
+    fn alloc_str(&mut self, s: String) -> Val {
+        if let Some(&idx) = self.str_interner.get(s.as_str()) {
+            return Val::ptr(idx);
+        }
+        let val = self.alloc(Obj::Str(s.clone()));
+        self.str_interner.insert(s, val.as_ptr());
+        val
+    }
+
     fn get_obj(&self, val: Val) -> Option<&Obj> {
         if val.is_ptr() {
             self.heap.get(val.as_ptr())
@@ -375,7 +393,7 @@ impl Vm {
             return Val::ptr(idx);
         }
         let s = self.module.strings[sid.0 as usize].clone();
-        let val = self.alloc(Obj::Str(s));
+        let val = self.alloc_str(s);
         self.string_cache.insert(sid, val.as_ptr());
         val
     }
@@ -716,7 +734,7 @@ impl Vm {
                             Val::int(*n)
                         } else {
                             // Box large ints
-                            self.alloc(Obj::Str(n.to_string()))
+                            self.alloc_str(n.to_string())
                             // TODO: proper boxed int
                         }
                     }
@@ -1419,7 +1437,9 @@ impl Vm {
                 let coll = args.get(1).copied().unwrap_or(Val::UNIT);
                 match self.get_obj(coll).cloned() {
                     Some(Obj::Vec(items)) if n.is_int() => {
-                        let taken = items.take(n.as_int() as usize);
+                        // Clamp to [0, len]: `imbl::Vector::take` panics past len.
+                        let k = (n.as_int().max(0) as usize).min(items.len());
+                        let taken = items.take(k);
                         Ok(self.alloc(Obj::Vec(taken)))
                     }
                     _ => Ok(Val::UNIT),
@@ -1430,7 +1450,9 @@ impl Vm {
                 let coll = args.get(1).copied().unwrap_or(Val::UNIT);
                 match self.get_obj(coll).cloned() {
                     Some(Obj::Vec(items)) if n.is_int() => {
-                        let dropped = items.skip(n.as_int() as usize);
+                        // Clamp to [0, len]: `imbl::Vector::skip` panics past len.
+                        let k = (n.as_int().max(0) as usize).min(items.len());
+                        let dropped = items.skip(k);
                         Ok(self.alloc(Obj::Vec(dropped)))
                     }
                     _ => Ok(Val::UNIT),
@@ -1447,7 +1469,7 @@ impl Vm {
                     (Some(sep), Some(s)) => {
                         let parts: ImVec = s
                             .split(&sep)
-                            .map(|p| self.alloc(Obj::Str(p.to_string())))
+                            .map(|p| self.alloc_str(p.to_string()))
                             .collect();
                         Ok(self.alloc(Obj::Vec(parts)))
                     }
@@ -1485,21 +1507,21 @@ impl Vm {
                     self.get_str(to).map(|s| s.to_string()),
                     self.get_str(s).map(|s| s.to_string()),
                 ) {
-                    (Some(f), Some(t), Some(s)) => Ok(self.alloc(Obj::Str(s.replace(&f, &t)))),
+                    (Some(f), Some(t), Some(s)) => Ok(self.alloc_str(s.replace(&f, &t))),
                     _ => Ok(Val::UNIT),
                 }
             }
             Built::Uppercase => {
                 let s = args.first().copied().unwrap_or(Val::UNIT);
                 match self.get_str(s).map(|s| s.to_string()) {
-                    Some(s) => Ok(self.alloc(Obj::Str(s.to_uppercase()))),
+                    Some(s) => Ok(self.alloc_str(s.to_uppercase())),
                     _ => Ok(Val::UNIT),
                 }
             }
             Built::Lowercase => {
                 let s = args.first().copied().unwrap_or(Val::UNIT);
                 match self.get_str(s).map(|s| s.to_string()) {
-                    Some(s) => Ok(self.alloc(Obj::Str(s.to_lowercase()))),
+                    Some(s) => Ok(self.alloc_str(s.to_lowercase())),
                     _ => Ok(Val::UNIT),
                 }
             }
@@ -1535,15 +1557,15 @@ impl Vm {
                     Some(Obj::Vec(items)) => {
                         let parts: Vec<String> =
                             items.iter().map(|v| self.val_to_string(*v)).collect();
-                        Ok(self.alloc(Obj::Str(parts.join(&sep_str))))
+                        Ok(self.alloc_str(parts.join(&sep_str)))
                     }
-                    _ => Ok(self.alloc(Obj::Str(String::new()))),
+                    _ => Ok(self.alloc_str(String::new())),
                 }
             }
             Built::Trim => {
                 let s = args.first().copied().unwrap_or(Val::UNIT);
                 match self.get_str(s).map(|s| s.to_string()) {
-                    Some(s) => Ok(self.alloc(Obj::Str(s.trim().to_string()))),
+                    Some(s) => Ok(self.alloc_str(s.trim().to_string())),
                     _ => Ok(Val::UNIT),
                 }
             }
@@ -1873,12 +1895,12 @@ impl Vm {
                     Some(s) if idx.is_int() => {
                         let i = idx.as_int() as usize;
                         if let Some(c) = s.chars().nth(i) {
-                            Ok(self.alloc(Obj::Str(c.to_string())))
+                            Ok(self.alloc_str(c.to_string()))
                         } else {
-                            Ok(self.alloc(Obj::Str(String::new())))
+                            Ok(self.alloc_str(String::new()))
                         }
                     }
-                    _ => Ok(self.alloc(Obj::Str(String::new()))),
+                    _ => Ok(self.alloc_str(String::new())),
                 }
             }
             Built::Substring => {
@@ -1894,9 +1916,9 @@ impl Vm {
                         let en = en.min(chars.len());
                         let st = st.min(en);
                         let sub: String = chars[st..en].iter().collect();
-                        Ok(self.alloc(Obj::Str(sub)))
+                        Ok(self.alloc_str(sub))
                     }
-                    _ => Ok(self.alloc(Obj::Str(String::new()))),
+                    _ => Ok(self.alloc_str(String::new())),
                 }
             }
             Built::Slice => {
@@ -1919,7 +1941,7 @@ impl Vm {
                         let en = en.min(chars.len());
                         let st = st.min(en);
                         let sub: String = chars[st..en].iter().collect();
-                        Ok(self.alloc(Obj::Str(sub)))
+                        Ok(self.alloc_str(sub))
                     }
                     _ => Ok(Val::UNIT),
                 }
@@ -2032,7 +2054,7 @@ impl Vm {
                         Ok(self.alloc(Obj::Vec(va)))
                     }
                     (Some(Obj::Str(sa)), Some(Obj::Str(sb))) => {
-                        Ok(self.alloc(Obj::Str(format!("{sa}{sb}"))))
+                        Ok(self.alloc_str(format!("{sa}{sb}")))
                     }
                     _ => Ok(Val::UNIT),
                 }
@@ -2055,7 +2077,7 @@ impl Vm {
                 if let Some(path) = args.first() {
                     let path_str = self.val_to_string(*path);
                     match std::fs::read_to_string(&path_str) {
-                        Ok(contents) => self.alloc(Obj::Str(contents)),
+                        Ok(contents) => self.alloc_str(contents),
                         Err(_) => Val::UNIT,
                     }
                 } else {
@@ -2145,7 +2167,7 @@ impl Vm {
     }
 
     fn alloc_str_owned(&mut self, s: String) -> Val {
-        self.alloc(Obj::Str(s))
+        self.alloc_str(s)
     }
 }
 
