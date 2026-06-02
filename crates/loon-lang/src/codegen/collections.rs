@@ -120,8 +120,21 @@ impl CollectionsRuntime {
         i.push(LocalGet(15));
         i.push(Else);
         // ---- copy to a fresh centered buffer ----
-        // newcap = max(8, 3*(len+1))
-        i.push(LocalGet(2)); i.push(I64Const(1)); i.push(I64Add); i.push(I64Const(3)); i.push(I64Mul); i.push(LocalSet(10));
+        // newcap: over-allocate 3x only when copying because we ran out of room
+        // at the frontier (genuine growth → keeps building amortized O(1)); on a
+        // *branch* copy (this version isn't the frontier — e.g. repeatedly
+        // cloning a fixed vector) allocate minimally, since the fork won't grow.
+        if prepend {
+            i.push(LocalGet(3)); i.push(LocalGet(8)); i.push(I64Eq);  // start == lo → full
+        } else {
+            i.push(LocalGet(3)); i.push(LocalGet(2)); i.push(I64Add); i.push(LocalGet(9)); i.push(I64Eq); // start+len == hi → full
+        }
+        i.push(If(BlockType::Result(ValType::I64)));
+        i.push(LocalGet(2)); i.push(I64Const(1)); i.push(I64Add); i.push(I64Const(3)); i.push(I64Mul);   // 3*(len+1)
+        i.push(Else);
+        i.push(LocalGet(2)); i.push(I64Const(2)); i.push(I64Add);                                         // len+2
+        i.push(End);
+        i.push(LocalSet(10));
         i.push(LocalGet(10)); i.push(I64Const(8)); i.push(I64LtS);
         i.push(If(BlockType::Empty)); i.push(I64Const(8)); i.push(LocalSet(10)); i.push(End);
         // newbuf = alloc(24 + newcap*8)

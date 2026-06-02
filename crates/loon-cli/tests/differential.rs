@@ -178,6 +178,19 @@ fn supported_samples_match_interpreter() {
     }
 }
 
+/// bench-collections.oo at full wasm↔VM parity. Ignored by default because its
+/// O(n²) linear-scan map dedup over 100K keys takes ~70s on wasm; run with
+/// `cargo test -- --ignored` to verify.
+#[test]
+#[ignore]
+fn bench_collections_matches_interpreter() {
+    let interp = run("bench-collections.oo", false);
+    assert!(interp.ok, "interpreter failed:\n{}", interp.stderr);
+    let wasm = run("bench-collections.oo", true);
+    assert!(wasm.ok, "wasm run failed:\n{}", wasm.stderr);
+    assert_eq!(interp.stdout, wasm.stdout, "bench-collections stdout diverged");
+}
+
 /// Samples that exercise a feature the wasm backend does not implement yet.
 /// Each must be rejected by codegen with an error containing the given reason.
 /// The interpreter, by contrast, must run them — proving the program itself is
@@ -187,14 +200,11 @@ const UNSUPPORTED: &[(&str, &str)] = &[
     // (escaping, multi-shot) — its handler desugars to a call form the
     // tail-resumptive backend does not recognize.
     ("state.oo", "unsupported call form"),
-    // (bench-collections.oo is intentionally absent: it now *compiles and runs*
-    // — vec-append/vec-prepend/map-insert/map-lookup all produce correct
-    // results — but its 100K-element microbenchmarks need persistent O(log n)
-    // collections that the VM has and the wasm backend doesn't: `map-insert`'s
-    // linear-scan dedup is O(n²) (~minute), and `clone-mutate` copies a 100K
-    // vector 1000× (memory). A hash-indexed map and structurally-shared vectors
-    // would make it practical. It is neither SUPPORTED nor a clean codegen
-    // rejection, so it is tracked here only in this note.)
+    // (bench-collections.oo reaches full parity but is verified by the
+    // `#[ignore]`d `bench_collections_matches_interpreter` test below: its
+    // `map-insert` does an O(n²) linear-scan dedup over 100K keys (~70s), so it
+    // is kept out of the fast default suite. A hash-indexed map would make it
+    // quick; the result is already byte-identical to the VM.)
 ];
 
 #[test]
