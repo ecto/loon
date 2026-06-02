@@ -22,6 +22,10 @@ pub struct StringRuntime {
     pub str_eq_idx: u32,
     /// WASM function index for str_substring
     pub str_substring_idx: u32,
+    /// WASM function index for int_to_str
+    pub int_to_str_idx: u32,
+    /// WASM function index for to_str (coerce int-or-string → string)
+    pub to_str_idx: u32,
 }
 
 #[allow(dead_code)]
@@ -450,6 +454,141 @@ impl StringRuntime {
                 ValType::I64, // 7: new_ptr
                 ValType::I64, // 8: i
             ],
+            instructions: instrs,
+        }
+    }
+
+    /// Generate `int_to_str(n: i64) -> i64` (packed string of n's decimal form).
+    /// Handles zero and negatives. Writes digits least-significant-first into a
+    /// freshly bump-allocated buffer.
+    pub(super) fn gen_int_to_str() -> FunctionBody {
+        // Locals: 0=val(param) 1=neg 2=count 3=tmp 4=ptr 5=total_len 6=pos
+        let mut instrs = Vec::new();
+        // neg = 0; if val < 0 { neg = 1; val = -val }
+        instrs.push(I64Const(0));
+        instrs.push(LocalSet(1));
+        instrs.push(LocalGet(0));
+        instrs.push(I64Const(0));
+        instrs.push(I64LtS);
+        instrs.push(If(BlockType::Empty));
+        instrs.push(I64Const(1));
+        instrs.push(LocalSet(1));
+        instrs.push(I64Const(0));
+        instrs.push(LocalGet(0));
+        instrs.push(I64Sub);
+        instrs.push(LocalSet(0));
+        instrs.push(End);
+        // count = 0; tmp = val; do { count++; tmp /= 10 } while tmp != 0
+        instrs.push(I64Const(0));
+        instrs.push(LocalSet(2));
+        instrs.push(LocalGet(0));
+        instrs.push(LocalSet(3));
+        instrs.push(Loop(BlockType::Empty));
+        instrs.push(LocalGet(2));
+        instrs.push(I64Const(1));
+        instrs.push(I64Add);
+        instrs.push(LocalSet(2));
+        instrs.push(LocalGet(3));
+        instrs.push(I64Const(10));
+        instrs.push(I64DivS);
+        instrs.push(LocalSet(3));
+        instrs.push(LocalGet(3));
+        instrs.push(I64Const(0));
+        instrs.push(I64Ne);
+        instrs.push(BrIf(0));
+        instrs.push(End);
+        // total_len = count + neg
+        instrs.push(LocalGet(2));
+        instrs.push(LocalGet(1));
+        instrs.push(I64Add);
+        instrs.push(LocalSet(5));
+        // ptr = heap; heap += total_len
+        instrs.push(GlobalGet(0));
+        instrs.push(I64ExtendI32U);
+        instrs.push(LocalSet(4));
+        instrs.push(GlobalGet(0));
+        instrs.push(LocalGet(5));
+        instrs.push(I32WrapI64);
+        instrs.push(I32Add);
+        instrs.push(GlobalSet(0));
+        // if neg { mem[ptr] = '-' }
+        instrs.push(LocalGet(1));
+        instrs.push(I64Eqz);
+        instrs.push(I32Eqz);
+        instrs.push(If(BlockType::Empty));
+        instrs.push(LocalGet(4));
+        instrs.push(I32WrapI64);
+        instrs.push(I32Const(45)); // '-'
+        instrs.push(I32Store8(0, 0));
+        instrs.push(End);
+        // pos = ptr + total_len - 1; tmp = val
+        instrs.push(LocalGet(4));
+        instrs.push(LocalGet(5));
+        instrs.push(I64Add);
+        instrs.push(I64Const(1));
+        instrs.push(I64Sub);
+        instrs.push(LocalSet(6));
+        instrs.push(LocalGet(0));
+        instrs.push(LocalSet(3));
+        // do { mem[pos] = '0' + tmp%10; pos--; tmp /= 10 } while tmp != 0
+        instrs.push(Loop(BlockType::Empty));
+        instrs.push(LocalGet(6));
+        instrs.push(I32WrapI64);
+        instrs.push(I32Const(48)); // '0'
+        instrs.push(LocalGet(3));
+        instrs.push(I64Const(10));
+        instrs.push(I64RemS);
+        instrs.push(I32WrapI64);
+        instrs.push(I32Add);
+        instrs.push(I32Store8(0, 0));
+        instrs.push(LocalGet(6));
+        instrs.push(I64Const(1));
+        instrs.push(I64Sub);
+        instrs.push(LocalSet(6));
+        instrs.push(LocalGet(3));
+        instrs.push(I64Const(10));
+        instrs.push(I64DivS);
+        instrs.push(LocalSet(3));
+        instrs.push(LocalGet(3));
+        instrs.push(I64Const(0));
+        instrs.push(I64Ne);
+        instrs.push(BrIf(0));
+        instrs.push(End);
+        // return (ptr << 32) | total_len
+        instrs.push(LocalGet(4));
+        instrs.push(I64Const(32));
+        instrs.push(I64Shl);
+        instrs.push(LocalGet(5));
+        instrs.push(I64Or);
+
+        FunctionBody {
+            params: vec![ValType::I64],
+            results: vec![ValType::I64],
+            locals: vec![ValType::I64; 6], // 1..=6
+            instructions: instrs,
+        }
+    }
+
+    /// Generate `to_str(v: i64) -> i64`: pass packed strings through unchanged,
+    /// convert small integers to decimal. Strings pack a heap ptr (≥ 1024) into
+    /// the high 32 bits, so any value ≥ 2^32 is already a string; anything
+    /// smaller (including negatives) is treated as an integer.
+    pub(super) fn gen_to_str(int_to_str_idx: u32) -> FunctionBody {
+        let mut instrs = Vec::new();
+        instrs.push(LocalGet(0));
+        instrs.push(I64Const(0x1_0000_0000));
+        instrs.push(I64GeS);
+        instrs.push(If(BlockType::Result(ValType::I64)));
+        instrs.push(LocalGet(0));
+        instrs.push(Else);
+        instrs.push(LocalGet(0));
+        instrs.push(Call(int_to_str_idx));
+        instrs.push(End);
+
+        FunctionBody {
+            params: vec![ValType::I64],
+            results: vec![ValType::I64],
+            locals: vec![],
             instructions: instrs,
         }
     }
