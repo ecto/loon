@@ -38,6 +38,30 @@ pub fn compile_with_imports(exprs: &[Expr], base_dir: &std::path::Path) -> Resul
     Ok(compiler.finish())
 }
 
+/// Does the legacy direct WASM backend emit code for this builtin?
+///
+/// This is codegen's **coverage contract against the single source of truth**
+/// (`Built`). It is exhaustive on purpose: adding a `Built` variant is a
+/// compile error here until someone decides whether the wasm backend handles
+/// it. `true` means an arm in `compile_call` emits it; `false` means it falls
+/// through to a clean "not yet supported" error. The EIR VM/interpreter remain
+/// the oracle for the `false` set until those gaps close.
+fn wasm_builtin_supported(b: crate::eir::Built) -> bool {
+    use crate::eir::Built::*;
+    match b {
+        // Emitted by a `compile_call` arm (directly or as an operator form).
+        Str | Substring | CharAt | Conj | Cons | Assoc | Get | Entries | Split
+        | Lowercase | Uppercase | Unit | Magnitude | Len | First | Empty
+        | Println | Print | Map | Filter | Each | Fold | Update | GroupBy
+        | Merge | Range | Take | SortBy | Abs | Min | Max | Not | Or => true,
+        // Not yet implemented on the wasm backend.
+        Reduce | FlatMap | Keys | Vals | Nth | Drop | Slice | Contains | Join
+        | Trim | Sort | Reverse | Flatten | Zip | Chunk | Any | All | Sum | Int
+        | Float | IntoMap | Collect | StartsWith | EndsWith | Replace | IndexOf
+        | Last | Find | Keyword | KeywordizeKeys | AssertEq | Concat => false,
+    }
+}
+
 #[derive(Clone)]
 struct FnDef {
     func_idx: u32,
@@ -2981,14 +3005,21 @@ impl<'a> FnCtx<'a> {
                     if self.locals.contains_key(name) {
                         return self.compile_closure_call_local(name, &items[1..]);
                     }
-                    // Consult the single source of truth: if this name is a
-                    // known builtin that no arm above handled, the wasm backend
-                    // simply hasn't implemented it yet — say so plainly, rather
-                    // than the misleading "unknown function".
-                    if crate::eir::Built::from_name(name).is_some() {
-                        return Err(format!(
-                            "codegen: builtin '{name}' is not yet supported on the wasm backend"
-                        ));
+                    // Consult the single source of truth. A known builtin that
+                    // reached this fallthrough was not emitted by any arm above:
+                    // its coverage-contract entry decides the diagnostic, so the
+                    // backend's gaps are attributed to one exhaustive table.
+                    if let Some(b) = crate::eir::Built::from_name(name) {
+                        return Err(if wasm_builtin_supported(b) {
+                            // Supported builtins are handled by arms above;
+                            // reaching here means a malformed (e.g. wrong-arity)
+                            // call, not an unknown name.
+                            format!("codegen: malformed call to builtin '{name}'")
+                        } else {
+                            format!(
+                                "codegen: builtin '{name}' is not yet supported on the wasm backend"
+                            )
+                        });
                     }
                     return Err(format!("codegen: unknown function '{name}'"));
                 }
@@ -4406,6 +4437,34 @@ mod tests {
         wasmparser::Validator::new()
             .validate_all(&bytes)
             .unwrap_or_else(|e| panic!("invalid wasm for {src:?}: {e}"));
+    }
+
+    /// The coverage contract must stay honest: every builtin the map marks
+    /// unsupported is rejected with the canonical, attributed diagnostic — never
+    /// silently miscompiled or reported as an "unknown function". (The supported
+    /// set is exercised for real by the differential suite and the `valid`
+    /// tests above.) Because `wasm_builtin_supported` is exhaustive over `Built`,
+    /// adding a builtin forces a conscious entry here, and this test then holds
+    /// the entry to its word.
+    #[test]
+    fn unsupported_builtins_are_rejected_cleanly() {
+        use crate::eir::Built;
+        for &b in Built::ALL {
+            if wasm_builtin_supported(b) {
+                continue;
+            }
+            let src = format!("[fn main [] [{}]]", b.name());
+            let err = compile(&parse(&src).unwrap()).expect_err(&format!(
+                "builtin '{}' is marked unsupported but compiled",
+                b.name()
+            ));
+            assert!(
+                err.contains("not yet supported on the wasm backend"),
+                "builtin '{}' should report the canonical 'not yet supported' \
+                 diagnostic, got: {err}",
+                b.name()
+            );
+        }
     }
 
     #[test]
