@@ -75,17 +75,21 @@ params are float, propagated through call sites. Synthesized nodes (desugared
   for the body's dynamic extent; `[resume v]` (in tail position) makes the op
   return `v`. Handlers are dynamically scoped (intercept ops through calls and
   nest correctly).
+- **Abort / `try`**: `Fail.fail v` and `[try expr handler]` lower to the WASM
+  exception proposal (a `fail` tag; `throw` / `try_table` catch), so abort
+  unwinds correctly across calls — including recursive abort handling.
 - Dead-code elimination (`tree_shake`) and a relocating function-index pass so
   imports and `_start` stay correct.
 
 ## What does *not* compile yet (use `loon run`)
 
 - **Non-tail / escaping / multi-shot continuations** — `resume` used anywhere
-  but tail position (the function-returning `State` pattern in
-  `samples/state.oo`), and **abort-style `try`** (`tco-stress.oo`), which needs a
-  non-local exit across calls. The tail-resumptive tier above is the boundary;
-  the rest needs reified continuations (CPS / a trampoline, or wasm exceptions
-  for abort). The VM implements all of these.
+  but tail position, i.e. the continuation reified as a first-class value (the
+  function-returning `State` pattern in `samples/state.oo`, where a handler
+  clause returns `[fn [s] [[resume s] s]]`). This is the one remaining tier and
+  needs reified continuations: a whole-program CPS/trampoline transform, or the
+  wasm stack-switching proposal (unsupported by current runtimes). Tail-resume
+  and abort (above) are the boundary. The VM implements the full set.
 - **Sets** (`#{…}`) as data.
 - **Heterogeneous / fully-dynamic values.** The string-vs-pointer
   self-description used for map keys, `empty?`, and `str` covers homogeneous
