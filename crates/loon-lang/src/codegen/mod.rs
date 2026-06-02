@@ -2087,6 +2087,25 @@ impl<'a> FnCtx<'a> {
             ExprKind::List(items) => {
                 if let ExprKind::Symbol(s) = &items[0].kind {
                     if s == "fn" {
+                        // `[fn [params] …]` is an anonymous closure. A nested
+                        // *named* form `[fn name [params] …]` (a local function
+                        // definition inside a body) compiles to a closure value
+                        // bound to `name` in scope.
+                        let named = items.len() >= 3
+                            && matches!(&items[1].kind, ExprKind::Symbol(_))
+                            && matches!(&items[2].kind, ExprKind::List(_));
+                        if named {
+                            let name = match &items[1].kind {
+                                ExprKind::Symbol(n) => n.clone(),
+                                _ => unreachable!(),
+                            };
+                            self.compile_closure(&items[2..])?;
+                            let l = self.alloc_local();
+                            self.instructions.push(WasmInstruction::LocalSet(l));
+                            self.locals.insert(name, l);
+                            self.instructions.push(WasmInstruction::LocalGet(l));
+                            return Ok(());
+                        }
                         return self.compile_closure(&items[1..]);
                     }
                 }
@@ -4133,6 +4152,13 @@ mod tests {
     #[test]
     fn compile_conj_len_are_valid() {
         valid(r#"[fn main [] [println [len [conj [conj #[] 5] 9]]]]"#);
+    }
+    #[test]
+    fn compile_nested_named_fn_is_valid() {
+        valid(
+            r#"[fn outer [n] [fn dbl [x] [* x 2]] [+ [dbl n] [dbl 1]]]
+               [fn main [] [println [outer 10]]]"#,
+        );
     }
     #[test]
     fn compile_lowercase_and_builtin_hof_are_valid() {
