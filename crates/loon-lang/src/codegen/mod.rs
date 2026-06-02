@@ -80,6 +80,16 @@ struct Compiler {
     /// Names of functions whose result is a float (computed by a pre-pass), so
     /// call sites can be classified by `expr_is_float`.
     float_return_fns: std::collections::HashSet<String>,
+    /// Dynamic effect-handler slots: each `Effect.op` used in a `handle` gets a
+    /// small id; the current handler closure for it lives at memory offset
+    /// `HANDLER_BASE + id*8` (0 = no handler installed). Enables tail-resumptive
+    /// handlers without a full continuation transform.
+    handler_op_ids: HashMap<String, u32>,
+    /// Whether the program contains any `handle` form. Effect operations only
+    /// emit the (table-using) handler-slot dispatch when this holds; otherwise
+    /// they call their host import directly, so handler-free programs need no
+    /// function table.
+    uses_handlers: bool,
     #[allow(dead_code)]
     adt_types: Vec<AdtInfo>,
     table_entries: Vec<u32>,
@@ -443,6 +453,8 @@ impl Compiler {
             adt_constructors: HashMap::new(),
             adt_float_fields: HashMap::new(),
             float_return_fns: std::collections::HashSet::new(),
+            handler_op_ids: HashMap::new(),
+            uses_handlers: false,
             adt_types: Vec::new(),
             table_entries: Vec::new(),
             table_map: HashMap::new(),
@@ -476,6 +488,13 @@ impl Compiler {
         id
     }
     fn ensure_in_table(&mut self, func_idx: u32) -> u32 {
+        if self.table_entries.is_empty() {
+            // Reserve table index 0 as a placeholder, so no closure ever has
+            // table index 0. A no-capture closure packs its value as `ti << 32`,
+            // which would be 0 for `ti == 0` — indistinguishable from "absent"
+            // (e.g. an empty effect-handler slot). The slot is never called.
+            self.table_entries.push(func_idx);
+        }
         if let Some(&ti) = self.table_map.get(&func_idx) {
             return ti;
         }
@@ -708,6 +727,7 @@ impl Compiler {
         // With ADT field float-ness known, determine which functions return a
         // float so call sites classify correctly.
         self.compute_float_return_fns(exprs);
+        self.uses_handlers = exprs.iter().any(Self::contains_handle);
         #[allow(clippy::possible_missing_else)]
         for expr in exprs {
             if let ExprKind::List(items) = &expr.kind {
@@ -835,6 +855,19 @@ impl Compiler {
             ExprKind::List(items) => match items.first().map(|e| &e.kind) {
                 Some(ExprKind::Symbol(s)) => match s.as_str() {
                     "str" | "str-concat" | "substring" | "lowercase" | "uppercase" => true,
+                    "resume" => items.get(1).is_some_and(|e| Self::expr_returns_string(e, fns)),
+                    // A `handle` yields a string when every handler-clause body
+                    // does (tail-resumptive handlers feed those values back as
+                    // the operations' results).
+                    "handle" if items.len() > 2 => {
+                        let mut k = 3;
+                        let mut all = true;
+                        while k < items.len() {
+                            all &= Self::expr_returns_string(&items[k], fns);
+                            k += 2;
+                        }
+                        all
+                    }
                     "do" => items.last().is_some_and(|e| Self::expr_returns_string(e, fns)),
                     "if" => {
                         items.len() >= 4
@@ -1086,6 +1119,15 @@ impl Compiler {
         self.effect_imports.insert(key, idx);
         idx
     }
+    /// Memory address of the handler slot for effect op `key` (`"Effect.op"`),
+    /// assigning a fresh id on first use. Slots live below the heap (which
+    /// starts at 4096), so they never collide with allocations.
+    fn handler_slot_addr(&mut self, key: &str) -> i32 {
+        let next = self.handler_op_ids.len() as u32;
+        let id = *self.handler_op_ids.entry(key.to_string()).or_insert(next);
+        const HANDLER_BASE: i32 = 256;
+        HANDLER_BASE + (id as i32) * 8
+    }
     /// Host import `loon:rt::print-f64(bits) -> i64` that formats a float (given
     /// as its i64 bit pattern) the way the VM does and writes it with a newline.
     fn ensure_print_f64_import(&mut self) -> u32 {
@@ -1198,6 +1240,19 @@ impl Compiler {
             if !changed {
                 break;
             }
+        }
+    }
+    /// Whether `expr` contains a `handle` form anywhere within it.
+    fn contains_handle(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::List(items) => {
+                matches!(items.first().map(|e| &e.kind), Some(ExprKind::Symbol(s)) if s == "handle")
+                    || items.iter().any(Self::contains_handle)
+            }
+            ExprKind::Tuple(items) | ExprKind::Vec(items) | ExprKind::Set(items) => {
+                items.iter().any(Self::contains_handle)
+            }
+            _ => false,
         }
     }
     fn collect_adt_def(&mut self, args: &[Expr]) -> Result<(), String> {
@@ -1346,6 +1401,7 @@ impl Compiler {
             loop_starts: Vec::new(),
             loop_vars: Vec::new(),
             float_locals: std::collections::HashSet::new(),
+            string_locals: std::collections::HashSet::new(),
         };
         for (i, p) in params.iter().enumerate() {
             if let ClosureParam::Simple(s) = p {
@@ -1638,6 +1694,9 @@ struct FnCtx<'a> {
     loop_vars: Vec<Vec<u32>>,
     /// Names of locals currently bound to float (f64-bit) values.
     float_locals: std::collections::HashSet<String>,
+    /// Names of locals currently bound to string values (so bare `println`
+    /// formats them as strings rather than integers).
+    string_locals: std::collections::HashSet<String>,
 }
 
 impl<'a> FnCtx<'a> {
@@ -1792,6 +1851,11 @@ impl<'a> FnCtx<'a> {
     /// pick the string-printing path when it can prove the argument is a
     /// string at compile time.
     fn expr_is_string(&self, expr: &Expr) -> bool {
+        if let ExprKind::Symbol(s) = &expr.kind {
+            if self.string_locals.contains(s) {
+                return true;
+            }
+        }
         Compiler::expr_returns_string(expr, &self.compiler.string_fns)
     }
     /// Whether `expr` evaluates to a float in the current local context.
@@ -2256,10 +2320,14 @@ impl<'a> FnCtx<'a> {
                         _ => return Err("let binding must be a symbol".into()),
                     };
                     let is_float = self.expr_is_float(&items[vi]);
+                    let is_string = self.expr_is_string(&items[vi]);
                     self.compile_expr(&items[vi])?;
                     let local = self.alloc_local();
                     if is_float {
                         self.float_locals.insert(name.clone());
+                    }
+                    if is_string {
+                        self.string_locals.insert(name.clone());
                     }
                     self.locals.insert(name, local);
                     self.instructions.push(WasmInstruction::LocalSet(local));
@@ -2562,16 +2630,29 @@ impl<'a> FnCtx<'a> {
                     self.instructions.push(WasmInstruction::I64Const(0));
                     return Ok(());
                 }
-                "handle" | "resume" | "try" => {
-                    // Delimited continuations need to capture and resume a stack
-                    // segment, which standalone wasm can't express without a
-                    // whole-program CPS/trampoline transform. These run on the
-                    // EIR VM (`loon run`) for now. Effect *operations*
-                    // (`E.op …`) still compile to host imports.
-                    return Err(format!(
-                        "codegen: '{s}' (delimited continuations) is not supported by the \
+                "resume" => {
+                    // Tail-resumptive handlers: `[resume v]` makes the effect
+                    // operation that invoked the handler return `v`. With the
+                    // handler compiled as an ordinary function whose result is
+                    // the operation's result, `resume` is the identity.
+                    if let Some(v) = items.get(1) {
+                        return self.compile_expr(v);
+                    }
+                    self.instructions.push(WasmInstruction::I64Const(0));
+                    return Ok(());
+                }
+                "handle" => {
+                    return self.compile_handle(items);
+                }
+                "try" => {
+                    // `try` needs general (multi-shot/escaping) continuations,
+                    // which standalone wasm can't express without a whole-program
+                    // CPS transform. Runs on the VM via `loon run`.
+                    return Err(
+                        "codegen: 'try' (delimited continuations) is not supported by the \
                          wasm backend yet; run it on the VM with `loon run`"
-                    ));
+                            .into(),
+                    );
                 }
                 name => {
                     if let Some((tag, arity)) = self.compiler.adt_constructors.get(name).cloned() {
@@ -2615,6 +2696,33 @@ impl<'a> FnCtx<'a> {
                     return self.compile_call(&rewritten);
                 }
                 if effect.starts_with(char::is_uppercase) {
+                    // One-argument ops may be intercepted by a tail-resumptive
+                    // `handle`: if a handler closure is installed in this op's
+                    // slot, call it; otherwise fall back to the host import.
+                    // Only programs that use `handle` get this (table-using)
+                    // dispatch — others call the import directly.
+                    if items.len() == 2 && self.compiler.uses_handlers {
+                        use WasmInstruction as W;
+                        let addr = self.compiler.handler_slot_addr(&format!("{effect}.{op}"));
+                        let h = self.alloc_local();
+                        self.instructions.push(W::I32Const(addr));
+                        self.instructions.push(W::I64Load(3, 0));
+                        self.instructions.push(W::LocalTee(h));
+                        self.instructions.push(W::I64Eqz);
+                        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+                        // No handler installed → default host import.
+                        let import_idx = self.compiler.get_or_create_effect_import(effect, op);
+                        self.compile_expr(&items[1])?;
+                        self.instructions.push(W::Call(import_idx));
+                        self.instructions.push(W::Else);
+                        // Handler installed → call it with the operation argument.
+                        self.compile_expr(&items[1])?;
+                        let arg = self.alloc_local();
+                        self.instructions.push(W::LocalSet(arg));
+                        self.emit_apply1(&FnRepr::Closure(h), arg);
+                        self.instructions.push(W::End);
+                        return Ok(());
+                    }
                     let import_idx = self.compiler.get_or_create_effect_import(effect, op);
                     for arg in &items[1..] {
                         self.compile_expr(arg)?;
@@ -2910,6 +3018,7 @@ impl<'a> FnCtx<'a> {
             loop_starts: Vec::new(),
             loop_vars: Vec::new(),
             float_locals: std::collections::HashSet::new(),
+            string_locals: std::collections::HashSet::new(),
         };
         cctx.locals.insert("__env_ptr".to_string(), 0);
         for (i, p) in params.iter().enumerate() {
@@ -3295,6 +3404,83 @@ impl<'a> FnCtx<'a> {
         self.instructions.push(W::End);
         self.instructions.push(W::End);
         self.instructions.push(W::LocalGet(result));
+        Ok(())
+    }
+    /// `[handle body  [E.op param] hbody …  [return v] rbody]` — tail-resumptive
+    /// effect handlers. Each handler clause is compiled to a one-argument
+    /// closure (its result is the operation's result; `resume` is the identity)
+    /// and installed in the op's handler slot for the dynamic extent of `body`;
+    /// the previous slot value is restored afterwards. This covers handlers that
+    /// resume once in tail position (and `return` transforms); it does not
+    /// implement aborting or multi-shot handlers (those need full continuations
+    /// and run on the VM).
+    fn compile_handle(&mut self, items: &[Expr]) -> Result<(), String> {
+        use WasmInstruction as W;
+        self.compiler.force_heap = true;
+        let body = &items[1];
+        let mut installed: Vec<(i32, u32)> = Vec::new(); // (slot addr, saved-old local)
+        let mut return_clause: Option<(String, Expr)> = None;
+        let mut i = 2;
+        while i + 1 < items.len() {
+            let pat = &items[i];
+            let hbody = &items[i + 1];
+            if let ExprKind::List(pitems) = &pat.kind {
+                match pitems.first().map(|e| &e.kind) {
+                    Some(ExprKind::DotAccess(obj, op)) => {
+                        if let ExprKind::Symbol(eff) = &obj.kind {
+                            let addr = self.compiler.handler_slot_addr(&format!("{eff}.{op}"));
+                            let param = match pitems.get(1).map(|e| &e.kind) {
+                                Some(ExprKind::Symbol(p)) => p.clone(),
+                                _ => "_".to_string(),
+                            };
+                            let paramlist = Expr::new(
+                                ExprKind::List(vec![Expr::new(
+                                    ExprKind::Symbol(param),
+                                    pat.span,
+                                )]),
+                                pat.span,
+                            );
+                            // Build + store the handler closure, save old slot.
+                            self.compile_closure(&[paramlist, hbody.clone()])?;
+                            let htmp = self.alloc_local();
+                            self.instructions.push(W::LocalSet(htmp));
+                            let save = self.alloc_local();
+                            self.instructions.push(W::I32Const(addr));
+                            self.instructions.push(W::I64Load(3, 0));
+                            self.instructions.push(W::LocalSet(save));
+                            self.instructions.push(W::I32Const(addr));
+                            self.instructions.push(W::LocalGet(htmp));
+                            self.instructions.push(W::I64Store(3, 0));
+                            installed.push((addr, save));
+                        }
+                    }
+                    Some(ExprKind::Symbol(s)) if s == "return" => {
+                        let var = match pitems.get(1).map(|e| &e.kind) {
+                            Some(ExprKind::Symbol(p)) => p.clone(),
+                            _ => "_".to_string(),
+                        };
+                        return_clause = Some((var, hbody.clone()));
+                    }
+                    _ => {}
+                }
+            }
+            i += 2;
+        }
+        self.compile_expr(body)?;
+        let result = self.alloc_local();
+        self.instructions.push(W::LocalSet(result));
+        // Restore the previous handler slots.
+        for (addr, save) in &installed {
+            self.instructions.push(W::I32Const(*addr));
+            self.instructions.push(W::LocalGet(*save));
+            self.instructions.push(W::I64Store(3, 0));
+        }
+        if let Some((var, rbody)) = return_clause {
+            self.locals.insert(var, result); // bind the return var to the result
+            self.compile_expr(&rbody)?;
+        } else {
+            self.instructions.push(W::LocalGet(result));
+        }
         Ok(())
     }
     /// `[sort-by f coll]` / `[sort-by f :desc coll]` — a stable sort of `coll`
@@ -3952,6 +4138,14 @@ mod tests {
     fn compile_sort_by_is_valid() {
         valid(r#"[fn main [] [println [len [sort-by [fn [x] x] #[3 1 2]]]]]"#);
         valid(r#"[fn main [] [println [len [sort-by [fn [[_ n]] n] :desc [entries {}]]]]]"#);
+    }
+    #[test]
+    fn compile_tail_resumptive_handlers_are_valid() {
+        valid(
+            r#"[effect E [op [String] String]]
+               [fn use [] [E.op "x"]]
+               [fn main [] [println [handle [use] [E.op p] [resume "GOT"]]]]"#,
+        );
     }
     #[test]
     fn compile_floats_are_valid() {

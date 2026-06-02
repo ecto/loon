@@ -364,6 +364,17 @@ fn run_file_wasm(path: &PathBuf) {
 
     let mut store = wasmtime::Store::new(&engine, wasi);
 
+    // Effect operations emit an import for their no-handler default path. Ops
+    // handled by a tail-resumptive `handle` never take that path at runtime, but
+    // the import is still declared, and user-defined effects have no host
+    // implementation. Define any such leftover imports as traps so the module
+    // instantiates; a trap only fires if an unhandled effect is actually
+    // performed.
+    if let Err(e) = linker.define_unknown_imports_as_traps(&module) {
+        eprintln!("{}: {e}", "wasmtime error".red().bold());
+        std::process::exit(1);
+    }
+
     let instance = match linker.instantiate(&mut store, &module) {
         Ok(i) => i,
         Err(e) => {

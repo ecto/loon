@@ -142,6 +142,9 @@ const SUPPORTED: &[&str] = &[
     // Floating-point: f64 literals/arithmetic, ADT f64 fields, float-returning
     // functions, and VM-matching float formatting.
     "types.oo",
+    // Tail-resumptive algebraic effect handlers (`handle`/`resume`).
+    "effects.oo",
+    "user-effects.oo",
 ];
 
 #[test]
@@ -173,13 +176,12 @@ fn supported_samples_match_interpreter() {
 /// The interpreter, by contrast, must run them — proving the program itself is
 /// valid and the boundary is a backend gap, not a broken sample.
 const UNSUPPORTED: &[(&str, &str)] = &[
-    // Algebraic effects via delimited continuations.
-    ("effects.oo", "delimited continuations"),
-    ("user-effects.oo", "delimited continuations"),
+    // `try` and escaping/multi-shot continuations need a full continuation
+    // transform (tail-resumptive `handle` is supported — see effects.oo).
     ("tco-stress.oo", "delimited continuations"),
-    // `state.oo` is also a continuations program; its handler desugars to a
-    // call form the backend does not recognize. (Nicer would be the explicit
-    // "delimited continuations" message — see continuations support work.)
+    // `state.oo` resumes a captured continuation *after* `handle` returns
+    // (escaping, multi-shot) — its handler desugars to a call form the
+    // tail-resumptive backend does not recognize.
     ("state.oo", "unsupported call form"),
     // Dimensional units + a Physics effect handler (continuations); floats
     // themselves are supported now (see types.oo in SUPPORTED).
