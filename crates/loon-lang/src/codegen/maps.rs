@@ -8,9 +8,12 @@
 //!   offset 16: data_ptr (i64) — points to `capacity * 2` i64 slots
 //!
 //! Operations are copy-on-write for persistence, like vectors. Key comparison
-//! is selected by an `is_str` flag passed from the call site (the compiler
-//! knows the static key type): string keys compare by content via `str_eq`,
-//! everything else by raw i64 equality. Uses global 0 as the bump allocator.
+//! is *self-describing* (see `emit_key_eq`): raw i64 equality first, then a
+//! string-content compare when both keys look like string pointers (their
+//! high-32 bits land in the heap range). This works for string keys even when
+//! the static key type is unknown (e.g. a generic accumulator through `fold`).
+//! The trailing `is_str` parameter on the helpers is now vestigial. Uses global
+//! 0 as the bump allocator.
 
 use super::{FunctionBody, WasmInstruction::*};
 use wasm_encoder::*;
@@ -67,22 +70,45 @@ impl MapRuntime {
         }
     }
 
-    /// Emit: compute key equality of locals `a` and `b` (both i64) under the
-    /// `is_str` flag (local), leaving an i64 0/1 on the stack. Calls `str_eq`.
-    fn emit_key_eq(i: &mut Vec<super::WasmInstruction>, a: u32, b: u32, is_str: u32, str_eq: u32) {
-        i.push(LocalGet(is_str));
-        i.push(I64Eqz); // 1 if not string
-        i.push(If(BlockType::Result(ValType::I64)));
-        // non-string: a == b
+    /// Emit a *self-describing* key equality of locals `a` and `b`, leaving an
+    /// i64 0/1. Fast path: raw `a == b` (covers ints, keywords, and identical
+    /// string pointers). Otherwise, if both values look like string pointers —
+    /// their packed high-32 bits fall in the heap range `[1024, heap_ptr)`,
+    /// which ints (high bits 0) and keyword ids (high bits huge) never do —
+    /// compare by content via `str_eq`. This removes the need for a compile-time
+    /// key-type flag, so string keys work even through generic HOF-threaded code.
+    fn emit_key_eq(i: &mut Vec<super::WasmInstruction>, a: u32, b: u32, str_eq: u32) {
+        // strptr(x): (x>>32) >= 1024 && (x>>32) < heap_ptr  -> i32
+        let push_strptr = |i: &mut Vec<super::WasmInstruction>, x: u32| {
+            i.push(LocalGet(x));
+            i.push(I64Const(32));
+            i.push(I64ShrU);
+            i.push(I64Const(1024));
+            i.push(I64GeS);
+            i.push(LocalGet(x));
+            i.push(I64Const(32));
+            i.push(I64ShrU);
+            i.push(GlobalGet(0));
+            i.push(I64ExtendI32U);
+            i.push(I64LtS);
+            i.push(I32And);
+        };
         i.push(LocalGet(a));
         i.push(LocalGet(b));
         i.push(I64Eq);
-        i.push(I64ExtendI32U);
+        i.push(If(BlockType::Result(ValType::I64)));
+        i.push(I64Const(1));
         i.push(Else);
-        // string: str_eq(a, b)
+        push_strptr(i, a);
+        push_strptr(i, b);
+        i.push(I32And);
+        i.push(If(BlockType::Result(ValType::I64)));
         i.push(LocalGet(a));
         i.push(LocalGet(b));
         i.push(Call(str_eq));
+        i.push(Else);
+        i.push(I64Const(0));
+        i.push(End);
         i.push(End);
     }
 
@@ -119,7 +145,7 @@ impl MapRuntime {
         i.push(I64Load(3, 0));
         i.push(LocalSet(6));
         // if key_eq(ek, k) return data[i*16+8]
-        Self::emit_key_eq(&mut i, 6, 1, 2, str_eq);
+        Self::emit_key_eq(&mut i, 6, 1, str_eq);
         i.push(I64Eqz);
         i.push(I32Eqz); // truthy?
         i.push(If(BlockType::Empty));
@@ -178,7 +204,7 @@ impl MapRuntime {
         i.push(I32WrapI64);
         i.push(I64Load(3, 0));
         i.push(LocalSet(6));
-        Self::emit_key_eq(&mut i, 6, 1, 2, str_eq);
+        Self::emit_key_eq(&mut i, 6, 1, str_eq);
         i.push(I64Eqz);
         i.push(I32Eqz);
         i.push(If(BlockType::Empty));
@@ -272,7 +298,7 @@ impl MapRuntime {
         i.push(LocalGet(11));
         i.push(I64Store(3, 0));
         // value: if key_eq(ek,k) { v ; found=1 } else { old value }
-        Self::emit_key_eq(&mut i, 11, 1, 3, str_eq);
+        Self::emit_key_eq(&mut i, 11, 1, str_eq);
         i.push(I64Eqz);
         i.push(I32Eqz);
         i.push(If(BlockType::Result(ValType::I64)));

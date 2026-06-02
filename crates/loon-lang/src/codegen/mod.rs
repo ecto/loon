@@ -211,6 +211,7 @@ enum WasmInstruction {
     I64And,
     I64Or,
     I64Shl,
+    I32And,
     I32Add,
     I32Load8U(u32, u32),
     I32Store8(u32, u32),
@@ -426,6 +427,9 @@ fn emit_instruction(f: &mut Function, instr: &WasmInstruction) {
         }
         WasmInstruction::I32Add => {
             f.instruction(&Instruction::I32Add);
+        }
+        WasmInstruction::I32And => {
+            f.instruction(&Instruction::I32And);
         }
         WasmInstruction::I32Eq => {
             f.instruction(&Instruction::I32Eq);
@@ -3666,6 +3670,12 @@ mod tests {
         valid(
             r#"[fn add1 [m k] [assoc m k [+ [get m k] 1]]]
                [fn main [] [let m [fold {} add1 #[5 5 7]]] [println [get m 5]]]"#,
+        );
+        // String keys through a generic accumulator passed to fold — relies on
+        // the self-describing key comparison, not a static key-type flag.
+        valid(
+            r#"[fn add1 [m k] [assoc m k [+ [get m k] 1]]]
+               [fn main [] [let m [fold {} add1 [split "a b a" " "]]] [println [get m "a"]]]"#,
         );
     }
     #[test]
