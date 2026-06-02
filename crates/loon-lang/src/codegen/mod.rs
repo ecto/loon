@@ -122,6 +122,13 @@ struct Compiler {
     /// type-directed choices instead of guessing from syntax. Synthesized nodes
     /// (desugared `pipe`/`when`/… ) are absent and fall back to the untyped path.
     node_types: HashMap<NodeId, Type>,
+    /// Function keys (`name`/`name#arity`) whose result is float. The checker
+    /// generalizes polymorphic bodies, so concrete float-ness of a function's
+    /// result and params isn't on the body nodes — this structural fixpoint
+    /// recovers it so float ops compile inside function bodies.
+    float_fns: std::collections::HashSet<String>,
+    /// For each function key, the names of its float-typed parameters.
+    float_params: HashMap<String, Vec<String>>,
 }
 
 struct FunctionBody {
@@ -159,6 +166,17 @@ enum WasmInstruction {
     F64Add,
     F64Sub,
     F64Mul,
+    F64Div,
+    F64Lt,
+    F64Gt,
+    F64Le,
+    F64Ge,
+    F64Eq,
+    F64Ne,
+    F64ReinterpretI64,
+    I64ReinterpretF64,
+    F64ConvertI64S,
+    I64TruncF64S,
     LocalGet(u32),
     LocalSet(u32),
     LocalTee(u32),
@@ -249,6 +267,39 @@ fn emit_instruction(f: &mut Function, instr: &WasmInstruction) {
         }
         WasmInstruction::F64Mul => {
             f.instruction(&Instruction::F64Mul);
+        }
+        WasmInstruction::F64Div => {
+            f.instruction(&Instruction::F64Div);
+        }
+        WasmInstruction::F64Lt => {
+            f.instruction(&Instruction::F64Lt);
+        }
+        WasmInstruction::F64Gt => {
+            f.instruction(&Instruction::F64Gt);
+        }
+        WasmInstruction::F64Le => {
+            f.instruction(&Instruction::F64Le);
+        }
+        WasmInstruction::F64Ge => {
+            f.instruction(&Instruction::F64Ge);
+        }
+        WasmInstruction::F64Eq => {
+            f.instruction(&Instruction::F64Eq);
+        }
+        WasmInstruction::F64Ne => {
+            f.instruction(&Instruction::F64Ne);
+        }
+        WasmInstruction::F64ReinterpretI64 => {
+            f.instruction(&Instruction::F64ReinterpretI64);
+        }
+        WasmInstruction::I64ReinterpretF64 => {
+            f.instruction(&Instruction::I64ReinterpretF64);
+        }
+        WasmInstruction::F64ConvertI64S => {
+            f.instruction(&Instruction::F64ConvertI64S);
+        }
+        WasmInstruction::I64TruncF64S => {
+            f.instruction(&Instruction::I64TruncF64S);
         }
         WasmInstruction::LocalGet(i) => {
             f.instruction(&Instruction::LocalGet(*i));
@@ -424,6 +475,8 @@ impl Compiler {
             string_fns: std::collections::HashSet::new(),
             keywords: HashMap::new(),
             node_types: HashMap::new(),
+            float_fns: std::collections::HashSet::new(),
+            float_params: HashMap::new(),
         }
     }
     /// The resolved type of an AST node, if the checker inferred one.
@@ -593,6 +646,7 @@ impl Compiler {
             }
         }
         self.analyze_string_fns(exprs);
+        self.analyze_floats(exprs);
         for expr in exprs {
             if let ExprKind::List(items) = &expr.kind {
                 if items.len() >= 3 {
@@ -653,6 +707,174 @@ impl Compiler {
                 break;
             }
         }
+    }
+    /// Structural float check: whether `e` evaluates to a float, given the set
+    /// of in-scope float-named bindings and the known float-returning functions.
+    /// Used both by the whole-program fixpoint and (at runtime) by codegen.
+    fn is_float_static(
+        e: &Expr,
+        floats: &std::collections::HashSet<String>,
+        float_fns: &std::collections::HashSet<String>,
+    ) -> bool {
+        match &e.kind {
+            ExprKind::Float(_) => true,
+            ExprKind::Symbol(s) => floats.contains(s),
+            ExprKind::List(items) if !items.is_empty() => {
+                if let ExprKind::Symbol(h) = &items[0].kind {
+                    let argc = items.len() - 1;
+                    match h.as_str() {
+                        "+" | "-" | "*" | "/" | "min" | "max" if argc >= 2 => {
+                            Self::is_float_static(&items[1], floats, float_fns)
+                                || Self::is_float_static(&items[2], floats, float_fns)
+                        }
+                        "abs" | "inc" | "dec" if argc >= 1 => {
+                            Self::is_float_static(&items[1], floats, float_fns)
+                        }
+                        "if" if argc >= 3 => {
+                            Self::is_float_static(&items[2], floats, float_fns)
+                                || Self::is_float_static(&items[3], floats, float_fns)
+                        }
+                        "do" => items
+                            .last()
+                            .is_some_and(|x| Self::is_float_static(x, floats, float_fns)),
+                        _ => {
+                            float_fns.contains(h.as_str())
+                                || float_fns.contains(&format!("{h}#{argc}"))
+                        }
+                    }
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+    /// Whole-program fixpoint recovering which functions return floats and which
+    /// of their parameters are float. The checker generalizes polymorphic
+    /// bodies, so this structural pass fills the gap for monomorphic float use.
+    fn analyze_floats(&mut self, exprs: &[Expr]) {
+        // fn key -> param names; and (key, last body expr) per clause.
+        let mut fn_params: HashMap<String, Vec<String>> = HashMap::new();
+        let mut fn_bodies: Vec<(String, &Expr)> = Vec::new();
+        // (enclosing fn key, callee name, arg exprs)
+        let mut calls: Vec<(Option<String>, String, Vec<&Expr>)> = Vec::new();
+        fn collect_calls<'e>(
+            e: &'e Expr,
+            enc: Option<&str>,
+            out: &mut Vec<(Option<String>, String, Vec<&'e Expr>)>,
+        ) {
+            match &e.kind {
+                ExprKind::List(items) if !items.is_empty() => {
+                    if let ExprKind::Symbol(h) = &items[0].kind {
+                        if h == "fn" {
+                            return; // don't descend into nested closures
+                        }
+                        out.push((
+                            enc.map(String::from),
+                            h.clone(),
+                            items[1..].iter().collect(),
+                        ));
+                    }
+                    for it in items {
+                        collect_calls(it, enc, out);
+                    }
+                }
+                ExprKind::Vec(items) | ExprKind::Set(items) | ExprKind::Tuple(items) => {
+                    for it in items {
+                        collect_calls(it, enc, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for expr in exprs {
+            if let ExprKind::List(items) = &expr.kind {
+                if items.len() >= 3 && matches!(&items[0].kind, ExprKind::Symbol(s) if s == "fn") {
+                    if let ExprKind::Symbol(name) = &items[1].kind {
+                        let args = &items[1..];
+                        if Self::is_multi_arity(args) {
+                            for clause in &args[1..] {
+                                if let ExprKind::Tuple(parts) = &clause.kind {
+                                    if let Some(ExprKind::List(params)) =
+                                        parts.first().map(|e| &e.kind)
+                                    {
+                                        let pnames = Self::param_names(params);
+                                        let key = format!("{name}#{}", pnames.len());
+                                        fn_params.insert(key.clone(), pnames);
+                                        if let Some(last) = parts.last() {
+                                            fn_bodies.push((key.clone(), last));
+                                        }
+                                        for p in &parts[1..] {
+                                            collect_calls(p, Some(&key), &mut calls);
+                                        }
+                                    }
+                                }
+                            }
+                        } else if let ExprKind::List(params) = &items[2].kind {
+                            let pnames = Self::param_names(params);
+                            fn_params.insert(name.clone(), pnames);
+                            if let Some(last) = items.last() {
+                                fn_bodies.push((name.clone(), last));
+                            }
+                            for p in &items[3..] {
+                                collect_calls(p, Some(name), &mut calls);
+                            }
+                        }
+                    }
+                } else {
+                    collect_calls(expr, None, &mut calls);
+                }
+            }
+        }
+        let mut float_fns: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut float_params: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+        loop {
+            let mut changed = false;
+            for (key, last) in &fn_bodies {
+                let names = float_params.get(key).cloned().unwrap_or_default();
+                if !float_fns.contains(key) && Self::is_float_static(last, &names, &float_fns) {
+                    float_fns.insert(key.clone());
+                    changed = true;
+                }
+            }
+            for (enc, callee, args) in &calls {
+                let callee_key = if fn_params.contains_key(callee) {
+                    callee.clone()
+                } else {
+                    let k = format!("{callee}#{}", args.len());
+                    if fn_params.contains_key(&k) {
+                        k
+                    } else {
+                        continue;
+                    }
+                };
+                let enc_names = enc
+                    .as_ref()
+                    .and_then(|k| float_params.get(k))
+                    .cloned()
+                    .unwrap_or_default();
+                let pnames = fn_params[&callee_key].clone();
+                for (i, arg) in args.iter().enumerate() {
+                    if i >= pnames.len() {
+                        break;
+                    }
+                    if Self::is_float_static(arg, &enc_names, &float_fns) {
+                        let set = float_params.entry(callee_key.clone()).or_default();
+                        if set.insert(pnames[i].clone()) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        self.float_fns = float_fns;
+        self.float_params = float_params
+            .into_iter()
+            .map(|(k, v)| (k, v.into_iter().collect()))
+            .collect();
     }
     /// Whether an expression statically evaluates to a string, consulting the
     /// set of known string-returning functions for calls. Conservative.
@@ -1030,6 +1252,12 @@ impl Compiler {
         params: &[String],
         body: &[Expr],
     ) -> Result<(), String> {
+        // Params known to be float (from the float fixpoint) seed float_locals.
+        let float_locals: std::collections::HashSet<String> = self
+            .float_params
+            .get(key)
+            .map(|v| v.iter().cloned().collect())
+            .unwrap_or_default();
         let mut ctx = FnCtx {
             locals: HashMap::new(),
             local_count: params.len() as u32,
@@ -1037,6 +1265,7 @@ impl Compiler {
             compiler: self,
             loop_starts: Vec::new(),
             loop_vars: Vec::new(),
+            float_locals,
         };
         for (i, p) in params.iter().enumerate() {
             ctx.locals.insert(p.clone(), i as u32);
@@ -1300,6 +1529,9 @@ struct FnCtx<'a> {
     /// op (to compute `recur`'s branch depth) and its loop-variable locals.
     loop_starts: Vec<usize>,
     loop_vars: Vec<Vec<u32>>,
+    /// Names of in-scope bindings (params + lets) known to hold float values,
+    /// so arithmetic on them picks the f64 path.
+    float_locals: std::collections::HashSet<String>,
 }
 
 impl<'a> FnCtx<'a> {
@@ -1461,20 +1693,78 @@ impl<'a> FnCtx<'a> {
         // Fallback for synthesized nodes (desugared forms) the checker never saw.
         Compiler::expr_returns_string(expr, &self.compiler.string_fns)
     }
+    /// Whether an expression is statically of float type. Trusts the checker's
+    /// concrete type when present; otherwise falls back to a structural check
+    /// (the checker generalizes polymorphic function bodies, so body nodes
+    /// often carry a type var rather than `Float`).
+    fn expr_is_float(&self, expr: &Expr) -> bool {
+        match self.compiler.node_type(expr) {
+            Some(Type::Float) => return true,
+            // A concrete non-float type is authoritative.
+            Some(t) if !matches!(t, Type::Var(_)) => return false,
+            _ => {}
+        }
+        Compiler::is_float_static(expr, &self.float_locals, &self.compiler.float_fns)
+    }
+    /// Compile a binary arithmetic op, choosing the i64 or f64 instruction by
+    /// the operands' static type. Float values are carried as f64 bits in the
+    /// i64 slot, so the float path reinterprets in and out.
+    fn compile_arith(
+        &mut self,
+        a: &Expr,
+        b: &Expr,
+        iop: WasmInstruction,
+        fop: WasmInstruction,
+    ) -> Result<(), String> {
+        if self.expr_is_float(a) || self.expr_is_float(b) {
+            self.compile_expr(a)?;
+            self.instructions.push(WasmInstruction::F64ReinterpretI64);
+            self.compile_expr(b)?;
+            self.instructions.push(WasmInstruction::F64ReinterpretI64);
+            self.instructions.push(fop);
+            self.instructions.push(WasmInstruction::I64ReinterpretF64);
+        } else {
+            self.compile_expr(a)?;
+            self.compile_expr(b)?;
+            self.instructions.push(iop);
+        }
+        Ok(())
+    }
+    /// Compile a comparison, choosing i64 or f64 by operand type. Both paths
+    /// yield an i32 which is widened to the i64 boolean value model.
+    fn compile_cmp(
+        &mut self,
+        a: &Expr,
+        b: &Expr,
+        iop: WasmInstruction,
+        fop: WasmInstruction,
+    ) -> Result<(), String> {
+        if self.expr_is_float(a) || self.expr_is_float(b) {
+            self.compile_expr(a)?;
+            self.instructions.push(WasmInstruction::F64ReinterpretI64);
+            self.compile_expr(b)?;
+            self.instructions.push(WasmInstruction::F64ReinterpretI64);
+            self.instructions.push(fop);
+        } else {
+            self.compile_expr(a)?;
+            self.compile_expr(b)?;
+            self.instructions.push(iop);
+        }
+        self.instructions.push(WasmInstruction::I64ExtendI32U);
+        Ok(())
+    }
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), String> {
         match &expr.kind {
             ExprKind::Int(n) => {
                 self.instructions.push(WasmInstruction::I64Const(*n));
                 Ok(())
             }
-            ExprKind::Float(_) => {
-                // The value model is untagged i64; arithmetic emits i64 ops, so
-                // an f64 here yields a module the validator rejects. Fail
-                // cleanly until there's a typed/tagged value model. (Runs on the
-                // VM via `loon run`.)
-                Err("codegen: floating-point values are not supported by the wasm \
-                     backend yet; run with `loon run`"
-                    .into())
+            ExprKind::Float(n) => {
+                // Floats are carried as their f64 bit-pattern in the i64 value
+                // slot; arithmetic/comparison reinterpret to f64 at the op.
+                self.instructions
+                    .push(WasmInstruction::I64Const(n.to_bits() as i64));
+                Ok(())
             }
             ExprKind::Keyword(k) => {
                 let id = self.compiler.intern_keyword(k);
@@ -1542,72 +1832,84 @@ impl<'a> FnCtx<'a> {
         if let ExprKind::Symbol(s) = &items[0].kind {
             match s.as_str() {
                 "+" => {
-                    self.compile_expr(&items[1])?;
-                    self.compile_expr(&items[2])?;
-                    self.instructions.push(WasmInstruction::I64Add);
-                    return Ok(());
+                    return self.compile_arith(
+                        &items[1],
+                        &items[2],
+                        WasmInstruction::I64Add,
+                        WasmInstruction::F64Add,
+                    );
                 }
                 "-" => {
-                    self.compile_expr(&items[1])?;
-                    self.compile_expr(&items[2])?;
-                    self.instructions.push(WasmInstruction::I64Sub);
-                    return Ok(());
+                    return self.compile_arith(
+                        &items[1],
+                        &items[2],
+                        WasmInstruction::I64Sub,
+                        WasmInstruction::F64Sub,
+                    );
                 }
                 "*" => {
-                    self.compile_expr(&items[1])?;
-                    self.compile_expr(&items[2])?;
-                    self.instructions.push(WasmInstruction::I64Mul);
-                    return Ok(());
-                }
-                ">" => {
-                    self.compile_expr(&items[1])?;
-                    self.compile_expr(&items[2])?;
-                    self.instructions.push(WasmInstruction::I64GtS);
-                    // Comparisons produce an i32; values are i64 throughout
-                    // (incl. `if` conditions and booleans-as-values), so widen.
-                    self.instructions.push(WasmInstruction::I64ExtendI32U);
-                    return Ok(());
-                }
-                "<" => {
-                    self.compile_expr(&items[1])?;
-                    self.compile_expr(&items[2])?;
-                    self.instructions.push(WasmInstruction::I64LtS);
-                    self.instructions.push(WasmInstruction::I64ExtendI32U);
-                    return Ok(());
-                }
-                "=" => {
-                    self.compile_expr(&items[1])?;
-                    self.compile_expr(&items[2])?;
-                    self.instructions.push(WasmInstruction::I64Eq);
-                    self.instructions.push(WasmInstruction::I64ExtendI32U);
-                    return Ok(());
-                }
-                "!=" => {
-                    self.compile_expr(&items[1])?;
-                    self.compile_expr(&items[2])?;
-                    self.instructions.push(WasmInstruction::I64Ne);
-                    self.instructions.push(WasmInstruction::I64ExtendI32U);
-                    return Ok(());
-                }
-                "<=" => {
-                    self.compile_expr(&items[1])?;
-                    self.compile_expr(&items[2])?;
-                    self.instructions.push(WasmInstruction::I64LeS);
-                    self.instructions.push(WasmInstruction::I64ExtendI32U);
-                    return Ok(());
-                }
-                ">=" => {
-                    self.compile_expr(&items[1])?;
-                    self.compile_expr(&items[2])?;
-                    self.instructions.push(WasmInstruction::I64GeS);
-                    self.instructions.push(WasmInstruction::I64ExtendI32U);
-                    return Ok(());
+                    return self.compile_arith(
+                        &items[1],
+                        &items[2],
+                        WasmInstruction::I64Mul,
+                        WasmInstruction::F64Mul,
+                    );
                 }
                 "/" => {
-                    self.compile_expr(&items[1])?;
-                    self.compile_expr(&items[2])?;
-                    self.instructions.push(WasmInstruction::I64DivS);
-                    return Ok(());
+                    return self.compile_arith(
+                        &items[1],
+                        &items[2],
+                        WasmInstruction::I64DivS,
+                        WasmInstruction::F64Div,
+                    );
+                }
+                ">" => {
+                    return self.compile_cmp(
+                        &items[1],
+                        &items[2],
+                        WasmInstruction::I64GtS,
+                        WasmInstruction::F64Gt,
+                    );
+                }
+                "<" => {
+                    return self.compile_cmp(
+                        &items[1],
+                        &items[2],
+                        WasmInstruction::I64LtS,
+                        WasmInstruction::F64Lt,
+                    );
+                }
+                "=" => {
+                    return self.compile_cmp(
+                        &items[1],
+                        &items[2],
+                        WasmInstruction::I64Eq,
+                        WasmInstruction::F64Eq,
+                    );
+                }
+                "!=" => {
+                    return self.compile_cmp(
+                        &items[1],
+                        &items[2],
+                        WasmInstruction::I64Ne,
+                        WasmInstruction::F64Ne,
+                    );
+                }
+                "<=" => {
+                    return self.compile_cmp(
+                        &items[1],
+                        &items[2],
+                        WasmInstruction::I64LeS,
+                        WasmInstruction::F64Le,
+                    );
+                }
+                ">=" => {
+                    return self.compile_cmp(
+                        &items[1],
+                        &items[2],
+                        WasmInstruction::I64GeS,
+                        WasmInstruction::F64Ge,
+                    );
                 }
                 "%" | "mod" => {
                     self.compile_expr(&items[1])?;
@@ -1846,6 +2148,10 @@ impl<'a> FnCtx<'a> {
                         ExprKind::Symbol(s) => s.clone(),
                         _ => return Err("let binding must be a symbol".into()),
                     };
+                    // Remember float-typed bindings so later uses pick f64 ops.
+                    if self.expr_is_float(&items[vi]) {
+                        self.float_locals.insert(name.clone());
+                    }
                     self.compile_expr(&items[vi])?;
                     let local = self.alloc_local();
                     self.locals.insert(name, local);
@@ -2417,6 +2723,7 @@ impl<'a> FnCtx<'a> {
             compiler: self.compiler,
             loop_starts: Vec::new(),
             loop_vars: Vec::new(),
+            float_locals: std::collections::HashSet::new(),
         };
         cctx.locals.insert("__env_ptr".to_string(), 0);
         for (i, p) in params.iter().enumerate() {
