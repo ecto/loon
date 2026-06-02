@@ -2981,6 +2981,15 @@ impl<'a> FnCtx<'a> {
                     if self.locals.contains_key(name) {
                         return self.compile_closure_call_local(name, &items[1..]);
                     }
+                    // Consult the single source of truth: if this name is a
+                    // known builtin that no arm above handled, the wasm backend
+                    // simply hasn't implemented it yet — say so plainly, rather
+                    // than the misleading "unknown function".
+                    if crate::eir::Built::from_name(name).is_some() {
+                        return Err(format!(
+                            "codegen: builtin '{name}' is not yet supported on the wasm backend"
+                        ));
+                    }
                     return Err(format!("codegen: unknown function '{name}'"));
                 }
             }

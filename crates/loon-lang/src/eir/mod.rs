@@ -368,3 +368,195 @@ pub enum Built {
     AssertEq,
     Concat,
 }
+
+impl Built {
+    /// Resolve a source-level name to its builtin tag.
+    ///
+    /// This is the **single source of truth** for which names denote runtime
+    /// builtins. Every frontend consults it: EIR lowering (→ VM / native /
+    /// wasm backends) and the legacy direct WASM `codegen/`. Adding a builtin
+    /// means adding one variant and one arm here — nowhere else decides what
+    /// counts as a builtin.
+    pub fn from_name(name: &str) -> Option<Built> {
+        Some(match name {
+            "println" => Built::Println,
+            "print" => Built::Print,
+            "str" => Built::Str,
+            "len" => Built::Len,
+            "get" => Built::Get,
+            "conj" => Built::Conj,
+            "cons" => Built::Cons,
+            "assoc" => Built::Assoc,
+            "merge" => Built::Merge,
+            "range" => Built::Range,
+            "map" => Built::Map,
+            "filter" => Built::Filter,
+            "reduce" => Built::Reduce,
+            "each" => Built::Each,
+            "flat-map" => Built::FlatMap,
+            "keys" => Built::Keys,
+            "vals" => Built::Vals,
+            "nth" => Built::Nth,
+            "take" => Built::Take,
+            "drop" => Built::Drop,
+            "slice" => Built::Slice,
+            "contains?" => Built::Contains,
+            "join" => Built::Join,
+            "trim" => Built::Trim,
+            "split" => Built::Split,
+            "sort" => Built::Sort,
+            "reverse" => Built::Reverse,
+            "flatten" => Built::Flatten,
+            "zip" => Built::Zip,
+            "chunk" => Built::Chunk,
+            "any?" => Built::Any,
+            "all?" => Built::All,
+            "sum" => Built::Sum,
+            "min" => Built::Min,
+            "max" => Built::Max,
+            "int" => Built::Int,
+            "float" => Built::Float,
+            "into-map" => Built::IntoMap,
+            "group-by" => Built::GroupBy,
+            "collect" => Built::Collect,
+            "starts-with?" => Built::StartsWith,
+            "ends-with?" => Built::EndsWith,
+            "replace" => Built::Replace,
+            "uppercase" => Built::Uppercase,
+            "lowercase" => Built::Lowercase,
+            "index-of" => Built::IndexOf,
+            "char-at" => Built::CharAt,
+            "substring" => Built::Substring,
+            "not" => Built::Not,
+            "empty?" => Built::Empty,
+            "fold" => Built::Fold,
+            "update" => Built::Update,
+            "entries" => Built::Entries,
+            "sort-by" => Built::SortBy,
+            "unit" => Built::Unit,
+            "magnitude" => Built::Magnitude,
+            "or" => Built::Or,
+            "abs" => Built::Abs,
+            "first" => Built::First,
+            "last" => Built::Last,
+            "find" => Built::Find,
+            "keyword" => Built::Keyword,
+            "keywordize-keys" => Built::KeywordizeKeys,
+            "assert-eq" => Built::AssertEq,
+            "concat" => Built::Concat,
+            _ => return None,
+        })
+    }
+
+    /// The canonical source-level name for this builtin — the inverse of
+    /// [`Built::from_name`]. Exhaustive by construction: adding a variant to
+    /// `Built` is a compile error until it is named here.
+    pub fn name(self) -> &'static str {
+        match self {
+            Built::Println => "println",
+            Built::Print => "print",
+            Built::Str => "str",
+            Built::Len => "len",
+            Built::Get => "get",
+            Built::Conj => "conj",
+            Built::Cons => "cons",
+            Built::Assoc => "assoc",
+            Built::Merge => "merge",
+            Built::Range => "range",
+            Built::Map => "map",
+            Built::Filter => "filter",
+            Built::Reduce => "reduce",
+            Built::Each => "each",
+            Built::FlatMap => "flat-map",
+            Built::Keys => "keys",
+            Built::Vals => "vals",
+            Built::Nth => "nth",
+            Built::Take => "take",
+            Built::Drop => "drop",
+            Built::Slice => "slice",
+            Built::Contains => "contains?",
+            Built::Join => "join",
+            Built::Trim => "trim",
+            Built::Split => "split",
+            Built::Sort => "sort",
+            Built::Reverse => "reverse",
+            Built::Flatten => "flatten",
+            Built::Zip => "zip",
+            Built::Chunk => "chunk",
+            Built::Any => "any?",
+            Built::All => "all?",
+            Built::Sum => "sum",
+            Built::Min => "min",
+            Built::Max => "max",
+            Built::Int => "int",
+            Built::Float => "float",
+            Built::IntoMap => "into-map",
+            Built::GroupBy => "group-by",
+            Built::Collect => "collect",
+            Built::StartsWith => "starts-with?",
+            Built::EndsWith => "ends-with?",
+            Built::Replace => "replace",
+            Built::Uppercase => "uppercase",
+            Built::Lowercase => "lowercase",
+            Built::IndexOf => "index-of",
+            Built::CharAt => "char-at",
+            Built::Substring => "substring",
+            Built::Not => "not",
+            Built::Empty => "empty?",
+            Built::Fold => "fold",
+            Built::Update => "update",
+            Built::Entries => "entries",
+            Built::SortBy => "sort-by",
+            Built::Unit => "unit",
+            Built::Magnitude => "magnitude",
+            Built::Or => "or",
+            Built::Abs => "abs",
+            Built::First => "first",
+            Built::Last => "last",
+            Built::Find => "find",
+            Built::Keyword => "keyword",
+            Built::KeywordizeKeys => "keywordize-keys",
+            Built::AssertEq => "assert-eq",
+            Built::Concat => "concat",
+        }
+    }
+
+    /// Every builtin, for exhaustive iteration in tests and tooling.
+    pub const ALL: &'static [Built] = &[
+        Built::Println, Built::Print, Built::Str, Built::Len, Built::Get,
+        Built::Conj, Built::Cons, Built::Assoc, Built::Merge, Built::Range,
+        Built::Map, Built::Filter, Built::Reduce, Built::Each, Built::FlatMap,
+        Built::Keys, Built::Vals, Built::Nth, Built::Take, Built::Drop,
+        Built::Slice, Built::Contains, Built::Join, Built::Trim, Built::Split,
+        Built::Sort, Built::Reverse, Built::Flatten, Built::Zip, Built::Chunk,
+        Built::Any, Built::All, Built::Sum, Built::Min, Built::Max,
+        Built::Int, Built::Float, Built::IntoMap, Built::GroupBy, Built::Collect,
+        Built::StartsWith, Built::EndsWith, Built::Replace, Built::Uppercase,
+        Built::Lowercase, Built::IndexOf, Built::CharAt, Built::Substring,
+        Built::Not, Built::Empty, Built::Fold, Built::Update, Built::Entries,
+        Built::SortBy, Built::Unit, Built::Magnitude, Built::Or, Built::Abs,
+        Built::First, Built::Last, Built::Find, Built::Keyword,
+        Built::KeywordizeKeys, Built::AssertEq, Built::Concat,
+    ];
+}
+
+#[cfg(test)]
+mod builtin_name_tests {
+    use super::Built;
+
+    /// The single source of truth must be internally consistent: every builtin
+    /// round-trips name → tag → name, and `ALL` covers the whole enum.
+    #[test]
+    fn builtin_names_round_trip() {
+        assert_eq!(Built::ALL.len(), 65, "ALL must list every Built variant");
+        for &b in Built::ALL {
+            assert_eq!(
+                Built::from_name(b.name()),
+                Some(b),
+                "round-trip failed for {:?} (name {:?})",
+                b,
+                b.name()
+            );
+        }
+    }
+}
