@@ -22,6 +22,10 @@ pub struct StringRuntime {
     pub str_eq_idx: u32,
     /// WASM function index for str_substring
     pub str_substring_idx: u32,
+    /// WASM function index for int_to_str
+    pub int_to_str_idx: u32,
+    /// WASM function index for lowercase
+    pub lowercase_idx: u32,
 }
 
 #[allow(dead_code)]
@@ -297,6 +301,294 @@ impl StringRuntime {
                 ValType::I64, // 6: i
             ],
             instructions: instrs,
+        }
+    }
+
+    /// Generate `int_to_str(n) -> i64` — the decimal text of `n` as a freshly
+    /// allocated packed string. Writes digits backward into a scratch region,
+    /// then copies them into the heap.
+    pub(super) fn gen_int_to_str() -> FunctionBody {
+        const BUF: i64 = 542; // scratch end (digits written backward below it)
+        // Params: 0=n ; Locals: 1=p, 2=neg, 3=len, 4=dst, 5=i
+        let mut i = Vec::new();
+        // neg = n < 0 ; if neg n = -n
+        i.push(LocalGet(0));
+        i.push(I64Const(0));
+        i.push(I64LtS);
+        i.push(If(BlockType::Empty));
+        i.push(I64Const(1));
+        i.push(LocalSet(2));
+        i.push(I64Const(0));
+        i.push(LocalGet(0));
+        i.push(I64Sub);
+        i.push(LocalSet(0));
+        i.push(Else);
+        i.push(I64Const(0));
+        i.push(LocalSet(2));
+        i.push(End);
+        // p = BUF ; do { p--; mem[p] = '0' + n%10; n/=10 } while n != 0
+        i.push(I64Const(BUF));
+        i.push(LocalSet(1));
+        i.push(Loop(BlockType::Empty));
+        i.push(LocalGet(1));
+        i.push(I64Const(1));
+        i.push(I64Sub);
+        i.push(LocalSet(1));
+        i.push(LocalGet(1));
+        i.push(I32WrapI64);
+        i.push(LocalGet(0));
+        i.push(I64Const(10));
+        i.push(I64RemU);
+        i.push(I64Const(48));
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(I32Store8(0, 0));
+        i.push(LocalGet(0));
+        i.push(I64Const(10));
+        i.push(I64DivU);
+        i.push(LocalSet(0));
+        i.push(LocalGet(0));
+        i.push(I64Eqz);
+        i.push(I32Eqz);
+        i.push(BrIf(0));
+        i.push(End);
+        // if neg { p--; mem[p] = '-' }
+        i.push(LocalGet(2));
+        i.push(I64Eqz);
+        i.push(I32Eqz);
+        i.push(If(BlockType::Empty));
+        i.push(LocalGet(1));
+        i.push(I64Const(1));
+        i.push(I64Sub);
+        i.push(LocalSet(1));
+        i.push(LocalGet(1));
+        i.push(I32WrapI64);
+        i.push(I32Const(45));
+        i.push(I32Store8(0, 0));
+        i.push(End);
+        // len = BUF - p
+        i.push(I64Const(BUF));
+        i.push(LocalGet(1));
+        i.push(I64Sub);
+        i.push(LocalSet(3));
+        // dst = heap ; heap += len
+        i.push(GlobalGet(0));
+        i.push(I64ExtendI32U);
+        i.push(LocalSet(4));
+        i.push(GlobalGet(0));
+        i.push(LocalGet(3));
+        i.push(I32WrapI64);
+        i.push(I32Add);
+        i.push(GlobalSet(0));
+        // copy: for i in 0..len: mem[dst+i] = mem[p+i]
+        i.push(I64Const(0));
+        i.push(LocalSet(5));
+        i.push(Block(BlockType::Empty));
+        i.push(Loop(BlockType::Empty));
+        i.push(LocalGet(5));
+        i.push(LocalGet(3));
+        i.push(I64LtS);
+        i.push(I32Eqz);
+        i.push(BrIf(1));
+        i.push(LocalGet(4));
+        i.push(LocalGet(5));
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(LocalGet(1));
+        i.push(LocalGet(5));
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(I32Load8U(0, 0));
+        i.push(I32Store8(0, 0));
+        i.push(LocalGet(5));
+        i.push(I64Const(1));
+        i.push(I64Add);
+        i.push(LocalSet(5));
+        i.push(Br(0));
+        i.push(End);
+        i.push(End);
+        // return (dst << 32) | len
+        i.push(LocalGet(4));
+        i.push(I64Const(32));
+        i.push(I64Shl);
+        i.push(LocalGet(3));
+        i.push(I64Or);
+        FunctionBody {
+            params: vec![ValType::I64],
+            results: vec![ValType::I64],
+            locals: vec![ValType::I64; 5],
+            instructions: i,
+        }
+    }
+
+    /// Generate `lowercase(s) -> i64` — a fresh packed string with ASCII
+    /// `A`–`Z` lowercased.
+    pub(super) fn gen_lowercase() -> FunctionBody {
+        // Params: 0=s ; Locals: 1=sptr, 2=len, 3=dst, 4=i, 5=b
+        let mut i = Vec::new();
+        i.push(LocalGet(0));
+        i.push(I64Const(32));
+        i.push(I64ShrU);
+        i.push(LocalSet(1));
+        i.push(LocalGet(0));
+        i.push(I64Const(0xFFFF_FFFF));
+        i.push(I64And);
+        i.push(LocalSet(2));
+        // dst = heap ; heap += len
+        i.push(GlobalGet(0));
+        i.push(I64ExtendI32U);
+        i.push(LocalSet(3));
+        i.push(GlobalGet(0));
+        i.push(LocalGet(2));
+        i.push(I32WrapI64);
+        i.push(I32Add);
+        i.push(GlobalSet(0));
+        i.push(I64Const(0));
+        i.push(LocalSet(4));
+        i.push(Block(BlockType::Empty));
+        i.push(Loop(BlockType::Empty));
+        i.push(LocalGet(4));
+        i.push(LocalGet(2));
+        i.push(I64LtS);
+        i.push(I32Eqz);
+        i.push(BrIf(1));
+        // b = mem[sptr + i]
+        i.push(LocalGet(1));
+        i.push(LocalGet(4));
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(I32Load8U(0, 0));
+        i.push(I64ExtendI32U);
+        i.push(LocalSet(5));
+        // if 65 <= b <= 90: b += 32
+        i.push(LocalGet(5));
+        i.push(I64Const(65));
+        i.push(I64GeS);
+        i.push(LocalGet(5));
+        i.push(I64Const(90));
+        i.push(I64LeS);
+        i.push(I32And);
+        i.push(If(BlockType::Empty));
+        i.push(LocalGet(5));
+        i.push(I64Const(32));
+        i.push(I64Add);
+        i.push(LocalSet(5));
+        i.push(End);
+        // mem[dst + i] = b
+        i.push(LocalGet(3));
+        i.push(LocalGet(4));
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(LocalGet(5));
+        i.push(I32WrapI64);
+        i.push(I32Store8(0, 0));
+        i.push(LocalGet(4));
+        i.push(I64Const(1));
+        i.push(I64Add);
+        i.push(LocalSet(4));
+        i.push(Br(0));
+        i.push(End);
+        i.push(End);
+        i.push(LocalGet(3));
+        i.push(I64Const(32));
+        i.push(I64Shl);
+        i.push(LocalGet(2));
+        i.push(I64Or);
+        FunctionBody {
+            params: vec![ValType::I64],
+            results: vec![ValType::I64],
+            locals: vec![ValType::I64; 5],
+            instructions: i,
+        }
+    }
+
+    /// Generate `str_split(s, sep, vec_new, vec_push, substr) -> i64` — split
+    /// `s` on the first byte of `sep`, returning a vector of substrings
+    /// (including empties for adjacent separators). `sep` is treated as a
+    /// single character (the common case, e.g. " ").
+    pub(super) fn gen_str_split(vec_new: u32, vec_push: u32, substr: u32) -> FunctionBody {
+        // Params: 0=s, 1=sep
+        // Locals: 2=sptr, 3=len, 4=sepch, 5=r, 6=start, 7=i, 8=ch
+        let mut i = Vec::new();
+        // sptr = s >> 32
+        i.push(LocalGet(0));
+        i.push(I64Const(32));
+        i.push(I64ShrU);
+        i.push(LocalSet(2));
+        // len = s & 0xffffffff
+        i.push(LocalGet(0));
+        i.push(I64Const(0xFFFF_FFFF));
+        i.push(I64And);
+        i.push(LocalSet(3));
+        // sepch = mem[(sep>>32)]
+        i.push(LocalGet(1));
+        i.push(I64Const(32));
+        i.push(I64ShrU);
+        i.push(I32WrapI64);
+        i.push(I32Load8U(0, 0));
+        i.push(I64ExtendI32U);
+        i.push(LocalSet(4));
+        // r = vec_new()
+        i.push(Call(vec_new));
+        i.push(LocalSet(5));
+        // start = 0; i = 0
+        i.push(I64Const(0));
+        i.push(LocalSet(6));
+        i.push(I64Const(0));
+        i.push(LocalSet(7));
+        i.push(Block(BlockType::Empty));
+        i.push(Loop(BlockType::Empty));
+        // if i >= len break
+        i.push(LocalGet(7));
+        i.push(LocalGet(3));
+        i.push(I64LtS);
+        i.push(I32Eqz);
+        i.push(BrIf(1));
+        // ch = mem[sptr + i]
+        i.push(LocalGet(2));
+        i.push(LocalGet(7));
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(I32Load8U(0, 0));
+        i.push(I64ExtendI32U);
+        i.push(LocalSet(8));
+        // if ch == sepch: r = vec_push(r, substr(s, start, i)); start = i+1
+        i.push(LocalGet(8));
+        i.push(LocalGet(4));
+        i.push(I64Eq);
+        i.push(If(BlockType::Empty));
+        i.push(LocalGet(5));
+        i.push(LocalGet(0));
+        i.push(LocalGet(6));
+        i.push(LocalGet(7));
+        i.push(Call(substr));
+        i.push(Call(vec_push));
+        i.push(LocalSet(5));
+        i.push(LocalGet(7));
+        i.push(I64Const(1));
+        i.push(I64Add);
+        i.push(LocalSet(6));
+        i.push(End);
+        // i++
+        i.push(LocalGet(7));
+        i.push(I64Const(1));
+        i.push(I64Add);
+        i.push(LocalSet(7));
+        i.push(Br(0));
+        i.push(End);
+        i.push(End);
+        // final segment: r = vec_push(r, substr(s, start, len))
+        i.push(LocalGet(5));
+        i.push(LocalGet(0));
+        i.push(LocalGet(6));
+        i.push(LocalGet(3));
+        i.push(Call(substr));
+        i.push(Call(vec_push));
+        FunctionBody {
+            params: vec![ValType::I64, ValType::I64],
+            results: vec![ValType::I64],
+            locals: vec![ValType::I64; 7], // locals 2..=8
+            instructions: i,
         }
     }
 
