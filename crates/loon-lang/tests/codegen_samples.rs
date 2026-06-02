@@ -45,6 +45,10 @@ fn samples_compile_to_valid_wasm() {
         "multi-arity.oo",
         "types.oo",
         "word-count.oo",
+        "word-freq.oo",
+        "bench-collections.oo",
+        "effects.oo",
+        "user-effects.oo",
     ] {
         let bytes = compile_sample(name);
         assert_valid_wasm(name, &bytes);

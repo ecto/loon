@@ -78,6 +78,11 @@ struct AdtInfo {
 
 const WASI_IMPORT_COUNT: u32 = 6;
 const PRE_ALLOC_TYPES: u32 = 7;
+/// Dynamic effect-handler stack, in low memory (below the string table at
+/// 1024 and the itoa scratch at ~520). `HANDLER_COUNT` holds the number of
+/// installed (op_id, closure) frames; each frame is 16 bytes from `HANDLER_BASE`.
+const HANDLER_COUNT_ADDR: i32 = 248;
+const HANDLER_BASE: i32 = 256;
 
 struct Compiler {
     functions: Vec<FunctionBody>,
@@ -110,6 +115,10 @@ struct Compiler {
     base_dir: Option<std::path::PathBuf>,
     compiled_modules: std::collections::HashSet<std::path::PathBuf>,
     force_heap: bool,
+    /// Force a (possibly empty) function table to exist. Effect operations emit
+    /// a `call_indirect` for the handler-closure path even when a program has no
+    /// closures of its own, and `call_indirect` requires a table.
+    force_table: bool,
     used_wasi_imports: Option<Vec<u32>>,
     /// Effect imports: "Effect.op" → import function index
     effect_imports: HashMap<String, u32>,
@@ -126,6 +135,9 @@ struct Compiler {
     /// Distinct keyword literals interned to unique i64 ids (for `=` and use as
     /// enum-like tags). Ids start high to avoid colliding with small ints.
     keywords: HashMap<String, i64>,
+    /// Distinct effect operations ("Effect.op") interned to small ids, used as
+    /// the key in the dynamic handler stack.
+    effect_op_ids: HashMap<String, i64>,
     /// Resolved type of each AST node (from the checker). Lets codegen make
     /// type-directed choices instead of guessing from syntax. Synthesized nodes
     /// (desugared `pipe`/`when`/… ) are absent and fall back to the untyped path.
@@ -213,6 +225,8 @@ enum WasmInstruction {
     I64Shl,
     I32And,
     I32Add,
+    I32Sub,
+    I32Mul,
     I32Load8U(u32, u32),
     I32Store8(u32, u32),
     I32Eq,
@@ -428,6 +442,12 @@ fn emit_instruction(f: &mut Function, instr: &WasmInstruction) {
         WasmInstruction::I32Add => {
             f.instruction(&Instruction::I32Add);
         }
+        WasmInstruction::I32Sub => {
+            f.instruction(&Instruction::I32Sub);
+        }
+        WasmInstruction::I32Mul => {
+            f.instruction(&Instruction::I32Mul);
+        }
         WasmInstruction::I32And => {
             f.instruction(&Instruction::I32And);
         }
@@ -482,6 +502,7 @@ impl Compiler {
             base_dir: None,
             compiled_modules: std::collections::HashSet::new(),
             force_heap: false,
+            force_table: false,
             used_wasi_imports: None,
             effect_imports: HashMap::new(),
             effect_import_defs: Vec::new(),
@@ -489,6 +510,7 @@ impl Compiler {
             string_fns: std::collections::HashSet::new(),
             string_params: HashMap::new(),
             keywords: HashMap::new(),
+            effect_op_ids: HashMap::new(),
             node_types: HashMap::new(),
             float_fns: std::collections::HashSet::new(),
             float_params: HashMap::new(),
@@ -506,6 +528,16 @@ impl Compiler {
         }
         let id = 0x4000_0000_0000_0000_i64 + self.keywords.len() as i64;
         self.keywords.insert(kw.to_string(), id);
+        id
+    }
+    /// Intern an effect operation key ("Effect.op") to a small positive id used
+    /// as the lookup key in the dynamic handler stack.
+    fn intern_effect_op(&mut self, key: &str) -> i64 {
+        if let Some(&id) = self.effect_op_ids.get(key) {
+            return id;
+        }
+        let id = self.effect_op_ids.len() as i64 + 1;
+        self.effect_op_ids.insert(key.to_string(), id);
         id
     }
     fn ensure_in_table(&mut self, func_idx: u32) -> u32 {
@@ -1577,12 +1609,13 @@ impl Compiler {
             functions.function(*idx);
         }
         module.section(&functions);
-        if !self.table_entries.is_empty() {
+        if !self.table_entries.is_empty() || self.force_table {
             let mut t = TableSection::new();
+            let n = self.table_entries.len() as u64;
             t.table(TableType {
                 element_type: RefType::FUNCREF,
-                minimum: self.table_entries.len() as u64,
-                maximum: Some(self.table_entries.len() as u64),
+                minimum: n,
+                maximum: Some(n),
                 table64: false,
                 shared: false,
             });
@@ -2895,11 +2928,34 @@ impl<'a> FnCtx<'a> {
                             self.compile_expr(arg)?;
                             self.emit_print_f64(nl);
                             return Ok(());
-                        } else {
-                            // A computed (non-literal) argument: evaluate it to
-                            // an i64 and print it as a decimal at runtime.
+                        } else if matches!(
+                            self.compiler.node_type(arg),
+                            Some(t) if !matches!(t, Type::Var(_))
+                        ) {
+                            // Statically a concrete non-string type: print as int.
                             self.compile_expr(arg)?;
                             self.emit_print_i64(nl);
+                            return Ok(());
+                        } else {
+                            // Unknown static type (e.g. a `handle` result): print
+                            // self-describingly — string bytes if it looks like a
+                            // string pointer at runtime, else a decimal int.
+                            use WasmInstruction as W;
+                            let x = self.alloc_local();
+                            self.compile_expr(arg)?;
+                            self.instructions.push(W::LocalSet(x));
+                            self.instructions.push(W::LocalGet(x));
+                            self.instructions.push(W::I64Const(32));
+                            self.instructions.push(W::I64ShrU);
+                            self.instructions.push(W::I64Const(1024));
+                            self.instructions.push(W::I64GeS);
+                            self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+                            self.instructions.push(W::LocalGet(x));
+                            self.emit_print_str(nl);
+                            self.instructions.push(W::Else);
+                            self.instructions.push(W::LocalGet(x));
+                            self.emit_print_i64(nl);
+                            self.instructions.push(W::End);
                             return Ok(());
                         }
                     }
@@ -3034,16 +3090,28 @@ impl<'a> FnCtx<'a> {
                     self.instructions.push(WasmInstruction::I64Const(0));
                     return Ok(());
                 }
-                "handle" | "resume" | "try" => {
-                    // Delimited continuations need to capture and resume a stack
-                    // segment, which standalone wasm can't express without a
-                    // whole-program CPS/trampoline transform. These run on the
-                    // EIR VM (`loon run`) for now. Effect *operations*
-                    // (`E.op …`) still compile to host imports.
-                    return Err(format!(
-                        "codegen: '{s}' (delimited continuations) is not supported by the \
-                         wasm backend yet; run it on the VM with `loon run`"
-                    ));
+                "resume" => {
+                    // Tail-resumptive: `[resume v]` makes the effect operation
+                    // return v, so it compiles to just v (the handler closure's
+                    // return value becomes the op result). Non-tail / escaping
+                    // resume (the State pattern) is not supported here.
+                    if let Some(v) = items.get(1) {
+                        return self.compile_expr(v);
+                    }
+                    self.instructions.push(WasmInstruction::I64Const(0));
+                    return Ok(());
+                }
+                "handle" => {
+                    return self.compile_handle(&items[1..]);
+                }
+                "try" => {
+                    // Abort-style `try` needs non-local unwind across calls,
+                    // which standalone wasm can't express without exceptions or
+                    // a CPS transform. Run on the VM.
+                    return Err("codegen: 'try' (delimited continuations) is not \
+                                supported by the wasm backend yet; run it on the VM \
+                                with `loon run`"
+                        .into());
                 }
                 name => {
                     if let Some((tag, arity)) = self.compiler.adt_constructors.get(name).cloned() {
@@ -3076,16 +3144,205 @@ impl<'a> FnCtx<'a> {
         if let ExprKind::DotAccess(obj, op) = &items[0].kind {
             if let ExprKind::Symbol(effect) = &obj.kind {
                 if effect.starts_with(char::is_uppercase) {
-                    let import_idx = self.compiler.get_or_create_effect_import(effect, op);
-                    for arg in &items[1..] {
-                        self.compile_expr(arg)?;
-                    }
-                    self.instructions.push(WasmInstruction::Call(import_idx));
-                    return Ok(());
+                    return self.emit_effect_op(effect, op, &items[1..]);
                 }
             }
         }
         Err("codegen: unsupported call form".into())
+    }
+    /// Compile an effect operation `Effect.op args`. If a matching handler is
+    /// installed on the dynamic handler stack at runtime, call it (tail-
+    /// resumptive); otherwise fall back to the host import.
+    fn emit_effect_op(&mut self, effect: &str, op: &str, args: &[Expr]) -> Result<(), String> {
+        use WasmInstruction as W;
+        let key = format!("{effect}.{op}");
+        let op_id = self.compiler.intern_effect_op(&key);
+        let import_idx = self.compiler.get_or_create_effect_import(effect, op);
+        self.compiler.force_heap = true;
+        self.compiler.force_table = true; // the handler-closure path uses call_indirect
+        // Evaluate args into locals (reused by either call path).
+        let mut arglocs = Vec::new();
+        for a in args {
+            self.compile_expr(a)?;
+            let l = self.alloc_local();
+            self.instructions.push(W::LocalSet(l));
+            arglocs.push(l);
+        }
+        // Scan the handler stack top-down for op_id. Track `found` separately:
+        // a capture-less closure value can legitimately be 0 (table index 0).
+        let cl = self.alloc_local();
+        let found = self.alloc_local();
+        let f = self.alloc_local();
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(cl));
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(found));
+        // f = count - 1
+        self.instructions.push(W::I32Const(HANDLER_COUNT_ADDR));
+        self.instructions.push(W::I32Load(2, 0));
+        self.instructions.push(W::I64ExtendI32U);
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Sub);
+        self.instructions.push(W::LocalSet(f));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(f));
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::BrIf(1)); // f < 0: not found
+        // addr = HANDLER_BASE + f*16  (kept as i64; wrapped at memory ops)
+        let addr = self.alloc_local();
+        self.instructions.push(W::LocalGet(f));
+        self.instructions.push(W::I64Const(16));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Const(HANDLER_BASE as i64));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(addr));
+        // entry op_id == op_id ?
+        self.instructions.push(W::LocalGet(addr));
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::I64Const(op_id));
+        self.instructions.push(W::I64Eq);
+        self.instructions.push(W::If(BlockType::Empty));
+        self.instructions.push(W::LocalGet(addr));
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 8));
+        self.instructions.push(W::LocalSet(cl));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::LocalSet(found));
+        self.instructions.push(W::Br(2)); // found: exit scan
+        self.instructions.push(W::End);
+        self.instructions.push(W::LocalGet(f));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Sub);
+        self.instructions.push(W::LocalSet(f));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        // if !found: import(args) else closure(env, args) via the table.
+        self.instructions.push(W::LocalGet(found));
+        self.instructions.push(W::I64Eqz);
+        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+        for &l in &arglocs {
+            self.instructions.push(W::LocalGet(l));
+        }
+        self.instructions.push(W::Call(import_idx));
+        self.instructions.push(W::Else);
+        // env = cl & 0xffffffff
+        self.instructions.push(W::LocalGet(cl));
+        self.instructions.push(W::I64Const(0xFFFF_FFFF));
+        self.instructions.push(W::I64And);
+        for &l in &arglocs {
+            self.instructions.push(W::LocalGet(l));
+        }
+        self.instructions.push(W::LocalGet(cl));
+        self.instructions.push(W::I64Const(32));
+        self.instructions.push(W::I64ShrU);
+        self.instructions.push(W::I32WrapI64);
+        let ty = self.get_or_create_indirect_type(1 + arglocs.len());
+        self.instructions.push(W::CallIndirect(ty));
+        self.instructions.push(W::End);
+        Ok(())
+    }
+    /// Compile `[handle body clause…]` for tail-resumptive handlers. Each
+    /// `[E.op params] hbody` clause installs a handler closure on the dynamic
+    /// stack for the duration of `body`; a `[return x]` clause post-processes
+    /// the body's value.
+    fn compile_handle(&mut self, args: &[Expr]) -> Result<(), String> {
+        use WasmInstruction as W;
+        if args.is_empty() {
+            self.instructions.push(W::I64Const(0));
+            return Ok(());
+        }
+        let body = &args[0];
+        let clauses = &args[1..];
+        self.compiler.force_heap = true;
+        let mut return_clause: Option<(String, &Expr)> = None;
+        let mut pushed = 0i32;
+        let mut i = 0;
+        while i + 1 < clauses.len() {
+            let pat = &clauses[i];
+            let hbody = &clauses[i + 1];
+            i += 2;
+            let parts = match &pat.kind {
+                ExprKind::List(p) if !p.is_empty() => p,
+                _ => continue,
+            };
+            // [return x] clause
+            if let ExprKind::Symbol(s) = &parts[0].kind {
+                if s == "return" {
+                    if let Some(ExprKind::Symbol(x)) = parts.get(1).map(|e| &e.kind) {
+                        return_clause = Some((x.clone(), hbody));
+                    }
+                    continue;
+                }
+            }
+            // [E.op params…] clause
+            if let ExprKind::DotAccess(obj, op) = &parts[0].kind {
+                if let ExprKind::Symbol(effect) = &obj.kind {
+                    let key = format!("{effect}.{op}");
+                    let op_id = self.compiler.intern_effect_op(&key);
+                    // handler closure: [fn [params…] hbody]
+                    let sp = pat.span;
+                    let params_list =
+                        Expr::new(ExprKind::List(parts[1..].to_vec()), sp);
+                    self.compile_closure(&[params_list, hbody.clone()])?;
+                    let cval = self.alloc_local();
+                    self.instructions.push(W::LocalSet(cval));
+                    // cnt = count (kept as i64); addr = HANDLER_BASE + cnt*16
+                    let cnt = self.alloc_local();
+                    self.instructions.push(W::I32Const(HANDLER_COUNT_ADDR));
+                    self.instructions.push(W::I32Load(2, 0));
+                    self.instructions.push(W::I64ExtendI32U);
+                    self.instructions.push(W::LocalSet(cnt));
+                    let addr = self.alloc_local();
+                    self.instructions.push(W::LocalGet(cnt));
+                    self.instructions.push(W::I64Const(16));
+                    self.instructions.push(W::I64Mul);
+                    self.instructions.push(W::I64Const(HANDLER_BASE as i64));
+                    self.instructions.push(W::I64Add);
+                    self.instructions.push(W::LocalSet(addr));
+                    // mem[addr] = op_id ; mem[addr+8] = cval
+                    self.instructions.push(W::LocalGet(addr));
+                    self.instructions.push(W::I32WrapI64);
+                    self.instructions.push(W::I64Const(op_id));
+                    self.instructions.push(W::I64Store(3, 0));
+                    self.instructions.push(W::LocalGet(addr));
+                    self.instructions.push(W::I32WrapI64);
+                    self.instructions.push(W::LocalGet(cval));
+                    self.instructions.push(W::I64Store(3, 8));
+                    // count += 1
+                    self.instructions.push(W::I32Const(HANDLER_COUNT_ADDR));
+                    self.instructions.push(W::LocalGet(cnt));
+                    self.instructions.push(W::I32WrapI64);
+                    self.instructions.push(W::I32Const(1));
+                    self.instructions.push(W::I32Add);
+                    self.instructions.push(W::I32Store(2, 0));
+                    pushed += 1;
+                }
+            }
+        }
+        // Compile the body, then pop the installed frames.
+        self.compile_expr(body)?;
+        let bodyval = self.alloc_local();
+        self.instructions.push(W::LocalSet(bodyval));
+        if pushed > 0 {
+            self.instructions.push(W::I32Const(HANDLER_COUNT_ADDR));
+            self.instructions.push(W::I32Const(HANDLER_COUNT_ADDR));
+            self.instructions.push(W::I32Load(2, 0));
+            self.instructions.push(W::I32Const(pushed));
+            self.instructions.push(W::I32Sub);
+            self.instructions.push(W::I32Store(2, 0));
+        }
+        // Apply the [return x] clause, if any.
+        if let Some((x, hbody)) = return_clause {
+            self.locals.insert(x, bodyval);
+            self.compile_expr(hbody)?;
+        } else {
+            self.instructions.push(W::LocalGet(bodyval));
+        }
+        Ok(())
     }
     fn compile_match_arms(&mut self, scrutinee: u32, arms: &[Expr]) -> Result<(), String> {
         let parsed = self.parse_arms(arms);
@@ -4500,6 +4757,22 @@ mod tests {
         assert!(
             wasm_str.contains("read-file"),
             "should contain effect op name"
+        );
+    }
+    #[test]
+    fn compile_tail_resumptive_handlers_are_valid() {
+        // A handler that `resume`s in tail position is installed on the dynamic
+        // handler stack and intercepts the op (even through a function call).
+        valid(
+            r#"[effect Log [ask [] Int]]
+               [fn use-log [] [+ [Log.ask] 1]]
+               [fn main [] [println [handle [use-log] [Log.ask] [resume 41]]]]"#,
+        );
+        // `[return x]` clause and multiple ops.
+        valid(
+            r#"[effect E [a [] Int] [b [] Int]]
+               [fn main [] [println [handle [+ [E.a] [E.b]]
+                 [return x] [* x 2] [E.a] [resume 10] [E.b] [resume 20]]]]"#,
         );
     }
     #[test]
