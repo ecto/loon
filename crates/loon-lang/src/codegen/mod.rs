@@ -1402,6 +1402,11 @@ impl Compiler {
         }
         let mut exports = ExportSection::new();
         exports.export("memory", ExportKind::Memory, 0);
+        // Export the bump-allocator heap pointer (global 0) when present, so host
+        // imports (e.g. `IO.read-file`) can allocate strings into linear memory.
+        if self.force_heap || !self.table_entries.is_empty() || !self.adt_constructors.is_empty() {
+            exports.export("heap_ptr", ExportKind::Global, 0);
+        }
         if let Some(main_fn) = self.fn_map.get("main") {
             exports.export("_start", ExportKind::Func, main_fn.func_idx);
         }

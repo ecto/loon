@@ -91,6 +91,26 @@ fn map_keys_use_structural_equality_on_all_backends() {
     assert_eq!(run_src(src, &["--wasm"]), "1", "wasm should dedup");
 }
 
+/// Regression: the `IO.read-file` host import reads a file into the guest heap
+/// and returns a loon string identical to the VM's.
+#[test]
+fn io_read_file_matches_on_wasm() {
+    use std::io::Write;
+    let dir = std::env::temp_dir().join(format!("loon-rf-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("data.txt");
+    std::fs::File::create(&file)
+        .unwrap()
+        .write_all(b"hello loon file io")
+        .unwrap();
+    let path = file.to_string_lossy().replace('\\', "/");
+    let src = format!(r#"[fn main [] [println [str [IO.read-file "{path}"]]]]"#);
+    let vm = run_src(&src, &[]);
+    let wasm = run_src(&src, &["--wasm"]);
+    assert_eq!(vm, "hello loon file io", "unexpected VM output: {vm}");
+    assert_eq!(vm, wasm, "IO.read-file diverged between VM and wasm");
+}
+
 /// Regression: `take`/`drop` clamp their count to the collection length instead
 /// of panicking when it exceeds the length (the VM previously panicked inside
 /// `imbl::Vector::split_off`).
@@ -112,6 +132,10 @@ const SUPPORTED: &[&str] = &[
     "pipeline.oo",
     "multi-arity.oo",
     "word-count.oo",
+    // Full pipeline: split/filter/map lowercase/group-by/entries/tuples/
+    // sort-by/take/each + fmt interpolation + IO.read-file (host bridge) +
+    // IO.println.
+    "word-freq.oo",
     // No `main` and only `[test]` blocks: a no-op under `loon run`, and now a
     // no-op (empty main) on wasm too.
     "test-suite.oo",
@@ -158,8 +182,9 @@ const UNSUPPORTED: &[(&str, &str)] = &[
     ("physics.oo", "floating-point"),
     ("types.oo", "floating-point"),
     // Collection / string stdlib builtins not yet ported to codegen.
+    // (bench-collections additionally builds 100K-element vectors, which the
+    // copy-on-write vector representation cannot do in reasonable time/space.)
     ("bench-collections.oo", "unknown function 'cons'"),
-    ("word-freq.oo", "lowercase"),
 ];
 
 #[test]

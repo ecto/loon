@@ -279,6 +279,54 @@ fn run_file_wasm(path: &PathBuf) {
     };
 
     let mut linker = wasmtime::Linker::new(&engine);
+    // Host implementation of the `IO.read-file` effect: read the path string
+    // from guest memory, read the file, copy its bytes into the guest heap
+    // (bumping the exported `heap_ptr` global), and return a packed
+    // `(ptr << 32) | len` string — the same ABI codegen uses.
+    linker
+        .func_wrap(
+            "loon:effects/io",
+            "read-file",
+            |mut caller: wasmtime::Caller<'_, WasiCtx>, packed: i64| -> i64 {
+                use wasmtime::{Extern, Val};
+                let mem = match caller.get_export("memory") {
+                    Some(Extern::Memory(m)) => m,
+                    _ => return 0,
+                };
+                let heap = match caller.get_export("heap_ptr") {
+                    Some(Extern::Global(g)) => g,
+                    _ => return 0,
+                };
+                let ptr = ((packed >> 32) & 0xffff_ffff) as usize;
+                let len = (packed & 0xffff_ffff) as usize;
+                let path = {
+                    let data = mem.data(&caller);
+                    match data.get(ptr..ptr + len).and_then(|b| std::str::from_utf8(b).ok()) {
+                        Some(s) => s.to_string(),
+                        None => return 0,
+                    }
+                };
+                let content = std::fs::read_to_string(&path).unwrap_or_default();
+                let bytes = content.into_bytes();
+                let cur = match heap.get(&mut caller) {
+                    Val::I32(v) => v as usize,
+                    _ => return 0,
+                };
+                let end = cur + bytes.len();
+                if mem.data(&caller).len() < end {
+                    return 0; // out of heap headroom
+                }
+                mem.data_mut(&mut caller)[cur..end].copy_from_slice(&bytes);
+                if heap.set(&mut caller, Val::I32(end as i32)).is_err() {
+                    return 0;
+                }
+                ((cur as i64) << 32) | (bytes.len() as i64)
+            },
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("{}: failed to link IO.read-file: {e}", "wasmtime error".red().bold());
+            std::process::exit(1);
+        });
     wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |s: &mut WasiCtx| s).unwrap_or_else(
         |e| {
             eprintln!(
