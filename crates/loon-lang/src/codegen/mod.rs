@@ -600,12 +600,19 @@ impl Compiler {
             keys_idx,
             MapRuntime::gen_map_keys(cr.vec_new_idx, cr.vec_push_idx),
         );
+        let entries_idx = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(
+            entries_idx,
+            MapRuntime::gen_map_entries(cr.vec_new_idx, cr.vec_push_idx),
+        );
         self.map_runtime = Some(MapRuntime {
             map_new_idx: new_idx,
             map_set_idx: set_idx,
             map_get_idx: get_idx,
             map_has_idx: has_idx,
             map_keys_idx: keys_idx,
+            map_entries_idx: entries_idx,
         });
     }
     fn ensure_split_runtime(&mut self) -> u32 {
@@ -2487,6 +2494,14 @@ impl<'a> FnCtx<'a> {
                     self.instructions.push(WasmInstruction::Call(rt.map_keys_idx));
                     return Ok(());
                 }
+                "entries" => {
+                    self.compiler.ensure_map_runtime();
+                    let rt = self.compiler.map_runtime.clone().unwrap();
+                    self.compile_expr(&items[1])?;
+                    self.instructions
+                        .push(WasmInstruction::Call(rt.map_entries_idx));
+                    return Ok(());
+                }
                 "take" => {
                     // [take n v] -> new vector of the first min(n, len) elems.
                     self.compiler.ensure_collections_runtime();
@@ -3128,19 +3143,30 @@ impl<'a> FnCtx<'a> {
         if args.is_empty() {
             return Err("closure requires params".into());
         }
-        let params = match &args[0].kind {
-            ExprKind::List(items) => items
-                .iter()
-                .filter_map(|p| {
-                    if let ExprKind::Symbol(s) = &p.kind {
-                        Some(s.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>(),
+        // Params may be plain symbols or destructuring patterns ([a b] for a
+        // pair). `param_exprs` keeps the raw forms; `bound_names` is the flat
+        // list of names they bind (used to exclude them from captures).
+        let param_exprs: Vec<Expr> = match &args[0].kind {
+            ExprKind::List(items) => items.clone(),
             _ => return Err("closure params must be a list".into()),
         };
+        let mut bound_names: Vec<String> = Vec::new();
+        for p in &param_exprs {
+            match &p.kind {
+                ExprKind::Symbol(s) => bound_names.push(s.clone()),
+                ExprKind::List(sub) | ExprKind::Tuple(sub) => {
+                    for e in sub {
+                        if let ExprKind::Symbol(s) = &e.kind {
+                            if s != "_" {
+                                bound_names.push(s.clone());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let params = bound_names.clone();
         let body = &args[1..];
         let free = capture::free_vars(&params, body);
         let mut captures: Vec<(String, u32)> = Vec::new();
@@ -3151,7 +3177,7 @@ impl<'a> FnCtx<'a> {
         }
         let lname = format!("__closure_{}", self.compiler.lambda_counter);
         self.compiler.lambda_counter += 1;
-        let tp = 1 + params.len();
+        let tp = 1 + param_exprs.len();
         let idx = self.compiler.next_fn_idx;
         self.compiler.fn_map.insert(
             lname,
@@ -3174,8 +3200,32 @@ impl<'a> FnCtx<'a> {
             string_locals: std::collections::HashSet::new(),
         };
         cctx.locals.insert("__env_ptr".to_string(), 0);
-        for (i, p) in params.iter().enumerate() {
-            cctx.locals.insert(p.clone(), (i + 1) as u32);
+        for (i, p) in param_exprs.iter().enumerate() {
+            let pos = (i + 1) as u32; // positional local (after __env_ptr)
+            match &p.kind {
+                ExprKind::Symbol(s) => {
+                    cctx.locals.insert(s.clone(), pos);
+                }
+                ExprKind::List(sub) | ExprKind::Tuple(sub) => {
+                    // Destructure a pair/tuple arg: name_j = vec-get(arg, j).
+                    cctx.compiler.ensure_collections_runtime();
+                    let vget = cctx.compiler.collections_runtime.clone().unwrap().vec_get_idx;
+                    for (j, e) in sub.iter().enumerate() {
+                        if let ExprKind::Symbol(s) = &e.kind {
+                            if s == "_" {
+                                continue;
+                            }
+                            let l = cctx.alloc_local();
+                            cctx.instructions.push(WasmInstruction::LocalGet(pos));
+                            cctx.instructions.push(WasmInstruction::I64Const(j as i64));
+                            cctx.instructions.push(WasmInstruction::Call(vget));
+                            cctx.instructions.push(WasmInstruction::LocalSet(l));
+                            cctx.locals.insert(s.clone(), l);
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
         for (ci, (cn, _)) in captures.iter().enumerate() {
             let l = cctx.alloc_local();
@@ -3665,6 +3715,12 @@ mod tests {
     #[test]
     fn compile_conj_len_are_valid() {
         valid(r#"[fn main [] [println [len [conj [conj #[] 5] 9]]]]"#);
+    }
+    #[test]
+    fn compile_entries_and_destructuring_are_valid() {
+        valid(r#"[fn main [] [println [len [entries {:a 1 :b 2 :c 3}]]]]"#);
+        valid(r#"[fn main [] [each [fn [[k v]] [println v]] [entries {:a 10 :b 20}]]]"#);
+        valid(r#"[fn main [] [each [fn [[_ v]] [println v]] [entries {:x 7}]]]"#);
     }
     #[test]
     fn compile_update_is_valid() {
