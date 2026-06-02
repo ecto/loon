@@ -672,7 +672,7 @@ impl Compiler {
                                             if let Some(ExprKind::List(params)) =
                                                 parts.first().map(|e| &e.kind)
                                             {
-                                                let arity = Self::param_names(params).len();
+                                                let arity = Self::parse_params(params).len();
                                                 let key = format!("{name}#{arity}");
                                                 if self.fn_map.contains_key(&key) {
                                                     continue;
@@ -696,7 +696,7 @@ impl Compiler {
                                     continue;
                                 }
                                 if let ExprKind::List(params) = &items[2].kind {
-                                    let arity = Self::param_names(params).len();
+                                    let arity = Self::parse_params(params).len();
                                     let idx = self.next_fn_idx;
                                     self.fn_map.insert(
                                         name.clone(),
@@ -748,7 +748,7 @@ impl Compiler {
                                     {
                                         if parts.len() >= 2 {
                                             let key =
-                                                format!("{name}#{}", Self::param_names(params).len());
+                                                format!("{name}#{}", Self::parse_params(params).len());
                                             returns.push((key, last));
                                         }
                                     }
@@ -1097,15 +1097,24 @@ impl Compiler {
             _ => false,
         }
     }
-    fn param_names(params: &[Expr]) -> Vec<String> {
+    /// Parse a parameter list into `ClosureParam`s. Each entry is one argument
+    /// slot: a plain symbol, or a positional destructuring pattern `[a b …]`
+    /// (with `_` ignoring a slot). Used by both named functions and closures so
+    /// arity (slot count) and binding stay consistent.
+    fn parse_params(params: &[Expr]) -> Vec<ClosureParam> {
         params
             .iter()
-            .filter_map(|p| {
-                if let ExprKind::Symbol(s) = &p.kind {
-                    Some(s.clone())
-                } else {
-                    None
-                }
+            .map(|p| match &p.kind {
+                ExprKind::List(subs) => ClosureParam::Destructure(
+                    subs.iter()
+                        .map(|e| match &e.kind {
+                            ExprKind::Symbol(s) if s != "_" => Some(s.clone()),
+                            _ => None,
+                        })
+                        .collect(),
+                ),
+                ExprKind::Symbol(s) => ClosureParam::Simple(s.clone()),
+                _ => ClosureParam::Simple("_".into()),
             })
             .collect()
     }
@@ -1123,7 +1132,7 @@ impl Compiler {
             for clause in &args[1..] {
                 if let ExprKind::Tuple(parts) = &clause.kind {
                     if let Some(ExprKind::List(params)) = parts.first().map(|e| &e.kind) {
-                        let names = Self::param_names(params);
+                        let names = Self::parse_params(params);
                         let key = format!("{name}#{}", names.len());
                         self.compile_fn_body(&key, false, &names, &parts[1..])?;
                     }
@@ -1132,7 +1141,7 @@ impl Compiler {
             return Ok(());
         }
         let params = match &args[1].kind {
-            ExprKind::List(items) => Self::param_names(items),
+            ExprKind::List(items) => Self::parse_params(items),
             _ => return Err("defn params must be a list".into()),
         };
         let mut body_start = 2;
@@ -1153,7 +1162,7 @@ impl Compiler {
         &mut self,
         key: &str,
         is_main: bool,
-        params: &[String],
+        params: &[ClosureParam],
         body: &[Expr],
     ) -> Result<(), String> {
         let mut ctx = FnCtx {
@@ -1165,7 +1174,9 @@ impl Compiler {
             loop_vars: Vec::new(),
         };
         for (i, p) in params.iter().enumerate() {
-            ctx.locals.insert(p.clone(), i as u32);
+            if let ClosureParam::Simple(s) = p {
+                ctx.locals.insert(s.clone(), i as u32);
+            }
         }
         // Self-tail-recursion: a `recur` in the body (not inside a nested
         // `loop`) rebinds the params and jumps to the top. Wrap the body in a
@@ -1176,6 +1187,26 @@ impl Compiler {
                 .push(WasmInstruction::Loop(BlockType::Result(ValType::I64)));
             ctx.loop_starts.push(ctx.instructions.len());
             ctx.loop_vars.push((0..params.len() as u32).collect());
+        }
+        // Bind destructured sub-names from each `[a b …]` param slot. Emitted
+        // at the top of the (possibly recur) loop so a recur re-extracts them.
+        for (i, p) in params.iter().enumerate() {
+            if let ClosureParam::Destructure(names) = p {
+                let slot = i as u32;
+                for (j, name) in names.iter().enumerate() {
+                    let Some(name) = name else { continue };
+                    let l = ctx.alloc_local();
+                    ctx.instructions.push(WasmInstruction::LocalGet(slot));
+                    ctx.instructions.push(WasmInstruction::I32WrapI64);
+                    ctx.instructions.push(WasmInstruction::I64Load(3, 16));
+                    ctx.instructions.push(WasmInstruction::I64Const((j * 8) as i64));
+                    ctx.instructions.push(WasmInstruction::I64Add);
+                    ctx.instructions.push(WasmInstruction::I32WrapI64);
+                    ctx.instructions.push(WasmInstruction::I64Load(3, 0));
+                    ctx.instructions.push(WasmInstruction::LocalSet(l));
+                    ctx.locals.insert(name.clone(), l);
+                }
+            }
         }
         // Compile each body expression; every one leaves an i64 on the stack,
         // so drop all but the last (a statement sequence keeps only its final
@@ -1640,8 +1671,10 @@ impl<'a> FnCtx<'a> {
                 }
                 self.compile_call(items)
             }
-            ExprKind::Vec(items) => {
-                // #[a b c] desugars to vec-new + a vec-push per element.
+            ExprKind::Vec(items) | ExprKind::Tuple(items) => {
+                // #[a b c] / (a, b, c) desugar to vec-new + a vec-push per
+                // element. Tuples share the vector representation, so positional
+                // destructuring (`[fn [[a b]] …]`) reads them uniformly.
                 self.compiler.ensure_collections_runtime();
                 let rt = self.compiler.collections_runtime.clone().unwrap();
                 self.instructions
@@ -3703,6 +3736,11 @@ mod tests {
     fn compile_sort_by_is_valid() {
         valid(r#"[fn main [] [println [len [sort-by [fn [x] x] #[3 1 2]]]]]"#);
         valid(r#"[fn main [] [println [len [sort-by [fn [[_ n]] n] :desc [entries {}]]]]]"#);
+    }
+    #[test]
+    fn compile_tuples_and_named_destructuring_are_valid() {
+        valid(r#"[fn main [] [each [fn [[a b]] [println [str a b]]] #[(1 2) (3 4)]]]"#);
+        valid(r#"[fn fmtp [[word n]] [str word "=" n]] [fn main [] [println [fmtp (5 9)]]]"#);
     }
     #[test]
     fn compile_group_by_is_valid() {
