@@ -2282,6 +2282,13 @@ impl<'a> FnCtx<'a> {
                     }
                     return Err("codegen: update requires a map, key, and function".into());
                 }
+                "group-by" => {
+                    // [group-by f coll] — map of key → vector of elements.
+                    if items.len() >= 3 {
+                        return self.compile_group_by(&items[1], &items[2]);
+                    }
+                    return Err("codegen: group-by requires a function and a collection".into());
+                }
                 "range" => {
                     // [range a b] — vector of a, a+1, …, b-1.
                     if items.len() >= 3 {
@@ -2966,6 +2973,81 @@ impl<'a> FnCtx<'a> {
         self.instructions.push(W::LocalGet(rloc));
         Ok(())
     }
+    /// `[group-by f coll]` — a map from each key `f` returns to the vector of
+    /// elements producing it, keys in first-occurrence order (matching the VM,
+    /// whose maps are insertion-ordered).
+    fn compile_group_by(&mut self, keyfn: &Expr, coll: &Expr) -> Result<(), String> {
+        use WasmInstruction as W;
+        self.compiler.ensure_maps_runtime();
+        let mr = self.compiler.maps_runtime.clone().unwrap();
+        let rt = self.compiler.collections_runtime.clone().unwrap();
+        self.compile_expr(coll)?;
+        let vloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(vloc));
+        let fr = self.prepare_fn_arg(keyfn)?;
+        let (nloc, dloc) = self.emit_vec_header(vloc);
+        let result = self.alloc_local();
+        self.instructions.push(W::Call(rt.vec_new_idx)); // empty map == empty vector of pairs
+        self.instructions.push(W::LocalSet(result));
+        let i = self.alloc_local();
+        let elem = self.alloc_local();
+        let key = self.alloc_local();
+        let group = self.alloc_local();
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::LocalGet(nloc));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // elem = data[i]
+        self.instructions.push(W::LocalGet(dloc));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(8));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalSet(elem));
+        // key = f(elem)
+        self.emit_apply1(&fr, elem);
+        self.instructions.push(W::LocalSet(key));
+        // group = map_get(result, key) (0/UNIT if absent → fresh vector)
+        self.instructions.push(W::LocalGet(result));
+        self.instructions.push(W::LocalGet(key));
+        self.instructions.push(W::Call(mr.map_get_idx));
+        self.instructions.push(W::LocalSet(group));
+        self.instructions.push(W::LocalGet(group));
+        self.instructions.push(W::I64Eqz);
+        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+        self.instructions.push(W::Call(rt.vec_new_idx));
+        self.instructions.push(W::Else);
+        self.instructions.push(W::LocalGet(group));
+        self.instructions.push(W::End);
+        self.instructions.push(W::LocalSet(group));
+        // group = vec_push(group, elem)
+        self.instructions.push(W::LocalGet(group));
+        self.instructions.push(W::LocalGet(elem));
+        self.instructions.push(W::Call(rt.vec_push_idx));
+        self.instructions.push(W::LocalSet(group));
+        // result = map_assoc(result, key, group)
+        self.instructions.push(W::LocalGet(result));
+        self.instructions.push(W::LocalGet(key));
+        self.instructions.push(W::LocalGet(group));
+        self.instructions.push(W::Call(mr.map_assoc_idx));
+        self.instructions.push(W::LocalSet(result));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        self.instructions.push(W::LocalGet(result));
+        Ok(())
+    }
     /// `[sort-by f coll]` / `[sort-by f :desc coll]` — a stable sort of `coll`
     /// by the integer key `f` returns for each element. Matches the EIR VM:
     /// the key function is evaluated once per element, the sort is stable, and
@@ -3621,6 +3703,14 @@ mod tests {
     fn compile_sort_by_is_valid() {
         valid(r#"[fn main [] [println [len [sort-by [fn [x] x] #[3 1 2]]]]]"#);
         valid(r#"[fn main [] [println [len [sort-by [fn [[_ n]] n] :desc [entries {}]]]]]"#);
+    }
+    #[test]
+    fn compile_group_by_is_valid() {
+        valid(r#"[fn main [] [println [len [group-by [fn [w] w] [split "a b a" " "]]]]]"#);
+        valid(
+            r#"[fn main [] [let es [entries [group-by [fn [w] w] #["a" "b" "a"]]]]
+                 [each [fn [[k vs]] [println [str k "=" [len vs]]]] es]]"#,
+        );
     }
     #[test]
     fn compile_lowercase_uppercase_are_valid() {
