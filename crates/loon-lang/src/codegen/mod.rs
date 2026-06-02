@@ -1698,6 +1698,19 @@ impl<'a> FnCtx<'a> {
                     }
                     return Ok(());
                 }
+                "char-at" => {
+                    // Byte at index `i` of the packed string, as an int.
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(WasmInstruction::I64Const(32));
+                    self.instructions.push(WasmInstruction::I64ShrU); // ptr (i64)
+                    self.instructions.push(WasmInstruction::I32WrapI64);
+                    self.compile_expr(&items[2])?;
+                    self.instructions.push(WasmInstruction::I32WrapI64);
+                    self.instructions.push(WasmInstruction::I32Add); // ptr + i
+                    self.instructions.push(WasmInstruction::I32Load8U(0, 0));
+                    self.instructions.push(WasmInstruction::I64ExtendI32U);
+                    return Ok(());
+                }
                 "str-eq" => {
                     self.compiler.ensure_string_runtime();
                     let rt = self.compiler.string_runtime.clone().unwrap();
@@ -2846,6 +2859,10 @@ mod tests {
     #[test]
     fn compile_conj_len_are_valid() {
         valid(r#"[fn main [] [println [len [conj [conj #[] 5] 9]]]]"#);
+    }
+    #[test]
+    fn compile_char_at_is_valid() {
+        valid(r#"[fn main [] [println [char-at "abc" 0]] [println [char-at "abc" 2]]]"#);
     }
     #[test]
     fn compile_when_unless_cond_are_valid() {
