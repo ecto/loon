@@ -51,14 +51,20 @@ params are float, propagated through call sites. Synthesized nodes (desugared
 - ADTs: `[type …]`, constructors, and `match` (int / nullary-ctor / field-binding
   arms, compiled to an if/else chain or a br_table).
 - Closures, including captures, and passing functions as values.
-- Strings: literals, variadic `str`/`str-concat`, `str-len`, `str-eq`,
-  `substring`, `char-at`, and `println` of a computed string (type-directed).
-- Vectors: `#[…]` literals, `vec-new`/`vec-push`/`conj`/`vec-get`/`len`/`first`/
-  `empty?`, and the higher-order functions `range`, `map`, `filter`, `each`,
-  `fold` (the function argument may be a lambda literal or a named function).
-- Maps: `{:k v …}` literals and `assoc`/`get`/`contains?`/`keys` — keys
-  compare structurally per their static type (keyword/int by value, **string by
-  content**, incl. computed keys). `split` (one-char separator), `cons`.
+- Strings: literals, variadic `str`/`str-concat` (which **stringifies non-string
+  args** — type-directed Display via `int_to_str`), `str-len`, `str-eq`,
+  `substring`, `char-at`, `lowercase`, `split`, and `println` of a computed
+  string. Interpolation (`\(expr)` / `fmt`) desugars to `str` at parse time.
+- Vectors: `#[…]` literals, `vec-new`/`vec-push`/`conj`/`cons`/`vec-get`/`len`/
+  `first`/`empty?`/`take`, and the higher-order functions `range`, `map`,
+  `filter`, `each`, `fold`, `sort-by` (the function argument may be a lambda, a
+  named function, or a builtin — the latter two are wrapped automatically).
+- Maps: `{:k v …}` literals and `assoc`/`get`/`update`/`contains?`/`keys`/
+  `entries`/`group-by`. Keys compare **self-describingly** at runtime — raw
+  equality, then string-content compare when both keys look like string pointers
+  — so string-keyed maps work even through generic HOFs (e.g. a `fold`
+  accumulator). `(a b)` tuple literals and tuple-destructuring params
+  (`[fn [[k v]] …]`, `_` wildcard) for both closures and top-level fns.
 - Keywords (`:foo`), `when`/`unless`/`cond`.
 - `pipe` (thread-last).
 - Multi-arity functions (`[fn f ([x] …) ([x y] …)]`) — each clause is its own
@@ -74,16 +80,13 @@ params are float, propagated through call sites. Synthesized nodes (desugared
   resuming a stack segment needs a whole-program CPS / trampoline transform the
   backend doesn't do. Effect *operations* still compile (to imports); only the
   handlers don't.
-- **Fully polymorphic values** — when a value's type can't be recovered
-  statically (e.g. a generic accumulator threaded through `fold`, or a
-  heterogeneous collection), codegen can't pick the right comparison/print path.
-  Concretely: a string-keyed map built by a generic function passed to a HOF
-  won't compare keys by content. This is the residue that needs real value
-  **tags** (or full monomorphization); the type-directed pass handles everything
-  whose type is statically evident.
-- **Sets** (`#{…}`) as data, and the rest of the string/seq stdlib
-  (`lowercase`, `sort-by`, `take`, `update`, `entries`, tuple-destructuring
-  lambda params).
+- **Nested *named* local functions** (`[fn build [..] …]` inside a body) and
+  **sets** (`#{…}`) as data.
+- **Heterogeneous / fully-dynamic values.** The string-vs-pointer
+  self-description used for map keys, `empty?`, and `str` covers homogeneous
+  data; a genuinely mixed collection (or printing an arbitrary value of unknown
+  type) would still need real value **tags**. Almost everything whose type is
+  statically evident, or whose runtime shape is self-describing, works today.
 
 These run on the EIR VM, which implements the full language including one-shot
 delimited continuations (see `samples/state.oo`).
