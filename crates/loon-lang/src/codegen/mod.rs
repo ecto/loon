@@ -2,11 +2,14 @@ mod capture;
 #[allow(clippy::vec_init_then_push)]
 pub mod collections;
 #[allow(clippy::vec_init_then_push)]
+pub mod maps;
+#[allow(clippy::vec_init_then_push)]
 pub mod strings;
 
 use crate::ast::{Expr, ExprKind, NodeId};
 use crate::types::Type;
 use collections::CollectionsRuntime;
+use maps::MapRuntime;
 use std::collections::HashMap;
 use strings::StringRuntime;
 use wasm_encoder::*;
@@ -101,6 +104,7 @@ struct Compiler {
     type_count: u32,
     string_runtime: Option<StringRuntime>,
     collections_runtime: Option<CollectionsRuntime>,
+    map_runtime: Option<MapRuntime>,
     base_dir: Option<std::path::PathBuf>,
     compiled_modules: std::collections::HashSet<std::path::PathBuf>,
     force_heap: bool,
@@ -465,6 +469,7 @@ impl Compiler {
             type_count: PRE_ALLOC_TYPES,
             string_runtime: None,
             collections_runtime: None,
+            map_runtime: None,
             base_dir: None,
             compiled_modules: std::collections::HashSet::new(),
             force_heap: false,
@@ -551,6 +556,42 @@ impl Compiler {
             vec_new_idx: n,
             vec_push_idx: p,
             vec_get_idx: g,
+        });
+    }
+    fn ensure_map_runtime(&mut self) {
+        if self.map_runtime.is_some() {
+            return;
+        }
+        self.force_heap = true;
+        // Maps reuse str_eq (string keys) and the vector runtime (for `keys`).
+        self.ensure_string_runtime();
+        let str_eq = self.string_runtime.clone().unwrap().str_eq_idx;
+        self.ensure_collections_runtime();
+        let cr = self.collections_runtime.clone().unwrap();
+        let new_idx = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(new_idx, MapRuntime::gen_map_new());
+        let set_idx = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(set_idx, MapRuntime::gen_map_set(str_eq));
+        let get_idx = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(get_idx, MapRuntime::gen_map_get(str_eq));
+        let has_idx = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(has_idx, MapRuntime::gen_map_has(str_eq));
+        let keys_idx = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(
+            keys_idx,
+            MapRuntime::gen_map_keys(cr.vec_new_idx, cr.vec_push_idx),
+        );
+        self.map_runtime = Some(MapRuntime {
+            map_new_idx: new_idx,
+            map_set_idx: set_idx,
+            map_get_idx: get_idx,
+            map_has_idx: has_idx,
+            map_keys_idx: keys_idx,
         });
     }
     fn compile_program(&mut self, exprs: &[Expr]) -> Result<(), String> {
@@ -1940,6 +1981,20 @@ impl<'a> FnCtx<'a> {
                 }
                 Ok(())
             }
+            ExprKind::Map(pairs) => {
+                // {:k v …} desugars to map-new + a map-set per pair.
+                self.compiler.ensure_map_runtime();
+                let rt = self.compiler.map_runtime.clone().unwrap();
+                self.instructions.push(WasmInstruction::Call(rt.map_new_idx));
+                for (k, v) in pairs {
+                    let is_str = self.expr_is_string(k) as i64;
+                    self.compile_expr(k)?;
+                    self.compile_expr(v)?;
+                    self.instructions.push(WasmInstruction::I64Const(is_str));
+                    self.instructions.push(WasmInstruction::Call(rt.map_set_idx));
+                }
+                Ok(())
+            }
             _ => Err(format!("codegen: unsupported expression: {:?}", expr.kind)),
         }
     }
@@ -2241,6 +2296,47 @@ impl<'a> FnCtx<'a> {
                     self.compile_expr(&items[2])?;
                     self.instructions
                         .push(WasmInstruction::Call(rt.vec_get_idx));
+                    return Ok(());
+                }
+                "assoc" => {
+                    // [assoc m k v] — copy-on-write insert; string keys use
+                    // structural equality (is_str flag).
+                    self.compiler.ensure_map_runtime();
+                    let rt = self.compiler.map_runtime.clone().unwrap();
+                    let is_str = self.expr_is_string(&items[2]) as i64;
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.compile_expr(&items[3])?;
+                    self.instructions.push(WasmInstruction::I64Const(is_str));
+                    self.instructions.push(WasmInstruction::Call(rt.map_set_idx));
+                    return Ok(());
+                }
+                "get" => {
+                    // [get m k] — map lookup (UNIT if absent).
+                    self.compiler.ensure_map_runtime();
+                    let rt = self.compiler.map_runtime.clone().unwrap();
+                    let is_str = self.expr_is_string(&items[2]) as i64;
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.instructions.push(WasmInstruction::I64Const(is_str));
+                    self.instructions.push(WasmInstruction::Call(rt.map_get_idx));
+                    return Ok(());
+                }
+                "contains?" | "has-key?" => {
+                    self.compiler.ensure_map_runtime();
+                    let rt = self.compiler.map_runtime.clone().unwrap();
+                    let is_str = self.expr_is_string(&items[2]) as i64;
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.instructions.push(WasmInstruction::I64Const(is_str));
+                    self.instructions.push(WasmInstruction::Call(rt.map_has_idx));
+                    return Ok(());
+                }
+                "keys" => {
+                    self.compiler.ensure_map_runtime();
+                    let rt = self.compiler.map_runtime.clone().unwrap();
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(WasmInstruction::Call(rt.map_keys_idx));
                     return Ok(());
                 }
                 "first" => {
@@ -3360,6 +3456,19 @@ mod tests {
     #[test]
     fn compile_conj_len_are_valid() {
         valid(r#"[fn main [] [println [len [conj [conj #[] 5] 9]]]]"#);
+    }
+    #[test]
+    fn compile_maps_are_valid() {
+        // literals, assoc/get/contains?/keys, keyword + computed-string keys,
+        // and a fold building a frequency map (the word-count pattern).
+        valid(r#"[fn main [] [let m {:x 10 :y 20}] [println [get m :y]]]"#);
+        valid(r#"[fn main [] [let m [assoc {} "hi" 7]] [println [get m [str "h" "i"]]]]"#);
+        valid(r#"[fn main [] [let m {:a 1}] [println [if [contains? m :a] 1 0]]]"#);
+        valid(r#"[fn main [] [println [len [keys {:a 1 :b 2}]]]]"#);
+        valid(
+            r#"[fn add1 [m k] [assoc m k [+ [get m k] 1]]]
+               [fn main [] [let m [fold {} add1 #[5 5 7]]] [println [get m 5]]]"#,
+        );
     }
     #[test]
     fn compile_string_equality_is_structural() {
