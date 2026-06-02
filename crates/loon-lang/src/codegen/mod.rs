@@ -2,10 +2,13 @@ mod capture;
 #[allow(clippy::vec_init_then_push)]
 pub mod collections;
 #[allow(clippy::vec_init_then_push)]
+pub mod maps;
+#[allow(clippy::vec_init_then_push)]
 pub mod strings;
 
 use crate::ast::{Expr, ExprKind};
 use collections::CollectionsRuntime;
+use maps::MapsRuntime;
 use std::collections::HashMap;
 use strings::StringRuntime;
 use wasm_encoder::*;
@@ -79,6 +82,7 @@ struct Compiler {
     type_count: u32,
     string_runtime: Option<StringRuntime>,
     collections_runtime: Option<CollectionsRuntime>,
+    maps_runtime: Option<MapsRuntime>,
     base_dir: Option<std::path::PathBuf>,
     compiled_modules: std::collections::HashSet<std::path::PathBuf>,
     force_heap: bool,
@@ -388,6 +392,7 @@ impl Compiler {
             type_count: PRE_ALLOC_TYPES,
             string_runtime: None,
             collections_runtime: None,
+            maps_runtime: None,
             base_dir: None,
             compiled_modules: std::collections::HashSet::new(),
             force_heap: false,
@@ -475,6 +480,36 @@ impl Compiler {
             vec_new_idx: n,
             vec_push_idx: p,
             vec_get_idx: g,
+        });
+    }
+    fn ensure_maps_runtime(&mut self) {
+        if self.maps_runtime.is_some() {
+            return;
+        }
+        self.ensure_collections_runtime();
+        self.ensure_string_runtime();
+        let cr = self.collections_runtime.clone().unwrap();
+        let sr = self.string_runtime.clone().unwrap();
+        let val_eq = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(val_eq, MapsRuntime::gen_val_eq(sr.str_eq_idx));
+        let pair = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(pair, MapsRuntime::gen_pair(cr.vec_new_idx, cr.vec_push_idx));
+        let map_get = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(map_get, MapsRuntime::gen_map_get(cr.vec_get_idx, val_eq));
+        let map_assoc = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(
+            map_assoc,
+            MapsRuntime::gen_map_assoc(cr.vec_new_idx, cr.vec_push_idx, cr.vec_get_idx, val_eq, pair),
+        );
+        self.maps_runtime = Some(MapsRuntime {
+            val_eq_idx: val_eq,
+            pair_idx: pair,
+            map_get_idx: map_get,
+            map_assoc_idx: map_assoc,
         });
     }
     /// Is this top-level form a runnable statement (as opposed to a definition
@@ -1569,6 +1604,22 @@ impl<'a> FnCtx<'a> {
                 }
                 Ok(())
             }
+            ExprKind::Map(pairs) => {
+                // {} / {:k v …} desugars to map-new (an empty pair-vector) plus
+                // a map_assoc per entry, preserving insertion order.
+                self.compiler.ensure_maps_runtime();
+                let cr = self.compiler.collections_runtime.clone().unwrap();
+                let mr = self.compiler.maps_runtime.clone().unwrap();
+                self.instructions
+                    .push(WasmInstruction::Call(cr.vec_new_idx));
+                for (k, v) in pairs {
+                    self.compile_expr(k)?;
+                    self.compile_expr(v)?;
+                    self.instructions
+                        .push(WasmInstruction::Call(mr.map_assoc_idx));
+                }
+                Ok(())
+            }
             _ => Err(format!("codegen: unsupported expression: {:?}", expr.kind)),
         }
     }
@@ -1826,6 +1877,31 @@ impl<'a> FnCtx<'a> {
                     self.compile_expr(&items[2])?;
                     self.instructions
                         .push(WasmInstruction::Call(rt.vec_push_idx));
+                    return Ok(());
+                }
+                "assoc" => {
+                    self.compiler.ensure_maps_runtime();
+                    let mr = self.compiler.maps_runtime.clone().unwrap();
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.compile_expr(&items[3])?;
+                    self.instructions
+                        .push(WasmInstruction::Call(mr.map_assoc_idx));
+                    return Ok(());
+                }
+                "get" => {
+                    self.compiler.ensure_maps_runtime();
+                    let mr = self.compiler.maps_runtime.clone().unwrap();
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.instructions
+                        .push(WasmInstruction::Call(mr.map_get_idx));
+                    return Ok(());
+                }
+                "entries" => {
+                    // A map *is* an insertion-ordered vector of [k v] pairs, so
+                    // `entries` is the identity on its argument.
+                    self.compile_expr(&items[1])?;
                     return Ok(());
                 }
                 "len" | "count" | "vec-len" => {
@@ -3090,6 +3166,16 @@ mod tests {
     #[test]
     fn compile_string_str_alias() {
         ok(r#"[fn main [] [str "foo" "bar"]]"#);
+    }
+    #[test]
+    fn compile_map_operations_are_valid() {
+        // Empty + non-empty literals, assoc, get, len, entries — string keys
+        // (structural equality) and integer keys (raw equality).
+        valid(r#"[fn main [] [println [len {}]]]"#);
+        valid(r#"[fn main [] [let m {"x" 10 "y" 20}] [println [get m "x"]]]"#);
+        valid(r#"[fn main [] [let m [assoc [assoc {} "a" 1] "b" 2]] [println [len m]]]"#);
+        valid(r#"[fn main [] [let m [assoc {} 1 100]] [println [get m 1]]]"#);
+        valid(r#"[fn main [] [println [len [entries {"a" 1 "b" 2}]]]]"#);
     }
     #[test]
     fn str_coerces_integers_to_decimal() {
