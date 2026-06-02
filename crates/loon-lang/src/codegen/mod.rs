@@ -439,10 +439,14 @@ impl Compiler {
         let e = self.next_fn_idx;
         self.next_fn_idx += 1;
         self.push_function(e, StringRuntime::gen_str_eq());
+        let sub = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(sub, StringRuntime::gen_str_substring());
         self.string_runtime = Some(StringRuntime {
             str_concat_idx: c,
             str_len_idx: l,
             str_eq_idx: e,
+            str_substring_idx: sub,
         });
     }
     fn ensure_collections_runtime(&mut self) {
@@ -1698,6 +1702,17 @@ impl<'a> FnCtx<'a> {
                     }
                     return Ok(());
                 }
+                "substring" => {
+                    // [substring s start end] -> new packed string.
+                    self.compiler.ensure_string_runtime();
+                    let rt = self.compiler.string_runtime.clone().unwrap();
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.compile_expr(&items[3])?;
+                    self.instructions
+                        .push(WasmInstruction::Call(rt.str_substring_idx));
+                    return Ok(());
+                }
                 "char-at" => {
                     // Byte at index `i` of the packed string, as an int.
                     self.compile_expr(&items[1])?;
@@ -2863,6 +2878,12 @@ mod tests {
     #[test]
     fn compile_char_at_is_valid() {
         valid(r#"[fn main [] [println [char-at "abc" 0]] [println [char-at "abc" 2]]]"#);
+    }
+    #[test]
+    fn compile_substring_is_valid() {
+        // substring returns a string, so println routes through the byte path.
+        valid(r#"[fn main [] [println [substring "hello world" 0 5]]]"#);
+        valid(r#"[fn main [] [println [substring "hello world" 6 11]]]"#);
     }
     #[test]
     fn compile_when_unless_cond_are_valid() {
