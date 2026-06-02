@@ -571,10 +571,14 @@ impl Compiler {
         let g = self.next_fn_idx;
         self.next_fn_idx += 1;
         self.push_function(g, CollectionsRuntime::gen_vec_get());
+        let c = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(c, CollectionsRuntime::gen_vec_cons());
         self.collections_runtime = Some(CollectionsRuntime {
             vec_new_idx: n,
             vec_push_idx: p,
             vec_get_idx: g,
+            vec_cons_idx: c,
         });
     }
     fn ensure_maps_runtime(&mut self) {
@@ -2455,6 +2459,16 @@ impl<'a> FnCtx<'a> {
                     self.compile_expr(&items[2])?;
                     self.instructions
                         .push(WasmInstruction::Call(rt.vec_push_idx));
+                    return Ok(());
+                }
+                "cons" => {
+                    // [cons val coll] — prepend (deque front, amortized O(1)).
+                    self.compiler.ensure_collections_runtime();
+                    let rt = self.compiler.collections_runtime.clone().unwrap();
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.instructions
+                        .push(WasmInstruction::Call(rt.vec_cons_idx));
                     return Ok(());
                 }
                 "assoc" => {
