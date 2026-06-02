@@ -1998,6 +1998,16 @@ impl<'a> FnCtx<'a> {
                     );
                 }
                 "=" => {
+                    // String equality is structural (str_eq), not pointer
+                    // identity — type-directed when either side is a string.
+                    if self.expr_is_string(&items[1]) || self.expr_is_string(&items[2]) {
+                        self.compiler.ensure_string_runtime();
+                        let rt = self.compiler.string_runtime.clone().unwrap();
+                        self.compile_expr(&items[1])?;
+                        self.compile_expr(&items[2])?;
+                        self.instructions.push(WasmInstruction::Call(rt.str_eq_idx));
+                        return Ok(());
+                    }
                     return self.compile_cmp(
                         &items[1],
                         &items[2],
@@ -2006,6 +2016,17 @@ impl<'a> FnCtx<'a> {
                     );
                 }
                 "!=" => {
+                    if self.expr_is_string(&items[1]) || self.expr_is_string(&items[2]) {
+                        self.compiler.ensure_string_runtime();
+                        let rt = self.compiler.string_runtime.clone().unwrap();
+                        self.compile_expr(&items[1])?;
+                        self.compile_expr(&items[2])?;
+                        self.instructions.push(WasmInstruction::Call(rt.str_eq_idx));
+                        // negate: (str_eq == 0)
+                        self.instructions.push(WasmInstruction::I64Eqz);
+                        self.instructions.push(WasmInstruction::I64ExtendI32U);
+                        return Ok(());
+                    }
                     return self.compile_cmp(
                         &items[1],
                         &items[2],
@@ -3339,6 +3360,12 @@ mod tests {
     #[test]
     fn compile_conj_len_are_valid() {
         valid(r#"[fn main [] [println [len [conj [conj #[] 5] 9]]]]"#);
+    }
+    #[test]
+    fn compile_string_equality_is_structural() {
+        // `=` on strings must compare content (str_eq), not pointer identity.
+        valid(r#"[fn main [] [println [if [= [str "a" "b"] "ab"] 1 0]]]"#);
+        valid(r#"[fn main [] [println [if [!= [str "a" "b"] "ac"] 1 0]]]"#);
     }
     #[test]
     fn compile_floats_are_valid() {
