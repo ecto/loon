@@ -2256,6 +2256,13 @@ impl<'a> FnCtx<'a> {
                     }
                     return Err("codegen: range requires start and end".into());
                 }
+                "take" => {
+                    // [take n coll] — a vector of the first min(n, len) elements.
+                    if items.len() >= 3 {
+                        return self.compile_take(&items[1], &items[2]);
+                    }
+                    return Err("codegen: take requires a count and a collection".into());
+                }
                 "type" | "use" | "effect" => {
                     self.instructions.push(WasmInstruction::I64Const(0));
                     return Ok(());
@@ -2799,6 +2806,61 @@ impl<'a> FnCtx<'a> {
         self.instructions.push(W::Call(mr.map_assoc_idx));
         Ok(())
     }
+    /// `[take n coll]` — the first `min(n, len)` elements of `coll` as a new
+    /// vector.
+    fn compile_take(&mut self, n: &Expr, coll: &Expr) -> Result<(), String> {
+        use WasmInstruction as W;
+        self.compiler.ensure_collections_runtime();
+        let rt = self.compiler.collections_runtime.clone().unwrap();
+        self.compile_expr(coll)?;
+        let vloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(vloc));
+        self.compile_expr(n)?;
+        let nloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(nloc));
+        let (lenloc, dloc) = self.emit_vec_header(vloc);
+        let rloc = self.alloc_local();
+        self.instructions.push(W::Call(rt.vec_new_idx));
+        self.instructions.push(W::LocalSet(rloc));
+        let iloc = self.alloc_local();
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(iloc));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        // if i >= len break
+        self.instructions.push(W::LocalGet(iloc));
+        self.instructions.push(W::LocalGet(lenloc));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // if i >= n break
+        self.instructions.push(W::LocalGet(iloc));
+        self.instructions.push(W::LocalGet(nloc));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // result = vec_push(result, data[i])
+        self.instructions.push(W::LocalGet(rloc));
+        self.instructions.push(W::LocalGet(dloc));
+        self.instructions.push(W::LocalGet(iloc));
+        self.instructions.push(W::I64Const(8));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::Call(rt.vec_push_idx));
+        self.instructions.push(W::LocalSet(rloc));
+        // i++
+        self.instructions.push(W::LocalGet(iloc));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(iloc));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        self.instructions.push(W::LocalGet(rloc));
+        Ok(())
+    }
     fn compile_fold(&mut self, init: &Expr, f: &Expr, coll: &Expr) -> Result<(), String> {
         use WasmInstruction as W;
         self.compiler.ensure_collections_runtime();
@@ -3234,6 +3296,12 @@ mod tests {
     fn compile_split_is_valid() {
         valid(r#"[fn main [] [println [len [split "a b c" " "]]]]"#);
         valid(r#"[fn main [] [println [str "first=" [first [split "x,y,z" ","]]]]]"#);
+    }
+    #[test]
+    fn compile_take_is_valid() {
+        valid(r#"[fn main [] [println [len [take 3 [range 0 10]]]]]"#);
+        // taking more than exists yields the whole collection (no overflow).
+        valid(r#"[fn main [] [println [len [take 99 [range 0 4]]]]]"#);
     }
     #[test]
     fn compile_update_is_valid() {

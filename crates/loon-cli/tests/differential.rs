@@ -51,6 +51,52 @@ fn run(sample: &str, wasm: bool) -> Run {
     }
 }
 
+/// Run an inline program through a chosen backend, returning trimmed stdout.
+fn run_src(src: &str, args: &[&str]) -> String {
+    use std::io::Write;
+    let dir = std::env::temp_dir().join(format!("loon-diff-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("prog.oo");
+    std::fs::File::create(&path)
+        .unwrap()
+        .write_all(src.as_bytes())
+        .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_loon"))
+        .arg("run")
+        .arg(&path)
+        .args(args)
+        .output()
+        .expect("spawn loon");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Documents a *known EIR VM bug* uncovered while building the wasm map stdlib:
+/// the VM (`loon run`, the differential oracle) keys maps by object handle, so
+/// two structurally-equal strings built separately count as distinct keys. The
+/// legacy tree-walking interpreter and the wasm backend both treat them as
+/// equal (the correct behaviour). This is why `word-count.oo` cannot reach
+/// output parity on wasm: the VM does not aggregate split-produced words.
+///
+/// When the VM is fixed to use structural key equality, this test will fail and
+/// should be updated (the `vm` value will become "1").
+#[test]
+fn vm_map_keys_are_handle_identity_not_structural() {
+    let src = r#"[fn main []
+        [let m [assoc [assoc {} [str "a" "b"] 1] [str "a" "b"] 2]]
+        [println [len m]]]"#;
+    let vm = run_src(src, &[]);
+    let legacy = run_src(src, &["--legacy"]);
+    let wasm = run_src(src, &["--wasm"]);
+    assert_eq!(legacy, "1", "legacy interpreter should dedup equal string keys");
+    assert_eq!(wasm, "1", "wasm backend should dedup equal string keys");
+    assert_eq!(
+        vm, "2",
+        "KNOWN BUG: the EIR VM keys maps by handle, not structural equality; \
+         if this now reports 1 the VM was fixed — update this test and revisit \
+         word-count.oo parity"
+    );
+}
+
 /// Samples the wasm backend fully supports: must run on both backends and
 /// produce identical stdout.
 const SUPPORTED: &[&str] = &[
@@ -104,7 +150,13 @@ const UNSUPPORTED: &[(&str, &str)] = &[
     ("types.oo", "floating-point"),
     // Collection / string stdlib builtins not yet ported to codegen.
     ("bench-collections.oo", "unknown function 'cons'"),
-    ("word-count.oo", "unknown function 'take'"),
+    // word-count compiles further now (split/filter/fold/update/take all land);
+    // its next codegen gap is `sort-by`. Note: even once that lands, word-count
+    // cannot reach *output* parity, because the EIR VM (the differential oracle)
+    // keys maps by object handle rather than structural equality, so
+    // split-produced duplicate words are not aggregated there. See the
+    // `vm_map_keys_are_handle_identity_not_structural` regression test.
+    ("word-count.oo", "unknown function 'sort-by'"),
     ("word-freq.oo", "lowercase"),
 ];
 
