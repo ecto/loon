@@ -592,4 +592,138 @@ impl StringRuntime {
             instructions: instrs,
         }
     }
+
+    /// Generate `split(s, sep) -> i64` — a vector of the substrings of `s`
+    /// separated by `sep`. Consecutive/leading/trailing separators yield empty
+    /// segments (matching the interpreter); the final segment is always pushed.
+    pub(super) fn gen_split(
+        str_substring_idx: u32,
+        vec_new_idx: u32,
+        vec_push_idx: u32,
+    ) -> FunctionBody {
+        // locals: 2=ptr_s 3=len_s 4=ptr_sep 5=len_sep 6=result 7=start 8=i
+        //         9=j 10=matched
+        let mut i = Vec::new();
+        // unpack s
+        i.push(LocalGet(0));
+        i.push(I64Const(32));
+        i.push(I64ShrU);
+        i.push(LocalSet(2));
+        i.push(LocalGet(0));
+        i.push(I64Const(0xFFFFFFFF));
+        i.push(I64And);
+        i.push(LocalSet(3));
+        // unpack sep
+        i.push(LocalGet(1));
+        i.push(I64Const(32));
+        i.push(I64ShrU);
+        i.push(LocalSet(4));
+        i.push(LocalGet(1));
+        i.push(I64Const(0xFFFFFFFF));
+        i.push(I64And);
+        i.push(LocalSet(5));
+        // result = vec_new(); start = 0; i = 0
+        i.push(Call(vec_new_idx));
+        i.push(LocalSet(6));
+        i.push(I64Const(0));
+        i.push(LocalSet(7));
+        i.push(I64Const(0));
+        i.push(LocalSet(8));
+        // outer scan
+        i.push(Block(BlockType::Empty)); // A
+        i.push(Loop(BlockType::Empty)); // B
+        // if i + len_sep > len_s: break A
+        i.push(LocalGet(8));
+        i.push(LocalGet(5));
+        i.push(I64Add);
+        i.push(LocalGet(3));
+        i.push(I64GtS);
+        i.push(BrIf(1));
+        // matched = 1; j = 0
+        i.push(I64Const(1));
+        i.push(LocalSet(10));
+        i.push(I64Const(0));
+        i.push(LocalSet(9));
+        i.push(Block(BlockType::Empty)); // C
+        i.push(Loop(BlockType::Empty)); // D
+        // if j >= len_sep: break C
+        i.push(LocalGet(9));
+        i.push(LocalGet(5));
+        i.push(I64LtS);
+        i.push(I32Eqz);
+        i.push(BrIf(1));
+        // mem[ptr_s + i + j]
+        i.push(LocalGet(2));
+        i.push(LocalGet(8));
+        i.push(I64Add);
+        i.push(LocalGet(9));
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(I32Load8U(0, 0));
+        // mem[ptr_sep + j]
+        i.push(LocalGet(4));
+        i.push(LocalGet(9));
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(I32Load8U(0, 0));
+        // if bytes differ: matched = 0; break C
+        i.push(I32Eq);
+        i.push(I32Eqz);
+        i.push(If(BlockType::Empty)); // E
+        i.push(I64Const(0));
+        i.push(LocalSet(10));
+        i.push(Br(2)); // break C (0=If E, 1=Loop D, 2=Block C)
+        i.push(End); // E
+        // j++
+        i.push(LocalGet(9));
+        i.push(I64Const(1));
+        i.push(I64Add);
+        i.push(LocalSet(9));
+        i.push(Br(0)); // continue D
+        i.push(End); // D
+        i.push(End); // C
+        // if matched: push substring(s, start, i); i += len_sep; start = i
+        i.push(LocalGet(10));
+        i.push(I64Eqz);
+        i.push(I32Eqz);
+        i.push(If(BlockType::Empty)); // F
+        i.push(LocalGet(6));
+        i.push(LocalGet(0));
+        i.push(LocalGet(7));
+        i.push(LocalGet(8));
+        i.push(Call(str_substring_idx));
+        i.push(Call(vec_push_idx));
+        i.push(LocalSet(6));
+        i.push(LocalGet(8));
+        i.push(LocalGet(5));
+        i.push(I64Add);
+        i.push(LocalSet(8));
+        i.push(LocalGet(8));
+        i.push(LocalSet(7));
+        i.push(Else);
+        // i++
+        i.push(LocalGet(8));
+        i.push(I64Const(1));
+        i.push(I64Add);
+        i.push(LocalSet(8));
+        i.push(End); // F
+        i.push(Br(0)); // continue B
+        i.push(End); // B
+        i.push(End); // A
+        // push final segment substring(s, start, len_s)
+        i.push(LocalGet(6));
+        i.push(LocalGet(0));
+        i.push(LocalGet(7));
+        i.push(LocalGet(3));
+        i.push(Call(str_substring_idx));
+        i.push(Call(vec_push_idx));
+        // (result left on stack)
+
+        FunctionBody {
+            params: vec![ValType::I64, ValType::I64],
+            results: vec![ValType::I64],
+            locals: vec![ValType::I64; 9], // 2..=10
+            instructions: i,
+        }
+    }
 }

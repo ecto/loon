@@ -104,8 +104,8 @@ const UNSUPPORTED: &[(&str, &str)] = &[
     ("types.oo", "floating-point"),
     // Collection / string stdlib builtins not yet ported to codegen.
     ("bench-collections.oo", "unknown function 'cons'"),
-    ("word-count.oo", "unknown function 'split'"),
-    ("word-freq.oo", "unknown function 'split'"),
+    ("word-count.oo", "unknown function 'update'"),
+    ("word-freq.oo", "lowercase"),
 ];
 
 #[test]

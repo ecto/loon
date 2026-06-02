@@ -83,6 +83,7 @@ struct Compiler {
     string_runtime: Option<StringRuntime>,
     collections_runtime: Option<CollectionsRuntime>,
     maps_runtime: Option<MapsRuntime>,
+    split_idx: Option<u32>,
     base_dir: Option<std::path::PathBuf>,
     compiled_modules: std::collections::HashSet<std::path::PathBuf>,
     force_heap: bool,
@@ -393,6 +394,7 @@ impl Compiler {
             string_runtime: None,
             collections_runtime: None,
             maps_runtime: None,
+            split_idx: None,
             base_dir: None,
             compiled_modules: std::collections::HashSet::new(),
             force_heap: false,
@@ -511,6 +513,23 @@ impl Compiler {
             map_get_idx: map_get,
             map_assoc_idx: map_assoc,
         });
+    }
+    fn ensure_split_runtime(&mut self) -> u32 {
+        if let Some(idx) = self.split_idx {
+            return idx;
+        }
+        self.ensure_string_runtime();
+        self.ensure_collections_runtime();
+        let sr = self.string_runtime.clone().unwrap();
+        let cr = self.collections_runtime.clone().unwrap();
+        let idx = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(
+            idx,
+            StringRuntime::gen_split(sr.str_substring_idx, cr.vec_new_idx, cr.vec_push_idx),
+        );
+        self.split_idx = Some(idx);
+        idx
     }
     /// Is this top-level form a runnable statement (as opposed to a definition
     /// like `fn`/`type`/`use`/`effect`)? Bare literals and non-definition lists
@@ -1904,6 +1923,13 @@ impl<'a> FnCtx<'a> {
                     self.compile_expr(&items[1])?;
                     return Ok(());
                 }
+                "split" => {
+                    let split_idx = self.compiler.ensure_split_runtime();
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.instructions.push(WasmInstruction::Call(split_idx));
+                    return Ok(());
+                }
                 "len" | "count" | "vec-len" => {
                     // Vector length lives at header offset 0.
                     self.compile_expr(&items[1])?;
@@ -3166,6 +3192,11 @@ mod tests {
     #[test]
     fn compile_string_str_alias() {
         ok(r#"[fn main [] [str "foo" "bar"]]"#);
+    }
+    #[test]
+    fn compile_split_is_valid() {
+        valid(r#"[fn main [] [println [len [split "a b c" " "]]]]"#);
+        valid(r#"[fn main [] [println [str "first=" [first [split "x,y,z" ","]]]]]"#);
     }
     #[test]
     fn compile_map_operations_are_valid() {
