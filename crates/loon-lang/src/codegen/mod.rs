@@ -105,6 +105,8 @@ struct Compiler {
     string_runtime: Option<StringRuntime>,
     collections_runtime: Option<CollectionsRuntime>,
     map_runtime: Option<MapRuntime>,
+    /// Lazily-generated `str_split` (needs both string + vector runtimes).
+    str_split_idx: Option<u32>,
     base_dir: Option<std::path::PathBuf>,
     compiled_modules: std::collections::HashSet<std::path::PathBuf>,
     force_heap: bool,
@@ -119,6 +121,8 @@ struct Compiler {
     /// string. Lets `println` pick the string-printing path for calls, since
     /// the untagged value model offers no runtime check.
     string_fns: std::collections::HashSet<String>,
+    /// For each function key, the names of its string-typed parameters.
+    string_params: HashMap<String, Vec<String>>,
     /// Distinct keyword literals interned to unique i64 ids (for `=` and use as
     /// enum-like tags). Ids start high to avoid colliding with small ints.
     keywords: HashMap<String, i64>,
@@ -470,6 +474,7 @@ impl Compiler {
             string_runtime: None,
             collections_runtime: None,
             map_runtime: None,
+            str_split_idx: None,
             base_dir: None,
             compiled_modules: std::collections::HashSet::new(),
             force_heap: false,
@@ -478,6 +483,7 @@ impl Compiler {
             effect_import_defs: Vec::new(),
             effect_registry: crate::effects::EffectRegistry::new(),
             string_fns: std::collections::HashSet::new(),
+            string_params: HashMap::new(),
             keywords: HashMap::new(),
             node_types: HashMap::new(),
             float_fns: std::collections::HashSet::new(),
@@ -594,6 +600,24 @@ impl Compiler {
             map_keys_idx: keys_idx,
         });
     }
+    fn ensure_split_runtime(&mut self) -> u32 {
+        if let Some(idx) = self.str_split_idx {
+            return idx;
+        }
+        self.force_heap = true;
+        self.ensure_string_runtime();
+        let substr = self.string_runtime.clone().unwrap().str_substring_idx;
+        self.ensure_collections_runtime();
+        let cr = self.collections_runtime.clone().unwrap();
+        let idx = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(
+            idx,
+            StringRuntime::gen_str_split(cr.vec_new_idx, cr.vec_push_idx, substr),
+        );
+        self.str_split_idx = Some(idx);
+        idx
+    }
     fn compile_program(&mut self, exprs: &[Expr]) -> Result<(), String> {
         // Pass 0: collect [effect ...] declarations
         for expr in exprs {
@@ -686,8 +710,7 @@ impl Compiler {
                 }
             }
         }
-        self.analyze_string_fns(exprs);
-        self.analyze_floats(exprs);
+        self.analyze_types(exprs);
         for expr in exprs {
             if let ExprKind::List(items) = &expr.kind {
                 if items.len() >= 3 {
@@ -702,52 +725,6 @@ impl Compiler {
             }
         }
         Ok(())
-    }
-    /// Compute, to a fixpoint, which functions statically return a string, so
-    /// `println` can route their call results through the byte-printing path.
-    fn analyze_string_fns(&mut self, exprs: &[Expr]) {
-        // Collect (fn key, return expression) for every clause.
-        let mut returns: Vec<(String, &Expr)> = Vec::new();
-        for expr in exprs {
-            if let ExprKind::List(items) = &expr.kind {
-                if items.len() >= 3 && matches!(&items[0].kind, ExprKind::Symbol(s) if s == "fn") {
-                    if let ExprKind::Symbol(name) = &items[1].kind {
-                        let args = &items[1..];
-                        if Self::is_multi_arity(args) {
-                            for clause in &args[1..] {
-                                if let ExprKind::Tuple(parts) = &clause.kind {
-                                    if let (Some(ExprKind::List(params)), Some(last)) =
-                                        (parts.first().map(|e| &e.kind), parts.last())
-                                    {
-                                        if parts.len() >= 2 {
-                                            let key =
-                                                format!("{name}#{}", Self::param_names(params).len());
-                                            returns.push((key, last));
-                                        }
-                                    }
-                                }
-                            }
-                        } else if let Some(last) = items.last() {
-                            returns.push((name.clone(), last));
-                        }
-                    }
-                }
-            }
-        }
-        loop {
-            let mut changed = false;
-            for (key, ret) in &returns {
-                if !self.string_fns.contains(key)
-                    && Self::expr_returns_string(ret, &self.string_fns)
-                {
-                    self.string_fns.insert(key.clone());
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
     }
     /// Structural float check: whether `e` evaluates to a float, given the set
     /// of in-scope float-named bindings and the known float-returning functions.
@@ -808,7 +785,7 @@ impl Compiler {
     /// Whole-program fixpoint recovering which functions return floats and which
     /// of their parameters are float. The checker generalizes polymorphic
     /// bodies, so this structural pass fills the gap for monomorphic float use.
-    fn analyze_floats(&mut self, exprs: &[Expr]) {
+    fn analyze_types(&mut self, exprs: &[Expr]) {
         // fn key -> param names; and (key, last body expr) per clause.
         let mut fn_params: HashMap<String, Vec<String>> = HashMap::new();
         let mut fn_bodies: Vec<(String, &Expr)> = Vec::new();
@@ -882,18 +859,43 @@ impl Compiler {
                 }
             }
         }
-        let mut float_fns: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut float_params: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+        // Run the same return/param fixpoint for floats and for strings, using
+        // the matching structural predicate.
+        let (float_fns, float_params) =
+            Self::propagate_type(&fn_bodies, &calls, &fn_params, Self::is_float_static);
+        self.float_fns = float_fns;
+        self.float_params = float_params;
+        let (string_fns, string_params) =
+            Self::propagate_type(&fn_bodies, &calls, &fn_params, Self::is_str_static);
+        self.string_fns = string_fns;
+        self.string_params = string_params;
+    }
+    /// Generic whole-program fixpoint: given a structural predicate `pred` that
+    /// decides whether an expression is of the type in question (consulting the
+    /// in-scope names + the set of functions returning that type), compute which
+    /// functions return that type and which of their params carry it.
+    #[allow(clippy::type_complexity)]
+    fn propagate_type(
+        fn_bodies: &[(String, &Expr)],
+        calls: &[(Option<String>, String, Vec<&Expr>)],
+        fn_params: &HashMap<String, Vec<String>>,
+        pred: fn(&Expr, &std::collections::HashSet<String>, &std::collections::HashSet<String>) -> bool,
+    ) -> (
+        std::collections::HashSet<String>,
+        HashMap<String, Vec<String>>,
+    ) {
+        let mut ret_fns: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut params: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
         loop {
             let mut changed = false;
-            for (key, last) in &fn_bodies {
-                let names = float_params.get(key).cloned().unwrap_or_default();
-                if !float_fns.contains(key) && Self::is_float_static(last, &names, &float_fns) {
-                    float_fns.insert(key.clone());
+            for (key, last) in fn_bodies {
+                let names = params.get(key).cloned().unwrap_or_default();
+                if !ret_fns.contains(key) && pred(last, &names, &ret_fns) {
+                    ret_fns.insert(key.clone());
                     changed = true;
                 }
             }
-            for (enc, callee, args) in &calls {
+            for (enc, callee, args) in calls {
                 let callee_key = if fn_params.contains_key(callee) {
                     callee.clone()
                 } else {
@@ -906,7 +908,7 @@ impl Compiler {
                 };
                 let enc_names = enc
                     .as_ref()
-                    .and_then(|k| float_params.get(k))
+                    .and_then(|k| params.get(k))
                     .cloned()
                     .unwrap_or_default();
                 let pnames = fn_params[&callee_key].clone();
@@ -914,8 +916,8 @@ impl Compiler {
                     if i >= pnames.len() {
                         break;
                     }
-                    if Self::is_float_static(arg, &enc_names, &float_fns) {
-                        let set = float_params.entry(callee_key.clone()).or_default();
+                    if pred(arg, &enc_names, &ret_fns) {
+                        let set = params.entry(callee_key.clone()).or_default();
                         if set.insert(pnames[i].clone()) {
                             changed = true;
                         }
@@ -926,35 +928,54 @@ impl Compiler {
                 break;
             }
         }
-        self.float_fns = float_fns;
-        self.float_params = float_params
+        let params = params
             .into_iter()
             .map(|(k, v)| (k, v.into_iter().collect()))
             .collect();
+        (ret_fns, params)
     }
-    /// Whether an expression statically evaluates to a string, consulting the
-    /// set of known string-returning functions for calls. Conservative.
-    fn expr_returns_string(expr: &Expr, fns: &std::collections::HashSet<String>) -> bool {
-        match &expr.kind {
+    /// Structural string check (mirrors `is_float_static`): whether `e`
+    /// evaluates to a string, given in-scope string-named bindings and the set
+    /// of known string-returning functions.
+    fn is_str_static(
+        e: &Expr,
+        strs: &std::collections::HashSet<String>,
+        string_fns: &std::collections::HashSet<String>,
+    ) -> bool {
+        match &e.kind {
             ExprKind::Str(_) => true,
-            ExprKind::List(items) => match items.first().map(|e| &e.kind) {
-                Some(ExprKind::Symbol(s)) => match s.as_str() {
-                    "str" | "str-concat" | "substring" => true,
-                    "do" => items.last().is_some_and(|e| Self::expr_returns_string(e, fns)),
-                    "if" => {
-                        items.len() >= 4
-                            && Self::expr_returns_string(&items[2], fns)
-                            && Self::expr_returns_string(&items[3], fns)
+            ExprKind::Symbol(s) => strs.contains(s),
+            ExprKind::List(items) if !items.is_empty() => {
+                if let ExprKind::Symbol(h) = &items[0].kind {
+                    let argc = items.len() - 1;
+                    match h.as_str() {
+                        "str" | "str-concat" | "substring" => true,
+                        "do" => items
+                            .last()
+                            .is_some_and(|e| Self::is_str_static(e, strs, string_fns)),
+                        "if" if argc >= 3 => {
+                            Self::is_str_static(&items[2], strs, string_fns)
+                                || Self::is_str_static(&items[3], strs, string_fns)
+                        }
+                        "match" if argc >= 3 => {
+                            let mut i = 3;
+                            while i < items.len() {
+                                if Self::is_str_static(&items[i], strs, string_fns) {
+                                    return true;
+                                }
+                                i += 2;
+                            }
+                            false
+                        }
+                        _ => {
+                            string_fns.contains(h.as_str())
+                                || string_fns.contains(&format!("{h}#{argc}"))
+                        }
                     }
-                    // A call: string iff the callee (by name or arity) is known
-                    // to return a string.
-                    name => {
-                        let argc = items.len() - 1;
-                        fns.contains(name) || fns.contains(&format!("{name}#{argc}"))
-                    }
-                },
-                _ => false,
-            },
+                } else {
+                    false
+                }
+            }
             _ => false,
         }
     }
@@ -1308,9 +1329,14 @@ impl Compiler {
         params: &[String],
         body: &[Expr],
     ) -> Result<(), String> {
-        // Params known to be float (from the float fixpoint) seed float_locals.
+        // Params known to be float/string (from the fixpoint) seed the locals.
         let float_locals: std::collections::HashSet<String> = self
             .float_params
+            .get(key)
+            .map(|v| v.iter().cloned().collect())
+            .unwrap_or_default();
+        let string_locals: std::collections::HashSet<String> = self
+            .string_params
             .get(key)
             .map(|v| v.iter().cloned().collect())
             .unwrap_or_default();
@@ -1322,6 +1348,7 @@ impl Compiler {
             loop_starts: Vec::new(),
             loop_vars: Vec::new(),
             float_locals,
+            string_locals,
         };
         for (i, p) in params.iter().enumerate() {
             ctx.locals.insert(p.clone(), i as u32);
@@ -1588,6 +1615,9 @@ struct FnCtx<'a> {
     /// Names of in-scope bindings (params + lets) known to hold float values,
     /// so arithmetic on them picks the f64 path.
     float_locals: std::collections::HashSet<String>,
+    /// Names of in-scope bindings known to hold string values, so `=`/map keys/
+    /// `println` pick the string path.
+    string_locals: std::collections::HashSet<String>,
 }
 
 impl<'a> FnCtx<'a> {
@@ -1845,12 +1875,14 @@ impl<'a> FnCtx<'a> {
     /// pick the string-printing path when it can prove the argument is a
     /// string at compile time.
     fn expr_is_string(&self, expr: &Expr) -> bool {
-        // Type-directed: trust the checker's resolved type when it has one.
-        if let Some(ty) = self.compiler.node_type(expr) {
-            return matches!(ty, Type::Str);
+        match self.compiler.node_type(expr) {
+            Some(Type::Str) => return true,
+            // A concrete non-string type is authoritative.
+            Some(t) if !matches!(t, Type::Var(_)) => return false,
+            _ => {}
         }
-        // Fallback for synthesized nodes (desugared forms) the checker never saw.
-        Compiler::expr_returns_string(expr, &self.compiler.string_fns)
+        // Generalized/synthesized nodes: structural fallback.
+        Compiler::is_str_static(expr, &self.string_locals, &self.compiler.string_fns)
     }
     /// Whether an expression is statically of float type. Trusts the checker's
     /// concrete type when present; otherwise falls back to a structural check
@@ -2282,6 +2314,70 @@ impl<'a> FnCtx<'a> {
                         .push(WasmInstruction::Call(rt.vec_push_idx));
                     return Ok(());
                 }
+                "split" => {
+                    // [split s sep] -> vector of substrings (sep is one char).
+                    let idx = self.compiler.ensure_split_runtime();
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.instructions.push(WasmInstruction::Call(idx));
+                    return Ok(());
+                }
+                "cons" => {
+                    // [cons x v] -> new vector with x prepended.
+                    self.compiler.ensure_collections_runtime();
+                    let rt = self.compiler.collections_runtime.clone().unwrap();
+                    let xl = self.alloc_local();
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(WasmInstruction::LocalSet(xl));
+                    self.compile_expr(&items[2])?;
+                    let vl = self.alloc_local();
+                    self.instructions.push(WasmInstruction::LocalSet(vl));
+                    // r = vec_push(vec_new(), x)
+                    self.instructions
+                        .push(WasmInstruction::Call(rt.vec_new_idx));
+                    self.instructions.push(WasmInstruction::LocalGet(xl));
+                    self.instructions
+                        .push(WasmInstruction::Call(rt.vec_push_idx));
+                    let rl = self.alloc_local();
+                    self.instructions.push(WasmInstruction::LocalSet(rl));
+                    // append each element of v
+                    let (n, d) = self.emit_vec_header(vl);
+                    let iv = self.alloc_local();
+                    let el = self.alloc_local();
+                    use WasmInstruction as W;
+                    self.instructions.push(W::I64Const(0));
+                    self.instructions.push(W::LocalSet(iv));
+                    self.instructions.push(W::Block(BlockType::Empty));
+                    self.instructions.push(W::Loop(BlockType::Empty));
+                    self.instructions.push(W::LocalGet(iv));
+                    self.instructions.push(W::LocalGet(n));
+                    self.instructions.push(W::I64LtS);
+                    self.instructions.push(W::I32Eqz);
+                    self.instructions.push(W::BrIf(1));
+                    // el = d[iv]
+                    self.instructions.push(W::LocalGet(d));
+                    self.instructions.push(W::LocalGet(iv));
+                    self.instructions.push(W::I64Const(8));
+                    self.instructions.push(W::I64Mul);
+                    self.instructions.push(W::I64Add);
+                    self.instructions.push(W::I32WrapI64);
+                    self.instructions.push(W::I64Load(3, 0));
+                    self.instructions.push(W::LocalSet(el));
+                    // r = vec_push(r, el)
+                    self.instructions.push(W::LocalGet(rl));
+                    self.instructions.push(W::LocalGet(el));
+                    self.instructions.push(W::Call(rt.vec_push_idx));
+                    self.instructions.push(W::LocalSet(rl));
+                    self.instructions.push(W::LocalGet(iv));
+                    self.instructions.push(W::I64Const(1));
+                    self.instructions.push(W::I64Add);
+                    self.instructions.push(W::LocalSet(iv));
+                    self.instructions.push(W::Br(0));
+                    self.instructions.push(W::End);
+                    self.instructions.push(W::End);
+                    self.instructions.push(W::LocalGet(rl));
+                    return Ok(());
+                }
                 "len" | "count" | "vec-len" => {
                     // Vector length lives at header offset 0.
                     self.compile_expr(&items[1])?;
@@ -2383,9 +2479,12 @@ impl<'a> FnCtx<'a> {
                         ExprKind::Symbol(s) => s.clone(),
                         _ => return Err("let binding must be a symbol".into()),
                     };
-                    // Remember float-typed bindings so later uses pick f64 ops.
+                    // Remember float/string bindings so later uses dispatch.
                     if self.expr_is_float(&items[vi]) {
                         self.float_locals.insert(name.clone());
+                    }
+                    if self.expr_is_string(&items[vi]) {
+                        self.string_locals.insert(name.clone());
                     }
                     self.compile_expr(&items[vi])?;
                     let local = self.alloc_local();
@@ -2963,6 +3062,7 @@ impl<'a> FnCtx<'a> {
             loop_starts: Vec::new(),
             loop_vars: Vec::new(),
             float_locals: std::collections::HashSet::new(),
+            string_locals: std::collections::HashSet::new(),
         };
         cctx.locals.insert("__env_ptr".to_string(), 0);
         for (i, p) in params.iter().enumerate() {
@@ -3456,6 +3556,17 @@ mod tests {
     #[test]
     fn compile_conj_len_are_valid() {
         valid(r#"[fn main [] [println [len [conj [conj #[] 5] 9]]]]"#);
+    }
+    #[test]
+    fn compile_split_and_cons_are_valid() {
+        valid(r#"[fn main [] [println [len [split "a b c d" " "]]]]"#);
+        valid(r#"[fn main [] [each [fn [w] [println w]] [split "the quick fox" " "]]]"#);
+        valid(r#"[fn main [] [println [len [cons 1 [cons 2 #[3 4]]]]]]"#);
+    }
+    #[test]
+    fn compile_string_param_equality_is_valid() {
+        // A directly-called fn with string params gets structural `=`.
+        valid(r#"[fn same [a b] [if [= a b] 1 0]] [fn main [] [println [same "xy" [str "x" "y"]]]]"#);
     }
     #[test]
     fn compile_maps_are_valid() {

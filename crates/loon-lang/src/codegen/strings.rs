@@ -300,6 +300,96 @@ impl StringRuntime {
         }
     }
 
+    /// Generate `str_split(s, sep, vec_new, vec_push, substr) -> i64` — split
+    /// `s` on the first byte of `sep`, returning a vector of substrings
+    /// (including empties for adjacent separators). `sep` is treated as a
+    /// single character (the common case, e.g. " ").
+    pub(super) fn gen_str_split(vec_new: u32, vec_push: u32, substr: u32) -> FunctionBody {
+        // Params: 0=s, 1=sep
+        // Locals: 2=sptr, 3=len, 4=sepch, 5=r, 6=start, 7=i, 8=ch
+        let mut i = Vec::new();
+        // sptr = s >> 32
+        i.push(LocalGet(0));
+        i.push(I64Const(32));
+        i.push(I64ShrU);
+        i.push(LocalSet(2));
+        // len = s & 0xffffffff
+        i.push(LocalGet(0));
+        i.push(I64Const(0xFFFF_FFFF));
+        i.push(I64And);
+        i.push(LocalSet(3));
+        // sepch = mem[(sep>>32)]
+        i.push(LocalGet(1));
+        i.push(I64Const(32));
+        i.push(I64ShrU);
+        i.push(I32WrapI64);
+        i.push(I32Load8U(0, 0));
+        i.push(I64ExtendI32U);
+        i.push(LocalSet(4));
+        // r = vec_new()
+        i.push(Call(vec_new));
+        i.push(LocalSet(5));
+        // start = 0; i = 0
+        i.push(I64Const(0));
+        i.push(LocalSet(6));
+        i.push(I64Const(0));
+        i.push(LocalSet(7));
+        i.push(Block(BlockType::Empty));
+        i.push(Loop(BlockType::Empty));
+        // if i >= len break
+        i.push(LocalGet(7));
+        i.push(LocalGet(3));
+        i.push(I64LtS);
+        i.push(I32Eqz);
+        i.push(BrIf(1));
+        // ch = mem[sptr + i]
+        i.push(LocalGet(2));
+        i.push(LocalGet(7));
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(I32Load8U(0, 0));
+        i.push(I64ExtendI32U);
+        i.push(LocalSet(8));
+        // if ch == sepch: r = vec_push(r, substr(s, start, i)); start = i+1
+        i.push(LocalGet(8));
+        i.push(LocalGet(4));
+        i.push(I64Eq);
+        i.push(If(BlockType::Empty));
+        i.push(LocalGet(5));
+        i.push(LocalGet(0));
+        i.push(LocalGet(6));
+        i.push(LocalGet(7));
+        i.push(Call(substr));
+        i.push(Call(vec_push));
+        i.push(LocalSet(5));
+        i.push(LocalGet(7));
+        i.push(I64Const(1));
+        i.push(I64Add);
+        i.push(LocalSet(6));
+        i.push(End);
+        // i++
+        i.push(LocalGet(7));
+        i.push(I64Const(1));
+        i.push(I64Add);
+        i.push(LocalSet(7));
+        i.push(Br(0));
+        i.push(End);
+        i.push(End);
+        // final segment: r = vec_push(r, substr(s, start, len))
+        i.push(LocalGet(5));
+        i.push(LocalGet(0));
+        i.push(LocalGet(6));
+        i.push(LocalGet(3));
+        i.push(Call(substr));
+        i.push(Call(vec_push));
+        FunctionBody {
+            params: vec![ValType::I64, ValType::I64],
+            results: vec![ValType::I64],
+            locals: vec![ValType::I64; 7], // locals 2..=8
+            instructions: i,
+        }
+    }
+
     /// Generate the `str_concat` function body.
     /// Signature: `(a: i64, b: i64) -> i64`
     /// Allocates new string, copies both, returns packed i64.
