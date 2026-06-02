@@ -537,11 +537,15 @@ impl Compiler {
         let sub = self.next_fn_idx;
         self.next_fn_idx += 1;
         self.push_function(sub, StringRuntime::gen_str_substring());
+        let its = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(its, StringRuntime::gen_int_to_str());
         self.string_runtime = Some(StringRuntime {
             str_concat_idx: c,
             str_len_idx: l,
             str_eq_idx: e,
             str_substring_idx: sub,
+            int_to_str_idx: its,
         });
     }
     fn ensure_collections_runtime(&mut self) {
@@ -1884,6 +1888,20 @@ impl<'a> FnCtx<'a> {
         // Generalized/synthesized nodes: structural fallback.
         Compiler::is_str_static(expr, &self.string_locals, &self.compiler.string_fns)
     }
+    /// Compile `expr` so it leaves a packed *string* on the stack: strings are
+    /// used as-is; other values are rendered via `int_to_str` (type-directed
+    /// Display — covers ints/bools/keywords; floats fall here too and render
+    /// their integer value, a known rough edge).
+    fn compile_as_string(&mut self, expr: &Expr) -> Result<(), String> {
+        if self.expr_is_string(expr) {
+            return self.compile_expr(expr);
+        }
+        self.compiler.ensure_string_runtime();
+        let its = self.compiler.string_runtime.clone().unwrap().int_to_str_idx;
+        self.compile_expr(expr)?;
+        self.instructions.push(WasmInstruction::Call(its));
+        Ok(())
+    }
     /// Whether an expression is statically of float type. Trusts the checker's
     /// concrete type when present; otherwise falls back to a structural check
     /// (the checker generalizes polymorphic function bodies, so body nodes
@@ -2245,8 +2263,8 @@ impl<'a> FnCtx<'a> {
                     return Ok(());
                 }
                 "str-concat" | "str" => {
-                    // Variadic: fold str_concat left-to-right over all args.
-                    // [str] -> "", [str a] -> a, [str a b c] -> concat(concat(a,b),c).
+                    // Variadic: stringify each arg (type-directed Display) and
+                    // fold str_concat. [str] -> "", [str a] -> a.
                     let args = &items[1..];
                     if args.is_empty() {
                         let (offset, len) = self.compiler.intern_string("");
@@ -2254,12 +2272,12 @@ impl<'a> FnCtx<'a> {
                             .push(WasmInstruction::I64Const(((offset as i64) << 32) | len as i64));
                         return Ok(());
                     }
-                    self.compile_expr(&args[0])?;
+                    self.compile_as_string(&args[0])?;
                     if args.len() > 1 {
                         self.compiler.ensure_string_runtime();
                         let rt = self.compiler.string_runtime.clone().unwrap();
                         for arg in &args[1..] {
-                            self.compile_expr(arg)?;
+                            self.compile_as_string(arg)?;
                             self.instructions
                                 .push(WasmInstruction::Call(rt.str_concat_idx));
                         }
@@ -3556,6 +3574,13 @@ mod tests {
     #[test]
     fn compile_conj_len_are_valid() {
         valid(r#"[fn main [] [println [len [conj [conj #[] 5] 9]]]]"#);
+    }
+    #[test]
+    fn compile_str_stringifies_ints() {
+        // Type-directed Display: non-string args to `str` render via int_to_str.
+        valid(r#"[fn main [] [println [str "k" 42]]]"#);
+        valid(r#"[fn main [] [println [str "n=" 7 "!"]]]"#);
+        valid(r#"[fn main [] [println [str 123]]]"#);
     }
     #[test]
     fn compile_split_and_cons_are_valid() {

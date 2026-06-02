@@ -22,6 +22,8 @@ pub struct StringRuntime {
     pub str_eq_idx: u32,
     /// WASM function index for str_substring
     pub str_substring_idx: u32,
+    /// WASM function index for int_to_str
+    pub int_to_str_idx: u32,
 }
 
 #[allow(dead_code)]
@@ -297,6 +299,123 @@ impl StringRuntime {
                 ValType::I64, // 6: i
             ],
             instructions: instrs,
+        }
+    }
+
+    /// Generate `int_to_str(n) -> i64` — the decimal text of `n` as a freshly
+    /// allocated packed string. Writes digits backward into a scratch region,
+    /// then copies them into the heap.
+    pub(super) fn gen_int_to_str() -> FunctionBody {
+        const BUF: i64 = 542; // scratch end (digits written backward below it)
+        // Params: 0=n ; Locals: 1=p, 2=neg, 3=len, 4=dst, 5=i
+        let mut i = Vec::new();
+        // neg = n < 0 ; if neg n = -n
+        i.push(LocalGet(0));
+        i.push(I64Const(0));
+        i.push(I64LtS);
+        i.push(If(BlockType::Empty));
+        i.push(I64Const(1));
+        i.push(LocalSet(2));
+        i.push(I64Const(0));
+        i.push(LocalGet(0));
+        i.push(I64Sub);
+        i.push(LocalSet(0));
+        i.push(Else);
+        i.push(I64Const(0));
+        i.push(LocalSet(2));
+        i.push(End);
+        // p = BUF ; do { p--; mem[p] = '0' + n%10; n/=10 } while n != 0
+        i.push(I64Const(BUF));
+        i.push(LocalSet(1));
+        i.push(Loop(BlockType::Empty));
+        i.push(LocalGet(1));
+        i.push(I64Const(1));
+        i.push(I64Sub);
+        i.push(LocalSet(1));
+        i.push(LocalGet(1));
+        i.push(I32WrapI64);
+        i.push(LocalGet(0));
+        i.push(I64Const(10));
+        i.push(I64RemU);
+        i.push(I64Const(48));
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(I32Store8(0, 0));
+        i.push(LocalGet(0));
+        i.push(I64Const(10));
+        i.push(I64DivU);
+        i.push(LocalSet(0));
+        i.push(LocalGet(0));
+        i.push(I64Eqz);
+        i.push(I32Eqz);
+        i.push(BrIf(0));
+        i.push(End);
+        // if neg { p--; mem[p] = '-' }
+        i.push(LocalGet(2));
+        i.push(I64Eqz);
+        i.push(I32Eqz);
+        i.push(If(BlockType::Empty));
+        i.push(LocalGet(1));
+        i.push(I64Const(1));
+        i.push(I64Sub);
+        i.push(LocalSet(1));
+        i.push(LocalGet(1));
+        i.push(I32WrapI64);
+        i.push(I32Const(45));
+        i.push(I32Store8(0, 0));
+        i.push(End);
+        // len = BUF - p
+        i.push(I64Const(BUF));
+        i.push(LocalGet(1));
+        i.push(I64Sub);
+        i.push(LocalSet(3));
+        // dst = heap ; heap += len
+        i.push(GlobalGet(0));
+        i.push(I64ExtendI32U);
+        i.push(LocalSet(4));
+        i.push(GlobalGet(0));
+        i.push(LocalGet(3));
+        i.push(I32WrapI64);
+        i.push(I32Add);
+        i.push(GlobalSet(0));
+        // copy: for i in 0..len: mem[dst+i] = mem[p+i]
+        i.push(I64Const(0));
+        i.push(LocalSet(5));
+        i.push(Block(BlockType::Empty));
+        i.push(Loop(BlockType::Empty));
+        i.push(LocalGet(5));
+        i.push(LocalGet(3));
+        i.push(I64LtS);
+        i.push(I32Eqz);
+        i.push(BrIf(1));
+        i.push(LocalGet(4));
+        i.push(LocalGet(5));
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(LocalGet(1));
+        i.push(LocalGet(5));
+        i.push(I64Add);
+        i.push(I32WrapI64);
+        i.push(I32Load8U(0, 0));
+        i.push(I32Store8(0, 0));
+        i.push(LocalGet(5));
+        i.push(I64Const(1));
+        i.push(I64Add);
+        i.push(LocalSet(5));
+        i.push(Br(0));
+        i.push(End);
+        i.push(End);
+        // return (dst << 32) | len
+        i.push(LocalGet(4));
+        i.push(I64Const(32));
+        i.push(I64Shl);
+        i.push(LocalGet(3));
+        i.push(I64Or);
+        FunctionBody {
+            params: vec![ValType::I64],
+            results: vec![ValType::I64],
+            locals: vec![ValType::I64; 5],
+            instructions: i,
         }
     }
 
