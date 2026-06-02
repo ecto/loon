@@ -269,7 +269,15 @@ fn run_file_wasm(path: &PathBuf) {
         }
     };
 
-    let engine = wasmtime::Engine::default();
+    // Enable the WebAssembly tail-call proposal so the codegen's `return_call`
+    // instructions (proper tail calls for named/mutual recursion) run in O(1)
+    // stack.
+    let mut config = wasmtime::Config::new();
+    config.wasm_tail_call(true);
+    let engine = wasmtime::Engine::new(&config).unwrap_or_else(|e| {
+        eprintln!("{}: {e}", "wasmtime error".red().bold());
+        std::process::exit(1);
+    });
     let module = match wasmtime::Module::new(&engine, &wasm_bytes) {
         Ok(m) => m,
         Err(e) => {

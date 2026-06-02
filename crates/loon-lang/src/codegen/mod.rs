@@ -177,6 +177,8 @@ enum WasmInstruction {
     LocalSet(u32),
     LocalTee(u32),
     Call(u32),
+    ReturnCall(u32),
+    ReturnCallIndirect(u32),
     If(BlockType),
     Else,
     End,
@@ -305,6 +307,15 @@ fn emit_instruction(f: &mut Function, instr: &WasmInstruction) {
         }
         WasmInstruction::Call(i) => {
             f.instruction(&Instruction::Call(*i));
+        }
+        WasmInstruction::ReturnCall(i) => {
+            f.instruction(&Instruction::ReturnCall(*i));
+        }
+        WasmInstruction::ReturnCallIndirect(ty) => {
+            f.instruction(&Instruction::ReturnCallIndirect {
+                type_index: *ty,
+                table_index: 0,
+            });
         }
         WasmInstruction::CallIndirect(ty) => {
             f.instruction(&Instruction::CallIndirect {
@@ -913,7 +924,7 @@ impl Compiler {
             let mut has_indirect = false;
             for instr in &self.functions[pos].instructions {
                 match instr {
-                    WasmInstruction::Call(target) => {
+                    WasmInstruction::Call(target) | WasmInstruction::ReturnCall(target) => {
                         if reachable.insert(*target) {
                             queue.push_back(*target);
                         }
@@ -973,10 +984,12 @@ impl Compiler {
             .map(|&i| old_fns[i].take().unwrap())
             .collect();
         self.fn_indices = kept_fn_indices.iter().map(|&i| remap[&old_ids[i]]).collect();
-        // Rewrite Call targets
+        // Rewrite Call / ReturnCall targets
         for func in &mut self.functions {
             for instr in &mut func.instructions {
-                if let WasmInstruction::Call(ref mut target) = instr {
+                if let WasmInstruction::Call(ref mut target)
+                | WasmInstruction::ReturnCall(ref mut target) = instr
+                {
                     if let Some(&new) = remap.get(target) {
                         *target = new;
                     }
@@ -1452,10 +1465,18 @@ impl Compiler {
         // Compile each body expression; every one leaves an i64 on the stack,
         // so drop all but the last (a statement sequence keeps only its final
         // value). The last value is the function's result (or dropped for main).
+        // The final expression is compiled in tail position so tail calls become
+        // `return_call` — except in `main`, whose result type is `()` (a tail
+        // `return_call` to an i64-returning function would mismatch).
         for (i, expr) in body.iter().enumerate() {
-            ctx.compile_expr(expr)?;
-            if i + 1 < body.len() {
-                ctx.instructions.push(WasmInstruction::Drop);
+            let is_last = i + 1 == body.len();
+            if is_last && !is_main {
+                ctx.compile_tail(expr)?;
+            } else {
+                ctx.compile_expr(expr)?;
+                if !is_last {
+                    ctx.instructions.push(WasmInstruction::Drop);
+                }
             }
         }
         if self_recur {
@@ -2021,6 +2042,92 @@ impl<'a> FnCtx<'a> {
             _ => Err(format!("codegen: unsupported expression: {:?}", expr.kind)),
         }
     }
+    /// Compile `expr` in tail position. A call to a top-level function in tail
+    /// position becomes a `return_call` (proper tail call — constant stack), so
+    /// named/mutual recursion through `if`/`do`/`when`/`match` runs in O(1)
+    /// stack. Control forms recurse into their tail sub-expressions; anything
+    /// else falls back to a normal compile (its value is the function result).
+    fn compile_tail(&mut self, expr: &Expr) -> Result<(), String> {
+        use WasmInstruction as W;
+        if let ExprKind::List(items) = &expr.kind {
+            if let Some(ExprKind::Symbol(s)) = items.first().map(|e| &e.kind) {
+                match s.as_str() {
+                    "if" if items.len() >= 3 => {
+                        // `I64Eqz` inverts the test, so the truthy arm is the
+                        // `else` (mirrors the non-tail `if`).
+                        self.compile_expr(&items[1])?;
+                        self.instructions.push(W::I64Eqz);
+                        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+                        if items.len() > 3 {
+                            self.compile_tail(&items[3])?;
+                        } else {
+                            self.instructions.push(W::I64Const(0));
+                        }
+                        self.instructions.push(W::Else);
+                        self.compile_tail(&items[2])?;
+                        self.instructions.push(W::End);
+                        return Ok(());
+                    }
+                    "do" if items.len() >= 2 => {
+                        let last = items.len() - 1;
+                        for item in &items[1..last] {
+                            self.compile_expr(item)?;
+                            self.instructions.push(W::Drop);
+                        }
+                        return self.compile_tail(&items[last]);
+                    }
+                    "when" if items.len() >= 3 => {
+                        self.compile_expr(&items[1])?;
+                        self.instructions.push(W::I64Eqz);
+                        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+                        self.instructions.push(W::I64Const(0));
+                        self.instructions.push(W::Else);
+                        let last = items.len() - 1;
+                        for item in &items[2..last] {
+                            self.compile_expr(item)?;
+                            self.instructions.push(W::Drop);
+                        }
+                        self.compile_tail(&items[last])?;
+                        self.instructions.push(W::End);
+                        return Ok(());
+                    }
+                    "match" if items.len() >= 2 => {
+                        self.compile_expr(&items[1])?;
+                        let sc = self.alloc_local();
+                        self.instructions.push(W::LocalSet(sc));
+                        return self.compile_match_arms(sc, &items[2..], true);
+                    }
+                    // `recur` is the loop-based self-tail-call; leave it to the
+                    // normal path (a branch to the function's loop header).
+                    "recur" => {}
+                    name => {
+                        let argc = items.len() - 1;
+                        let fn_def = self.compiler.fn_map.get(name).cloned().or_else(|| {
+                            self.compiler.fn_map.get(&format!("{name}#{argc}")).cloned()
+                        });
+                        if let Some(fn_def) = fn_def {
+                            if !fn_def.is_closure {
+                                for arg in &items[1..] {
+                                    self.compile_expr(arg)?;
+                                }
+                                self.instructions.push(W::ReturnCall(fn_def.func_idx));
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.compile_expr(expr)
+    }
+    /// Compile a match-arm body, in tail position when `tail` is set.
+    fn compile_maybe_tail(&mut self, body: &Expr, tail: bool) -> Result<(), String> {
+        if tail {
+            self.compile_tail(body)
+        } else {
+            self.compile_expr(body)
+        }
+    }
     fn compile_call(&mut self, items: &[Expr]) -> Result<(), String> {
         if items.is_empty() {
             return Ok(());
@@ -2524,7 +2631,7 @@ impl<'a> FnCtx<'a> {
                     self.compile_expr(&items[1])?;
                     let sc = self.alloc_local();
                     self.instructions.push(WasmInstruction::LocalSet(sc));
-                    self.compile_match_arms(sc, &items[2..])?;
+                    self.compile_match_arms(sc, &items[2..], false)?;
                     return Ok(());
                 }
                 "loop" => {
@@ -2772,12 +2879,17 @@ impl<'a> FnCtx<'a> {
         }
         Err("codegen: unsupported call form".into())
     }
-    fn compile_match_arms(&mut self, scrutinee: u32, arms: &[Expr]) -> Result<(), String> {
+    fn compile_match_arms(
+        &mut self,
+        scrutinee: u32,
+        arms: &[Expr],
+        tail: bool,
+    ) -> Result<(), String> {
         let parsed = self.parse_arms(arms);
-        if self.try_compile_br_table(scrutinee, &parsed)? {
+        if self.try_compile_br_table(scrutinee, &parsed, tail)? {
             return Ok(());
         }
-        self.compile_match_arms_ifelse(scrutinee, arms)
+        self.compile_match_arms_ifelse(scrutinee, arms, tail)
     }
     fn parse_arms<'b>(&self, arms: &'b [Expr]) -> Vec<(&'b Expr, &'b Expr)> {
         let mut r = Vec::new();
@@ -2792,6 +2904,7 @@ impl<'a> FnCtx<'a> {
         &mut self,
         scrutinee: u32,
         parsed: &[(&Expr, &Expr)],
+        tail: bool,
     ) -> Result<bool, String> {
         if parsed.is_empty() {
             return Ok(false);
@@ -2841,7 +2954,7 @@ impl<'a> FnCtx<'a> {
         ));
         for (ci, (_, body)) in int_arms.iter().enumerate() {
             self.instructions.push(WasmInstruction::End);
-            self.compile_expr(body)?;
+            self.compile_maybe_tail(body, tail)?;
             self.instructions
                 .push(WasmInstruction::Br((nc - ci) as u32));
         }
@@ -2854,14 +2967,19 @@ impl<'a> FnCtx<'a> {
                 self.instructions.push(WasmInstruction::LocalGet(scrutinee));
                 self.instructions.push(WasmInstruction::LocalSet(local));
             }
-            self.compile_expr(body)?;
+            self.compile_maybe_tail(body, tail)?;
         } else {
             self.instructions.push(WasmInstruction::I64Const(0));
         }
         self.instructions.push(WasmInstruction::End);
         Ok(true)
     }
-    fn compile_match_arms_ifelse(&mut self, scrutinee: u32, arms: &[Expr]) -> Result<(), String> {
+    fn compile_match_arms_ifelse(
+        &mut self,
+        scrutinee: u32,
+        arms: &[Expr],
+        tail: bool,
+    ) -> Result<(), String> {
         // Right-nested if/else chain, each `if` producing an i64:
         //   t1; if {b1} else { t2; if {b2} else { … default } } …
         // Every conditional arm opens one `if (Result I64)` and its `else`; a
@@ -2896,7 +3014,7 @@ impl<'a> FnCtx<'a> {
                         self.instructions.push(WasmInstruction::LocalSet(local));
                     }
                 }
-                self.compile_expr(body)?;
+                self.compile_maybe_tail(body, tail)?;
                 have_default = true;
                 break;
             }
@@ -2938,7 +3056,7 @@ impl<'a> FnCtx<'a> {
                         }
                     }
                 }
-                self.compile_expr(body)?;
+                self.compile_maybe_tail(body, tail)?;
                 self.instructions.push(WasmInstruction::Else);
                 open += 1;
                 i += 2;
@@ -2970,7 +3088,7 @@ impl<'a> FnCtx<'a> {
             }
             self.instructions
                 .push(WasmInstruction::If(BlockType::Result(ValType::I64)));
-            self.compile_expr(body)?;
+            self.compile_maybe_tail(body, tail)?;
             self.instructions.push(WasmInstruction::Else);
             open += 1;
             i += 2;
