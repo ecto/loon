@@ -2144,6 +2144,19 @@ impl<'a> FnCtx<'a> {
                     self.compiler.adt_constructors.get(name.as_str()).cloned()
                 {
                     self.compile_adt_constructor(name, tag, 0, &[])
+                } else if let Some(def) = self.compiler.fn_map.get(name).cloned() {
+                    // A bare reference to a top-level function is a first-class
+                    // value: wrap it in a closure `[fn [a…] [name a…]]` so it can
+                    // be passed around and called through the table.
+                    let sp = expr.span;
+                    let params: Vec<Expr> = (0..def.arity)
+                        .map(|i| Expr::new(ExprKind::Symbol(format!("__a{i}")), sp))
+                        .collect();
+                    let mut call = vec![Expr::new(ExprKind::Symbol(name.clone()), sp)];
+                    call.extend(params.iter().cloned());
+                    let params_list = Expr::new(ExprKind::List(params), sp);
+                    let body = Expr::new(ExprKind::List(call), sp);
+                    self.compile_closure(&[params_list, body])
                 } else {
                     Err(format!("codegen: unbound symbol '{name}'"))
                 }
@@ -3349,6 +3362,18 @@ impl<'a> FnCtx<'a> {
             let pat = &clauses[i];
             let hbody = &clauses[i + 1];
             i += 2;
+            // A handler clause that *returns a function* is the escaping /
+            // parameter-passing pattern (e.g. the State effect) — that needs
+            // reified, non-tail-resumptive continuations, which this backend
+            // can't express. Fail clearly rather than miscompile.
+            if matches!(&hbody.kind, ExprKind::List(h)
+                if matches!(h.first().map(|e| &e.kind), Some(ExprKind::Symbol(s)) if s == "fn"))
+            {
+                return Err("codegen: escaping/multi-shot continuations (a handler \
+                            returning a function) are not supported by the wasm \
+                            backend; run on the VM with `loon run`"
+                    .into());
+            }
             let parts = match &pat.kind {
                 ExprKind::List(p) if !p.is_empty() => p,
                 _ => continue,
