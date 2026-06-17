@@ -51,25 +51,24 @@ Impact: the cooperative scheduler and `State`-by-threading run but cannot
 `loon check`. Proper effect-handler typing (answer type distinct from the op
 result type) is the fix.
 
-## EFF-BUG-3 — handler-stack teardown leak (correctness)
+## EFF-BUG-3 — handler-stack teardown leak (correctness) — FIXED
 
-A flat handler that handles effect `E` leaks its handler entry when `E` is
-performed: the VM jumps into the handler at the perform site and pops the prompt
-frame, so the `PopHandler`s emitted after the body never run
-(`crates/loon-lang/src/eir/vm.rs`, `Op::Perform` vs `Op::PushHandler`/
-`PopHandler`). A subsequent **nested** handle for the same effect then finds the
-stale handler:
+Root cause: a **non-tail** resume re-establishes the handle's handlers on the
+dynamic stack (`resume_continuation`, `base=Some`) so the continuation is
+self-contained, but those re-established handlers were never removed. They
+accumulated and a subsequent **nested** handle for the same effect found the
+stale entry:
 
 ```
-both (handles R+L, flat)  then  nested (outer L, inner R)
-  => R routes to the stale `both` handler, not the live inner one
+flat (handles R+L, non-tail resume)  then  nested (outer L, inner R)
+  => R routed to the stale flat handler, not the live inner one  (BOTH/BOTH)
 ```
 
-Minimal repro (`both` then `nested` prints `BOTH BOTH`, should be `BOTH INNER`):
-see the probe in the Stage-0 investigation. This directly undermines the
-composition story for sequential towers (and would corrupt per-request towers in
-Stage 1). `eff.oo`'s demo orders the nested tower first to stay correct; the bug
-must be fixed before Stage 1.
+Fix (`crates/loon-lang/src/eir/vm.rs`): re-established handlers are marked
+`ephemeral` and pruned by frame depth whenever frames shrink — on normal return
+(`return_val`) and when a `perform` discards frames (`Op::Perform`). Lexical
+`PushHandler`/`PopHandler` handlers are untouched. Regression test:
+`vm_handler_isolation_across_handles`. `eff.oo`'s towers now run in any order.
 
 ## EFF-LIMITATION-4 — host effects not wired into the EIR VM
 
@@ -94,7 +93,9 @@ shared types in-file.
 
 A cooperative scheduler-as-a-handler (`Co.fork`/`Co.yield`, run-queue threaded as
 the answer) **runs** on the VM (escaping continuations work) but: (a) does not
-type-check (EFF-BUG-2), and (b) a multi-task run currently drops later tasks —
-likely the same teardown issue as EFF-BUG-3 surfacing under nested re-entrant
-resumption. Async is therefore deferred behind these fixes rather than shipped
-half-working.
+type-check (EFF-BUG-2), and (b) a multi-task run still drops later tasks (a
+two-worker fork prints `P a`/`C a` but not the post-yield `P b`/`C b`). This is
+a **separate** issue from EFF-BUG-3 (now fixed) — it involves re-capturing a
+continuation that was itself created inside a resumed segment (EFF-BUG-6,
+nested/re-entrant capture), and is the next thing to chase before async ships.
+Async is therefore still deferred rather than shipped half-working.

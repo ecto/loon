@@ -177,6 +177,13 @@ struct DynHandler {
     /// Frame-stack depth at the `handle` (the prompt). The continuation captured
     /// by a `perform` is the frames above this depth.
     prompt_depth: usize,
+    /// True for handlers re-established by a non-tail resume (base=Some). These
+    /// are not bracketed by lexical PushHandler/PopHandler, so they are pruned
+    /// automatically when their prompt frame leaves the stack — by ANY path
+    /// (normal return or a `perform` that discards frames). Lexical handlers
+    /// (ephemeral=false) are managed solely by PopHandler. Pruning ephemeral
+    /// handlers is what stops a completed handle from shadowing a later one.
+    ephemeral: bool,
 }
 
 /// The register VM. Executes an EIR Module.
@@ -518,7 +525,10 @@ impl Vm {
         if let Some(dst) = base {
             // Push the handler frame as a fresh prompt and re-establish the
             // handle's handlers at it, so performs inside the resumed segment
-            // are handled (even though the original `handle` may be gone).
+            // are handled (even though the original `handle` may be gone). The
+            // re-established handlers are scoped to this prompt frame: they are
+            // popped when it returns (see return_val), so they do not leak onto
+            // the dynamic handler stack and shadow a later, unrelated handle.
             self.frames.push(Frame {
                 func: self.func,
                 block: self.block,
@@ -531,6 +541,7 @@ impl Vm {
             for h in prompt_handlers {
                 self.handlers.push(DynHandler {
                     prompt_depth: prompt,
+                    ephemeral: true,
                     ..h
                 });
             }
@@ -560,10 +571,25 @@ impl Vm {
             self.block = frame.block;
             self.ip = frame.ip;
             self.regs[ret_reg as usize] = val;
+            // A resumed segment may have left ephemeral handlers scoped to a
+            // prompt frame that is now gone; drop them so they cannot shadow a
+            // later handle for the same effect.
+            self.prune_ephemeral_handlers();
             Ok(None) // keep executing
         } else {
             Ok(Some(val)) // top-level return
         }
+    }
+
+    /// Remove ephemeral (resume-re-established) handlers whose prompt frame is
+    /// no longer on the stack. A handler at prompt depth P is in scope only
+    /// while some frame sits above it (frames.len() > P); once we are back at or
+    /// below P its delimited region has been exited. Lexical handlers are left
+    /// to PopHandler.
+    fn prune_ephemeral_handlers(&mut self) {
+        let depth = self.frames.len();
+        self.handlers
+            .retain(|h| !h.ephemeral || h.prompt_depth < depth);
     }
 
     // ── Main dispatch loop ─────────────────────────────────────────────
@@ -932,6 +958,11 @@ impl Vm {
                     self.ip = f0.ip;
                     self.regs = f0.regs;
                     self.captures = f0.captures;
+                    // Capturing the continuation discarded every frame above the
+                    // prompt; drop ephemeral handlers re-established at those
+                    // (now-gone) prompts so they cannot shadow this or a later
+                    // handle.
+                    self.prune_ephemeral_handlers();
                     // Run the handler at the prompt with `resume` := k. If it
                     // returns without invoking k, that value becomes the handle's
                     // result (abort / 0-shot).
@@ -967,6 +998,7 @@ impl Vm {
                     op: *op_sid,
                     closure,
                     prompt_depth: self.frames.len(),
+                    ephemeral: false,
                 });
             }
 
@@ -2343,6 +2375,34 @@ mod tests {
             .as_int(),
             315
         );
+    }
+
+    #[test]
+    fn vm_handler_isolation_across_handles() {
+        // Regression: a non-tail resume re-establishes the handle's handlers on
+        // the dynamic stack (so the continuation is self-contained). Those
+        // ephemeral handlers must be dropped when their prompt frame leaves —
+        // otherwise a completed handle shadows a *later* one for the same
+        // effect. Here `flat` (R+L, with a NON-tail resume for L) runs first,
+        // then a NESTED handle (outer L, inner R) for the same program. The
+        // nested R must reach the inner handler (2), not the stale flat one (1).
+        let src = "[effect R [ask [] Int]] [effect L [note [] Int]] \
+                   [fn prog [] [L.note] [R.ask]] \
+                   [fn flat [b] [handle [b] \
+                       [R.ask]  [resume 1] \
+                       [L.note] [+ 0 [resume 0]]]] \
+                   [fn nested [b] \
+                     [handle [[fn [] [handle [b] [R.ask] [resume 2]]]] \
+                        [L.note] [resume 0]]] \
+                   [fn main [] [flat prog] [nested prog]]";
+        assert_eq!(run(src).as_int(), 2);
+        // And the symmetric multi-clause flat-then-flat case stays correct.
+        let src2 = "[effect R [ask [] Int]] [effect L [note [] Int]] \
+                    [fn prog [] [L.note] [R.ask]] \
+                    [fn a [b] [handle [b] [R.ask] [resume 10] [L.note] [+ 0 [resume 0]]]] \
+                    [fn c [b] [handle [b] [R.ask] [resume 20] [L.note] [+ 0 [resume 0]]]] \
+                    [fn main [] [a prog] [c prog]]";
+        assert_eq!(run(src2).as_int(), 20);
     }
 
     #[test]

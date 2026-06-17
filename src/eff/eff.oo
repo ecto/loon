@@ -145,12 +145,10 @@
   [with-observability [fn [] [with-deterministic-world body]]]]
 
 ; ── Demo ─────────────────────────────────────────────────────────────────────
-; NOTE: the layered (nested) tower runs first deliberately. A pre-existing EIR
-; handler-stack teardown bug (EFF-BUG-3 in NOTES.md) leaks a flat handler into a
-; subsequent NESTED handle for the same effect, so `prod` (flat) before
-; `layered` (nested) would misroute. Ordering keeps the demo correct until the
-; VM bug is fixed; the composition itself is sound (correct in isolation).
+; The same `make-session-id` runs under each tower, in any order. (Sequencing a
+; flat tower before the nested one used to misroute via EFF-BUG-3; that EIR
+; handler-stack leak is now fixed — see NOTES.md.)
 [fn main []
-  [println [str "layered: " [under-layered make-session-id]]]
   [println [str "test:    " [under-test make-session-id]]]
-  [println [str "prod:    " [under-prod make-session-id]]]]
+  [println [str "prod:    " [under-prod make-session-id]]]
+  [println [str "layered: " [under-layered make-session-id]]]]
