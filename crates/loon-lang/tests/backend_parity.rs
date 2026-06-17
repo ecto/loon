@@ -79,6 +79,36 @@ const CORPUS: &[(&str, &str)] = &[
          [fn body [] [* [C.pick] 2]] \
          [fn main [] [println [handle [body] [C.pick] [+ [resume 3] [resume 5]]]]]",
     ),
+    // strings
+    ("str-split-join", r#"[fn main [] [println [join [split "a,b,c" ","] "-"]]]"#),
+    ("str-case", r#"[fn main [] [println [str [uppercase "hi"] [lowercase "YO"]]]]"#),
+    ("str-trim", r#"[fn main [] [println [str "[" [trim "  x  "] "]"]]]"#),
+    ("str-replace", r#"[fn main [] [println [replace "aXbXc" "X" "-"]]]"#),
+    ("str-substring", r#"[fn main [] [println [substring "hello" 1 4]]]"#),
+    ("str-contains", r#"[fn main [] [println [contains? "hello" "ell"]]]"#),
+    // collections
+    ("range", "[fn main [] [println [range 0 5]]]"),
+    ("len", "[fn main [] [println [len #[10 20 30]]]]"),
+    ("sort", "[fn main [] [println [sort #[3 1 2]]]]"),
+    ("reverse", "[fn main [] [println [reverse #[1 2 3]]]]"),
+    ("take-drop", "[fn main [] [println [take 2 #[1 2 3 4 5]]] [println [drop 2 #[1 2 3 4 5]]]]"),
+    ("conj", "[fn main [] [println [conj #[1 2] 3]]]"),
+    ("first-nth", "[fn main [] [println [nth #[7 8 9] 1]]]"),
+    ("vec-contains", "[fn main [] [println [contains? #[1 2 3] 2]]]"),
+    ("sum", "[fn main [] [println [sum #[1 2 3 4]]]]"),
+    ("any-all", "[fn main [] [println [any? [fn [x] [> x 2]] #[1 2 3]]] [println [all? [fn [x] [> x 0]] #[1 2 3]]]]"),
+    // maps
+    ("map-get", "[fn main [] [println [get {:a 1 :b 2} :b]]]"),
+    ("map-assoc", "[fn main [] [println [get [assoc {:a 1} :c 9] :c]]]"),
+    ("map-keys", "[fn main [] [println [len [keys {:a 1 :b 2 :c 3}]]]]"),
+    // control / pattern
+    ("when", "[fn main [] [when [> 3 2] [println \"yes\"]]]"),
+    ("nested-let", "[fn main [] [let a 2] [let b [* a 3]] [let c [+ a b]] [println c]]"),
+    // higher-order with named function
+    (
+        "map-named-fn",
+        "[fn dbl [x] [* x 2]] [fn main [] [println [map #[1 2 3] dbl]]]",
+    ),
 ];
 
 #[test]
@@ -120,4 +150,14 @@ fn known_divergences_are_pinned() {
     let fold_builtin = "[fn main [] [println [fold #[1 2 3 4] 0 +]]]";
     assert_eq!(eir_output(fold_builtin).as_deref(), Ok("0"), "EIR builtin-as-fold-fn (gap)");
     assert_eq!(interp_output(fold_builtin).as_deref(), Ok("10"), "interp builtin-as-fold-fn");
+
+    // nested-handlers: two effects handled by two stacked handlers. The EIR VM
+    // composes them correctly (30); the legacy interp's replay strategy hits its
+    // "too many sequential effects" guard and errors. EIR correct — another
+    // reason the legacy tree-walker is the one to retire.
+    let nested = "[effect A [a [] Int]] [effect B [b [] Int]] \
+                  [fn body [] [+ [A.a] [B.b]]] \
+                  [fn main [] [println [handle [handle [body] [A.a] [resume 10]] [B.b] [resume 20]]]]";
+    assert_eq!(eir_output(nested).as_deref(), Ok("30"), "EIR nested handlers (correct)");
+    assert!(interp_output(nested).is_err(), "interp nested handlers (broken)");
 }

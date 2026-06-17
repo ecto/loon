@@ -1568,9 +1568,10 @@ impl Vm {
                 }
             }
             Built::Replace => {
-                let from = args.first().copied().unwrap_or(Val::UNIT);
-                let to = args.get(1).copied().unwrap_or(Val::UNIT);
-                let s = args.get(2).copied().unwrap_or(Val::UNIT);
+                // Loon order is subject-first: [replace s from to].
+                let s = args.first().copied().unwrap_or(Val::UNIT);
+                let from = args.get(1).copied().unwrap_or(Val::UNIT);
+                let to = args.get(2).copied().unwrap_or(Val::UNIT);
                 match (
                     self.get_str(from).map(|s| s.to_string()),
                     self.get_str(to).map(|s| s.to_string()),
@@ -1619,8 +1620,14 @@ impl Vm {
                 }
             }
             Built::Join => {
-                let sep = args.first().copied().unwrap_or(Val::UNIT);
-                let coll = args.get(1).copied().unwrap_or(Val::UNIT);
+                // Loon order is collection-first: [join coll sep]. Detect the
+                // vector by type so the pipe/thread-last form also works.
+                let a0_is_vec = matches!(self.get_obj(args.first().copied().unwrap_or(Val::UNIT)), Some(Obj::Vec(_)));
+                let (coll, sep) = if a0_is_vec {
+                    (args[0], args.get(1).copied().unwrap_or(Val::UNIT))
+                } else {
+                    (args.get(1).copied().unwrap_or(Val::UNIT), args.first().copied().unwrap_or(Val::UNIT))
+                };
                 let sep_str = self.val_to_string(sep);
                 match self.get_obj(coll).cloned() {
                     Some(Obj::Vec(items)) => {
