@@ -1,5 +1,43 @@
 # Stage 0 substrate — status and foundation gaps
 
+## Async substrate (Stage 0) — cooperative scheduler as a handler
+
+`src/eff/async.oo` completes Stage 0's async story: concurrency is ordinary code
+performing effects (`Co.fork`/`yield`/`exit`/`cancel`), with the SCHEDULER as a
+handler — no async "color" on functions, no runtime async primitive. It
+type-checks AND runs on the default EIR VM (built on the multi-shot delimited
+continuations proven in `src/eff/scheduler.oo`).
+
+- `spawn` (built on `fork`) runs a thunk as a background child; tasks interleave
+  cooperatively at `yield` (round-robin: `A1 B1 A2 B2 A3 B3`).
+- Structured concurrency is designed in: the scheduler IS the scope and drains
+  all children before returning; `cancel` cancels the scope — every pending
+  child is dropped (no orphans outlive the scope). Regression test:
+  `vm_cooperative_scheduler`.
+
+Remaining async op — `await` (a backgrounded task's *result*): returning a value
+from a spawned task needs result-passing (a Future/result-slot). Loon has no
+mutable cells on the EIR VM and state is itself an effect, so this wants either a
+state-threaded scheduler variant or a `Future` effect — the documented next
+async iteration. Awaiting a child *computation* inline is just running it (it
+participates in cooperative scheduling via `yield`).
+
+## Backend unification (in progress)
+
+A differential-parity suite (`crates/loon-lang/tests/backend_parity.rs`) runs the
+same programs under the EIR VM and the legacy interpreter and asserts identical
+output — the safety net for collapsing the backends onto one IR. It immediately
+caught a real bug: the EIR VM's `map`/`filter`/`fold` only handled the
+pipe/thread-last argument order (`[map fn coll]`), so the *direct* form
+(`[map coll fn]`) silently returned `()`/the input. Fixed by detecting the
+collection vs the function by TYPE (mirroring the interpreter), so both forms
+work. Two divergences remain PINNED as tests (a worklist, not silent drift):
+the legacy interp's non-resuming handler clause wrongly resumes (EIR's abort is
+correct), and a binary builtin passed as a HOF arg (`[fold xs 0 +]`) misfires on
+the EIR VM (arity-1 builtin-as-value wrapper). See the suite for details.
+
+
+
 The synchronous effect substrate (`eff.oo`) is complete and **type-checks + runs
 on the default EIR VM**: core effect interfaces, a representative program whose
 inferred effect row is `#{Reader Clock Random Log Fail}`, three handler towers
@@ -108,27 +146,35 @@ it. Stages can now `use` a shared `eff` module instead of concatenating.
 Also: the Rust prelude's `Option`/`Result` are not loaded on the EIR VM — define
 shared types in-file (or `use` a module that does).
 
-## EFF-BUG-6 — re-entrant continuation capture (interleaved scheduling) — MITIGATED, not fully fixed
+## EFF-BUG-6 — "re-entrant continuation capture" — NOT A BUG (test-harness error)
 
-The escaping/answer-passing style now type-checks (BUG-2) and runs for LINEAR,
-single-consumer continuations — see `src/eff/coroutine.oo` (a multi-yield
-generator collecting `#[1 4 9 16]`), `samples/state.oo`, and the pure-State
-encoding. Each continuation there is captured and resumed once, in order.
+**Correction.** Earlier notes claimed interleaved scheduling was broken on the
+EIR VM and needed a continuation-engine rework. That was wrong — the defect was
+in the *scheduler test code*, not the VM.
 
-What still fails: INTERLEAVED scheduling. A cooperative scheduler
-(`Co.fork`/`Co.yield`, run-queue threaded as the answer) runs the first round
-(`P a`/`C a`) but drops the post-yield round (`P b`/`C b`). The failing shape is
-a continuation captured *inside* a resumed segment and later resumed from
-*within another* resumed segment (re-entrant capture). Root cause: a captured
-`Obj::Continuation` snapshots one prompt's handlers and records absolute frame
-indices; when such a continuation is resumed at a different stack depth than it
-was captured, the prompt/return bookkeeping for the *nested* capture is
-inconsistent, so the innermost continuation's tail is dropped.
+The minimal scheduler's `run-next` did `[drop q 1]`, but `drop` is **count-first**
+(`[drop n coll]`), so `[drop q 1]` passed the queue as the count and `1` as the
+collection and returned `()`. The next task was therefore invoked with `()`
+instead of the remaining queue, so its yielded continuation was never enqueued —
+which *looked* like a lost continuation. Writing it `[drop 1 q]` fixes it.
 
-A correct fix is a continuation-engine change (capture the full handler chain;
-rebase frame/prompt indices on resume), which is precisely what the in-progress
-bytecode VM provides. Rather than rush a risky rework of the now-solid
-tree/EIR VM, this is documented with the minimal repro (the scheduler in the
-Stage-0 probes) and bounded: LINEAR coroutines are supported; INTERLEAVED
-fork-scheduling awaits the bytecode VM. Async (cooperative scheduler as a
-handler) is therefore deferred behind EFF-BUG-6.
+With that corrected, the cooperative scheduler as an effect handler RUNS
+correctly on the default EIR VM, including INTERLEAVED, re-entrant multi-shot
+resumption — two workers yielding twice round-robin produce
+`A1 B1 A2 B2 A3 B3`. See `src/eff/scheduler.oo`. The EIR VM's delimited
+continuations are sound for this; no engine rework is needed, and async is NOT
+blocked.
+
+### Type-checking the recursive answer type — RESOLVED via a nominal wrapper
+
+The scheduler's answer type is recursive — the queue is a `Vec` of resumptions,
+each a function *of the queue* (`Queue = Vec (Queue -> Unit)`), i.e.
+`t ~ Vec t -> u`, which Hindley-Milner rejects as infinite (E0203). Boxing the
+resumption in a nominal type — `[type Cont [MkCont [-> [Vec Cont] Unit]]]` —
+makes the queue type finite (`Vec Cont`), since HM treats the named `Cont`
+nominally and does not expand it. `run-next` then `match`es `[MkCont f]` to
+unwrap. With that, `src/eff/scheduler.oo` BOTH `loon check`s clean AND runs.
+
+Net: the cooperative scheduler-as-a-handler — the async substrate — is complete
+on the default EIR VM (type-checks + runs, interleaved multi-shot). No engine
+rework and no bytecode VM were needed for it.

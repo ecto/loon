@@ -1337,11 +1337,18 @@ impl Vm {
                 }
             }
             Built::Map | Built::Filter | Built::Each | Built::Reduce => {
-                // Higher-order builtins: call the function for each element
-                let (func, coll) = if args.len() == 2 {
-                    (args[0], args[1])
-                } else {
+                // Higher-order builtins: call the function for each element.
+                // Detect collection vs function by TYPE, not position, so both
+                // the direct form `[map coll fn]` and the pipe/thread-last form
+                // `[map fn coll]` work (mirrors the tree-walking interpreter).
+                if args.len() != 2 {
                     return Ok(Val::UNIT);
+                }
+                let a0_is_vec = matches!(self.get_obj(args[0]), Some(Obj::Vec(_)));
+                let (func, coll) = if a0_is_vec {
+                    (args[1], args[0])
+                } else {
+                    (args[0], args[1])
                 };
 
                 match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
@@ -1561,9 +1568,10 @@ impl Vm {
                 }
             }
             Built::Replace => {
-                let from = args.first().copied().unwrap_or(Val::UNIT);
-                let to = args.get(1).copied().unwrap_or(Val::UNIT);
-                let s = args.get(2).copied().unwrap_or(Val::UNIT);
+                // Loon order is subject-first: [replace s from to].
+                let s = args.first().copied().unwrap_or(Val::UNIT);
+                let from = args.get(1).copied().unwrap_or(Val::UNIT);
+                let to = args.get(2).copied().unwrap_or(Val::UNIT);
                 match (
                     self.get_str(from).map(|s| s.to_string()),
                     self.get_str(to).map(|s| s.to_string()),
@@ -1612,8 +1620,14 @@ impl Vm {
                 }
             }
             Built::Join => {
-                let sep = args.first().copied().unwrap_or(Val::UNIT);
-                let coll = args.get(1).copied().unwrap_or(Val::UNIT);
+                // Loon order is collection-first: [join coll sep]. Detect the
+                // vector by type so the pipe/thread-last form also works.
+                let a0_is_vec = matches!(self.get_obj(args.first().copied().unwrap_or(Val::UNIT)), Some(Obj::Vec(_)));
+                let (coll, sep) = if a0_is_vec {
+                    (args[0], args.get(1).copied().unwrap_or(Val::UNIT))
+                } else {
+                    (args.get(1).copied().unwrap_or(Val::UNIT), args.first().copied().unwrap_or(Val::UNIT))
+                };
                 let sep_str = self.val_to_string(sep);
                 match self.get_obj(coll).cloned() {
                     Some(Obj::Vec(items)) => {
@@ -1747,10 +1761,17 @@ impl Vm {
                 Ok(if a.is_truthy() { a } else { b })
             }
             Built::Fold => {
-                // [fold init f coll] or [fold init f coll]
-                let init = args.first().copied().unwrap_or(Val::UNIT);
-                let func = args.get(1).copied().unwrap_or(Val::UNIT);
-                let coll = args.get(2).copied().unwrap_or(Val::UNIT);
+                // Detect the collection by TYPE so both the direct form
+                // `[fold coll init f]` and the pipe/thread-last form
+                // `[fold init f coll]` work (mirrors the interpreter).
+                if args.len() != 3 {
+                    return Ok(args.first().copied().unwrap_or(Val::UNIT));
+                }
+                let (coll, init, func) = if matches!(self.get_obj(args[0]), Some(Obj::Vec(_))) {
+                    (args[0], args[1], args[2])
+                } else {
+                    (args[2], args[0], args[1])
+                };
                 match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
                     (Some(Obj::Closure(fid, caps)), Some(Obj::Vec(items))) => {
                         let mut acc = init;
@@ -2364,6 +2385,28 @@ mod tests {
 
     fn run_output(src: &str) -> Vec<String> {
         eval_eir(src).expect("vm error").output
+    }
+
+    #[test]
+    fn vm_cooperative_scheduler() {
+        // The async substrate: a cooperative scheduler as an effect handler,
+        // built on interleaved multi-shot continuations. Two forked tasks that
+        // each yield once interleave round-robin: A1 B1 A2 B2.
+        let src = "[effect Co [fork [] Bool] [yield [] Unit]] \
+                   [type Cont [MkCont [-> [Vec Cont] Unit]]] \
+                   [fn run-next [q] [if [empty? q] [] [match [nth q 0] [MkCont f] [f [drop 1 q]]]]] \
+                   [fn sched [entry] \
+                     [[handle [entry] \
+                         [return _] [fn [q] [run-next q]] \
+                         [Co.yield] [fn [q] [run-next [conj q [MkCont [fn [qp] [[resume []] qp]]]]]] \
+                         [Co.fork]  [fn [q] [[resume true] [conj q [MkCont [fn [qp] [[resume false] qp]]]]]]] \
+                       #[]]] \
+                   [fn w [t] [println [str t 1]] [Co.yield] [println [str t 2]]] \
+                   [fn main [] [sched [fn [] [if [Co.fork] [w \"A\"] [w \"B\"]]]]]";
+        assert_eq!(
+            run_output(src),
+            vec!["A1".to_string(), "B1".to_string(), "A2".to_string(), "B2".to_string()]
+        );
     }
 
     #[test]
