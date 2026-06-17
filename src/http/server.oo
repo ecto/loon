@@ -1,0 +1,128 @@
+; ───────────────────────────────────────────────────────────────────────────
+; HTTP framework — routes are effectful functions; the handler tower is the app.
+;
+; A route never names a handler, so its INFERRED effect row advertises exactly
+; what it can do: a route that hits the database shows `Db` in its row; one that
+; checks auth shows `Auth`. A route cannot touch the database without `Db`
+; appearing in its signature — capabilities are visible, not hidden.
+;
+; The SAME app (`app`) runs under three handler towers with zero changes to the
+; route code:
+;   under-test  — deterministic, in-memory, no network (integration tests need
+;                 no mocking framework and no sockets)
+;   under-trace — records every effect interaction for debugging
+;   under-prod  — performs real host effects (logging to stdout; clock/uuid real)
+;
+; The response body is MOVED into `Http.respond` and consumed there, so sending
+; twice is a compile error (see crates/loon-lang tests: http_double_send_*).
+;
+; Run:   loon run   src/http/server.oo
+; Check: loon check src/http/server.oo
+; ───────────────────────────────────────────────────────────────────────────
+[type Request
+  [Req String String String]] ; method, path, body
+
+[type Response
+  [Resp Int String]] ; status, body
+
+[effect Http
+  [route [] Request]
+  [respond [Response] Unit]]
+
+[effect Db
+  [query [String] String]]
+
+[effect Auth
+  [require [] String]]
+
+[effect Log
+  [info [String] Unit]]
+
+; ── Routes — each route's inferred capability row is noted ──
+[fn handle-home [] [Http.respond [Resp 200 "<h1>Home</h1>"]]] ; row: #{Http}
+
+[fn handle-health [] [Http.respond [Resp 200 "ok"]]] ; row: #{Http}
+
+[fn handle-dashboard []
+  [let user [Auth.require]]
+  [let widgets [Db.query "SELECT name FROM widgets"]]
+  [Log.info [str "rendered dashboard for " user]]
+  [Http.respond [Resp 200 [str user " sees " widgets]]]] ; row: #{Auth Db Log Http}
+
+[fn handle-404 [path] [Http.respond [Resp 404 [str "not found: " path]]]] ; row: #{Http}
+
+; ── The app: one program. It performs Http.route, dispatches, never handles ──
+[fn app []
+  [match [Http.route]
+    [Req method path body] [match path
+      "/" [handle-home]
+      "/health" [handle-health]
+      "/dashboard" [handle-dashboard]
+      _ [handle-404 path]]]]
+
+; ── TEST tower: deterministic, in-memory, no network ──
+[fn under-test [method path body]
+  [handle
+    [app]
+    [return _]
+    ""
+    [Http.route]
+    [resume [Req method path body]]
+    [Auth.require]
+    [resume "test-user"]
+    [Db.query q]
+    [resume "widget-a, widget-b"]
+    [Log.info m]
+    [resume []]
+    [Http.respond r]
+    [match r
+      [Resp s b] [str "[" s "] " b]]]]
+
+; ── TRACE tower: records every effect interaction, then behaves like test ──
+[fn under-trace [method path body]
+  [handle
+    [app]
+    [return _]
+    ""
+    [Http.route]
+    [do
+      [println [str "  trace: route " method " " path]]
+      [resume [Req method path body]]]
+    [Auth.require]
+    [do [println "  trace: auth.require -> test-user"] [resume "test-user"]]
+    [Db.query q]
+    [do [println [str "  trace: db.query " q]] [resume "widget-a, widget-b"]]
+    [Log.info m]
+    [do [println [str "  trace: log " m]] [resume []]]
+    [Http.respond r]
+    [match r
+      [Resp s b] [do [println [str "  trace: respond " s]] [str "[" s "] " b]]]]]
+
+; ── PROD tower: real host effects (logging to stdout). Real sockets/DB are a
+;    backend wiring task; clock/uuid/env are already wired into the VM. ──
+[fn under-prod [method path body]
+  [handle
+    [app]
+    [return _]
+    ""
+    [Http.route]
+    [resume [Req method path body]]
+    [Auth.require]
+    [resume "prod-user"]
+    [Db.query q]
+    [resume "live-row-1, live-row-2"]
+    [Log.info m]
+    [do [println [str "[" [IO.now] "] " m]] [resume []]]
+    [Http.respond r]
+    [match r
+      [Resp s b] [str "[" s "] " b]]]]
+
+[fn main []
+  [println "-- test tower --"]
+  [println [under-test "GET" "/" ""]]
+  [println [under-test "GET" "/dashboard" ""]]
+  [println [under-test "GET" "/nope" ""]]
+  [println "-- trace tower --"]
+  [println [under-trace "GET" "/dashboard" ""]]
+  [println "-- prod tower --"]
+  [println [under-prod "GET" "/dashboard" ""]]]

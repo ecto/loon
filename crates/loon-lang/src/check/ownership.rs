@@ -744,6 +744,29 @@ mod tests {
     }
 
     #[test]
+    fn http_double_send_is_compile_error() {
+        // An HTTP response body is MOVED into Http.respond and consumed there;
+        // performing the effect a second time with the same value must be a
+        // use-after-move error (the "double send is a compile error" property).
+        let errors = check(
+            "[type Response [Resp Int String]] \
+             [effect Http [respond [Response] Unit]] \
+             [fn handler [] [let r [Resp 200 \"hi\"]] [Http.respond r] [Http.respond r]]",
+        );
+        assert!(
+            errors.iter().any(|e| e.message().contains("moved")),
+            "expected use-after-move, got: {errors:?}"
+        );
+        // A single send is fine.
+        let ok = check(
+            "[type Response [Resp Int String]] \
+             [effect Http [respond [Response] Unit]] \
+             [fn handler [] [let r [Resp 200 \"hi\"]] [Http.respond r]]",
+        );
+        assert!(ok.is_empty(), "single send should be clean: {ok:?}");
+    }
+
+    #[test]
     fn use_after_move() {
         let errors = check(
             r#"

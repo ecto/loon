@@ -2388,6 +2388,35 @@ mod tests {
     }
 
     #[test]
+    fn vm_http_app_under_towers() {
+        // The same app + routes run under different handler towers unchanged: a
+        // deterministic test tower and a "prod-ish" tower that differs only in
+        // the handler. Routing and capability effects (Auth/Db/Log) work.
+        let routes = "[type Request [Req String String String]] \
+                      [type Response [Resp Int String]] \
+                      [effect Http [route [] Request] [respond [Response] Unit]] \
+                      [effect Db [query [String] String]] [effect Auth [require [] String]] \
+                      [fn home [] [Http.respond [Resp 200 \"home\"]]] \
+                      [fn dash [] [let u [Auth.require]] [let d [Db.query \"q\"]] \
+                        [Http.respond [Resp 200 [str u \":\" d]]]] \
+                      [fn app [] [match [Http.route] [Req m p b] \
+                        [match p \"/\" [home] \"/dash\" [dash] _ [Http.respond [Resp 404 p]]]]] \
+                      [fn under [m p who db] [handle [app] [return _] \"\" \
+                        [Http.route] [resume [Req m p \"\"]] \
+                        [Auth.require] [resume who] [Db.query q] [resume db] \
+                        [Http.respond r] [match r [Resp s b] [str \"[\" s \"] \" b]]]] ";
+        let prog = format!(
+            "{routes} [fn main [] [println [under \"GET\" \"/\" \"x\" \"y\"]] \
+             [println [under \"GET\" \"/dash\" \"alice\" \"rows\"]] \
+             [println [under \"GET\" \"/nope\" \"x\" \"y\"]]]"
+        );
+        assert_eq!(
+            run_output(&prog),
+            vec!["[200] home".to_string(), "[200] alice:rows".to_string(), "[404] /nope".to_string()]
+        );
+    }
+
+    #[test]
     fn vm_cooperative_scheduler() {
         // The async substrate: a cooperative scheduler as an effect handler,
         // built on interleaved multi-shot continuations. Two forked tasks that
