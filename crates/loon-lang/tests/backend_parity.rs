@@ -109,6 +109,13 @@ const CORPUS: &[(&str, &str)] = &[
         "map-named-fn",
         "[fn dbl [x] [* x 2]] [fn main [] [println [map #[1 2 3] dbl]]]",
     ),
+    // a handler clause that captures an enclosing local (parameterized handler)
+    (
+        "handler-captures-local",
+        "[effect E [op [] Int]] \
+         [fn run [n] [handle [E.op] [E.op] [resume n]]] \
+         [fn main [] [println [run 42]]]",
+    ),
 ];
 
 #[test]
