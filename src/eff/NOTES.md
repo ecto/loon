@@ -1,5 +1,21 @@
 # Stage 0 substrate — status and foundation gaps
 
+## Backend unification (in progress)
+
+A differential-parity suite (`crates/loon-lang/tests/backend_parity.rs`) runs the
+same programs under the EIR VM and the legacy interpreter and asserts identical
+output — the safety net for collapsing the backends onto one IR. It immediately
+caught a real bug: the EIR VM's `map`/`filter`/`fold` only handled the
+pipe/thread-last argument order (`[map fn coll]`), so the *direct* form
+(`[map coll fn]`) silently returned `()`/the input. Fixed by detecting the
+collection vs the function by TYPE (mirroring the interpreter), so both forms
+work. Two divergences remain PINNED as tests (a worklist, not silent drift):
+the legacy interp's non-resuming handler clause wrongly resumes (EIR's abort is
+correct), and a binary builtin passed as a HOF arg (`[fold xs 0 +]`) misfires on
+the EIR VM (arity-1 builtin-as-value wrapper). See the suite for details.
+
+
+
 The synchronous effect substrate (`eff.oo`) is complete and **type-checks + runs
 on the default EIR VM**: core effect interfaces, a representative program whose
 inferred effect row is `#{Reader Clock Random Log Fail}`, three handler towers

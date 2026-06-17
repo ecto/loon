@@ -1337,11 +1337,18 @@ impl Vm {
                 }
             }
             Built::Map | Built::Filter | Built::Each | Built::Reduce => {
-                // Higher-order builtins: call the function for each element
-                let (func, coll) = if args.len() == 2 {
-                    (args[0], args[1])
-                } else {
+                // Higher-order builtins: call the function for each element.
+                // Detect collection vs function by TYPE, not position, so both
+                // the direct form `[map coll fn]` and the pipe/thread-last form
+                // `[map fn coll]` work (mirrors the tree-walking interpreter).
+                if args.len() != 2 {
                     return Ok(Val::UNIT);
+                }
+                let a0_is_vec = matches!(self.get_obj(args[0]), Some(Obj::Vec(_)));
+                let (func, coll) = if a0_is_vec {
+                    (args[1], args[0])
+                } else {
+                    (args[0], args[1])
                 };
 
                 match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
@@ -1747,10 +1754,17 @@ impl Vm {
                 Ok(if a.is_truthy() { a } else { b })
             }
             Built::Fold => {
-                // [fold init f coll] or [fold init f coll]
-                let init = args.first().copied().unwrap_or(Val::UNIT);
-                let func = args.get(1).copied().unwrap_or(Val::UNIT);
-                let coll = args.get(2).copied().unwrap_or(Val::UNIT);
+                // Detect the collection by TYPE so both the direct form
+                // `[fold coll init f]` and the pipe/thread-last form
+                // `[fold init f coll]` work (mirrors the interpreter).
+                if args.len() != 3 {
+                    return Ok(args.first().copied().unwrap_or(Val::UNIT));
+                }
+                let (coll, init, func) = if matches!(self.get_obj(args[0]), Some(Obj::Vec(_))) {
+                    (args[0], args[1], args[2])
+                } else {
+                    (args[2], args[0], args[1])
+                };
                 match (self.get_obj(func).cloned(), self.get_obj(coll).cloned()) {
                     (Some(Obj::Closure(fid, caps)), Some(Obj::Vec(items))) => {
                         let mut acc = init;
