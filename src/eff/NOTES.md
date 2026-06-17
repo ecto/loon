@@ -1,5 +1,20 @@
 # Stage 0 substrate — status and foundation gaps
 
+## Durable execution as a handler (idea from Vercel's eve)
+
+Eve's headline feature is durable execution: each step is checkpointed so a
+session can pause, survive a crash, and resume — built on a separate Workflow
+SDK. On an effect substrate it is just another tower: `src/agent/durable.oo`'s
+`run-resume` replays a journal of recorded effect results (returning them
+without re-performing the side effects), then goes live once the journal is
+exhausted. A journal truncated by a "crash" replays its prefix and continues
+live to the SAME final state. The agent loop is unchanged; the journal is
+threaded as the handler's answer. Regression test: `vm_durable_resume`.
+
+Footgun noted while building it: do not name a function `resume` — it shadows
+the continuation binding inside handler clauses (a `[resume v]` then recurses
+into the function). Use a different name (`run-resume`).
+
 ## Agent framework — control loop as effects, tower decides everything
 
 `src/agent/agent.oo`: the agent control loop is plain code performing

@@ -2411,6 +2411,33 @@ mod tests {
     }
 
     #[test]
+    fn vm_durable_resume() {
+        // Durable execution as a handler: a RESUME tower replays a journal of
+        // recorded effect results, then goes live once exhausted. A journal
+        // truncated by a "crash" replays its prefix and continues live to the
+        // SAME final state as a full run.
+        let base = "[effect Llm [complete [String] String]] [effect Tool [call [String] String]] \
+                    [fn agent [step h] [let a [Llm.complete [str step]]] \
+                      [if [= a \"done\"] h \
+                        [do [let lbl [str h \" \" a]] [let r [Tool.call a]] \
+                            [agent [+ step 1] [str lbl \":\" r]]]]] \
+                    [fn lm [p] [match p \"0\" \"search\" \"1\" \"summarize\" _ \"done\"]] \
+                    [fn lt [t] [match t \"search\" \"hit\" \"summarize\" \"sum\" _ \"ok\"]] \
+                    [fn replay [journal] [[handle [agent 0 \"s\"] \
+                       [return x] [fn [j] x] \
+                       [Llm.complete p] [fn [j] [let v [if [empty? j] [lm p] [nth j 0]]] [[resume v] [drop 1 j]]] \
+                       [Tool.call t] [fn [j] [let v [if [empty? j] [lt t] [nth j 0]]] [[resume v] [drop 1 j]]]] journal]] ";
+        let full = format!(
+            "{base} [fn main [] [println [replay #[\"search\" \"hit\" \"summarize\" \"sum\" \"done\"]]]]"
+        );
+        let crashed = format!("{base} [fn main [] [println [replay #[\"search\" \"hit\"]]]]");
+        // Both reach the same final state; the crashed journal replays its prefix
+        // then continues live.
+        assert_eq!(run_output(&full), vec!["s search:hit summarize:sum".to_string()]);
+        assert_eq!(run_output(&crashed), vec!["s search:hit summarize:sum".to_string()]);
+    }
+
+    #[test]
     fn vm_agent_under_towers() {
         // The same agent loop runs under different towers. A deterministic test
         // tower (scripted model + mocked tools, approve-all) reproduces a
