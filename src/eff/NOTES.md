@@ -1,5 +1,27 @@
 # Stage 0 substrate — status and foundation gaps
 
+## Async substrate (Stage 0) — cooperative scheduler as a handler
+
+`src/eff/async.oo` completes Stage 0's async story: concurrency is ordinary code
+performing effects (`Co.fork`/`yield`/`exit`/`cancel`), with the SCHEDULER as a
+handler — no async "color" on functions, no runtime async primitive. It
+type-checks AND runs on the default EIR VM (built on the multi-shot delimited
+continuations proven in `src/eff/scheduler.oo`).
+
+- `spawn` (built on `fork`) runs a thunk as a background child; tasks interleave
+  cooperatively at `yield` (round-robin: `A1 B1 A2 B2 A3 B3`).
+- Structured concurrency is designed in: the scheduler IS the scope and drains
+  all children before returning; `cancel` cancels the scope — every pending
+  child is dropped (no orphans outlive the scope). Regression test:
+  `vm_cooperative_scheduler`.
+
+Remaining async op — `await` (a backgrounded task's *result*): returning a value
+from a spawned task needs result-passing (a Future/result-slot). Loon has no
+mutable cells on the EIR VM and state is itself an effect, so this wants either a
+state-threaded scheduler variant or a `Future` effect — the documented next
+async iteration. Awaiting a child *computation* inline is just running it (it
+participates in cooperative scheduling via `yield`).
+
 ## Backend unification (in progress)
 
 A differential-parity suite (`crates/loon-lang/tests/backend_parity.rs`) runs the

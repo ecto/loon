@@ -2388,6 +2388,28 @@ mod tests {
     }
 
     #[test]
+    fn vm_cooperative_scheduler() {
+        // The async substrate: a cooperative scheduler as an effect handler,
+        // built on interleaved multi-shot continuations. Two forked tasks that
+        // each yield once interleave round-robin: A1 B1 A2 B2.
+        let src = "[effect Co [fork [] Bool] [yield [] Unit]] \
+                   [type Cont [MkCont [-> [Vec Cont] Unit]]] \
+                   [fn run-next [q] [if [empty? q] [] [match [nth q 0] [MkCont f] [f [drop 1 q]]]]] \
+                   [fn sched [entry] \
+                     [[handle [entry] \
+                         [return _] [fn [q] [run-next q]] \
+                         [Co.yield] [fn [q] [run-next [conj q [MkCont [fn [qp] [[resume []] qp]]]]]] \
+                         [Co.fork]  [fn [q] [[resume true] [conj q [MkCont [fn [qp] [[resume false] qp]]]]]]] \
+                       #[]]] \
+                   [fn w [t] [println [str t 1]] [Co.yield] [println [str t 2]]] \
+                   [fn main [] [sched [fn [] [if [Co.fork] [w \"A\"] [w \"B\"]]]]]";
+        assert_eq!(
+            run_output(src),
+            vec!["A1".to_string(), "B1".to_string(), "A2".to_string(), "B2".to_string()]
+        );
+    }
+
+    #[test]
     fn vm_int_literal() {
         let v = run("42");
         assert!(v.is_int());

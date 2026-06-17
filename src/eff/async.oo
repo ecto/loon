@@ -1,0 +1,82 @@
+; ───────────────────────────────────────────────────────────────────────────
+; Stage 0 — async as effects: a cooperative scheduler as a handler.
+;
+; Async is not a separate "color" of function and not a runtime primitive — it
+; is ordinary code performing effects (`Co.fork`/`yield`/`exit`/`cancel`), with
+; the SCHEDULER as a handler. Swap the handler, swap the concurrency policy; the
+; app is unchanged. Single-threaded cooperative scheduling, built on the EIR
+; VM's multi-shot delimited continuations (see src/eff/scheduler.oo for the
+; minimal fork/yield core this extends).
+;
+; Structured concurrency is designed in, not bolted on: the scheduler IS the
+; scope. It does not return until every spawned child has finished (the queue is
+; drained), and `Co.cancel` cancels the scope — every pending child is dropped.
+;
+; Run:   loon run   src/eff/async.oo
+; Check: loon check src/eff/async.oo
+; ───────────────────────────────────────────────────────────────────────────
+[effect Co
+  [fork [] Bool] ; true in the parent, false in a freshly-spawned child
+  [yield [] Unit] ; cooperatively hand off to the next ready task
+  [exit [] Unit] ; finish the current task without resuming it
+  [cancel [] Unit]] ; cancel the scope: drop every pending child
+
+; A resumption boxed nominally so the run-queue type (Vec Cont) is finite.
+[type Cont
+  [MkCont [-> [Vec Cont] Unit]]]
+
+[fn run-next [q]
+  [if [empty? q]
+    []
+    [match [nth q 0]
+      [MkCont f] [f [drop 1 q]]]]]
+
+; The scheduler / scope. Runs `entry` and all children to completion (structured:
+; it drains the queue before returning), threading the run-queue as its answer.
+;   fork   — resume the parent (true) now; enqueue the child (false).
+;   yield  — enqueue the current continuation; run the next ready task.
+;   exit   — drop the current continuation; run the next ready task.
+;   cancel — drop the whole pending queue: the scope and its children stop.
+[fn scheduler [entry]
+  [[handle
+    [entry]
+    [return _]
+    [fn [q] [run-next q]]
+    [Co.exit]
+    [fn [q] [run-next q]]
+    [Co.cancel]
+    [fn [q] []]
+    [Co.yield]
+    [fn [q] [run-next [conj q [MkCont [fn [qp] [[resume []] qp]]]]]]
+    [Co.fork]
+    [fn [q] [[resume true] [conj q [MkCont [fn [qp] [[resume false] qp]]]]]]]
+    #[]]]
+
+; spawn a thunk as a background child task. Built on fork: the child runs the
+; thunk and then exits (so it does not fall through into the parent's code).
+; Its inferred row is #{Co}.
+[fn spawn [t] [if [Co.fork] [] [do [t] [Co.exit]]]]
+
+; ── Demo 1: cooperative interleaving ─────────────────────────────────────────
+[fn worker [tag]
+  [println [str tag " step 1"]]
+  [Co.yield]
+  [println [str tag " step 2"]]
+  [Co.yield]
+  [println [str tag " step 3"]]]
+
+; ── Demo 2: structured cancellation ──────────────────────────────────────────
+; The scope spawns three children; the second cancels the scope after its first
+; step, so the remaining pending work (A's and C's later steps, and C's start if
+; still queued) is dropped — no orphaned children outlive the scope.
+[fn cancelling-scope []
+  [spawn [fn [] [println "A1"] [Co.yield] [println "A2 (dropped)"]]]
+  [spawn [fn [] [println "B1"] [Co.cancel] [println "B2 (never)"]]]
+  [spawn [fn [] [println "C1 (dropped)"] [Co.yield] [println "C2 (dropped)"]]]
+  [println "spawned all"]]
+
+[fn main []
+  [println "-- interleaving --"]
+  [scheduler [fn [] [spawn [fn [] [worker "A"]]] [spawn [fn [] [worker "B"]]]]]
+  [println "-- structured cancellation --"]
+  [scheduler cancelling-scope]]
