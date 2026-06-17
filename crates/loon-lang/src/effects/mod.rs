@@ -99,6 +99,12 @@ impl EffectRegistry {
             operations: vec![
                 op("get", &["url"]),
                 op("post", &["url", "options"]),
+                // Blocking TCP/HTTP server on the EIR VM (see eir/net.rs):
+                // listen a port, accept one request (-> [method path body]),
+                // send the response to it.
+                typed_op("listen", &["port"], "Bool"),
+                op("accept", &["port"]),
+                typed_op("send", &["status", "body"], "Bool"),
                 op("http-serve", &["port"]),
                 op("respond", &["id", "response"]),
                 op("serve-file", &["id", "path", "content-type"]),

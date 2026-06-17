@@ -5,6 +5,7 @@
 
 pub mod backend;
 pub mod lower;
+pub mod net;
 #[cfg(feature = "native")]
 pub mod native;
 pub mod trace;

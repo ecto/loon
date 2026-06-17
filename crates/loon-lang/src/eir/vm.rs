@@ -2203,6 +2203,29 @@ impl Vm {
                     self.alloc_str(String::new())
                 }
             }
+            // Real TCP/HTTP sockets (see eir/net.rs). A blocking one-at-a-time
+            // server: listen a port, accept a request, send the response.
+            ("Net", "listen") => {
+                let port = args.first().map(|v| v.as_int() as u16).unwrap_or(0);
+                Val::bool(crate::eir::net::listen(port))
+            }
+            ("Net", "accept") => {
+                let port = args.first().map(|v| v.as_int() as u16).unwrap_or(0);
+                match crate::eir::net::accept(port) {
+                    Some((method, path, body)) => {
+                        let m = self.alloc_str(method);
+                        let p = self.alloc_str(path);
+                        let b = self.alloc_str(body);
+                        self.alloc(Obj::Vec([m, p, b].into_iter().collect()))
+                    }
+                    None => self.alloc(Obj::Vec(ImVec::new())),
+                }
+            }
+            ("Net", "send") => {
+                let status = args.first().map(|v| v.as_int()).unwrap_or(200);
+                let body = args.get(1).map(|v| self.val_to_string(*v)).unwrap_or_default();
+                Val::bool(crate::eir::net::send(status, &body))
+            }
             ("Const", "c") => Val::float(299_792_458.0),
             ("Physics", "yield-strength") => Val::float(250.0),
             ("Physics", "gravity") => Val::float(9.80665),

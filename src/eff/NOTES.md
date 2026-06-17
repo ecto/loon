@@ -123,10 +123,17 @@ prod tower works on the default VM — see `src/eff/host_prod.oo`: the same
 `make-id` runs under a deterministic `test` tower and a real-host `prod` tower
 (`<uuid>@<unix-seconds>`). Regression test: `vm_host_effects`.
 
-Still open: real `Net` (sockets/HTTP) is not yet wired into the EIR VM, and
-`Process.env` returns `""` for an unset var rather than an `Option` (the VM
-cannot construct a program-defined ADT tag from a builtin). Sockets are the
-Stage-1 server's concern.
+Real `Net` sockets are now wired too (`crates/loon-lang/src/eir/net.rs`):
+`Net.listen` / `Net.accept` (-> `[method path body]`) / `Net.send` give a
+blocking one-request-at-a-time HTTP server that fits the single-threaded VM. A
+Loon program serves real HTTP over TCP — see `src/http/serve.oo`; round-trip
+test: `real_http_round_trip`.
+
+Still open: `Process.env` returns `""` for an unset var rather than an `Option`
+(the VM cannot construct a program-defined ADT tag from a builtin); and the
+ownership checker does not yet treat a Copy-typed *parameter* as Copy across a
+consuming call (a false use-after-move — work around by reusing a let-bound Int
+or inlining the literal; see `src/http/serve.oo`).
 
 ## EFF-LIMITATION-5 — multi-file `use` doesn't run on the EIR VM — FIXED
 
