@@ -44,6 +44,35 @@ fn let_binding() {
 }
 
 #[test]
+fn let_with_body_returns_body() {
+    // `[let name value body…]` evaluates the body with the binding visible and
+    // returns the body's value — NOT the bound value. (Regression: the trailing
+    // body used to be silently dropped, so this returned 5 instead of 6.)
+    assert_eq!(run("[let x 5 [+ x 1]]"), Value::Int(6));
+    // Multiple body expressions: last one wins.
+    assert_eq!(run("[let x 5 [+ x 1] [* x 2]]"), Value::Int(10));
+    // Nested let-in-body composes (the case that motivated the fix).
+    assert_eq!(run("[let a 2 [let b 3 [+ a b]]]"), Value::Int(5));
+}
+
+#[test]
+fn let_with_body_does_not_leak_binding() {
+    // The binding introduced by the expression form is scoped to the body and
+    // must not leak into the enclosing scope.
+    assert_eq!(
+        run("[do [let outer 1] [let outer 99 outer] outer]"),
+        Value::Int(1)
+    );
+}
+
+#[test]
+fn let_statement_form_still_binds_in_scope() {
+    // The two-arg statement form must keep binding into the current scope so
+    // later forms observe it.
+    assert_eq!(run("[do [let x 1] [let y 2] [+ x y]]"), Value::Int(3));
+}
+
+#[test]
 fn defn_and_call() {
     assert_eq!(
         run(r#"
