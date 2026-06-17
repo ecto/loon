@@ -1164,23 +1164,46 @@ fn eval_let(args: &[Expr], env: &mut Env) -> IResult {
         return Err(err("let requires a binding and value"));
     }
 
-    // Handle [let mut name val]
-    let (binding, val_expr) = if matches!(&args[0].kind, ExprKind::Symbol(s) if s == "mut") {
+    // Handle [let mut name val ...] — the optional `mut` keyword shifts the
+    // binding/value, and anything past the value is a body (see below).
+    let (binding, val_expr, body) = if matches!(&args[0].kind, ExprKind::Symbol(s) if s == "mut") {
         if args.len() < 3 {
             return Err(err("let mut requires name and value"));
         }
-        (&args[1], &args[2])
+        (&args[1], &args[2], &args[3..])
     } else {
-        (&args[0], &args[1])
+        (&args[0], &args[1], &args[2..])
     };
 
+    // Evaluate the value in the enclosing scope (a let binding can't see
+    // itself), then destructure it into the binding.
     let val = eval(val_expr, env)?;
-
-    // Use extract_param + bind_param for uniform destructuring
     let param = extract_param(binding)?;
-    bind_param(&param, &val, env)?;
 
-    Ok(val)
+    if body.is_empty() {
+        // Statement form `[let name value]`: bind in the *current* scope and
+        // return the value, so later forms — at top level or inside a `[do …]`
+        // block — observe the binding.
+        bind_param(&param, &val, env)?;
+        Ok(val)
+    } else {
+        // Expression form `[let name value body…]`: bind in a fresh scope,
+        // evaluate the body with the binding visible, and return the body's
+        // last value. The binding does not leak past the body. Previously the
+        // trailing body was silently dropped and the bound value returned,
+        // which made `[let b … expr]` evaluate to `b` instead of `expr`.
+        env.push_scope();
+        let result = (|| -> IResult {
+            bind_param(&param, &val, env)?;
+            let mut last = Value::Unit;
+            for expr in body {
+                last = eval(expr, env)?;
+            }
+            Ok(last)
+        })();
+        env.pop_scope();
+        result
+    }
 }
 
 fn eval_if(args: &[Expr], env: &mut Env) -> IResult {
