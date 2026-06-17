@@ -1,0 +1,127 @@
+; ─────────────────────────────────────────────────────────────────────────
+; loon-hdl — full single-head ATTENTION (decode step), end to end.
+; Composes the verified primitives into one head:
+;   scores[t] = q · k_t           (Q·Kᵀ — dot products / MAC)
+;   p = softmax(scores)           (max → LUT-exp → normalize, Q8)
+;   out[d] = Σ_t p[t]·v_t[d] / 256 (A·V — weighted sum)
+; K/V are the KV cache (the verified Mem primitive feeds these). head-dim 2,
+; 4 KV tokens. Co-sim'd bit-exact against a pure-Loon attention golden.
+; ─────────────────────────────────────────────────────────────────────────
+
+[type BinOp Add Sub Mul Div Ge Eq]
+[type Expr [Ref String] [Lit Int] [Bin BinOp Expr Expr] [Mux Expr Expr Expr]]
+[type Dir In Out]
+[type Kind Wire Reg]
+[type Port [Port Dir Kind Int String]]
+[type Decl [Net Kind Int String]]
+[type Stmt [Assign String Expr]]
+[type Module [Module String (Vec Port) (Vec Decl) (Vec Stmt)]]
+
+; ── emitter ──────────────────────────────────────────────────────────────
+[fn bin-sym  [op] [match op Add "+" Sub "-" Mul "*" Div "/" Ge ">=" Eq "=="]]
+[fn dir-str  [d]  [match d In "input " Out "output"]]
+[fn kind-str [k]  [match k Wire "wire" Reg "reg "]]
+[fn range-str  [w] [if [= w 1] "" [str "[" [- w 1] ":0] "]]]
+[fn signed-str [w] [if [= w 1] "" "signed "]]
+[fn emit-expr [e]
+  [match e
+    [Ref n]      n
+    [Lit v]      [str v]
+    [Bin op a b] [str "(" [emit-expr a] " " [bin-sym op] " " [emit-expr b] ")"]
+    [Mux c t f]  [str "(" [emit-expr c] " ? " [emit-expr t] " : " [emit-expr f] ")"]]]
+[fn emit-port [p]
+  [match p [Port d k w n]
+    [str "  " [dir-str d] " " [kind-str k] " " [signed-str w] [range-str w] n]]]
+[fn emit-decl [d]
+  [match d [Net k w n] [str "  " [kind-str k] " " [signed-str w] [range-str w] n ";\n"]]]
+[fn emit-stmt [s] [match s [Assign lhs e] [str "  assign " lhs " = " [emit-expr e] ";"]]]
+[fn emit-module [m]
+  [match m [Module name ports decls stmts]
+    [str "module " name " (\n" [join ",\n" [map emit-port ports]] "\n);\n"
+         [join "" [map emit-decl decls]] [join "\n" [map emit-stmt stmts]]
+         "\nendmodule\n"]]]
+
+; ── building blocks ──────────────────────────────────────────────────────
+[fn vmax [a b] [Mux [Bin Ge a b] a b]]
+[fn lutexp [d]
+  [Mux [Bin Eq d [Lit 0]]  [Lit 256]
+    [Mux [Bin Eq d [Lit -1]] [Lit 94]
+      [Mux [Bin Eq d [Lit -2]] [Lit 35]
+        [Mux [Bin Eq d [Lit -3]] [Lit 13]
+          [Mux [Bin Eq d [Lit -4]] [Lit 5]
+            [Mux [Bin Eq d [Lit -5]] [Lit 2]
+              [Mux [Bin Eq d [Lit -6]] [Lit 1] [Lit 0]]]]]]]]]
+; score_t = q0*k_t0 + q1*k_t1
+[fn score [t]
+  [Bin Add [Bin Mul [Ref "q0"] [Ref [str "k" t "0"]]]
+           [Bin Mul [Ref "q1"] [Ref [str "k" t "1"]]]]]
+; av numerator for output dim d = Σ_t p_t * v_td
+[fn av [d]
+  [Bin Add
+    [Bin Add [Bin Mul [Ref "p0"] [Ref [str "v0" d]]] [Bin Mul [Ref "p1"] [Ref [str "v1" d]]]]
+    [Bin Add [Bin Mul [Ref "p2"] [Ref [str "v2" d]]] [Bin Mul [Ref "p3"] [Ref [str "v3" d]]]]]]
+
+; ── the attention head ───────────────────────────────────────────────────
+[fn attn-head []
+  [let qp #[[Port In Wire 16 "q0"] [Port In Wire 16 "q1"]]]
+  [let kp #[[Port In Wire 16 "k00"] [Port In Wire 16 "k01"]
+            [Port In Wire 16 "k10"] [Port In Wire 16 "k11"]
+            [Port In Wire 16 "k20"] [Port In Wire 16 "k21"]
+            [Port In Wire 16 "k30"] [Port In Wire 16 "k31"]]]
+  [let vp #[[Port In Wire 16 "v00"] [Port In Wire 16 "v01"]
+            [Port In Wire 16 "v10"] [Port In Wire 16 "v11"]
+            [Port In Wire 16 "v20"] [Port In Wire 16 "v21"]
+            [Port In Wire 16 "v30"] [Port In Wire 16 "v31"]]]
+  [let op #[[Port Out Wire 16 "out0"] [Port Out Wire 16 "out1"]]]
+  [let ports [vcat [vcat [vcat qp kp] vp] op]]
+  [let decls
+    #[[Net Wire 16 "s0"] [Net Wire 16 "s1"] [Net Wire 16 "s2"] [Net Wire 16 "s3"]
+      [Net Wire 16 "m"]
+      [Net Wire 16 "e0"] [Net Wire 16 "e1"] [Net Wire 16 "e2"] [Net Wire 16 "e3"]
+      [Net Wire 16 "sm"]
+      [Net Wire 16 "p0"] [Net Wire 16 "p1"] [Net Wire 16 "p2"] [Net Wire 16 "p3"]]]
+  [let stmts
+    #[[Assign "s0" [score 0]] [Assign "s1" [score 1]]
+      [Assign "s2" [score 2]] [Assign "s3" [score 3]]
+      [Assign "m" [vmax [vmax [Ref "s0"] [Ref "s1"]] [vmax [Ref "s2"] [Ref "s3"]]]]
+      [Assign "e0" [lutexp [Bin Sub [Ref "s0"] [Ref "m"]]]]
+      [Assign "e1" [lutexp [Bin Sub [Ref "s1"] [Ref "m"]]]]
+      [Assign "e2" [lutexp [Bin Sub [Ref "s2"] [Ref "m"]]]]
+      [Assign "e3" [lutexp [Bin Sub [Ref "s3"] [Ref "m"]]]]
+      [Assign "sm" [Bin Add [Bin Add [Ref "e0"] [Ref "e1"]] [Bin Add [Ref "e2"] [Ref "e3"]]]]
+      [Assign "p0" [Bin Div [Bin Mul [Ref "e0"] [Lit 256]] [Ref "sm"]]]
+      [Assign "p1" [Bin Div [Bin Mul [Ref "e1"] [Lit 256]] [Ref "sm"]]]
+      [Assign "p2" [Bin Div [Bin Mul [Ref "e2"] [Lit 256]] [Ref "sm"]]]
+      [Assign "p3" [Bin Div [Bin Mul [Ref "e3"] [Lit 256]] [Ref "sm"]]]
+      [Assign "out0" [Bin Div [av 0] [Lit 256]]]
+      [Assign "out1" [Bin Div [av 1] [Lit 256]]]]]
+  [Module "attn_head" ports decls stmts]]
+[fn vcat [xs ys] [fold xs [fn [acc x] [conj acc x]] ys]]
+
+; ── golden model: the SAME attention, pure Loon ──────────────────────────
+[fn imax [a b] [if [>= a b] a b]]
+[fn gexp [d]
+  [if [= d 0] 256 [if [= d -1] 94 [if [= d -2] 35 [if [= d -3] 13
+    [if [= d -4] 5 [if [= d -5] 2 [if [= d -6] 1 0]]]]]]]]
+[fn gscore [q k t] [+ [* [nth q 0] [nth [nth k t] 0]] [* [nth q 1] [nth [nth k t] 1]]]]
+[fn gav [p v d]
+  [/ [+ [+ [* [nth p 0] [nth [nth v 0] d]] [* [nth p 1] [nth [nth v 1] d]]]
+        [+ [* [nth p 2] [nth [nth v 2] d]] [* [nth p 3] [nth [nth v 3] d]]]] 256]]
+[fn attention [q k v]
+  [let s0 [gscore q k 0]] [let s1 [gscore q k 1]]
+  [let s2 [gscore q k 2]] [let s3 [gscore q k 3]]
+  [let m [imax [imax s0 s1] [imax s2 s3]]]
+  [let e0 [gexp [- s0 m]]] [let e1 [gexp [- s1 m]]]
+  [let e2 [gexp [- s2 m]]] [let e3 [gexp [- s3 m]]]
+  [let sm [+ [+ e0 e1] [+ e2 e3]]]
+  [let p #[[/ [* e0 256] sm] [/ [* e1 256] sm] [/ [* e2 256] sm] [/ [* e3 256] sm]]]
+  #[[gav p v 0] [gav p v 1]]]
+
+[fn main []
+  [println "=== loon-hdl: full single-head attention (Q·Kᵀ -> softmax -> A·V) ==="]
+  [println [emit-module [attn-head]]]
+  [println "=== golden: out the attention head must reproduce ==="]
+  [let q #[2 1]]
+  [let k #[#[3 0] #[1 2] #[0 1] #[2 2]]]
+  [let v #[#[5 1] #[2 4] #[0 3] #[6 2]]]
+  [println [str "  attention(q,K,V) = " [attention q k v]]]]

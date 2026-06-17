@@ -1,0 +1,117 @@
+; ─────────────────────────────────────────────────────────────────────────
+; loon-hdl — output-stationary GEMM tile generator.
+; Computes C[m×n] = A[m×k] · B[k×n] by streaming K: each cycle t feeds
+; column t of A (one value per row) and row t of B (one value per col);
+; every PE(i,j) accumulates a_i * b_j. After K cycles, C is complete.
+; 64 MACs/cycle for an 8×8 tile. Reuses the verified L0 IR + emitter.
+; ─────────────────────────────────────────────────────────────────────────
+
+[fn clog2-go [n acc] [if [<= n 1] acc [clog2-go [/ [+ n 1] 2] [+ acc 1]]]]
+[fn clog2 [n] [clog2-go n 0]]
+[fn vcat [xs ys] [fold xs [fn [acc x] [conj acc x]] ys]]
+
+; ── L0 IR ────────────────────────────────────────────────────────────────
+[type BinOp Add Mul]
+[type Expr [Ref String] [Lit Int Int] [Bin BinOp Expr Expr]]
+[type Dir In Out]
+[type Kind Wire Reg]
+[type Port [Port Dir Kind Int String]]
+[type Decl [Net Kind Int String]]
+[type Seq [Nb String Expr] [If Expr (Vec Seq) (Vec Seq)]]
+[type Stmt [Assign String Expr] [Always String (Vec Seq)]]
+[type Module [Module String (Vec Port) (Vec Decl) (Vec Stmt)]]
+
+; ── emitter (identical to the verified MAC emitter) ──────────────────────
+[fn bin-sym  [op] [match op Add "+" Mul "*"]]
+[fn dir-str  [d]  [match d In "input " Out "output"]]
+[fn kind-str [k]  [match k Wire "wire" Reg "reg "]]
+[fn range-str  [w] [if [= w 1] "" [str "[" [- w 1] ":0] "]]]
+[fn signed-str [w] [if [= w 1] "" "signed "]]
+[fn emit-expr [e]
+  [match e
+    [Ref n]      n
+    [Lit v w]    [str w "'d" v]
+    [Bin op a b] [str "(" [emit-expr a] " " [bin-sym op] " " [emit-expr b] ")"]]]
+[fn emit-port [p]
+  [match p [Port d k w n]
+    [str "  " [dir-str d] " " [kind-str k] " " [signed-str w] [range-str w] n]]]
+[fn emit-decl [d]
+  [match d [Net k w n] [str "  " [kind-str k] " " [signed-str w] [range-str w] n ";\n"]]]
+[fn emit-seq [s ind]
+  [match s
+    [Nb lhs e] [str ind lhs " <= " [emit-expr e] ";"]
+    [If c t e]
+      [if [= [len e] 0]
+        [str ind "if (" [emit-expr c] ") begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] t]] "\n" ind "end"]
+        [str ind "if (" [emit-expr c] ") begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] t]]
+             "\n" ind "end else begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] e]]
+             "\n" ind "end"]]]]
+[fn emit-stmt [s]
+  [match s
+    [Assign lhs e] [str "  assign " lhs " = " [emit-expr e] ";"]
+    [Always clk body]
+      [str "  always @(posedge " clk ") begin\n"
+           [join "\n" [map [fn [x] [emit-seq x "    "]] body]] "\n  end"]]]
+[fn emit-module [m]
+  [match m [Module name ports decls stmts]
+    [str "module " name " (\n" [join ",\n" [map emit-port ports]] "\n);\n"
+         [join "" [map emit-decl decls]] [join "\n" [map emit-stmt stmts]]
+         "\nendmodule\n"]]]
+
+; ── PE coordinate generation (capturing closures → slot-clobber-safe) ────
+[fn pe-name   [i j] [str "c_" i "_" j]]
+[fn row-coords [i n] [map [fn [j] #[i j]] [range 0 n]]]
+[fn pe-coords [m n]
+  [fold #[] [fn [acc i] [vcat acc [row-coords i n]]] [range 0 m]]]
+
+; ── per-PE / per-port builders ───────────────────────────────────────────
+[fn data-ports [pre cnt] [map [fn [i] [Port In Wire 8 [str pre i]]] [range 0 cnt]]]
+[fn out-ports  [coords accw]
+  [map [fn [p] [Port Out Reg accw [pe-name [nth p 0] [nth p 1]]]] coords]]
+[fn zero-nbs   [coords accw]
+  [map [fn [p] [Nb [pe-name [nth p 0] [nth p 1]] [Lit 0 accw]]] coords]]
+[fn pe-acc-nb [p]
+  [let i [nth p 0]]
+  [let j [nth p 1]]
+  [Nb [pe-name i j]
+      [Bin Add [Ref [pe-name i j]]
+               [Bin Mul [Ref [str "a" i]] [Ref [str "b" j]]]]]]
+[fn acc-nbs [coords] [map pe-acc-nb coords]]
+
+; ── the generator : (m n k) -> a Module ─────────────────────────────────
+[fn gemm-tile [m n k]
+  [let accw [+ 16 [clog2 k]]]
+  [let coords [pe-coords m n]]
+  [let ctrl #[[Port In Wire 1 "clk"] [Port In Wire 1 "rst"] [Port In Wire 1 "en"]]]
+  [let av [data-ports "a" m]]
+  [let bv [data-ports "b" n]]
+  [let outs [out-ports coords accw]]
+  [let ports [vcat [vcat [vcat ctrl av] bv] outs]]
+  [let zv  [zero-nbs coords accw]]
+  [let acv [acc-nbs coords]]
+  [let body #[[If [Ref "rst"] zv #[[If [Ref "en"] acv #[]]]]]]
+  [Module [str "gemm_" m "x" n] ports #[] #[[Always "clk" body]]]]
+
+; ── golden model : the SAME matmul, pure Loon.  Written as tail recursion
+;    (no closures) — a fold closure that CAPTURES a scalar param is corrupted
+;    by the EIR VM, so we pass every value explicitly instead.
+[fn cij-go [A B i j k t acc]
+  [if [>= t k] acc
+    [cij-go A B i j k [+ t 1] [+ acc [* [nth [nth A i] t] [nth [nth B t] j]]]]]]
+[fn cij [A B i j k] [cij-go A B i j k 0 0]]
+
+[fn main []
+  [println "=== loon-hdl: emitted Verilog (2x2 GEMM tile, K=3) ==="]
+  [println [emit-module [gemm-tile 2 2 3]]]
+  [println "=== golden model: expected C = A·B the Verilog must reproduce ==="]
+  [let A #[#[1 2 3] #[4 5 6]]]
+  [let B #[#[7 8] #[9 10] #[11 12]]]
+  [println [str "  c_0_0=" [cij A B 0 0 3] "  c_0_1=" [cij A B 0 1 3]]]
+  [println [str "  c_1_0=" [cij A B 1 0 3] "  c_1_1=" [cij A B 1 1 3]]]
+  [println "=== scale: same generator at 8x8, K=8 ==="]
+  [println [str "  PEs (MACs/cycle) = " [* 8 8]]]
+  [println [str "  accumulator width = " [+ 16 [clog2 8]] " bits"]]
+  [println [emit-module [gemm-tile 8 8 8]]]]
