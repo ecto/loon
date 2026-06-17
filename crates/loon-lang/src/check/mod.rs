@@ -2948,58 +2948,85 @@ impl Checker {
         let body_ty = self.infer(&args[0]);
         let body_effects = self.current_fn_effects.clone();
 
-        // Parse handler patterns to find handled effects
+        // The handler's ANSWER type: what every clause (and the `return` clause)
+        // produces, and what the whole `handle` evaluates to. For a plain
+        // tail-resumptive handler with no `return` clause it coincides with the
+        // body's type; for the escaping/answer-passing style (clauses return
+        // functions) it is that function type. `resume : op-result -> answer`.
+        let answer = self.subst.fresh();
         let mut handled = EffectSet::empty();
         let handler_args = &args[1..];
+        let mut has_return = false;
         let mut i = 0;
-        while i < handler_args.len() {
-            if let ExprKind::List(pattern) = &handler_args[i].kind {
-                if !pattern.is_empty() {
-                    if let ExprKind::DotAccess(obj, _op) = &pattern[0].kind {
-                        if let ExprKind::Symbol(effect) = &obj.kind {
-                            if effect.starts_with(char::is_uppercase) {
-                                handled.insert(effect.to_string());
-                            }
+        while i + 1 < handler_args.len() {
+            let ExprKind::List(pattern) = &handler_args[i].kind else {
+                i += 1;
+                continue;
+            };
+            if pattern.is_empty() {
+                i += 1;
+                continue;
+            }
+            let clause_body = &handler_args[i + 1];
+            match &pattern[0].kind {
+                // [return x] body — maps the body's normal-completion value to
+                // the answer type. x is bound to the body's type.
+                ExprKind::Symbol(s) if s == "return" => {
+                    has_return = true;
+                    self.push_scope();
+                    if let Some(ExprKind::Symbol(name)) = pattern.get(1).map(|e| &e.kind) {
+                        self.env.set(name.clone(), Scheme::mono(body_ty.clone()));
+                    }
+                    let rty = self.infer(clause_body);
+                    if let Err(e) = unify(&mut self.subst, &answer, &rty) {
+                        self.push_unify_error(e, clause_body.span);
+                    }
+                    self.pop_scope();
+                }
+                // [Effect.op params…] body — an operation clause.
+                ExprKind::DotAccess(obj, _op) => {
+                    if let ExprKind::Symbol(effect) = &obj.kind {
+                        if effect.starts_with(char::is_uppercase) {
+                            handled.insert(effect.to_string());
                         }
                     }
-                }
-            }
-            // Handler: pattern body → i += 2
-            if i + 1 < handler_args.len() {
-                if let ExprKind::List(pattern) = &handler_args[i].kind {
-                    if !pattern.is_empty() {
-                        if let ExprKind::DotAccess(_, _) = &pattern[0].kind {
-                            // Bind handler params and resume in scope for handler body
-                            self.push_scope();
-                            for p in &pattern[1..] {
-                                if let ExprKind::Symbol(name) = &p.kind {
-                                    let t = self.subst.fresh();
-                                    self.env.set(name.clone(), Scheme::mono(t));
-                                }
-                            }
-                            // resume: a -> a (one-shot continuation)
-                            let resume_arg = self.subst.fresh();
-                            self.env.set(
-                                "resume".to_string(),
-                                Scheme::mono(Type::Fn(
-                                    vec![resume_arg.clone()],
-                                    Box::new(resume_arg),
-                                )),
-                            );
-                            self.infer(&handler_args[i + 1]);
-                            self.pop_scope();
-                            i += 2;
-                            continue;
+                    self.push_scope();
+                    for p in &pattern[1..] {
+                        if let ExprKind::Symbol(name) = &p.kind {
+                            let t = self.subst.fresh();
+                            self.env.set(name.clone(), Scheme::mono(t));
                         }
                     }
+                    // resume : op-result -> answer. Argument and result are
+                    // INDEPENDENT (tying them — the old `a -> a` — made the
+                    // escaping encoding an infinite type). The result is the
+                    // shared answer, so a clause that returns a function checks.
+                    let resume_arg = self.subst.fresh();
+                    self.env.set(
+                        "resume".to_string(),
+                        Scheme::mono(Type::Fn(vec![resume_arg], Box::new(answer.clone()))),
+                    );
+                    let cty = self.infer(clause_body);
+                    if let Err(e) = unify(&mut self.subst, &answer, &cty) {
+                        self.push_unify_error(e, clause_body.span);
+                    }
+                    self.pop_scope();
                 }
+                _ => {}
             }
-            i += 1;
+            i += 2;
+        }
+
+        // With no `return` clause, the body's value IS the answer.
+        if !has_return {
+            if let Err(e) = unify(&mut self.subst, &answer, &body_ty) {
+                self.push_unify_error(e, args[0].span);
+            }
         }
 
         // handle expression's effects = body_effects - handled
         self.current_fn_effects = saved_effects.union(&body_effects.subtract(&handled));
-        body_ty
+        answer
     }
 
     /// Resolve a type name string to a Type (for effect declarations and annotations).
@@ -4251,6 +4278,34 @@ mod tests {
         let (ty, errors) = infer_type("42");
         assert!(errors.is_empty());
         assert_eq!(ty, Type::Int);
+    }
+
+    #[test]
+    fn escaping_handler_type_checks() {
+        // Regression: the escaping/answer-passing style (a handler clause returns
+        // a function and uses `resume` non-tail) must type-check. The pure State
+        // effect is the canonical case; it used to fail with E0203 (infinite
+        // type) and then E0300 (false move of the reused state).
+        let errors = check_errors(
+            "[effect State [get [] Int] [put [Int] Unit]] \
+             [fn run-state [thunk init] \
+               [[handle [thunk] \
+                   [return x]    [fn [s] x] \
+                   [State.get]   [fn [s] [[resume s] s]] \
+                   [State.put n] [fn [s] [[resume 0] n]]] \
+                 init]] \
+             [fn prog [] [let a [State.get]] [State.put [+ a 1]] [State.get]] \
+             [fn main [] [run-state prog 0]]",
+        );
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        // Tail-resumptive handlers still check, and a clause that aborts (no
+        // resume) unifies its value with the handle's answer type.
+        let errors = check_errors(
+            "[effect E [op [Int] Int]] [effect F [fail [] Int]] \
+             [fn body [] [+ [E.op 1] [F.fail]]] \
+             [fn main [] [handle [body] [E.op v] [+ 1 [resume v]] [F.fail] 0]]",
+        );
+        assert!(errors.is_empty(), "errors: {errors:?}");
     }
 
     #[test]

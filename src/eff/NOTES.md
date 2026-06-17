@@ -38,20 +38,24 @@ mixed ADTs (`samples/types.oo`'s `Shape`) are unaffected. Regression test:
 `generic_adt_construction`. `eff.oo` now uses `Env.lookup : String -> Option
 String` with real `Some`/`None`.
 
-## EFF-BUG-2 — escaping/answer-passing handlers don't type-check
+## EFF-BUG-2 — escaping/answer-passing handlers don't type-check — FIXED
 
-`resume` is typed `a -> a` (one-shot, tail). The escaping style — a handler
-clause that returns a function and uses `resume` non-tail — produces `E0203`
-infinite type, even though it *runs*:
+`resume` was typed `a -> a`, so the escaping style — a clause that returns a
+function and uses `resume` non-tail — was an infinite type (`E0203`).
 
-```
-loon check samples/state.oo    ; error[E0203]: infinite type: t ~ t -> t
-loon run   samples/state.oo    ; 11 / 55  (runs fine)
-```
+Fix, in two parts (`check/mod.rs`, `check/ownership.rs`):
+1. `infer_handle` now gives the handler a single **answer** type: `resume :
+   op-result -> answer` (argument and result independent), every clause body and
+   the `return` clause unify with the answer, and the `handle` evaluates to the
+   answer. With no `return` clause the answer is just the body's type, so
+   tail-resumptive handlers are unchanged.
+2. The ownership checker treats `resume` as borrowing (not moving) its argument
+   — a multi-shot continuation may be resumed repeatedly, so resume must not
+   consume the value. This removes a false `E0300` move on `[[resume s] s]`.
 
-Impact: the cooperative scheduler and `State`-by-threading run but cannot
-`loon check`. Proper effect-handler typing (answer type distinct from the op
-result type) is the fix.
+`loon check samples/state.oo` is now clean and it still runs (11 / 55).
+Regression test: `escaping_handler_type_checks`. The cooperative scheduler's
+handlers now type-check too (its remaining runtime gap is EFF-BUG-6, below).
 
 ## EFF-BUG-3 — handler-stack teardown leak (correctness) — FIXED
 

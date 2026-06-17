@@ -89,6 +89,12 @@ impl<'a> OwnershipChecker<'a> {
             "not",
             "and",
             "or",
+            // `resume` continues a captured continuation with a value. A
+            // multi-shot continuation may be resumed more than once, so resume
+            // must NOT consume (move) its argument — treat it as a borrow. This
+            // lets the escaping/answer-passing style (e.g. `[[resume s] s]`)
+            // reuse a value across the resume without a false move error.
+            "resume",
         ] {
             borrow_fns.insert(name.to_string());
         }
