@@ -132,3 +132,27 @@ tree/EIR VM, this is documented with the minimal repro (the scheduler in the
 Stage-0 probes) and bounded: LINEAR coroutines are supported; INTERLEAVED
 fork-scheduling awaits the bytecode VM. Async (cooperative scheduler as a
 handler) is therefore deferred behind EFF-BUG-6.
+
+### Sharpened diagnosis (from a traced fix attempt)
+
+Instrumenting the `Co.fork`/`Co.yield` scheduler narrowed it down:
+
+- Multi-shot itself is sound here: `fork`'s continuation is captured once and
+  resumed twice (`true` → parent prints `P`, `false` → child prints `C1`), as
+  intended.
+- The break is on the *third* hop: the child (already running inside a resumed
+  segment) performs `yield`. Its handler runs and produces the answer function
+  `fid` correctly, but when that answer function calls `run-next`, the **queue
+  is empty** — the stored continuation (`childRest`) that should print `C2` was
+  never enqueued/seen. The queue VALUE is lost across the nested re-entrant
+  resume, so `run-next` takes its `[empty? q]` branch and the program ends.
+
+So the defect is value/threading consistency for a continuation captured *inside*
+another resumed segment — `prompt_depth` and `perform_dst` are absolute indices
+into a shared frame stack, and a continuation captured at one base then resumed
+at another doesn't preserve the intermediate frames' register values (the queue)
+coherently. Reestablished handlers ARE rebased (their `prompt_depth` is reset on
+resume), but the saved frames' register state under nesting is not, which is the
+remaining gap. A safe fix needs the continuation to be fully self-contained with
+base-relative indices — the bytecode VM's model — rather than a patch to the
+shared-stack tree/EIR VM.
