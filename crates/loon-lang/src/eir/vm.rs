@@ -164,6 +164,40 @@ struct Frame {
     captures: Vec<Val>,
 }
 
+/// Generate a v4-format UUID string using only std (no optional `uuid` dep, so
+/// host `IO.uuid` works in every build). 122 bits come from the wall clock and
+/// a process-global counter; the version (4) and variant bits are set so the
+/// shape is a valid v4 UUID. Not cryptographically random, fine for ids/keys.
+fn gen_uuid_v4() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let c = COUNTER.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+    // Mix the two 64-bit sources (splitmix-style) into two halves.
+    let mut hi = nanos
+        .wrapping_mul(0xD1B5_4A32_D192_ED03)
+        .rotate_left(31)
+        .wrapping_add(c);
+    let mut lo = c
+        .wrapping_mul(0x94D0_49BB_1331_11EB)
+        .rotate_left(29)
+        .wrapping_add(nanos);
+    // Set version (4) and variant (RFC 4122) bits.
+    hi = (hi & 0xFFFF_FFFF_FFFF_0FFF) | 0x0000_0000_0000_4000;
+    lo = (lo & 0x3FFF_FFFF_FFFF_FFFF) | 0x8000_0000_0000_0000;
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        hi >> 32,
+        (hi >> 16) & 0xFFFF,
+        hi & 0xFFFF,
+        lo >> 48,
+        lo & 0xFFFF_FFFF_FFFF
+    )
+}
+
 // ─── VM ────────────────────────────────────────────────────────────────────
 
 /// Dynamic effect handler entry.
@@ -2112,6 +2146,42 @@ impl Vm {
                     Val::UNIT
                 }
             }
+            ("IO", "write-file") => {
+                if let (Some(path), Some(contents)) = (args.first(), args.get(1)) {
+                    let p = self.val_to_string(*path);
+                    let c = self.val_to_string(*contents);
+                    let _ = std::fs::write(&p, c);
+                }
+                Val::UNIT
+            }
+            // Clock: real wall-clock time. `now` in whole seconds, `millis` in
+            // milliseconds since the Unix epoch (both fit in a 48-bit int).
+            ("IO", "now") => {
+                let secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                self.safe_int(secs)
+            }
+            ("IO", "millis") => {
+                let ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                self.safe_int(ms)
+            }
+            ("IO", "uuid") => self.alloc_str(gen_uuid_v4()),
+            // Env / Process: read an environment variable. Returns the value, or
+            // "" when unset (the EIR VM cannot construct an Option here — the
+            // tag is program-defined — so callers branch on the empty string).
+            ("Env", "lookup") | ("Env", "get") | ("Process", "env") => {
+                if let Some(key) = args.first() {
+                    let k = self.val_to_string(*key);
+                    self.alloc_str(std::env::var(&k).unwrap_or_default())
+                } else {
+                    self.alloc_str(String::new())
+                }
+            }
             ("Const", "c") => Val::float(299_792_458.0),
             ("Physics", "yield-strength") => Val::float(250.0),
             ("Physics", "gravity") => Val::float(9.80665),
@@ -2374,6 +2444,23 @@ mod tests {
                  [handle [d 5] [E.op v] [+ [resume v] [+ [resume v] [resume v]]]]")
             .as_int(),
             315
+        );
+    }
+
+    #[test]
+    fn vm_host_effects() {
+        // Host effects are wired into the EIR VM (LIM-4): unhandled IO.now /
+        // IO.uuid / Process.env reach real implementations. now is a positive
+        // Unix timestamp; uuid is a 36-char string; env reads the environment.
+        assert!(run("[IO.now]").as_int() > 1_000_000_000);
+        assert!(run("[IO.millis]").as_int() > 1_000_000_000_000);
+        let uuid = &run_output("[println [IO.uuid]]")[0];
+        assert_eq!(uuid.len(), 36, "uuid: {uuid}");
+        assert_eq!(uuid.matches('-').count(), 4);
+        std::env::set_var("LOON_TEST_VAR", "hello-env");
+        assert_eq!(
+            run_output(r#"[println [Process.env "LOON_TEST_VAR"]]"#),
+            vec!["hello-env".to_string()]
         );
     }
 

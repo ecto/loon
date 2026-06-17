@@ -72,14 +72,19 @@ Fix (`crates/loon-lang/src/eir/vm.rs`): re-established handlers are marked
 `PushHandler`/`PopHandler` handlers are untouched. Regression test:
 `vm_handler_isolation_across_handles`. `eff.oo`'s towers now run in any order.
 
-## EFF-LIMITATION-4 — host effects not wired into the EIR VM
+## EFF-LIMITATION-4 — host effects not wired into the EIR VM — MOSTLY FIXED
 
-On the default VM only `println` is a live host effect. `now`, `millis`, `uuid`,
-`read-file`, `env`, and real `Net` are "value is not callable" / return `()`.
-They exist for the legacy tree-walking interpreter / `net.rs`, not the EIR
-backend. Impact: a *real* prod tower (real clock/random/socket/DB) cannot run on
-the default VM yet — Stage 1's "prod" needs these wired into EIR. Deterministic
-`test`/`replay` towers are fully unaffected.
+The EIR VM's `builtin_effect` now implements the common host effects, so an
+unhandled `IO.now` / `IO.millis` / `IO.uuid` / `IO.write-file` / `Process.env`
+reaches a real implementation (wall clock, std-only v4 UUID, fs, env). A real
+prod tower works on the default VM — see `src/eff/host_prod.oo`: the same
+`make-id` runs under a deterministic `test` tower and a real-host `prod` tower
+(`<uuid>@<unix-seconds>`). Regression test: `vm_host_effects`.
+
+Still open: real `Net` (sockets/HTTP) is not yet wired into the EIR VM, and
+`Process.env` returns `""` for an unset var rather than an `Option` (the VM
+cannot construct a program-defined ADT tag from a builtin). Sockets are the
+Stage-1 server's concern.
 
 ## EFF-LIMITATION-5 — multi-file `use` doesn't run on the EIR VM
 

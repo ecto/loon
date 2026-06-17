@@ -1,0 +1,48 @@
+; ───────────────────────────────────────────────────────────────────────────
+; Stage 0 — real prod tower on the EIR VM.
+;
+; The same app (`make-id`) runs under a deterministic TEST tower (offline, no
+; host access) and a real PROD tower that performs genuine host effects —
+; `IO.now` (wall clock) and `IO.uuid` — now wired into the EIR VM (LIM-4). Only
+; the tower changes; the app is identical.
+;
+; Run:   loon run src/eff/host_prod.oo
+; ───────────────────────────────────────────────────────────────────────────
+[effect Clock
+  [now [] Int]]
+
+[effect Ids
+  [fresh [] String]]
+
+[effect Log
+  [info [String] Unit]]
+
+; One app. Inferred row: #{Clock Ids Log}. It never names a handler.
+[fn make-id [] [Log.info "minting"] [str [Ids.fresh] "@" [Clock.now]]]
+
+; PROD tower: real host effects. Unhandled IO.now / IO.uuid fall through to the
+; VM's builtin host implementations (real wall clock, real UUID).
+[fn under-prod [body]
+  [handle
+    [body]
+    [Clock.now]
+    [resume [IO.now]]
+    [Ids.fresh]
+    [resume [IO.uuid]]
+    [Log.info m]
+    [do [println [str "[log] " m]] [resume []]]]]
+
+; TEST tower: fully deterministic, offline, no host access.
+[fn under-test [body]
+  [handle
+    [body]
+    [Clock.now]
+    [resume 1000]
+    [Ids.fresh]
+    [resume "fixed-id"]
+    [Log.info m]
+    [resume []]]]
+
+[fn main []
+  [println [str "test: " [under-test make-id]]] ; test: fixed-id@1000
+  [println [str "prod: " [under-prod make-id]]]] ; prod: <uuid>@<unix-seconds>
