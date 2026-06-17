@@ -124,51 +124,32 @@ it. Stages can now `use` a shared `eff` module instead of concatenating.
 Also: the Rust prelude's `Option`/`Result` are not loaded on the EIR VM — define
 shared types in-file (or `use` a module that does).
 
-## EFF-BUG-6 — re-entrant continuation capture (interleaved scheduling) — MITIGATED, not fully fixed
+## EFF-BUG-6 — "re-entrant continuation capture" — NOT A BUG (test-harness error)
 
-The escaping/answer-passing style now type-checks (BUG-2) and runs for LINEAR,
-single-consumer continuations — see `src/eff/coroutine.oo` (a multi-yield
-generator collecting `#[1 4 9 16]`), `samples/state.oo`, and the pure-State
-encoding. Each continuation there is captured and resumed once, in order.
+**Correction.** Earlier notes claimed interleaved scheduling was broken on the
+EIR VM and needed a continuation-engine rework. That was wrong — the defect was
+in the *scheduler test code*, not the VM.
 
-What still fails: INTERLEAVED scheduling. A cooperative scheduler
-(`Co.fork`/`Co.yield`, run-queue threaded as the answer) runs the first round
-(`P a`/`C a`) but drops the post-yield round (`P b`/`C b`). The failing shape is
-a continuation captured *inside* a resumed segment and later resumed from
-*within another* resumed segment (re-entrant capture). Root cause: a captured
-`Obj::Continuation` snapshots one prompt's handlers and records absolute frame
-indices; when such a continuation is resumed at a different stack depth than it
-was captured, the prompt/return bookkeeping for the *nested* capture is
-inconsistent, so the innermost continuation's tail is dropped.
+The minimal scheduler's `run-next` did `[drop q 1]`, but `drop` is **count-first**
+(`[drop n coll]`), so `[drop q 1]` passed the queue as the count and `1` as the
+collection and returned `()`. The next task was therefore invoked with `()`
+instead of the remaining queue, so its yielded continuation was never enqueued —
+which *looked* like a lost continuation. Writing it `[drop 1 q]` fixes it.
 
-A correct fix is a continuation-engine change (capture the full handler chain;
-rebase frame/prompt indices on resume), which is precisely what the in-progress
-bytecode VM provides. Rather than rush a risky rework of the now-solid
-tree/EIR VM, this is documented with the minimal repro (the scheduler in the
-Stage-0 probes) and bounded: LINEAR coroutines are supported; INTERLEAVED
-fork-scheduling awaits the bytecode VM. Async (cooperative scheduler as a
-handler) is therefore deferred behind EFF-BUG-6.
+With that corrected, the cooperative scheduler as an effect handler RUNS
+correctly on the default EIR VM, including INTERLEAVED, re-entrant multi-shot
+resumption — two workers yielding twice round-robin produce
+`A1 B1 A2 B2 A3 B3`. See `src/eff/scheduler.oo`. The EIR VM's delimited
+continuations are sound for this; no engine rework is needed, and async is NOT
+blocked.
 
-### Sharpened diagnosis (from a traced fix attempt)
+### Remaining gap: type-checking a recursive answer type
 
-Instrumenting the `Co.fork`/`Co.yield` scheduler narrowed it down:
-
-- Multi-shot itself is sound here: `fork`'s continuation is captured once and
-  resumed twice (`true` → parent prints `P`, `false` → child prints `C1`), as
-  intended.
-- The break is on the *third* hop: the child (already running inside a resumed
-  segment) performs `yield`. Its handler runs and produces the answer function
-  `fid` correctly, but when that answer function calls `run-next`, the **queue
-  is empty** — the stored continuation (`childRest`) that should print `C2` was
-  never enqueued/seen. The queue VALUE is lost across the nested re-entrant
-  resume, so `run-next` takes its `[empty? q]` branch and the program ends.
-
-So the defect is value/threading consistency for a continuation captured *inside*
-another resumed segment — `prompt_depth` and `perform_dst` are absolute indices
-into a shared frame stack, and a continuation captured at one base then resumed
-at another doesn't preserve the intermediate frames' register values (the queue)
-coherently. Reestablished handlers ARE rebased (their `prompt_depth` is reset on
-resume), but the saved frames' register state under nesting is not, which is the
-remaining gap. A safe fix needs the continuation to be fully self-contained with
-base-relative indices — the bytecode VM's model — rather than a patch to the
-shared-stack tree/EIR VM.
+The scheduler RUNS but does not yet `loon check`: its answer type is genuinely
+recursive — the queue is a `Vec` of resumptions, each a function *of the queue*
+(`Queue = Vec (Queue -> Unit)`), i.e. `t ~ Vec t -> u`. Hindley-Milner rejects
+the infinite type (E0203). This is a *type-system* limitation (no iso-recursive
+types), independent of the runtime; the State-style escaping handlers (BUG-2)
+type-check because their answer type is non-recursive. A nominal/iso-recursive
+wrapper around the queue element (boxing `Queue -> Unit` in an ADT) would give
+HM a finite type; that's the remaining work to make the scheduler `check`-clean.

@@ -6,11 +6,11 @@
 ; multi-shot/escaping handler that both type-checks (BUG-2) and runs on the
 ; default EIR VM.
 ;
-; Scope: LINEAR, single-consumer coroutines work (each continuation is captured
-; and resumed once, in order). INTERLEAVED scheduling — `fork` plus yields where
-; a continuation captured inside one resumed task is resumed from within another
-; — is EFF-BUG-6 in NOTES.md (re-entrant capture), still pending the deeper
-; continuation-engine work. This file stays within the supported subset.
+; This is the LINEAR, single-consumer case (each continuation captured and
+; resumed once, in order) and both type-checks and runs. INTERLEAVED scheduling
+; (fork + round-robin yields) also runs correctly on the EIR VM — see
+; `src/eff/scheduler.oo` — though that one does not yet type-check (its answer
+; type is recursive; see EFF-BUG-6 in NOTES.md).
 ;
 ; Run: loon run src/eff/coroutine.oo
 ; ───────────────────────────────────────────────────────────────────────────
