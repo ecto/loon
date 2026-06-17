@@ -98,8 +98,9 @@
     [match r
       [Resp s b] [do [println [str "  trace: respond " s]] [str "[" s "] " b]]]]]
 
-; ── PROD tower: real host effects (logging to stdout). Real sockets/DB are a
-;    backend wiring task; clock/uuid/env are already wired into the VM. ──
+; ── PROD tower: real host effects (logging to stdout). For an actually-serving
+;    prod tower over a real TCP socket, see src/http/serve.oo (Net.listen/
+;    accept/send are wired into the VM). DB stays stubbed here. ──
 [fn under-prod [method path body]
   [handle
     [app]

@@ -1,0 +1,76 @@
+; ───────────────────────────────────────────────────────────────────────────
+; A real HTTP server: the SAME routes from server.oo, served over a real TCP
+; socket by a prod handler tower. `Net.listen`/`accept`/`send` are real sockets
+; wired into the EIR VM (see crates/loon-lang/src/eir/net.rs).
+;
+; The route code is unchanged from the offline demo — only the tower differs:
+; here `Http.route` blocks on a real connection and `Http.respond` writes to it.
+;
+; Run:    loon run src/http/serve.oo      (serves on :8080 until killed)
+; Visit:  curl localhost:8080/  ·  curl localhost:8080/dashboard
+; ───────────────────────────────────────────────────────────────────────────
+[type Request
+  [Req String String String]]
+
+[type Response
+  [Resp Int String]]
+
+[effect Http
+  [route [] Request]
+  [respond [Response] Unit]]
+
+[effect Db
+  [query [String] String]]
+
+[effect Auth
+  [require [] String]]
+
+[effect Log
+  [info [String] Unit]]
+
+[fn handle-home [] [Http.respond [Resp 200 "<h1>Home</h1>"]]]
+
+[fn handle-dashboard []
+  [let user [Auth.require]]
+  [let widgets [Db.query "SELECT name FROM widgets"]]
+  [Log.info [str "rendered dashboard for " user]]
+  [Http.respond [Resp 200 [str user " sees " widgets]]]]
+
+[fn handle-404 [path] [Http.respond [Resp 404 [str "not found: " path]]]]
+
+[fn app []
+  [match [Http.route]
+    [Req method path body] [match path
+      "/" [handle-home]
+      "/dashboard" [handle-dashboard]
+      _ [handle-404 path]]]]
+
+; PROD tower: real sockets + real host logging. Db/Auth are stubbed (a real
+; driver is the same pattern: a handler that performs its own host effect).
+[fn serve-one [port]
+  [handle
+    [app]
+    [return _]
+    []
+    [Http.route]
+    [do [let r [Net.accept port]] [resume [Req [nth r 0] [nth r 1] [nth r 2]]]]
+    [Auth.require]
+    [resume "prod-user"]
+    [Db.query q]
+    [resume "live-row-1, live-row-2"]
+    [Log.info m]
+    [do [println [str "[" [IO.now] "] " m]] [resume []]]
+    [Http.respond resp]
+    [match resp
+      [Resp s b] [do [Net.send s b] []]]]]
+
+; Serve forever. The port is inlined rather than threaded as a parameter: the
+; ownership checker does not yet treat a Copy-typed *parameter* as Copy across a
+; consuming call, so `[serve-one port] [serve-loop port]` would read as a
+; use-after-move. (Reusing a let-bound Int is fine; see NOTES.)
+[fn serve-loop [] [serve-one 8080] [serve-loop]]
+
+[fn main []
+  [if [Net.listen 8080]
+    [do [println "serving on :8080"] [serve-loop]]
+    [println "bind failed"]]]
