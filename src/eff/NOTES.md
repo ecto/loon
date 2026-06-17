@@ -22,19 +22,21 @@ minimal repros. None are caused by this branch.
 - Effect-op signatures with applied/generic types: `[op [] [Option String]]`,
   `[op [[Vec Int]] a]`, polymorphic `State` — all parse and check.
 
-## EFF-BUG-1 — generic ADT construction fails the type checker
+## EFF-BUG-1 — generic ADT construction fails the type checker — FIXED
 
-Constructing any generic ADT trips `E0200`:
+Root cause: `infer_type_def` collected type parameters by reading leading
+symbols and **stopping at the first uppercase one** — but the prelude
+convention writes parameters uppercase (`[type Option T [Some T] None]`). So
+`T` was misread as a nullary constructor and `[Some 42]` produced
+`E0200: cannot unify T with …`.
 
-```
-[type Option T [Some T] None]
-[fn pick [b] [if b [Some "y"] None]]   ; error[E0200]: cannot unify T with String
-```
-
-Non-generic ADTs are fine (`samples/types.oo`'s `Shape` has concrete fields).
-The declaration checks clean; only *construction* fails. Impact: the substrate
-declares `Option`/`Result` (the shared contract) but the synchronous demo uses
-plain `String`s instead of constructing them.
+Fix (`crates/loon-lang/src/check/mod.rs`, `infer_type_def`): a leading bare
+symbol is a type parameter iff it appears in some constructor's field positions
+(e.g. `T` in `[Some T]`); otherwise it is a nullary constructor (`None`, or
+`Red`/`Green`/`Blue`). Works for lowercase and uppercase parameters; enums and
+mixed ADTs (`samples/types.oo`'s `Shape`) are unaffected. Regression test:
+`generic_adt_construction`. `eff.oo` now uses `Env.lookup : String -> Option
+String` with real `Some`/`None`.
 
 ## EFF-BUG-2 — escaping/answer-passing handlers don't type-check
 

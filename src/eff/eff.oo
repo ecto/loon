@@ -19,9 +19,7 @@
 ; ───────────────────────────────────────────────────────────────────────────
 ; ── Shared algebraic types ───────────────────────────────────────────────────
 ; The Rust prelude's Option/Result are not loaded on the EIR VM, so the shared
-; substrate declares them once, here, for every consumer. (Constructing generic
-; ADTs currently trips a checker bug — see NOTES.md — so the synchronous demo
-; below uses plain Strings; these declarations are the shared contract.)
+; substrate declares them once, here, for every consumer.
 [type Option
   T
   [Some T]
@@ -48,7 +46,7 @@
   [gen [] Int]]
 
 [effect Env
-  [lookup [String] String]]
+  [lookup [String] [Option String]]]
 
 [effect Reader
   [ask [] String]]
@@ -64,18 +62,22 @@
   [put [Int] Unit]]
 
 ; ── A representative program ─────────────────────────────────────────────────
-; `make-session-id` performs Reader, Clock, Random, Log and Fail. It never names
-; a handler, so its INFERRED required-effect row is exactly:
+; `make-session-id` performs Reader, Env, Clock, Random, Log and Fail. It never
+; names a handler, so its INFERRED required-effect row is exactly:
 ;
-;     #{Reader Clock Random Log Fail}
+;     #{Reader Env Clock Random Log Fail}
 ;
 ; A reviewer reads the capabilities straight off the signature: this function
-; can read config, observe the clock and randomness, log, and fail — and it can
-; do nothing else. It cannot touch the network or a DB, because those effects do
-; not appear in its row.
+; can read config and the environment, observe the clock and randomness, log,
+; and fail — and it can do nothing else. It cannot touch the network or a DB,
+; because those effects do not appear in its row.
 [fn make-session-id []
   [Log.info "creating session id"]
-  [let prefix [Reader.ask]]
+  ; prefix from the env if set, else the Reader config — Option, not null.
+  [let prefix
+  [match [Env.lookup "SID_PREFIX"]
+    [Some p] p
+    None [Reader.ask]]]
   [let t [Clock.now]]
   [let r [Random.gen]]
   [if [< r 0] [Fail.fail "random source exhausted"] [str prefix "-" t "-" r]]]
@@ -90,6 +92,8 @@
     [body]
     [Reader.ask]
     [resume "test"]
+    [Env.lookup k]
+    [resume None]
     [Clock.now]
     [resume 1000]
     [Random.gen]
@@ -108,6 +112,8 @@
     [body]
     [Reader.ask]
     [resume "prod"]
+    [Env.lookup k]
+    [resume [Some "from-env"]]
     [Clock.now]
     [resume 1717200000]
     [Random.gen]
@@ -136,6 +142,8 @@
     [body]
     [Reader.ask]
     [resume "layered"]
+    [Env.lookup k]
+    [resume None]
     [Clock.now]
     [resume 2000]
     [Random.gen]

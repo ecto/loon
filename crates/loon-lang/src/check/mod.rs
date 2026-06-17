@@ -3395,16 +3395,42 @@ impl Checker {
         let mut type_params = Vec::new();
         let mut ctor_start = 1;
         let mut ctor_names = Vec::new();
+        // Distinguish a leading type PARAMETER (a symbol used as a field type,
+        // e.g. `T` in `[type Option T [Some T] None]`) from a leading nullary
+        // CONSTRUCTOR (e.g. `None`, or `Red` in `[type Color Red Green Blue]`).
+        // Type parameters are exactly the leading symbols that appear in some
+        // constructor's field positions — works for both lowercase (`a`) and
+        // uppercase (`T`, the prelude convention) parameter names.
+        fn collect_field_syms(e: &Expr, out: &mut std::collections::HashSet<String>) {
+            if let ExprKind::List(items) = &e.kind {
+                for f in items.iter().skip(1) {
+                    match &f.kind {
+                        ExprKind::Symbol(s) => {
+                            out.insert(s.clone());
+                        }
+                        ExprKind::List(_) => collect_field_syms(f, out),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let mut field_syms: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for arg in &args[1..] {
+            collect_field_syms(arg, &mut field_syms);
+        }
         for arg in &args[1..] {
             if let ExprKind::Symbol(s) = &arg.kind {
-                if s.chars().next().is_some_and(|c| c.is_uppercase()) {
+                if field_syms.contains(s) {
+                    let tv = self.subst.fresh();
+                    if let Type::Var(v) = tv {
+                        type_params.push((s.clone(), v));
+                    }
+                    ctor_start += 1;
+                } else {
+                    // A leading bare symbol not used as a field is a nullary
+                    // constructor, not a parameter — stop collecting params.
                     break;
                 }
-                let tv = self.subst.fresh();
-                if let Type::Var(v) = tv {
-                    type_params.push((s.clone(), v));
-                }
-                ctor_start += 1;
             } else {
                 break;
             }
@@ -4220,6 +4246,26 @@ mod tests {
         let (ty, errors) = infer_type("42");
         assert!(errors.is_empty());
         assert_eq!(ty, Type::Int);
+    }
+
+    #[test]
+    fn generic_adt_construction() {
+        // Regression: an uppercase type parameter (the prelude convention) must
+        // be recognized so a generic constructor instantiates per use rather
+        // than pinning the parameter to the first concrete type seen.
+        let errors = check_errors(
+            "[type Option T [Some T] None] \
+             [fn pick [b] [if b [Some 42] None]] \
+             [fn name [b] [if b [Some \"x\"] None]] \
+             [fn main [] [pick true] [name false]]",
+        );
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        // Result with two parameters, and nullary-only enums still parse.
+        let errors = check_errors(
+            "[type Result T E [Ok T] [Err E]] [type Color Red Green Blue] \
+             [fn main [] [Ok 7] [Err \"e\"] Green]",
+        );
+        assert!(errors.is_empty(), "errors: {errors:?}");
     }
 
     #[test]
