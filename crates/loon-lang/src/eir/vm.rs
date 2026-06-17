@@ -2411,6 +2411,39 @@ mod tests {
     }
 
     #[test]
+    fn vm_agent_under_towers() {
+        // The same agent loop runs under different towers. A deterministic test
+        // tower (scripted model + mocked tools, approve-all) reproduces a
+        // multi-step run offline; a multi-shot "explore" tower resumes each
+        // Approval.request BOTH ways to visit every approve/deny world.
+        let loop_src = "[effect Llm [complete [String] Keyword]] \
+                        [effect Tool [call [Keyword] String]] \
+                        [effect Approval [request [Keyword] Bool]] \
+                        [fn act [p] [match p \"0\" :search _ :done]] \
+                        [fn tool [t] [match t :search \"hit\" _ \"ok\"]] \
+                        [fn agent [step h] \
+                          [let a [Llm.complete [str step]]] \
+                          [if [= a :done] h \
+                            [if [Approval.request a] \
+                              [agent [+ step 1] [str h \" \" a \":\" [Tool.call a]]] \
+                              [agent [+ step 1] [str h \" \" a \":no\"]]]]] ";
+        // Deterministic offline run, approve-all.
+        let test = format!(
+            "{loop_src} [fn main [] [println [handle [agent 0 \"r\"] \
+               [Llm.complete p] [resume [act p]] [Tool.call t] [resume [tool t]] \
+               [Approval.request a] [resume true]]]]"
+        );
+        assert_eq!(run_output(&test), vec!["r :search:hit".to_string()]);
+        // Multi-shot: resume the approval both ways and join the two worlds.
+        let explore = format!(
+            "{loop_src} [fn main [] [println [handle [agent 0 \"r\"] \
+               [Llm.complete p] [resume [act p]] [Tool.call t] [resume [tool t]] \
+               [Approval.request a] [str [resume true] \" | \" [resume false]]]]]"
+        );
+        assert_eq!(run_output(&explore), vec!["r :search:hit | r :search:no".to_string()]);
+    }
+
+    #[test]
     fn vm_http_app_under_towers() {
         // The same app + routes run under different handler towers unchanged: a
         // deterministic test tower and a "prod-ish" tower that differs only in

@@ -1,0 +1,133 @@
+; ───────────────────────────────────────────────────────────────────────────
+; Agent framework — the control loop is plain code that performs effects; the
+; handler tower decides everything else (model, tools, approval, memory).
+;
+; The SAME loop runs under different towers with zero changes:
+;   under-test  — scripted model + mocked tools, deterministic and offline
+;                 (replayable agent evals, no network, no mocking framework)
+;   under-trace — records every model/tool/approval interaction (a transcript)
+;   under-deny  — a human-in-the-loop approval that DENIES one action
+;   explore     — multi-shot: resume the SAME approval point BOTH ways to
+;                 explore the approve and deny futures (backtracking for free)
+;
+; Approval.request is a perform that suspends the agent and resumes when the
+; handler decides — the canonical human-in-the-loop round trip. Retries and
+; backtracking are just handlers wrapping this one loop; no state machine.
+;
+; Run:   loon run   src/agent/agent.oo
+; Check: loon check src/agent/agent.oo
+; ───────────────────────────────────────────────────────────────────────────
+[effect Llm
+  [complete [String] Keyword]] ; prompt -> the model's chosen action
+
+[effect Tool
+  [call [Keyword] String]] ; run a tool, get its result
+
+[effect Memory
+  [remember [Keyword String] Unit]]
+
+[effect Approval
+  [request [Keyword] Bool]] ; human-in-the-loop gate
+
+[effect Log
+  [info [String] Unit]]
+
+; The agent control loop. It asks the model for the next action, gates it on
+; approval, runs the tool, records it, and recurses until the model says :done.
+; Inferred row: #{Llm Approval Tool Log Memory}.
+[fn agent [step history]
+  [let action [Llm.complete [str step]]]
+  [if [= action :done]
+    history
+    [if [Approval.request action]
+      [do
+        [let result [Tool.call action]]
+        [Log.info [str "  step " step ": " action " -> " result]]
+        [let next [str history " " action ":" result]]
+        [Memory.remember action result]
+        [agent [+ step 1] next]]
+      [agent [+ step 1] [str history " " action ":denied"]]]]]
+
+; A scripted model + mocked tools, shared by the deterministic towers.
+[fn script-action [p]
+  [match p
+    "0" :search
+    "1" :summarize
+    _ :done]]
+
+[fn mock-tool [t]
+  [match t
+    :search "3-hits"
+    :summarize "summary-ready"
+    _ "ok"]]
+
+; ── TEST tower: deterministic, offline, approves everything ──
+[fn under-test [goal]
+  [handle
+    [agent 0 goal]
+    [Llm.complete p]
+    [resume [script-action p]]
+    [Tool.call t]
+    [resume [mock-tool t]]
+    [Approval.request a]
+    [resume true]
+    [Memory.remember k v]
+    [resume []]
+    [Log.info m]
+    [resume []]]]
+
+; ── TRACE tower: records every interaction, then behaves like test ──
+[fn under-trace [goal]
+  [handle
+    [agent 0 goal]
+    [Llm.complete p]
+    [do [println [str "  trace: llm " p]] [resume [script-action p]]]
+    [Tool.call t]
+    [do [println [str "  trace: tool " t]] [resume [mock-tool t]]]
+    [Approval.request a]
+    [do [println [str "  trace: approve? " a]] [resume true]]
+    [Memory.remember k v]
+    [do [println [str "  trace: memory " k "=" v]] [resume []]]
+    [Log.info m]
+    [resume []]]]
+
+; ── DENY tower: human-in-the-loop denies :summarize (approval round-trip) ──
+[fn under-deny [goal]
+  [handle
+    [agent 0 goal]
+    [Llm.complete p]
+    [resume [script-action p]]
+    [Tool.call t]
+    [resume [mock-tool t]]
+    [Approval.request a]
+    [resume [not [= a :summarize]]]
+    [Memory.remember k v]
+    [resume []]
+    [Log.info m]
+    [resume []]]]
+
+; ── EXPLORE tower: multi-shot — resume each approval BOTH ways and join the
+;    resulting histories. One agent program, every approve/deny world. ──
+[fn explore [goal]
+  [handle
+    [agent 0 goal]
+    [Llm.complete p]
+    [resume [script-action p]]
+    [Tool.call t]
+    [resume [mock-tool t]]
+    [Approval.request a]
+    [str "{" [resume true] " | " [resume false] "}"]
+    [Memory.remember k v]
+    [resume []]
+    [Log.info m]
+    [resume []]]]
+
+[fn main []
+  [println "-- test --"]
+  [println [under-test "run:"]]
+  [println "-- trace --"]
+  [println [under-trace "run:"]]
+  [println "-- deny :summarize --"]
+  [println [under-deny "run:"]]
+  [println "-- explore (every approval world) --"]
+  [println [explore "run:"]]]

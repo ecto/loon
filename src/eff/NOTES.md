@@ -1,5 +1,30 @@
 # Stage 0 substrate — status and foundation gaps
 
+## Agent framework — control loop as effects, tower decides everything
+
+`src/agent/agent.oo`: the agent control loop is plain code performing
+`Llm`/`Tool`/`Approval`/`Memory`/`Log` effects; the handler tower supplies the
+model, tools, approval policy, and memory. The SAME loop runs under four towers
+unchanged — `under-test` (scripted model + mocked tools, deterministic and
+offline), `under-trace` (records every interaction), `under-deny` (a
+human-in-the-loop approval that denies one action — the `Approval.request`
+suspend/resume round trip), and `explore` (multi-shot: resume each approval BOTH
+ways to visit every approve/deny world — backtracking from one program).
+Regression test: `vm_agent_under_towers`.
+
+The prod tower (real LLM API + MCP tools) needs an outbound HTTP client wired
+into the VM (the server side — `Net.listen`/`accept`/`send` — is done; the
+client `Net.get`/`post` is behind the `pkg-fetch`/ureq feature and not yet wired
+into the EIR builtin effects). The offline test/trace/deny/explore towers — the
+ship-gate items (deterministic multi-step replay; approval round trip) — work
+today with no network.
+
+A checker fix this needed: `resolve_type_name` was missing the `Keyword` case
+(only `name_to_type` had it), so a user-effect op declared to return `Keyword`
+got a fresh type var, which defeated the ownership checker's Copy detection and
+produced a false use-after-move when the result was used in two effects. Added
+the arm; effect-result keywords are now Copy as expected.
+
 ## Async substrate (Stage 0) — cooperative scheduler as a handler
 
 `src/eff/async.oo` completes Stage 0's async story: concurrency is ordinary code
