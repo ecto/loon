@@ -1,0 +1,117 @@
+; ─────────────────────────────────────────────────────────────────────────
+; loon-hdl — DMA Slice 0: the END-TO-END streaming MAC engine.
+; Composes every verified block: weights stream in through a FIFO (the
+; cartridge/PHY pushes them, possibly with gaps), activations sit stationary
+; in a RAM, and a multiplier-free TERNARY accumulator drains the FIFO against
+; them. After K weights, acc == the ternary dot product — proving
+; pack -> stream -> compute end to end, bit-exact, with the compute never
+; stalling while the FIFO has data. K=8.
+; ─────────────────────────────────────────────────────────────────────────
+
+; ── L0 IR  (the union of everything we built) ───────────────────────────
+[type BinOp Add Sub And Eq]
+[type Expr
+  [Ref String] [Lit Int] [Bin BinOp Expr Expr]
+  [Index String Expr]               ; mem[idx]
+  [Signed Expr]                     ; $signed(e) — signed read of an unsigned mem
+  [TSel Expr Expr]]                 ; (w==1 ? x : w==-1 ? -x : 0)  — multiplier-free
+[type Dir In Out]
+[type Kind Wire Reg]
+[type Port [Port Dir Kind Int String]]
+[type Decl [Net Kind Int String] [Mem Int Int String]]
+[type Seq [Nb String Expr] [MemNb String Expr Expr] [If Expr (Vec Seq) (Vec Seq)]]
+[type Stmt [Assign String Expr] [Always String (Vec Seq)]]
+[type Module [Module String (Vec Port) (Vec Decl) (Vec Stmt)]]
+
+; ── emitter ──────────────────────────────────────────────────────────────
+[fn bin-sym  [op] [match op Add "+" Sub "-" And "&" Eq "=="]]
+[fn dir-str  [d]  [match d In "input " Out "output"]]
+[fn kind-str [k]  [match k Wire "wire" Reg "reg "]]
+[fn range-str [w] [if [= w 1] "" [str "[" [- w 1] ":0] "]]]
+[fn emit-expr [e]
+  [match e
+    [Ref n]      n
+    [Lit v]      [str v]
+    [Bin op a b] [str "(" [emit-expr a] " " [bin-sym op] " " [emit-expr b] ")"]
+    [Index m i]  [str m "[" [emit-expr i] "]"]
+    [Signed x]   [str "$signed(" [emit-expr x] ")"]
+    [TSel w x]   [str "(" [emit-expr w] " == 1 ? " [emit-expr x]
+                      " : (" [emit-expr w] " == -1 ? -" [emit-expr x] " : 0))"]]]
+[fn emit-port [p]
+  [match p [Port d k w n] [str "  " [dir-str d] " " [kind-str k] " " [range-str w] n]]]
+[fn emit-decl [d]
+  [match d
+    [Net k w n]  [str "  " [kind-str k] " " [range-str w] n ";\n"]
+    [Mem w dp n] [str "  reg " [range-str w] n " [0:" [- dp 1] "];\n"]]]
+[fn emit-seq [s ind]
+  [match s
+    [Nb lhs e]    [str ind lhs " <= " [emit-expr e] ";"]
+    [MemNb m i e] [str ind m "[" [emit-expr i] "] <= " [emit-expr e] ";"]
+    [If c t e]
+      [if [= [len e] 0]
+        [str ind "if (" [emit-expr c] ") begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] t]] "\n" ind "end"]
+        [str ind "if (" [emit-expr c] ") begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] t]]
+             "\n" ind "end else begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] e]]
+             "\n" ind "end"]]]]
+[fn emit-stmt [s]
+  [match s
+    [Assign lhs e] [str "  assign " lhs " = " [emit-expr e] ";"]
+    [Always clk body]
+      [str "  always @(posedge " clk ") begin\n"
+           [join "\n" [map [fn [x] [emit-seq x "    "]] body]] "\n  end"]]]
+[fn emit-module [m]
+  [match m [Module name ports decls stmts]
+    [str "module " name " (\n" [join ",\n" [map emit-port ports]] "\n);\n"
+         [join "" [map emit-decl decls]] [join "\n" [map emit-stmt stmts]]
+         "\nendmodule\n"]]]
+
+; ── the streaming MAC engine ─────────────────────────────────────────────
+[fn stream-mac []
+  [let ports
+    #[[Port In Wire 1 "clk"] [Port In Wire 1 "rst"]
+      [Port In Wire 1 "wpush"] [Port In Wire 2 "wdata"]      ; ternary weight stream
+      [Port In Wire 1 "xwe"] [Port In Wire 3 "xaddr"] [Port In Wire 8 "xdata"]  ; activation load
+      [Port Out Reg 16 "acc"] [Port Out Reg 4 "pos"]]]
+  [let decls
+    #[[Mem 2 8 "wmem"] [Mem 8 8 "xmem"]
+      [Net Reg 3 "whead"] [Net Reg 3 "wtail"] [Net Reg 4 "wcount"]
+      [Net Wire 1 "wempty"] [Net Wire 1 "do_pop"]]]
+  ; do_pop = data available AND not yet done (pos != 8)
+  [let assigns
+    #[[Assign "wempty" [Bin Eq [Ref "wcount"] [Lit 0]]]
+      [Assign "do_pop" [Bin And [Bin Eq [Ref "wempty"] [Lit 0]]
+                                [Bin Eq [Bin Eq [Ref "pos"] [Lit 8]] [Lit 0]]]]]]
+  [let tsel [TSel [Signed [Index "wmem" [Ref "whead"]]]
+                  [Signed [Index "xmem" [Ref "pos"]]]]]
+  [let rst-blk #[[Nb "whead" [Lit 0]] [Nb "wtail" [Lit 0]] [Nb "wcount" [Lit 0]]
+                 [Nb "pos" [Lit 0]] [Nb "acc" [Lit 0]]]]
+  [let run-blk
+    #[[If [Ref "wpush"]
+         #[[MemNb "wmem" [Ref "wtail"] [Ref "wdata"]]
+           [Nb "wtail" [Bin Add [Ref "wtail"] [Lit 1]]]] #[]]
+      [If [Ref "xwe"] #[[MemNb "xmem" [Ref "xaddr"] [Ref "xdata"]]] #[]]
+      [If [Ref "do_pop"]
+         #[[Nb "acc" [Bin Add [Signed [Ref "acc"]] tsel]]
+           [Nb "whead" [Bin Add [Ref "whead"] [Lit 1]]]
+           [Nb "pos" [Bin Add [Ref "pos"] [Lit 1]]]] #[]]
+      [Nb "wcount" [Bin Sub [Bin Add [Ref "wcount"] [Ref "wpush"]] [Ref "do_pop"]]]]]
+  [let abody #[[If [Ref "rst"] rst-blk run-blk]]]
+  [let stmts [conj assigns [Always "clk" abody]]]
+  [Module "stream_mac" ports decls stmts]]
+
+; ── golden model: the ternary dot the streamed engine must reproduce ─────
+[fn tsel [w x] [if [= w 1] x [if [= w -1] [- 0 x] 0]]]
+[fn tdot-g [w x k i acc]
+  [if [>= i k] acc [tdot-g w x k [+ i 1] [+ acc [tsel [nth w i] [nth x i]]]]]]
+[fn tdot [w x k] [tdot-g w x k 0 0]]
+
+[fn main []
+  [println "=== loon-hdl: DMA Slice 0 — end-to-end streaming MAC engine ==="]
+  [println [emit-module [stream-mac]]]
+  [println "=== golden: acc the streamed engine must reproduce ==="]
+  [let x #[10 -3 5 8 -2 7 4 1]]
+  [let w #[1 -1 0 1 -1 1 0 -1]]
+  [println [str "  ternary dot(streamed W, stationary x) = " [tdot w x 8]]]]

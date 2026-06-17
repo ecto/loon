@@ -1,0 +1,124 @@
+; ─────────────────────────────────────────────────────────────────────────
+; loon-hdl — EMIT A HAIKU. Autoregressive generation in hardware: a clocked
+; FSM emits a token, feeds it back through the next-token model, and loops,
+; storing the sequence — exactly the autoregressive loop that turns our
+; one-token decode step into generated text. The next-token model is a learned
+; transition table (what the LM-head+argmax collapses to for one-hot embeds).
+; Co-sim'd bit-exact vs a pure-Loon golden, then decoded through a vocabulary
+; into a 5-7-5 haiku.
+; ─────────────────────────────────────────────────────────────────────────
+
+[fn vcat [xs ys] [fold xs [fn [acc x] [conj acc x]] ys]]
+
+[type BinOp Add Eq]
+[type Expr [Ref String] [Lit Int] [Bin BinOp Expr Expr] [Index String Expr]]
+[type Dir In Out]
+[type Kind Wire Reg]
+[type Port [Port Dir Kind Int String]]
+[type Decl [Net Kind Int String] [Mem Int Int String]]
+[type Seq [Nb String Expr] [MemNb String Expr Expr] [If Expr (Vec Seq) (Vec Seq)]]
+[type Stmt [Assign String Expr] [Always String (Vec Seq)]]
+[type Module [Module String (Vec Port) (Vec Decl) (Vec Stmt)]]
+
+[fn bin-sym  [op] [match op Add "+" Eq "=="]]
+[fn dir-str  [d]  [match d In "input " Out "output"]]
+[fn kind-str [k]  [match k Wire "wire" Reg "reg "]]
+[fn range-str [w] [if [= w 1] "" [str "[" [- w 1] ":0] "]]]
+[fn emit-expr [e]
+  [match e
+    [Ref n]      n
+    [Lit v]      [str v]
+    [Bin op a b] [str "(" [emit-expr a] " " [bin-sym op] " " [emit-expr b] ")"]
+    [Index m i]  [str m "[" [emit-expr i] "]"]]]
+[fn emit-port [p]
+  [match p [Port d k w n] [str "  " [dir-str d] " " [kind-str k] " " [range-str w] n]]]
+[fn emit-decl [d]
+  [match d
+    [Net k w n]  [str "  " [kind-str k] " " [range-str w] n ";\n"]
+    [Mem w dp n] [str "  reg " [range-str w] n " [0:" [- dp 1] "];\n"]]]
+[fn emit-seq [s ind]
+  [match s
+    [Nb lhs e]    [str ind lhs " <= " [emit-expr e] ";"]
+    [MemNb m i e] [str ind m "[" [emit-expr i] "] <= " [emit-expr e] ";"]
+    [If c t e]
+      [if [= [len e] 0]
+        [str ind "if (" [emit-expr c] ") begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] t]] "\n" ind "end"]
+        [str ind "if (" [emit-expr c] ") begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] t]]
+             "\n" ind "end else begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] e]]
+             "\n" ind "end"]]]]
+[fn emit-stmt [s]
+  [match s
+    [Assign lhs e] [str "  assign " lhs " = " [emit-expr e] ";"]
+    [Always clk body]
+      [str "  always @(posedge " clk ") begin\n"
+           [join "\n" [map [fn [x] [emit-seq x "    "]] body]] "\n  end"]]]
+[fn emit-module [m]
+  [match m [Module name ports decls stmts]
+    [str "module " name " (\n" [join ",\n" [map emit-port ports]] "\n);\n"
+         [join "" [map emit-decl decls]] [join "\n" [map emit-stmt stmts]]
+         "\nendmodule\n"]]]
+
+; ── the autoregressive sequencer (EOS token = 13) ───────────────────────
+[fn haiku-gen []
+  [let ports
+    #[[Port In Wire 1 "clk"] [Port In Wire 1 "rst"]
+      [Port In Wire 1 "tload"] [Port In Wire 4 "taddr"] [Port In Wire 4 "tdata"]
+      [Port In Wire 1 "start"] [Port In Wire 4 "seed"]
+      [Port In Wire 4 "oaddr"] [Port Out Wire 4 "otok"] [Port Out Wire 5 "count"]]]
+  [let decls
+    #[[Mem 4 16 "trans"] [Mem 4 16 "outm"]
+      [Net Reg 4 "cur"] [Net Reg 5 "step"] [Net Reg 1 "run"] [Net Wire 4 "nxt"]]]
+  [let assigns
+    #[[Assign "nxt" [Index "trans" [Ref "cur"]]]
+      [Assign "otok" [Index "outm" [Ref "oaddr"]]]
+      [Assign "count" [Ref "step"]]]]
+  [let gen-blk
+    #[[MemNb "outm" [Ref "step"] [Ref "cur"]]
+      [Nb "step" [Bin Add [Ref "step"] [Lit 1]]]
+      [If [Bin Eq [Ref "cur"] [Lit 13]]
+         #[[Nb "run" [Lit 0]]]
+         #[[Nb "cur" [Ref "nxt"]]]]]]
+  [let abody
+    #[[If [Ref "rst"]
+         #[[Nb "cur" [Lit 0]] [Nb "step" [Lit 0]] [Nb "run" [Lit 0]]]
+         #[[If [Ref "tload"] #[[MemNb "trans" [Ref "taddr"] [Ref "tdata"]]] #[]]
+           [If [Ref "start"]
+              #[[Nb "cur" [Ref "seed"]] [Nb "step" [Lit 0]] [Nb "run" [Lit 1]]]
+              #[[If [Ref "run"] gen-blk #[]]]]]]]]
+  [let stmts [conj assigns [Always "clk" abody]]]
+  [Module "haiku_gen" ports decls stmts]]
+
+; ── golden model: run the same transition chain, pure Loon ──────────────
+[fn gen-go [trans cur eos acc]
+  [if [= cur eos] [conj acc cur]
+    [gen-go trans [nth trans cur] eos [conj acc cur]]]]
+[fn gen [trans seed eos] [gen-go trans seed eos #[]]]
+
+; ── vocabulary: token id -> word ────────────────────────────────────────
+[fn word [id]
+  [if [= id 0] "silicon" [if [= id 1] "whispers" [if [= id 2] "a" [if [= id 3] "lisp"
+   [if [= id 4] "dreams" [if [= id 5] "in" [if [= id 6] "copper" [if [= id 7] "light"
+   [if [= id 8] "tokens" [if [= id 9] "bloom" [if [= id 10] "like" [if [= id 11] "spring"
+   ""]]]]]]]]]]]]]
+[fn dec-go [seq i acc]
+  [if [>= i [len seq]] acc
+    [do
+      [let id [nth seq i]]
+      [if [= id 13] acc
+        [if [if [= id 12] true [= id 14]]
+          [dec-go seq [+ i 1] [str acc "\n"]]
+          [dec-go seq [+ i 1] [str acc [word id] " "]]]]]]]
+[fn decode [seq] [dec-go seq 0 ""]]
+
+[fn main []
+  [println "=== loon-hdl: autoregressive haiku generator (hardware decode loop) ==="]
+  [println [emit-module [haiku-gen]]]
+  ; transition table (id -> next token): walks the haiku from seed 0 to EOS 13
+  [let trans #[1 12 3 4 5 6 7 14 9 10 11 13 2 13 8 0]]
+  [let seq [gen trans 0 13]]
+  [println [str "=== golden token sequence (" [len seq] " tokens): " seq " ==="]]
+  [println "=== >>> THE EMITTED HAIKU <<< ==="]
+  [println [decode seq]]]

@@ -1,5 +1,4 @@
 mod capture;
-mod cps;
 #[allow(clippy::vec_init_then_push)]
 pub mod collections;
 #[allow(clippy::vec_init_then_push)]
@@ -7,46 +6,20 @@ pub mod maps;
 #[allow(clippy::vec_init_then_push)]
 pub mod strings;
 
-use crate::ast::{Expr, ExprKind, NodeId};
-use crate::types::Type;
+use crate::ast::{Expr, ExprKind};
 use collections::CollectionsRuntime;
-use maps::MapRuntime;
+use maps::MapsRuntime;
 use std::collections::HashMap;
 use strings::StringRuntime;
 use wasm_encoder::*;
-
-/// Run the type checker over an (already macro-expanded) program and return a
-/// map from each node to its *resolved* type. Codegen consults this to make
-/// type-directed decisions (e.g. how to print a value) rather than re-deriving
-/// the information from syntax. Type errors are ignored here — the checker is a
-/// separate front door (`loon check`); unresolved nodes simply fall back to the
-/// untyped path.
-fn infer_node_types(exprs: &[Expr], base_dir: Option<&std::path::Path>) -> HashMap<NodeId, Type> {
-    let mut checker = match base_dir {
-        Some(dir) => crate::check::Checker::with_base_dir(dir),
-        None => crate::check::Checker::new(),
-    };
-    let _ = checker.check_program(exprs);
-    checker
-        .type_of
-        .iter()
-        .map(|(id, ty)| (*id, checker.resolve(ty)))
-        .collect()
-}
 
 /// Compile a Loon program to WASM bytes.
 pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, String> {
     // Macro expansion phase
     let mut expander = crate::macros::MacroExpander::new();
-    let mut expanded = expander.expand_program(exprs)?;
-    // Escaping effect handlers: CPS-transform the program first (gated, so other
-    // programs are untouched).
-    if cps::needs_cps(&expanded) {
-        expanded = cps::transform(&expanded);
-    }
+    let expanded = expander.expand_program(exprs)?;
 
     let mut compiler = Compiler::new();
-    compiler.node_types = infer_node_types(&expanded, None);
     compiler.compile_program(&expanded)?;
     compiler.tree_shake();
     Ok(compiler.finish())
@@ -56,14 +29,10 @@ pub fn compile(exprs: &[Expr]) -> Result<Vec<u8>, String> {
 pub fn compile_with_imports(exprs: &[Expr], base_dir: &std::path::Path) -> Result<Vec<u8>, String> {
     // Macro expansion phase
     let mut expander = crate::macros::MacroExpander::new();
-    let mut expanded = expander.expand_program(exprs)?;
-    if cps::needs_cps(&expanded) {
-        expanded = cps::transform(&expanded);
-    }
+    let expanded = expander.expand_program(exprs)?;
 
     let mut compiler = Compiler::new();
     compiler.base_dir = Some(base_dir.to_path_buf());
-    compiler.node_types = infer_node_types(&expanded, Some(base_dir));
     compiler.compile_program(&expanded)?;
     compiler.tree_shake();
     Ok(compiler.finish())
@@ -87,11 +56,6 @@ struct AdtInfo {
 
 const WASI_IMPORT_COUNT: u32 = 6;
 const PRE_ALLOC_TYPES: u32 = 7;
-/// Dynamic effect-handler stack, in low memory (below the string table at
-/// 1024 and the itoa scratch at ~520). `HANDLER_COUNT` holds the number of
-/// installed (op_id, closure) frames; each frame is 16 bytes from `HANDLER_BASE`.
-const HANDLER_COUNT_ADDR: i32 = 248;
-const HANDLER_BASE: i32 = 256;
 
 struct Compiler {
     functions: Vec<FunctionBody>,
@@ -103,6 +67,9 @@ struct Compiler {
     /// assuming `position == index - import_count`.
     fn_indices: Vec<u32>,
     fn_map: HashMap<String, FnDef>,
+    /// Cache of thunk-wrapper table indices for top-level functions used as
+    /// closure values (name → table index).
+    fn_thunks: HashMap<String, u32>,
     strings: Vec<(String, u32)>,
     string_offset: u32,
     next_fn_idx: u32,
@@ -110,6 +77,25 @@ struct Compiler {
     import_count: u32,
     lambda_counter: u32,
     adt_constructors: HashMap<String, (u32, usize)>,
+    /// Per-constructor flags: which fields are declared `f64`/`Float`. Used to
+    /// bind float-typed locals when destructuring in `match`.
+    adt_float_fields: HashMap<String, Vec<bool>>,
+    /// Names of functions whose result is a float (computed by a pre-pass), so
+    /// call sites can be classified by `expr_is_float`.
+    float_return_fns: std::collections::HashSet<String>,
+    /// Functions whose result is a boolean (greatest-fixpoint pass), so call
+    /// sites format as `true`/`false`.
+    bool_return_fns: std::collections::HashSet<String>,
+    /// Dynamic effect-handler slots: each `Effect.op` used in a `handle` gets a
+    /// small id; the current handler closure for it lives at memory offset
+    /// `HANDLER_BASE + id*8` (0 = no handler installed). Enables tail-resumptive
+    /// handlers without a full continuation transform.
+    handler_op_ids: HashMap<String, u32>,
+    /// Whether the program contains any `handle` form. Effect operations only
+    /// emit the (table-using) handler-slot dispatch when this holds; otherwise
+    /// they call their host import directly, so handler-free programs need no
+    /// function table.
+    uses_handlers: bool,
     #[allow(dead_code)]
     adt_types: Vec<AdtInfo>,
     table_entries: Vec<u32>,
@@ -118,19 +104,13 @@ struct Compiler {
     type_count: u32,
     string_runtime: Option<StringRuntime>,
     collections_runtime: Option<CollectionsRuntime>,
-    map_runtime: Option<MapRuntime>,
-    /// Lazily-generated `str_split` (needs both string + vector runtimes).
-    str_split_idx: Option<u32>,
+    maps_runtime: Option<MapsRuntime>,
+    split_idx: Option<u32>,
+    lowercase_idx: Option<u32>,
+    uppercase_idx: Option<u32>,
     base_dir: Option<std::path::PathBuf>,
     compiled_modules: std::collections::HashSet<std::path::PathBuf>,
     force_heap: bool,
-    /// Force a (possibly empty) function table to exist. Effect operations emit
-    /// a `call_indirect` for the handler-closure path even when a program has no
-    /// closures of its own, and `call_indirect` requires a table.
-    force_table: bool,
-    /// Whether the program uses abort (`Fail.fail`/`try`), which lowers to a
-    /// WASM exception: a `fail` tag carrying the i64 fail value.
-    uses_exceptions: bool,
     used_wasi_imports: Option<Vec<u32>>,
     /// Effect imports: "Effect.op" → import function index
     effect_imports: HashMap<String, u32>,
@@ -142,25 +122,9 @@ struct Compiler {
     /// string. Lets `println` pick the string-printing path for calls, since
     /// the untagged value model offers no runtime check.
     string_fns: std::collections::HashSet<String>,
-    /// For each function key, the names of its string-typed parameters.
-    string_params: HashMap<String, Vec<String>>,
     /// Distinct keyword literals interned to unique i64 ids (for `=` and use as
     /// enum-like tags). Ids start high to avoid colliding with small ints.
     keywords: HashMap<String, i64>,
-    /// Distinct effect operations ("Effect.op") interned to small ids, used as
-    /// the key in the dynamic handler stack.
-    effect_op_ids: HashMap<String, i64>,
-    /// Resolved type of each AST node (from the checker). Lets codegen make
-    /// type-directed choices instead of guessing from syntax. Synthesized nodes
-    /// (desugared `pipe`/`when`/… ) are absent and fall back to the untyped path.
-    node_types: HashMap<NodeId, Type>,
-    /// Function keys (`name`/`name#arity`) whose result is float. The checker
-    /// generalizes polymorphic bodies, so concrete float-ness of a function's
-    /// result and params isn't on the body nodes — this structural fixpoint
-    /// recovers it so float ops compile inside function bodies.
-    float_fns: std::collections::HashSet<String>,
-    /// For each function key, the names of its float-typed parameters.
-    float_params: HashMap<String, Vec<String>>,
 }
 
 struct FunctionBody {
@@ -176,6 +140,13 @@ enum FnRepr {
     Named(u32),
     /// A closure value held in a local — called via the table (env + args).
     Closure(u32),
+}
+
+/// A closure parameter: a plain binding or a positional destructuring pattern
+/// (`[k v]`), where `None` entries (`_`) ignore that slot.
+enum ClosureParam {
+    Simple(String),
+    Destructure(Vec<Option<String>>),
 }
 
 #[derive(Clone, Debug)]
@@ -205,14 +176,15 @@ enum WasmInstruction {
     F64Ge,
     F64Eq,
     F64Ne,
-    F64ReinterpretI64,
-    I64ReinterpretF64,
     F64ConvertI64S,
-    I64TruncF64S,
+    I64ReinterpretF64,
+    F64ReinterpretI64,
     LocalGet(u32),
     LocalSet(u32),
     LocalTee(u32),
     Call(u32),
+    ReturnCall(u32),
+    ReturnCallIndirect(u32),
     If(BlockType),
     Else,
     End,
@@ -235,10 +207,7 @@ enum WasmInstruction {
     I64And,
     I64Or,
     I64Shl,
-    I32And,
     I32Add,
-    I32Sub,
-    I32Mul,
     I32Load8U(u32, u32),
     I32Store8(u32, u32),
     I32Eq,
@@ -248,10 +217,6 @@ enum WasmInstruction {
     Br(u32),
     BrIf(u32),
     BrTable(Vec<u32>, u32),
-    /// Exception support (abort): throw the `fail` tag (index 0), and a
-    /// try_table whose single catch routes the `fail` tag to `catch_label`.
-    Throw,
-    TryTable { catch_label: u32 },
 }
 
 fn emit_instruction(f: &mut Function, instr: &WasmInstruction) {
@@ -328,17 +293,14 @@ fn emit_instruction(f: &mut Function, instr: &WasmInstruction) {
         WasmInstruction::F64Ne => {
             f.instruction(&Instruction::F64Ne);
         }
-        WasmInstruction::F64ReinterpretI64 => {
-            f.instruction(&Instruction::F64ReinterpretI64);
+        WasmInstruction::F64ConvertI64S => {
+            f.instruction(&Instruction::F64ConvertI64S);
         }
         WasmInstruction::I64ReinterpretF64 => {
             f.instruction(&Instruction::I64ReinterpretF64);
         }
-        WasmInstruction::F64ConvertI64S => {
-            f.instruction(&Instruction::F64ConvertI64S);
-        }
-        WasmInstruction::I64TruncF64S => {
-            f.instruction(&Instruction::I64TruncF64S);
+        WasmInstruction::F64ReinterpretI64 => {
+            f.instruction(&Instruction::F64ReinterpretI64);
         }
         WasmInstruction::LocalGet(i) => {
             f.instruction(&Instruction::LocalGet(*i));
@@ -351,6 +313,15 @@ fn emit_instruction(f: &mut Function, instr: &WasmInstruction) {
         }
         WasmInstruction::Call(i) => {
             f.instruction(&Instruction::Call(*i));
+        }
+        WasmInstruction::ReturnCall(i) => {
+            f.instruction(&Instruction::ReturnCall(*i));
+        }
+        WasmInstruction::ReturnCallIndirect(ty) => {
+            f.instruction(&Instruction::ReturnCallIndirect {
+                type_index: *ty,
+                table_index: 0,
+            });
         }
         WasmInstruction::CallIndirect(ty) => {
             f.instruction(&Instruction::CallIndirect {
@@ -458,15 +429,6 @@ fn emit_instruction(f: &mut Function, instr: &WasmInstruction) {
         WasmInstruction::I32Add => {
             f.instruction(&Instruction::I32Add);
         }
-        WasmInstruction::I32Sub => {
-            f.instruction(&Instruction::I32Sub);
-        }
-        WasmInstruction::I32Mul => {
-            f.instruction(&Instruction::I32Mul);
-        }
-        WasmInstruction::I32And => {
-            f.instruction(&Instruction::I32And);
-        }
         WasmInstruction::I32Eq => {
             f.instruction(&Instruction::I32Eq);
         }
@@ -491,18 +453,6 @@ fn emit_instruction(f: &mut Function, instr: &WasmInstruction) {
                 *default,
             ));
         }
-        WasmInstruction::Throw => {
-            f.instruction(&Instruction::Throw(0)); // the `fail` tag
-        }
-        WasmInstruction::TryTable { catch_label } => {
-            f.instruction(&Instruction::TryTable(
-                BlockType::Result(ValType::I64),
-                std::borrow::Cow::Owned(vec![Catch::One {
-                    tag: 0,
-                    label: *catch_label,
-                }]),
-            ));
-        }
     }
 }
 
@@ -512,12 +462,18 @@ impl Compiler {
             functions: Vec::new(),
             fn_indices: Vec::new(),
             fn_map: HashMap::new(),
+            fn_thunks: HashMap::new(),
             strings: Vec::new(),
             string_offset: 1024,
             next_fn_idx: WASI_IMPORT_COUNT,
             import_count: WASI_IMPORT_COUNT,
             lambda_counter: 0,
             adt_constructors: HashMap::new(),
+            adt_float_fields: HashMap::new(),
+            float_return_fns: std::collections::HashSet::new(),
+            bool_return_fns: std::collections::HashSet::new(),
+            handler_op_ids: HashMap::new(),
+            uses_handlers: false,
             adt_types: Vec::new(),
             table_entries: Vec::new(),
             table_map: HashMap::new(),
@@ -525,29 +481,20 @@ impl Compiler {
             type_count: PRE_ALLOC_TYPES,
             string_runtime: None,
             collections_runtime: None,
-            map_runtime: None,
-            str_split_idx: None,
+            maps_runtime: None,
+            split_idx: None,
+            lowercase_idx: None,
+            uppercase_idx: None,
             base_dir: None,
             compiled_modules: std::collections::HashSet::new(),
             force_heap: false,
-            force_table: false,
-            uses_exceptions: false,
             used_wasi_imports: None,
             effect_imports: HashMap::new(),
             effect_import_defs: Vec::new(),
             effect_registry: crate::effects::EffectRegistry::new(),
             string_fns: std::collections::HashSet::new(),
-            string_params: HashMap::new(),
             keywords: HashMap::new(),
-            effect_op_ids: HashMap::new(),
-            node_types: HashMap::new(),
-            float_fns: std::collections::HashSet::new(),
-            float_params: HashMap::new(),
         }
-    }
-    /// The resolved type of an AST node, if the checker inferred one.
-    fn node_type(&self, expr: &Expr) -> Option<&Type> {
-        self.node_types.get(&expr.id)
     }
     /// Intern a keyword to a stable, unique i64 id (high range to avoid
     /// colliding with ordinary integer values under structural `=`).
@@ -559,17 +506,43 @@ impl Compiler {
         self.keywords.insert(kw.to_string(), id);
         id
     }
-    /// Intern an effect operation key ("Effect.op") to a small positive id used
-    /// as the lookup key in the dynamic handler stack.
-    fn intern_effect_op(&mut self, key: &str) -> i64 {
-        if let Some(&id) = self.effect_op_ids.get(key) {
-            return id;
+    /// A top-level function used as a closure value needs an adapter with the
+    /// closure calling convention `(env, args…) -> i64` that forwards to the
+    /// function (which has no `env` parameter). Generates the adapter once and
+    /// returns its function-table index.
+    fn ensure_fn_thunk(&mut self, name: &str) -> u32 {
+        if let Some(&ti) = self.fn_thunks.get(name) {
+            return ti;
         }
-        let id = self.effect_op_ids.len() as i64 + 1;
-        self.effect_op_ids.insert(key.to_string(), id);
-        id
+        let def = self.fn_map.get(name).cloned().expect("fn exists");
+        let wrapper_idx = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        let mut instrs = Vec::new();
+        for i in 1..=def.arity {
+            instrs.push(WasmInstruction::LocalGet(i as u32)); // skip env (local 0)
+        }
+        instrs.push(WasmInstruction::Call(def.func_idx));
+        self.push_function(
+            wrapper_idx,
+            FunctionBody {
+                params: vec![ValType::I64; def.arity + 1], // env + args
+                results: vec![ValType::I64],
+                locals: vec![],
+                instructions: instrs,
+            },
+        );
+        let ti = self.ensure_in_table(wrapper_idx);
+        self.fn_thunks.insert(name.to_string(), ti);
+        ti
     }
     fn ensure_in_table(&mut self, func_idx: u32) -> u32 {
+        if self.table_entries.is_empty() {
+            // Reserve table index 0 as a placeholder, so no closure ever has
+            // table index 0. A no-capture closure packs its value as `ti << 32`,
+            // which would be 0 for `ti == 0` — indistinguishable from "absent"
+            // (e.g. an empty effect-handler slot). The slot is never called.
+            self.table_entries.push(func_idx);
+        }
         if let Some(&ti) = self.table_map.get(&func_idx) {
             return ti;
         }
@@ -605,16 +578,16 @@ impl Compiler {
         let its = self.next_fn_idx;
         self.next_fn_idx += 1;
         self.push_function(its, StringRuntime::gen_int_to_str());
-        let lc = self.next_fn_idx;
+        let ts = self.next_fn_idx;
         self.next_fn_idx += 1;
-        self.push_function(lc, StringRuntime::gen_lowercase());
+        self.push_function(ts, StringRuntime::gen_to_str(its));
         self.string_runtime = Some(StringRuntime {
             str_concat_idx: c,
             str_len_idx: l,
             str_eq_idx: e,
             str_substring_idx: sub,
             int_to_str_idx: its,
-            lowercase_idx: lc,
+            to_str_idx: ts,
         });
     }
     fn ensure_collections_runtime(&mut self) {
@@ -631,78 +604,144 @@ impl Compiler {
         let g = self.next_fn_idx;
         self.next_fn_idx += 1;
         self.push_function(g, CollectionsRuntime::gen_vec_get());
+        let c = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(c, CollectionsRuntime::gen_vec_cons());
         self.collections_runtime = Some(CollectionsRuntime {
             vec_new_idx: n,
             vec_push_idx: p,
             vec_get_idx: g,
+            vec_cons_idx: c,
         });
     }
-    fn ensure_map_runtime(&mut self) {
-        if self.map_runtime.is_some() {
+    fn ensure_maps_runtime(&mut self) {
+        if self.maps_runtime.is_some() {
             return;
         }
-        self.force_heap = true;
-        // Maps reuse str_eq (string keys) and the vector runtime (for `keys`).
-        self.ensure_string_runtime();
-        let str_eq = self.string_runtime.clone().unwrap().str_eq_idx;
         self.ensure_collections_runtime();
+        self.ensure_string_runtime();
         let cr = self.collections_runtime.clone().unwrap();
-        let new_idx = self.next_fn_idx;
+        let sr = self.string_runtime.clone().unwrap();
+        let val_eq = self.next_fn_idx;
         self.next_fn_idx += 1;
-        self.push_function(new_idx, MapRuntime::gen_map_new());
-        let set_idx = self.next_fn_idx;
+        self.push_function(val_eq, MapsRuntime::gen_val_eq(sr.str_eq_idx));
+        let pair = self.next_fn_idx;
         self.next_fn_idx += 1;
-        self.push_function(set_idx, MapRuntime::gen_map_set(str_eq));
-        let get_idx = self.next_fn_idx;
+        self.push_function(pair, MapsRuntime::gen_pair(cr.vec_new_idx, cr.vec_push_idx));
+        let map_get = self.next_fn_idx;
         self.next_fn_idx += 1;
-        self.push_function(get_idx, MapRuntime::gen_map_get(str_eq));
-        let has_idx = self.next_fn_idx;
-        self.next_fn_idx += 1;
-        self.push_function(has_idx, MapRuntime::gen_map_has(str_eq));
-        let keys_idx = self.next_fn_idx;
+        self.push_function(map_get, MapsRuntime::gen_map_get(cr.vec_get_idx, val_eq));
+        let map_assoc = self.next_fn_idx;
         self.next_fn_idx += 1;
         self.push_function(
-            keys_idx,
-            MapRuntime::gen_map_keys(cr.vec_new_idx, cr.vec_push_idx),
+            map_assoc,
+            MapsRuntime::gen_map_assoc(cr.vec_new_idx, cr.vec_push_idx, cr.vec_get_idx, val_eq, pair),
         );
-        let entries_idx = self.next_fn_idx;
-        self.next_fn_idx += 1;
-        self.push_function(
-            entries_idx,
-            MapRuntime::gen_map_entries(cr.vec_new_idx, cr.vec_push_idx),
-        );
-        let merge_idx = self.next_fn_idx;
-        self.next_fn_idx += 1;
-        self.push_function(merge_idx, MapRuntime::gen_map_merge(set_idx));
-        self.map_runtime = Some(MapRuntime {
-            map_new_idx: new_idx,
-            map_set_idx: set_idx,
-            map_get_idx: get_idx,
-            map_has_idx: has_idx,
-            map_keys_idx: keys_idx,
-            map_entries_idx: entries_idx,
-            map_merge_idx: merge_idx,
+        self.maps_runtime = Some(MapsRuntime {
+            val_eq_idx: val_eq,
+            pair_idx: pair,
+            map_get_idx: map_get,
+            map_assoc_idx: map_assoc,
         });
     }
     fn ensure_split_runtime(&mut self) -> u32 {
-        if let Some(idx) = self.str_split_idx {
+        if let Some(idx) = self.split_idx {
             return idx;
         }
-        self.force_heap = true;
         self.ensure_string_runtime();
-        let substr = self.string_runtime.clone().unwrap().str_substring_idx;
         self.ensure_collections_runtime();
+        let sr = self.string_runtime.clone().unwrap();
         let cr = self.collections_runtime.clone().unwrap();
         let idx = self.next_fn_idx;
         self.next_fn_idx += 1;
         self.push_function(
             idx,
-            StringRuntime::gen_str_split(cr.vec_new_idx, cr.vec_push_idx, substr),
+            StringRuntime::gen_split(sr.str_substring_idx, cr.vec_new_idx, cr.vec_push_idx),
         );
-        self.str_split_idx = Some(idx);
+        self.split_idx = Some(idx);
         idx
     }
+    fn ensure_str_case(&mut self, upper: bool) -> u32 {
+        if let Some(idx) = if upper { self.uppercase_idx } else { self.lowercase_idx } {
+            return idx;
+        }
+        // Allocates a new string from the bump heap, so the memory + heap-ptr
+        // global must be emitted even if nothing else forces them.
+        self.force_heap = true;
+        let idx = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(idx, StringRuntime::gen_str_case(upper));
+        if upper {
+            self.uppercase_idx = Some(idx);
+        } else {
+            self.lowercase_idx = Some(idx);
+        }
+        idx
+    }
+    /// Is this top-level form a runnable statement (as opposed to a definition
+    /// like `fn`/`type`/`use`/`effect`)? Bare literals and non-definition lists
+    /// count as statements.
+    fn is_toplevel_statement(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::List(items) => match items.first().map(|x| &x.kind) {
+                Some(ExprKind::Symbol(s)) => {
+                    // `test` registers a test; like other definitions it is not
+                    // run by `loon run`, so it never becomes a `main` statement.
+                    !matches!(s.as_str(), "fn" | "type" | "use" | "effect" | "test")
+                }
+                _ => true,
+            },
+            _ => true,
+        }
+    }
+
+    /// If the program defines no `main` but has top-level statements, build a
+    /// synthetic `[fn main [] <statements…>]` from them (preserving order).
+    fn synthesize_main(exprs: &[Expr]) -> Option<Expr> {
+        let has_main = exprs.iter().any(|e| {
+            matches!(&e.kind, ExprKind::List(items)
+                if items.len() >= 2
+                && matches!(&items[0].kind, ExprKind::Symbol(s) if s == "fn")
+                && matches!(&items[1].kind, ExprKind::Symbol(n) if n == "main"))
+        });
+        if has_main {
+            return None;
+        }
+        let stmts: Vec<Expr> = exprs
+            .iter()
+            .filter(|e| Self::is_toplevel_statement(e))
+            .cloned()
+            .collect();
+        // A file with no `main` and no top-level statements — a library, or a
+        // file containing only `[test …]` blocks — is a no-op under `loon run`
+        // (which produces no output). Synthesize an empty `main` so the wasm
+        // backend still has an entry point and matches that behaviour, rather
+        // than failing with "no main export".
+        let span = stmts.first().map(|s| s.span).unwrap_or(crate::syntax::Span::ZERO);
+        let mut main_items = vec![
+            Expr::new(ExprKind::Symbol("fn".into()), span),
+            Expr::new(ExprKind::Symbol("main".into()), span),
+            Expr::new(ExprKind::List(Vec::new()), span),
+        ];
+        main_items.extend(stmts);
+        Some(Expr::new(ExprKind::List(main_items), span))
+    }
+
     fn compile_program(&mut self, exprs: &[Expr]) -> Result<(), String> {
+        // A program with no explicit `[fn main]` but with top-level statements
+        // (e.g. a bench script that is a sequence of `[let …]`/`[println …]`)
+        // runs those statements in order — matching the interpreter, which
+        // evaluates top-level forms. Synthesize `[fn main [] <statements…>]` so
+        // the wasm backend has an entry point. Definition forms (fn/type/use/
+        // effect) stay where they are.
+        let augmented: Vec<Expr>;
+        let exprs: &[Expr] = match Self::synthesize_main(exprs) {
+            Some(main) => {
+                augmented = exprs.iter().cloned().chain(std::iter::once(main)).collect();
+                &augmented
+            }
+            None => exprs,
+        };
         // Pass 0: collect [effect ...] declarations
         for expr in exprs {
             if let ExprKind::List(items) = &expr.kind {
@@ -737,6 +776,11 @@ impl Compiler {
                 }
             }
         }
+        // With ADT field float-ness known, determine which functions return a
+        // float so call sites classify correctly.
+        self.compute_float_return_fns(exprs);
+        self.compute_bool_return_fns(exprs);
+        self.uses_handlers = exprs.iter().any(Self::contains_handle);
         #[allow(clippy::possible_missing_else)]
         for expr in exprs {
             if let ExprKind::List(items) = &expr.kind {
@@ -752,7 +796,7 @@ impl Compiler {
                                             if let Some(ExprKind::List(params)) =
                                                 parts.first().map(|e| &e.kind)
                                             {
-                                                let arity = Self::param_names(params).len();
+                                                let arity = Self::parse_params(params).len();
                                                 let key = format!("{name}#{arity}");
                                                 if self.fn_map.contains_key(&key) {
                                                     continue;
@@ -776,7 +820,7 @@ impl Compiler {
                                     continue;
                                 }
                                 if let ExprKind::List(params) = &items[2].kind {
-                                    let arity = Self::param_names(params).len();
+                                    let arity = Self::parse_params(params).len();
                                     let idx = self.next_fn_idx;
                                     self.fn_map.insert(
                                         name.clone(),
@@ -794,7 +838,7 @@ impl Compiler {
                 }
             }
         }
-        self.analyze_types(exprs);
+        self.analyze_string_fns(exprs);
         for expr in exprs {
             if let ExprKind::List(items) = &expr.kind {
                 if items.len() >= 3 {
@@ -810,100 +854,11 @@ impl Compiler {
         }
         Ok(())
     }
-    /// Structural float check: whether `e` evaluates to a float, given the set
-    /// of in-scope float-named bindings and the known float-returning functions.
-    /// Used both by the whole-program fixpoint and (at runtime) by codegen.
-    fn is_float_static(
-        e: &Expr,
-        floats: &std::collections::HashSet<String>,
-        float_fns: &std::collections::HashSet<String>,
-    ) -> bool {
-        match &e.kind {
-            ExprKind::Float(_) => true,
-            ExprKind::Symbol(s) => floats.contains(s),
-            ExprKind::List(items) if !items.is_empty() => {
-                if let ExprKind::Symbol(h) = &items[0].kind {
-                    let argc = items.len() - 1;
-                    match h.as_str() {
-                        "+" | "-" | "*" | "/" | "min" | "max" if argc >= 2 => {
-                            Self::is_float_static(&items[1], floats, float_fns)
-                                || Self::is_float_static(&items[2], floats, float_fns)
-                        }
-                        "abs" | "inc" | "dec" if argc >= 1 => {
-                            Self::is_float_static(&items[1], floats, float_fns)
-                        }
-                        "if" if argc >= 3 => {
-                            Self::is_float_static(&items[2], floats, float_fns)
-                                || Self::is_float_static(&items[3], floats, float_fns)
-                        }
-                        "do" => items
-                            .last()
-                            .is_some_and(|x| Self::is_float_static(x, floats, float_fns)),
-                        "match" if argc >= 3 => {
-                            // Arms are (pat, body) pairs from items[2..]. A
-                            // well-typed match has all arms the same type, so
-                            // any float arm body means the whole match is float
-                            // (this also sees through pattern-bound vars that
-                            // are themselves untracked, e.g. ADT float fields).
-                            let mut i = 3;
-                            while i < items.len() {
-                                if Self::is_float_static(&items[i], floats, float_fns) {
-                                    return true;
-                                }
-                                i += 2;
-                            }
-                            false
-                        }
-                        _ => {
-                            float_fns.contains(h.as_str())
-                                || float_fns.contains(&format!("{h}#{argc}"))
-                        }
-                    }
-                } else {
-                    false
-                }
-            }
-            _ => false,
-        }
-    }
-    /// Whole-program fixpoint recovering which functions return floats and which
-    /// of their parameters are float. The checker generalizes polymorphic
-    /// bodies, so this structural pass fills the gap for monomorphic float use.
-    fn analyze_types(&mut self, exprs: &[Expr]) {
-        // fn key -> param names; and (key, last body expr) per clause.
-        let mut fn_params: HashMap<String, Vec<String>> = HashMap::new();
-        let mut fn_bodies: Vec<(String, &Expr)> = Vec::new();
-        // (enclosing fn key, callee name, arg exprs)
-        let mut calls: Vec<(Option<String>, String, Vec<&Expr>)> = Vec::new();
-        fn collect_calls<'e>(
-            e: &'e Expr,
-            enc: Option<&str>,
-            out: &mut Vec<(Option<String>, String, Vec<&'e Expr>)>,
-        ) {
-            match &e.kind {
-                ExprKind::List(items) if !items.is_empty() => {
-                    if let ExprKind::Symbol(h) = &items[0].kind {
-                        if h == "fn" {
-                            return; // don't descend into nested closures
-                        }
-                        out.push((
-                            enc.map(String::from),
-                            h.clone(),
-                            items[1..].iter().collect(),
-                        ));
-                    }
-                    for it in items {
-                        collect_calls(it, enc, out);
-                    }
-                }
-                ExprKind::Vec(items) | ExprKind::Set(items) | ExprKind::Tuple(items) => {
-                    for it in items {
-                        collect_calls(it, enc, out);
-                    }
-                }
-                _ => {}
-            }
-        }
+    /// Compute, to a fixpoint, which functions statically return a string, so
+    /// `println` can route their call results through the byte-printing path.
+    fn analyze_string_fns(&mut self, exprs: &[Expr]) {
+        // Collect (fn key, return expression) for every clause.
+        let mut returns: Vec<(String, &Expr)> = Vec::new();
         for expr in exprs {
             if let ExprKind::List(items) = &expr.kind {
                 if items.len() >= 3 && matches!(&items[0].kind, ExprKind::Symbol(s) if s == "fn") {
@@ -912,154 +867,75 @@ impl Compiler {
                         if Self::is_multi_arity(args) {
                             for clause in &args[1..] {
                                 if let ExprKind::Tuple(parts) = &clause.kind {
-                                    if let Some(ExprKind::List(params)) =
-                                        parts.first().map(|e| &e.kind)
+                                    if let (Some(ExprKind::List(params)), Some(last)) =
+                                        (parts.first().map(|e| &e.kind), parts.last())
                                     {
-                                        let pnames = Self::param_names(params);
-                                        let key = format!("{name}#{}", pnames.len());
-                                        fn_params.insert(key.clone(), pnames);
-                                        if let Some(last) = parts.last() {
-                                            fn_bodies.push((key.clone(), last));
-                                        }
-                                        for p in &parts[1..] {
-                                            collect_calls(p, Some(&key), &mut calls);
+                                        if parts.len() >= 2 {
+                                            let key =
+                                                format!("{name}#{}", Self::parse_params(params).len());
+                                            returns.push((key, last));
                                         }
                                     }
                                 }
                             }
-                        } else if let ExprKind::List(params) = &items[2].kind {
-                            let pnames = Self::param_names(params);
-                            fn_params.insert(name.clone(), pnames);
-                            if let Some(last) = items.last() {
-                                fn_bodies.push((name.clone(), last));
-                            }
-                            for p in &items[3..] {
-                                collect_calls(p, Some(name), &mut calls);
-                            }
+                        } else if let Some(last) = items.last() {
+                            returns.push((name.clone(), last));
                         }
                     }
-                } else {
-                    collect_calls(expr, None, &mut calls);
                 }
             }
         }
-        // Run the same return/param fixpoint for floats and for strings, using
-        // the matching structural predicate.
-        let (float_fns, float_params) =
-            Self::propagate_type(&fn_bodies, &calls, &fn_params, Self::is_float_static);
-        self.float_fns = float_fns;
-        self.float_params = float_params;
-        let (string_fns, string_params) =
-            Self::propagate_type(&fn_bodies, &calls, &fn_params, Self::is_str_static);
-        self.string_fns = string_fns;
-        self.string_params = string_params;
-    }
-    /// Generic whole-program fixpoint: given a structural predicate `pred` that
-    /// decides whether an expression is of the type in question (consulting the
-    /// in-scope names + the set of functions returning that type), compute which
-    /// functions return that type and which of their params carry it.
-    #[allow(clippy::type_complexity)]
-    fn propagate_type(
-        fn_bodies: &[(String, &Expr)],
-        calls: &[(Option<String>, String, Vec<&Expr>)],
-        fn_params: &HashMap<String, Vec<String>>,
-        pred: fn(&Expr, &std::collections::HashSet<String>, &std::collections::HashSet<String>) -> bool,
-    ) -> (
-        std::collections::HashSet<String>,
-        HashMap<String, Vec<String>>,
-    ) {
-        let mut ret_fns: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut params: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
         loop {
             let mut changed = false;
-            for (key, last) in fn_bodies {
-                let names = params.get(key).cloned().unwrap_or_default();
-                if !ret_fns.contains(key) && pred(last, &names, &ret_fns) {
-                    ret_fns.insert(key.clone());
+            for (key, ret) in &returns {
+                if !self.string_fns.contains(key)
+                    && Self::expr_returns_string(ret, &self.string_fns)
+                {
+                    self.string_fns.insert(key.clone());
                     changed = true;
-                }
-            }
-            for (enc, callee, args) in calls {
-                let callee_key = if fn_params.contains_key(callee) {
-                    callee.clone()
-                } else {
-                    let k = format!("{callee}#{}", args.len());
-                    if fn_params.contains_key(&k) {
-                        k
-                    } else {
-                        continue;
-                    }
-                };
-                let enc_names = enc
-                    .as_ref()
-                    .and_then(|k| params.get(k))
-                    .cloned()
-                    .unwrap_or_default();
-                let pnames = fn_params[&callee_key].clone();
-                for (i, arg) in args.iter().enumerate() {
-                    if i >= pnames.len() {
-                        break;
-                    }
-                    if pred(arg, &enc_names, &ret_fns) {
-                        let set = params.entry(callee_key.clone()).or_default();
-                        if set.insert(pnames[i].clone()) {
-                            changed = true;
-                        }
-                    }
                 }
             }
             if !changed {
                 break;
             }
         }
-        let params = params
-            .into_iter()
-            .map(|(k, v)| (k, v.into_iter().collect()))
-            .collect();
-        (ret_fns, params)
     }
-    /// Structural string check (mirrors `is_float_static`): whether `e`
-    /// evaluates to a string, given in-scope string-named bindings and the set
-    /// of known string-returning functions.
-    fn is_str_static(
-        e: &Expr,
-        strs: &std::collections::HashSet<String>,
-        string_fns: &std::collections::HashSet<String>,
-    ) -> bool {
-        match &e.kind {
+    /// Whether an expression statically evaluates to a string, consulting the
+    /// set of known string-returning functions for calls. Conservative.
+    fn expr_returns_string(expr: &Expr, fns: &std::collections::HashSet<String>) -> bool {
+        match &expr.kind {
             ExprKind::Str(_) => true,
-            ExprKind::Symbol(s) => strs.contains(s),
-            ExprKind::List(items) if !items.is_empty() => {
-                if let ExprKind::Symbol(h) = &items[0].kind {
-                    let argc = items.len() - 1;
-                    match h.as_str() {
-                        "str" | "str-concat" | "substring" | "lowercase" => true,
-                        "do" => items
-                            .last()
-                            .is_some_and(|e| Self::is_str_static(e, strs, string_fns)),
-                        "if" if argc >= 3 => {
-                            Self::is_str_static(&items[2], strs, string_fns)
-                                || Self::is_str_static(&items[3], strs, string_fns)
+            ExprKind::List(items) => match items.first().map(|e| &e.kind) {
+                Some(ExprKind::Symbol(s)) => match s.as_str() {
+                    "str" | "str-concat" | "substring" | "lowercase" | "uppercase" => true,
+                    "resume" => items.get(1).is_some_and(|e| Self::expr_returns_string(e, fns)),
+                    // A `handle` yields a string when every handler-clause body
+                    // does (tail-resumptive handlers feed those values back as
+                    // the operations' results).
+                    "handle" if items.len() > 2 => {
+                        let mut k = 3;
+                        let mut all = true;
+                        while k < items.len() {
+                            all &= Self::expr_returns_string(&items[k], fns);
+                            k += 2;
                         }
-                        "match" if argc >= 3 => {
-                            let mut i = 3;
-                            while i < items.len() {
-                                if Self::is_str_static(&items[i], strs, string_fns) {
-                                    return true;
-                                }
-                                i += 2;
-                            }
-                            false
-                        }
-                        _ => {
-                            string_fns.contains(h.as_str())
-                                || string_fns.contains(&format!("{h}#{argc}"))
-                        }
+                        all
                     }
-                } else {
-                    false
-                }
-            }
+                    "do" => items.last().is_some_and(|e| Self::expr_returns_string(e, fns)),
+                    "if" => {
+                        items.len() >= 4
+                            && Self::expr_returns_string(&items[2], fns)
+                            && Self::expr_returns_string(&items[3], fns)
+                    }
+                    // A call: string iff the callee (by name or arity) is known
+                    // to return a string.
+                    name => {
+                        let argc = items.len() - 1;
+                        fns.contains(name) || fns.contains(&format!("{name}#{argc}"))
+                    }
+                },
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -1070,24 +946,17 @@ impl Compiler {
         for (pos, &id) in self.fn_indices.iter().enumerate() {
             id_to_pos.insert(id, pos);
         }
+        // `main` is the only entry point, so reachability is seeded from it.
+        // With no main — a file of bare definitions or `test` blocks — nothing
+        // is reachable and every compiled function is pruned, yielding a valid
+        // (empty) module. Bailing out instead would leave functions behind with
+        // stale provisional indices that `finish` mis-references, producing
+        // invalid wasm.
         let mut reachable = std::collections::HashSet::new();
         let mut queue = std::collections::VecDeque::new();
-        // Root the reachability at `main`. With no `main` (e.g. a top-level
-        // script or a library module), keep *all* functions — we can't prune,
-        // but this pass also performs the essential index relocation, so it
-        // must still run to keep Call targets / `_start` consistent.
-        match self.fn_map.get("main") {
-            Some(def) => {
-                reachable.insert(def.func_idx);
-                queue.push_back(def.func_idx);
-            }
-            None => {
-                for &id in &self.fn_indices {
-                    if reachable.insert(id) {
-                        queue.push_back(id);
-                    }
-                }
-            }
+        if let Some(def) = self.fn_map.get("main") {
+            reachable.insert(def.func_idx);
+            queue.push_back(def.func_idx);
         }
         while let Some(idx) = queue.pop_front() {
             let pos = match id_to_pos.get(&idx) {
@@ -1097,7 +966,7 @@ impl Compiler {
             let mut has_indirect = false;
             for instr in &self.functions[pos].instructions {
                 match instr {
-                    WasmInstruction::Call(target) => {
+                    WasmInstruction::Call(target) | WasmInstruction::ReturnCall(target) => {
                         if reachable.insert(*target) {
                             queue.push_back(*target);
                         }
@@ -1157,10 +1026,12 @@ impl Compiler {
             .map(|&i| old_fns[i].take().unwrap())
             .collect();
         self.fn_indices = kept_fn_indices.iter().map(|&i| remap[&old_ids[i]]).collect();
-        // Rewrite Call targets
+        // Rewrite Call / ReturnCall targets
         for func in &mut self.functions {
             for instr in &mut func.instructions {
-                if let WasmInstruction::Call(ref mut target) = instr {
+                if let WasmInstruction::Call(ref mut target)
+                | WasmInstruction::ReturnCall(ref mut target) = instr
+                {
                     if let Some(&new) = remap.get(target) {
                         *target = new;
                     }
@@ -1303,6 +1174,217 @@ impl Compiler {
         self.effect_imports.insert(key, idx);
         idx
     }
+    /// Memory address of the handler slot for effect op `key` (`"Effect.op"`),
+    /// assigning a fresh id on first use. Slots live below the heap (which
+    /// starts at 4096), so they never collide with allocations.
+    fn handler_slot_addr(&mut self, key: &str) -> i32 {
+        let next = self.handler_op_ids.len() as u32;
+        let id = *self.handler_op_ids.entry(key.to_string()).or_insert(next);
+        const HANDLER_BASE: i32 = 256;
+        HANDLER_BASE + (id as i32) * 8
+    }
+    /// Host import `loon:rt::print-f64(bits) -> i64` that formats a float (given
+    /// as its i64 bit pattern) the way the VM does and writes it with a newline.
+    fn ensure_print_f64_import(&mut self) -> u32 {
+        let key = "@print-f64".to_string();
+        if let Some(&idx) = self.effect_imports.get(&key) {
+            return idx;
+        }
+        let idx = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.effect_import_defs
+            .push(("loon:rt".to_string(), "print-f64".to_string(), 1));
+        self.effect_imports.insert(key, idx);
+        idx
+    }
+    /// Static float classifier for the untagged-i64 backend: an expression is a
+    /// float when it is a float literal, float arithmetic, a float-bound local
+    /// (`floats`), or a call to a float-returning function. `floats` carries the
+    /// locals currently known to hold floats (params, `let`, `match` bindings).
+    fn expr_is_float(&self, expr: &Expr, floats: &std::collections::HashSet<String>) -> bool {
+        match &expr.kind {
+            ExprKind::Float(_) => true,
+            ExprKind::Symbol(s) => floats.contains(s),
+            ExprKind::List(items) => {
+                let Some(head) = items.first() else {
+                    return false;
+                };
+                match &head.kind {
+                    ExprKind::Symbol(op) => match op.as_str() {
+                        "+" | "-" | "*" | "/" => {
+                            items.len() >= 3
+                                && (self.expr_is_float(&items[1], floats)
+                                    || self.expr_is_float(&items[2], floats))
+                        }
+                        "do" => items.last().is_some_and(|e| self.expr_is_float(e, floats)),
+                        "if" => {
+                            items.len() >= 3 && self.expr_is_float(&items[2], floats)
+                        }
+                        "let" => items.last().is_some_and(|e| self.expr_is_float(e, floats)),
+                        "match" => self.match_is_float(items, floats),
+                        // Dimensioned quantities carry a float magnitude.
+                        "unit" | "magnitude" => {
+                            items.get(1).is_some_and(|e| self.expr_is_float(e, floats))
+                        }
+                        name => self.float_return_fns.contains(name),
+                    },
+                    // Physics constants (`Const.c`, …) are floats.
+                    ExprKind::DotAccess(obj, _) => {
+                        matches!(&obj.kind, ExprKind::Symbol(ns) if ns == "Const")
+                    }
+                    _ => false,
+                }
+            }
+            ExprKind::DotAccess(obj, _) => {
+                matches!(&obj.kind, ExprKind::Symbol(ns) if ns == "Const")
+            }
+            _ => false,
+        }
+    }
+    /// A `match` is float when every arm body is float, evaluated with the arm's
+    /// destructured ADT fields bound to their declared float-ness.
+    fn match_is_float(
+        &self,
+        items: &[Expr],
+        floats: &std::collections::HashSet<String>,
+    ) -> bool {
+        let mut i = 2; // items[0]=match, items[1]=scrutinee
+        let mut saw_arm = false;
+        while i + 1 < items.len() {
+            let mut arm_floats = floats.clone();
+            if let ExprKind::List(pitems) = &items[i].kind {
+                if let Some(ExprKind::Symbol(ctor)) = pitems.first().map(|e| &e.kind) {
+                    if let Some(ff) = self.adt_float_fields.get(ctor) {
+                        for (j, sub) in pitems[1..].iter().enumerate() {
+                            if let ExprKind::Symbol(v) = &sub.kind {
+                                if ff.get(j).copied().unwrap_or(false) {
+                                    arm_floats.insert(v.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !self.expr_is_float(&items[i + 1], &arm_floats) {
+                return false;
+            }
+            saw_arm = true;
+            i += 2;
+        }
+        saw_arm
+    }
+    /// Static boolean classifier: comparisons, `not`/`and`/`or`, boolean
+    /// literals, `if`/`do` whose results are boolean, and calls to
+    /// boolean-returning functions. Used so `str`/`println` format `0`/`1` as
+    /// `false`/`true` (the untagged value model can't tell them apart at run
+    /// time).
+    fn expr_is_bool(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Bool(_) => true,
+            ExprKind::List(items) => match items.first().map(|e| &e.kind) {
+                Some(ExprKind::Symbol(op)) => match op.as_str() {
+                    "<" | ">" | "<=" | ">=" | "=" | "!=" | "not" | "and" | "or" | "empty?" => true,
+                    "do" => items.last().is_some_and(|e| self.expr_is_bool(e)),
+                    "if" => {
+                        items.len() >= 4
+                            && self.expr_is_bool(&items[2])
+                            && self.expr_is_bool(&items[3])
+                    }
+                    name => self.bool_return_fns.contains(name),
+                },
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    /// Greatest-fixpoint pass populating `bool_return_fns`: assume every
+    /// function returns a boolean, then drop any whose result expression is not
+    /// boolean under the current assumptions. (A least fixpoint can't seed
+    /// mutually recursive predicates like `is-even`/`is-odd`.)
+    fn compute_bool_return_fns(&mut self, exprs: &[Expr]) {
+        let defs: Vec<(String, Expr)> = exprs
+            .iter()
+            .filter_map(|e| {
+                let ExprKind::List(items) = &e.kind else {
+                    return None;
+                };
+                if !matches!(items.first().map(|i| &i.kind), Some(ExprKind::Symbol(s)) if s == "fn")
+                {
+                    return None;
+                }
+                let name = match items.get(1).map(|i| &i.kind) {
+                    Some(ExprKind::Symbol(n)) => n.clone(),
+                    _ => return None,
+                };
+                items.last().map(|body| (name, body.clone()))
+            })
+            .collect();
+        for (name, _) in &defs {
+            self.bool_return_fns.insert(name.clone());
+        }
+        loop {
+            let mut changed = false;
+            for (name, body) in &defs {
+                if self.bool_return_fns.contains(name) && !self.expr_is_bool(body) {
+                    self.bool_return_fns.remove(name);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+    /// Fixpoint pass populating `float_return_fns`: a function returns a float
+    /// when its result expression is float (ignoring float-typed parameters,
+    /// which the samples in scope don't rely on).
+    fn compute_float_return_fns(&mut self, exprs: &[Expr]) {
+        let defs: Vec<(String, Expr)> = exprs
+            .iter()
+            .filter_map(|e| {
+                let ExprKind::List(items) = &e.kind else {
+                    return None;
+                };
+                if !matches!(items.first().map(|i| &i.kind), Some(ExprKind::Symbol(s)) if s == "fn")
+                {
+                    return None;
+                }
+                let name = match items.get(1).map(|i| &i.kind) {
+                    Some(ExprKind::Symbol(n)) => n.clone(),
+                    _ => return None,
+                };
+                items.last().map(|body| (name, body.clone()))
+            })
+            .collect();
+        let empty = std::collections::HashSet::new();
+        loop {
+            let mut changed = false;
+            for (name, body) in &defs {
+                if !self.float_return_fns.contains(name) && self.expr_is_float(body, &empty) {
+                    self.float_return_fns.insert(name.clone());
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+    /// Whether `expr` contains a `handle` or `try` form anywhere within it
+    /// (both install effect handlers in op slots).
+    fn contains_handle(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::List(items) => {
+                matches!(items.first().map(|e| &e.kind),
+                    Some(ExprKind::Symbol(s)) if s == "handle" || s == "try")
+                    || items.iter().any(Self::contains_handle)
+            }
+            ExprKind::Tuple(items) | ExprKind::Vec(items) | ExprKind::Set(items) => {
+                items.iter().any(Self::contains_handle)
+            }
+            _ => false,
+        }
+    }
     fn collect_adt_def(&mut self, args: &[Expr]) -> Result<(), String> {
         if args.is_empty() {
             return Ok(());
@@ -1320,6 +1402,14 @@ impl Compiler {
                         if cn.starts_with(char::is_uppercase) {
                             let arity = items.len() - 1;
                             self.adt_constructors.insert(cn.clone(), (tag, arity));
+                            let floats: Vec<bool> = items[1..]
+                                .iter()
+                                .map(|f| {
+                                    matches!(&f.kind, ExprKind::Symbol(t)
+                                        if t == "f64" || t == "Float" || t == "float")
+                                })
+                                .collect();
+                            self.adt_float_fields.insert(cn.clone(), floats);
                             constructors.push((cn.clone(), tag, arity));
                             tag += 1;
                         }
@@ -1365,15 +1455,24 @@ impl Compiler {
             _ => false,
         }
     }
-    fn param_names(params: &[Expr]) -> Vec<String> {
+    /// Parse a parameter list into `ClosureParam`s. Each entry is one argument
+    /// slot: a plain symbol, or a positional destructuring pattern `[a b …]`
+    /// (with `_` ignoring a slot). Used by both named functions and closures so
+    /// arity (slot count) and binding stay consistent.
+    fn parse_params(params: &[Expr]) -> Vec<ClosureParam> {
         params
             .iter()
-            .filter_map(|p| {
-                if let ExprKind::Symbol(s) = &p.kind {
-                    Some(s.clone())
-                } else {
-                    None
-                }
+            .map(|p| match &p.kind {
+                ExprKind::List(subs) => ClosureParam::Destructure(
+                    subs.iter()
+                        .map(|e| match &e.kind {
+                            ExprKind::Symbol(s) if s != "_" => Some(s.clone()),
+                            _ => None,
+                        })
+                        .collect(),
+                ),
+                ExprKind::Symbol(s) => ClosureParam::Simple(s.clone()),
+                _ => ClosureParam::Simple("_".into()),
             })
             .collect()
     }
@@ -1391,15 +1490,16 @@ impl Compiler {
             for clause in &args[1..] {
                 if let ExprKind::Tuple(parts) = &clause.kind {
                     if let Some(ExprKind::List(params)) = parts.first().map(|e| &e.kind) {
-                        let key = format!("{name}#{}", params.len());
-                        self.compile_fn_body(&key, false, params, &parts[1..])?;
+                        let names = Self::parse_params(params);
+                        let key = format!("{name}#{}", names.len());
+                        self.compile_fn_body(&key, false, &names, &parts[1..])?;
                     }
                 }
             }
             return Ok(());
         }
-        let params: Vec<Expr> = match &args[1].kind {
-            ExprKind::List(items) => items.clone(),
+        let params = match &args[1].kind {
+            ExprKind::List(items) => Self::parse_params(items),
             _ => return Err("defn params must be a list".into()),
         };
         let mut body_start = 2;
@@ -1420,56 +1520,22 @@ impl Compiler {
         &mut self,
         key: &str,
         is_main: bool,
-        param_exprs: &[Expr],
+        params: &[ClosureParam],
         body: &[Expr],
     ) -> Result<(), String> {
-        let arity = param_exprs.len();
-        // Params known to be float/string (from the fixpoint) seed the locals.
-        let float_locals: std::collections::HashSet<String> = self
-            .float_params
-            .get(key)
-            .map(|v| v.iter().cloned().collect())
-            .unwrap_or_default();
-        let string_locals: std::collections::HashSet<String> = self
-            .string_params
-            .get(key)
-            .map(|v| v.iter().cloned().collect())
-            .unwrap_or_default();
         let mut ctx = FnCtx {
             locals: HashMap::new(),
-            local_count: arity as u32,
+            local_count: params.len() as u32,
             instructions: Vec::new(),
             compiler: self,
             loop_starts: Vec::new(),
             loop_vars: Vec::new(),
-            float_locals,
-            string_locals,
+            float_locals: std::collections::HashSet::new(),
+            string_locals: std::collections::HashSet::new(),
         };
-        // Bind params positionally; a list/tuple-pattern param destructures the
-        // (pair) argument via vec-get into named locals (`_` is a wildcard).
-        for (i, p) in param_exprs.iter().enumerate() {
-            match &p.kind {
-                ExprKind::Symbol(s) => {
-                    ctx.locals.insert(s.clone(), i as u32);
-                }
-                ExprKind::List(sub) | ExprKind::Tuple(sub) => {
-                    ctx.compiler.ensure_collections_runtime();
-                    let vget = ctx.compiler.collections_runtime.clone().unwrap().vec_get_idx;
-                    for (j, e) in sub.iter().enumerate() {
-                        if let ExprKind::Symbol(s) = &e.kind {
-                            if s == "_" {
-                                continue;
-                            }
-                            let l = ctx.alloc_local();
-                            ctx.instructions.push(WasmInstruction::LocalGet(i as u32));
-                            ctx.instructions.push(WasmInstruction::I64Const(j as i64));
-                            ctx.instructions.push(WasmInstruction::Call(vget));
-                            ctx.instructions.push(WasmInstruction::LocalSet(l));
-                            ctx.locals.insert(s.clone(), l);
-                        }
-                    }
-                }
-                _ => {}
+        for (i, p) in params.iter().enumerate() {
+            if let ClosureParam::Simple(s) = p {
+                ctx.locals.insert(s.clone(), i as u32);
             }
         }
         // Self-tail-recursion: a `recur` in the body (not inside a nested
@@ -1480,15 +1546,43 @@ impl Compiler {
             ctx.instructions
                 .push(WasmInstruction::Loop(BlockType::Result(ValType::I64)));
             ctx.loop_starts.push(ctx.instructions.len());
-            ctx.loop_vars.push((0..arity as u32).collect());
+            ctx.loop_vars.push((0..params.len() as u32).collect());
+        }
+        // Bind destructured sub-names from each `[a b …]` param slot. Emitted
+        // at the top of the (possibly recur) loop so a recur re-extracts them.
+        for (i, p) in params.iter().enumerate() {
+            if let ClosureParam::Destructure(names) = p {
+                let slot = i as u32;
+                for (j, name) in names.iter().enumerate() {
+                    let Some(name) = name else { continue };
+                    let l = ctx.alloc_local();
+                    ctx.instructions.push(WasmInstruction::LocalGet(slot));
+                    ctx.instructions.push(WasmInstruction::I32WrapI64);
+                    ctx.instructions.push(WasmInstruction::I64Load(3, 16));
+                    ctx.instructions.push(WasmInstruction::I64Const((j * 8) as i64));
+                    ctx.instructions.push(WasmInstruction::I64Add);
+                    ctx.instructions.push(WasmInstruction::I32WrapI64);
+                    ctx.instructions.push(WasmInstruction::I64Load(3, 0));
+                    ctx.instructions.push(WasmInstruction::LocalSet(l));
+                    ctx.locals.insert(name.clone(), l);
+                }
+            }
         }
         // Compile each body expression; every one leaves an i64 on the stack,
         // so drop all but the last (a statement sequence keeps only its final
         // value). The last value is the function's result (or dropped for main).
+        // The final expression is compiled in tail position so tail calls become
+        // `return_call` — except in `main`, whose result type is `()` (a tail
+        // `return_call` to an i64-returning function would mismatch).
         for (i, expr) in body.iter().enumerate() {
-            ctx.compile_expr(expr)?;
-            if i + 1 < body.len() {
-                ctx.instructions.push(WasmInstruction::Drop);
+            let is_last = i + 1 == body.len();
+            if is_last && !is_main {
+                ctx.compile_tail(expr)?;
+            } else {
+                ctx.compile_expr(expr)?;
+                if !is_last {
+                    ctx.instructions.push(WasmInstruction::Drop);
+                }
             }
         }
         if self_recur {
@@ -1496,8 +1590,8 @@ impl Compiler {
             ctx.loop_starts.pop();
             ctx.loop_vars.pop();
         }
-        let extra_locals = if ctx.local_count > arity as u32 {
-            vec![ValType::I64; (ctx.local_count - arity as u32) as usize]
+        let extra_locals = if ctx.local_count > params.len() as u32 {
+            vec![ValType::I64; (ctx.local_count - params.len() as u32) as usize]
         } else {
             vec![]
         };
@@ -1510,7 +1604,7 @@ impl Compiler {
         self.push_function(
             func_idx,
             FunctionBody {
-                params: vec![ValType::I64; arity],
+                params: vec![ValType::I64; params.len()],
                 results: if is_main { vec![] } else { vec![ValType::I64] },
                 locals: extra_locals,
                 instructions: instrs,
@@ -1593,11 +1687,6 @@ impl Compiler {
                 .ty()
                 .function(vec![ValType::I64; *arity], vec![ValType::I64]);
         }
-        // Type for the `fail` exception tag: (i64) -> ().
-        let fail_type_idx = types.len();
-        if self.uses_exceptions {
-            types.ty().function(vec![ValType::I64], vec![]);
-        }
         module.section(&types);
         let wasi_defs: [(u32, &str, u32); 6] = [
             (0, "fd_write", 0),
@@ -1643,13 +1732,12 @@ impl Compiler {
             functions.function(*idx);
         }
         module.section(&functions);
-        if !self.table_entries.is_empty() || self.force_table {
+        if !self.table_entries.is_empty() {
             let mut t = TableSection::new();
-            let n = self.table_entries.len() as u64;
             t.table(TableType {
                 element_type: RefType::FUNCREF,
-                minimum: n,
-                maximum: Some(n),
+                minimum: self.table_entries.len() as u64,
+                maximum: Some(self.table_entries.len() as u64),
                 table64: false,
                 shared: false,
             });
@@ -1657,26 +1745,18 @@ impl Compiler {
         }
         let mut mem = MemorySection::new();
         mem.memory(MemoryType {
-            // 256 pages (16 MiB). The bump allocator never frees and vectors
-            // are copy-on-write (O(n²) for repeated push), so one 64 KiB page
-            // is exhausted by even modest loops; this gives realistic programs
-            // headroom without a memory.grow path.
-            minimum: 256,
+            // 16384 pages (1 GiB). The bump allocator never frees and vectors
+            // are copy-on-write (O(n²) for repeated push), so building even a
+            // 10K-element vector touches hundreds of MiB. wasmtime maps the
+            // initial size lazily (zero-fill on demand), so small programs pay
+            // nothing; this avoids needing a memory.grow path in the allocator.
+            minimum: 16384,
             maximum: None,
             memory64: false,
             shared: false,
             page_size_log2: None,
         });
         module.section(&mem);
-        // Tag section (id 13) goes between memory and global.
-        if self.uses_exceptions {
-            let mut tags = TagSection::new();
-            tags.tag(TagType {
-                kind: TagKind::Exception,
-                func_type_idx: fail_type_idx,
-            });
-            module.section(&tags);
-        }
         if self.force_heap || !self.table_entries.is_empty() || !self.adt_constructors.is_empty() {
             let mut g = GlobalSection::new();
             g.global(
@@ -1691,6 +1771,11 @@ impl Compiler {
         }
         let mut exports = ExportSection::new();
         exports.export("memory", ExportKind::Memory, 0);
+        // Export the bump-allocator heap pointer (global 0) when present, so host
+        // imports (e.g. `IO.read-file`) can allocate strings into linear memory.
+        if self.force_heap || !self.table_entries.is_empty() || !self.adt_constructors.is_empty() {
+            exports.export("heap_ptr", ExportKind::Global, 0);
+        }
         if let Some(main_fn) = self.fn_map.get("main") {
             exports.export("_start", ExportKind::Func, main_fn.func_idx);
         }
@@ -1746,11 +1831,10 @@ struct FnCtx<'a> {
     /// op (to compute `recur`'s branch depth) and its loop-variable locals.
     loop_starts: Vec<usize>,
     loop_vars: Vec<Vec<u32>>,
-    /// Names of in-scope bindings (params + lets) known to hold float values,
-    /// so arithmetic on them picks the f64 path.
+    /// Names of locals currently bound to float (f64-bit) values.
     float_locals: std::collections::HashSet<String>,
-    /// Names of in-scope bindings known to hold string values, so `=`/map keys/
-    /// `println` pick the string path.
+    /// Names of locals currently bound to string values (so bare `println`
+    /// formats them as strings rather than integers).
     string_locals: std::collections::HashSet<String>,
 }
 
@@ -1901,219 +1985,90 @@ impl<'a> FnCtx<'a> {
         }
         self.instructions.push(W::I64Const(0));
     }
-    /// Emit a WASI fd_write of `len` bytes at memory address `addr` to stdout,
-    /// using the iovec scratch at mem[0..8]. Leaves nothing on the stack.
-    fn emit_fd_write_buf(&mut self, addr: i32, len: i32) {
-        use WasmInstruction as W;
-        self.instructions.push(W::I32Const(0));
-        self.instructions.push(W::I32Const(addr));
-        self.instructions.push(W::I32Store(2, 0));
-        self.instructions.push(W::I32Const(4));
-        self.instructions.push(W::I32Const(len));
-        self.instructions.push(W::I32Store(2, 0));
-        self.instructions.push(W::I32Const(1)); // stdout
-        self.instructions.push(W::I32Const(0)); // iovec
-        self.instructions.push(W::I32Const(1)); // count
-        self.instructions.push(W::I32Const(8)); // nwritten
-        self.instructions.push(W::Call(0));
-        self.instructions.push(W::Drop);
-    }
-    /// Consume an i64 holding f64 bits and print it as `[-]int.dddddd` (six
-    /// fixed fractional digits), optionally with a newline. Leaves UNIT.
-    fn emit_print_f64(&mut self, newline: bool) {
-        use WasmInstruction as W;
-        const FB: i32 = 600; // scratch: '.', six digits, then newline byte
-        let bits = self.alloc_local();
-        let ip = self.alloc_local();
-        let fr = self.alloc_local();
-        let dg = self.alloc_local();
-        self.instructions.push(W::LocalSet(bits));
-        // sign: if fv < 0 { print '-'; fv = -fv }
-        self.instructions.push(W::LocalGet(bits));
-        self.instructions.push(W::F64ReinterpretI64);
-        self.instructions.push(W::F64Const(0.0));
-        self.instructions.push(W::F64Lt);
-        self.instructions.push(W::If(BlockType::Empty));
-        self.instructions.push(W::I32Const(FB));
-        self.instructions.push(W::I32Const(45)); // '-'
-        self.instructions.push(W::I32Store8(0, 0));
-        self.emit_fd_write_buf(FB, 1);
-        self.instructions.push(W::F64Const(0.0));
-        self.instructions.push(W::LocalGet(bits));
-        self.instructions.push(W::F64ReinterpretI64);
-        self.instructions.push(W::F64Sub);
-        self.instructions.push(W::I64ReinterpretF64);
-        self.instructions.push(W::LocalSet(bits));
-        self.instructions.push(W::End);
-        // integer part = trunc(fv); print it with no newline (drop its UNIT).
-        self.instructions.push(W::LocalGet(bits));
-        self.instructions.push(W::F64ReinterpretI64);
-        self.instructions.push(W::I64TruncF64S);
-        self.instructions.push(W::LocalSet(ip));
-        self.instructions.push(W::LocalGet(ip));
-        self.emit_print_i64(false);
-        self.instructions.push(W::Drop);
-        // fractional part = fv - (ip as f64)
-        self.instructions.push(W::LocalGet(bits));
-        self.instructions.push(W::F64ReinterpretI64);
-        self.instructions.push(W::LocalGet(ip));
-        self.instructions.push(W::F64ConvertI64S);
-        self.instructions.push(W::F64Sub);
-        self.instructions.push(W::I64ReinterpretF64);
-        self.instructions.push(W::LocalSet(fr));
-        // buffer[0] = '.'
-        self.instructions.push(W::I32Const(FB));
-        self.instructions.push(W::I32Const(46));
-        self.instructions.push(W::I32Store8(0, 0));
-        // six fractional digits
-        for k in 0..6i32 {
-            // t = frac * 10 ; keep its bits in `fr`
-            self.instructions.push(W::LocalGet(fr));
-            self.instructions.push(W::F64ReinterpretI64);
-            self.instructions.push(W::F64Const(10.0));
-            self.instructions.push(W::F64Mul);
-            self.instructions.push(W::I64ReinterpretF64);
-            self.instructions.push(W::LocalSet(fr));
-            // digit = trunc(t)
-            self.instructions.push(W::LocalGet(fr));
-            self.instructions.push(W::F64ReinterpretI64);
-            self.instructions.push(W::I64TruncF64S);
-            self.instructions.push(W::LocalSet(dg));
-            // buffer[1+k] = '0' + digit
-            self.instructions.push(W::I32Const(FB + 1 + k));
-            self.instructions.push(W::I64Const(48));
-            self.instructions.push(W::LocalGet(dg));
-            self.instructions.push(W::I64Add);
-            self.instructions.push(W::I32WrapI64);
-            self.instructions.push(W::I32Store8(0, 0));
-            // frac = t - digit
-            self.instructions.push(W::LocalGet(fr));
-            self.instructions.push(W::F64ReinterpretI64);
-            self.instructions.push(W::LocalGet(dg));
-            self.instructions.push(W::F64ConvertI64S);
-            self.instructions.push(W::F64Sub);
-            self.instructions.push(W::I64ReinterpretF64);
-            self.instructions.push(W::LocalSet(fr));
-        }
-        self.emit_fd_write_buf(FB, 7); // '.' + 6 digits
-        if newline {
-            self.instructions.push(W::I32Const(FB + 8));
-            self.instructions.push(W::I32Const(10));
-            self.instructions.push(W::I32Store8(0, 0));
-            self.emit_fd_write_buf(FB + 8, 1);
-        }
-        self.instructions.push(W::I64Const(0));
-    }
     /// Whether an expression statically produces a string value. The value
     /// model is untagged (every value is a raw i64), so `println` can only
     /// pick the string-printing path when it can prove the argument is a
     /// string at compile time.
     fn expr_is_string(&self, expr: &Expr) -> bool {
-        match self.compiler.node_type(expr) {
-            Some(Type::Str) => return true,
-            // A concrete non-string type is authoritative.
-            Some(t) if !matches!(t, Type::Var(_)) => return false,
-            _ => {}
-        }
-        // Generalized/synthesized nodes: structural fallback.
-        Compiler::is_str_static(expr, &self.string_locals, &self.compiler.string_fns)
-    }
-    /// Compile `expr` so it leaves a packed *string* on the stack: strings are
-    /// used as-is; other values are rendered via `int_to_str` (type-directed
-    /// Display — covers ints/bools/keywords; floats fall here too and render
-    /// their integer value, a known rough edge).
-    fn compile_as_string(&mut self, expr: &Expr) -> Result<(), String> {
-        use WasmInstruction as W;
-        if self.expr_is_string(expr) {
-            return self.compile_expr(expr);
-        }
-        self.compiler.ensure_string_runtime();
-        let its = self.compiler.string_runtime.clone().unwrap().int_to_str_idx;
-        // Statically-known non-string (int/bool/keyword): render via int_to_str.
-        if let Some(ty) = self.compiler.node_type(expr) {
-            if !matches!(ty, Type::Var(_)) {
-                self.compile_expr(expr)?;
-                self.instructions.push(W::Call(its));
-                return Ok(());
+        if let ExprKind::Symbol(s) = &expr.kind {
+            if self.string_locals.contains(s) {
+                return true;
             }
         }
-        // Unknown static type (e.g. a destructured binding): self-describing —
-        // if the value looks like a string pointer at runtime use it directly,
-        // else stringify as an integer.
-        let x = self.alloc_local();
-        self.compile_expr(expr)?;
-        self.instructions.push(W::LocalSet(x));
-        self.instructions.push(W::LocalGet(x));
-        self.instructions.push(W::I64Const(32));
-        self.instructions.push(W::I64ShrU);
-        self.instructions.push(W::I64Const(1024));
-        self.instructions.push(W::I64GeS);
-        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
-        self.instructions.push(W::LocalGet(x));
-        self.instructions.push(W::Else);
-        self.instructions.push(W::LocalGet(x));
-        self.instructions.push(W::Call(its));
-        self.instructions.push(W::End);
-        Ok(())
+        Compiler::expr_returns_string(expr, &self.compiler.string_fns)
     }
-    /// Whether an expression is statically of float type. Trusts the checker's
-    /// concrete type when present; otherwise falls back to a structural check
-    /// (the checker generalizes polymorphic function bodies, so body nodes
-    /// often carry a type var rather than `Float`).
+    /// Whether `expr` evaluates to a float in the current local context.
     fn expr_is_float(&self, expr: &Expr) -> bool {
-        match self.compiler.node_type(expr) {
-            Some(Type::Float) => return true,
-            // A concrete non-float type is authoritative.
-            Some(t) if !matches!(t, Type::Var(_)) => return false,
-            _ => {}
-        }
-        Compiler::is_float_static(expr, &self.float_locals, &self.compiler.float_fns)
+        self.compiler.expr_is_float(expr, &self.float_locals)
     }
-    /// Compile a binary arithmetic op, choosing the i64 or f64 instruction by
-    /// the operands' static type. Float values are carried as f64 bits in the
-    /// i64 slot, so the float path reinterprets in and out.
-    fn compile_arith(
-        &mut self,
-        a: &Expr,
-        b: &Expr,
-        iop: WasmInstruction,
-        fop: WasmInstruction,
-    ) -> Result<(), String> {
-        if self.expr_is_float(a) || self.expr_is_float(b) {
-            self.compile_expr(a)?;
-            self.instructions.push(WasmInstruction::F64ReinterpretI64);
-            self.compile_expr(b)?;
-            self.instructions.push(WasmInstruction::F64ReinterpretI64);
-            self.instructions.push(fop);
-            self.instructions.push(WasmInstruction::I64ReinterpretF64);
-        } else {
-            self.compile_expr(a)?;
-            self.compile_expr(b)?;
-            self.instructions.push(iop);
+    /// Push the packed string `"true"`/`"false"` for an i64 boolean on the
+    /// stack.
+    fn emit_bool_to_str(&mut self) {
+        use WasmInstruction as W;
+        let (to, tl) = self.compiler.intern_string("true");
+        let (fo, fl) = self.compiler.intern_string("false");
+        self.instructions.push(W::I64Eqz);
+        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+        self.instructions
+            .push(W::I64Const(((fo as i64) << 32) | fl as i64));
+        self.instructions.push(W::Else);
+        self.instructions
+            .push(W::I64Const(((to as i64) << 32) | tl as i64));
+        self.instructions.push(W::End);
+    }
+    /// Compile one `str` argument: booleans format as `true`/`false`, floats via
+    /// the host formatter, everything else through `to_str`.
+    fn compile_str_arg(&mut self, arg: &Expr) -> Result<(), String> {
+        if self.compiler.expr_is_bool(arg) {
+            self.compile_expr(arg)?;
+            self.emit_bool_to_str();
+            return Ok(());
         }
+        let to_str = self.compiler.string_runtime.clone().unwrap().to_str_idx;
+        self.compile_expr(arg)?;
+        self.instructions.push(WasmInstruction::Call(to_str));
         Ok(())
     }
-    /// Compile a comparison, choosing i64 or f64 by operand type. Both paths
-    /// yield an i32 which is widened to the i64 boolean value model.
-    fn compile_cmp(
+    /// Compile `e` and leave an f64 on the stack: reinterpret if it is already
+    /// float bits, else convert an integer.
+    fn compile_operand_f64(&mut self, e: &Expr) -> Result<(), String> {
+        let is_f = self.expr_is_float(e);
+        self.compile_expr(e)?;
+        self.instructions.push(if is_f {
+            WasmInstruction::F64ReinterpretI64
+        } else {
+            WasmInstruction::F64ConvertI64S
+        });
+        Ok(())
+    }
+    /// Compile a numeric binary op, choosing the i64 or f64 path by float-ness.
+    /// `is_cmp` ops yield an i64 boolean; arithmetic ops yield a value (float
+    /// results are reinterpreted back to i64 bits).
+    fn compile_num_binop(
         &mut self,
         a: &Expr,
         b: &Expr,
         iop: WasmInstruction,
         fop: WasmInstruction,
+        is_cmp: bool,
     ) -> Result<(), String> {
         if self.expr_is_float(a) || self.expr_is_float(b) {
-            self.compile_expr(a)?;
-            self.instructions.push(WasmInstruction::F64ReinterpretI64);
-            self.compile_expr(b)?;
-            self.instructions.push(WasmInstruction::F64ReinterpretI64);
+            self.compile_operand_f64(a)?;
+            self.compile_operand_f64(b)?;
             self.instructions.push(fop);
+            self.instructions.push(if is_cmp {
+                WasmInstruction::I64ExtendI32U
+            } else {
+                WasmInstruction::I64ReinterpretF64
+            });
         } else {
             self.compile_expr(a)?;
             self.compile_expr(b)?;
             self.instructions.push(iop);
+            if is_cmp {
+                self.instructions.push(WasmInstruction::I64ExtendI32U);
+            }
         }
-        self.instructions.push(WasmInstruction::I64ExtendI32U);
         Ok(())
     }
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), String> {
@@ -2123,15 +2078,24 @@ impl<'a> FnCtx<'a> {
                 Ok(())
             }
             ExprKind::Float(n) => {
-                // Floats are carried as their f64 bit-pattern in the i64 value
-                // slot; arithmetic/comparison reinterpret to f64 at the op.
-                self.instructions
-                    .push(WasmInstruction::I64Const(n.to_bits() as i64));
+                // Floats live in the same untagged i64 slots as everything else,
+                // stored as their IEEE-754 bit pattern. Arithmetic that knows it
+                // is operating on floats (`expr_is_float`) reinterprets back to
+                // f64, computes, and reinterprets the result.
+                self.instructions.push(WasmInstruction::F64Const(*n));
+                self.instructions.push(WasmInstruction::I64ReinterpretF64);
                 Ok(())
             }
             ExprKind::Keyword(k) => {
-                let id = self.compiler.intern_keyword(k);
-                self.instructions.push(WasmInstruction::I64Const(id));
+                // Represent a keyword as the interned packed string `":name"`.
+                // Interning dedups, so two occurrences of the same keyword pack
+                // to the same i64 — `=`/`match`/map-key comparisons (all `i64.eq`
+                // / structural) still work — and `str` prints `:name` instead of
+                // reading an opaque id as a bad pointer.
+                let with_colon = format!(":{k}");
+                let (offset, len) = self.compiler.intern_string(&with_colon);
+                let packed = ((offset as i64) << 32) | (len as i64);
+                self.instructions.push(WasmInstruction::I64Const(packed));
                 Ok(())
             }
             ExprKind::Bool(b) => {
@@ -2153,24 +2117,33 @@ impl<'a> FnCtx<'a> {
                     self.compiler.adt_constructors.get(name.as_str()).cloned()
                 {
                     self.compile_adt_constructor(name, tag, 0, &[])
-                } else if let Some(def) = self.compiler.fn_map.get(name).cloned() {
-                    // A bare reference to a top-level function is a first-class
-                    // value: wrap it in a closure `[fn [a…] [name a…]]` so it can
-                    // be passed around and called through the table.
-                    let sp = expr.span;
-                    let params: Vec<Expr> = (0..def.arity)
-                        .map(|i| Expr::new(ExprKind::Symbol(format!("__a{i}")), sp))
-                        .collect();
-                    let mut call = vec![Expr::new(ExprKind::Symbol(name.clone()), sp)];
-                    call.extend(params.iter().cloned());
-                    let params_list = Expr::new(ExprKind::List(params), sp);
-                    let body = Expr::new(ExprKind::List(call), sp);
-                    self.compile_closure(&[params_list, body])
+                } else if self.compiler.fn_map.contains_key(name) {
+                    // A top-level function used as a value (e.g. passed as a
+                    // thunk): produce a closure value `(table_index << 32)` for
+                    // an adapter with the closure calling convention.
+                    let ti = self.compiler.ensure_fn_thunk(name);
+                    self.instructions
+                        .push(WasmInstruction::I64Const((ti as i64) << 32));
+                    Ok(())
                 } else {
                     Err(format!("codegen: unbound symbol '{name}'"))
                 }
             }
-            ExprKind::DotAccess(_, _) => {
+            ExprKind::DotAccess(obj, field) => {
+                // Physics constants used as values, e.g. `Const.c`.
+                if let ExprKind::Symbol(ns) = &obj.kind {
+                    if ns == "Const" {
+                        let v: f64 = match field.as_str() {
+                            "c" => 299_792_458.0,
+                            "pi" => std::f64::consts::PI,
+                            "e" => std::f64::consts::E,
+                            _ => 0.0,
+                        };
+                        self.instructions.push(WasmInstruction::F64Const(v));
+                        self.instructions.push(WasmInstruction::I64ReinterpretF64);
+                        return Ok(());
+                    }
+                }
                 Err("codegen: dot access not supported as expression".into())
             }
             ExprKind::List(items) if items.is_empty() => {
@@ -2180,23 +2153,15 @@ impl<'a> FnCtx<'a> {
             ExprKind::List(items) => {
                 if let ExprKind::Symbol(s) = &items[0].kind {
                     if s == "fn" {
-                        // `[fn [params] …]` is an anonymous closure. A nested
-                        // *named* form `[fn name [params] …]` (a local function
-                        // definition inside a body) compiles to a closure value
-                        // bound to `name` in scope.
-                        let named = items.len() >= 3
-                            && matches!(&items[1].kind, ExprKind::Symbol(_))
-                            && matches!(&items[2].kind, ExprKind::List(_));
-                        if named {
-                            let name = match &items[1].kind {
-                                ExprKind::Symbol(n) => n.clone(),
-                                _ => unreachable!(),
-                            };
+                        // A *named* nested fn `[fn name [params] body…]` binds a
+                        // closure to `name` in the enclosing scope; a bare
+                        // `[fn [params] body…]` is an anonymous lambda value.
+                        if let Some(ExprKind::Symbol(name)) = items.get(1).map(|e| &e.kind) {
+                            let name = name.clone();
                             self.compile_closure(&items[2..])?;
-                            let l = self.alloc_local();
-                            self.instructions.push(WasmInstruction::LocalSet(l));
-                            self.locals.insert(name, l);
-                            self.instructions.push(WasmInstruction::LocalGet(l));
+                            let local = self.alloc_local();
+                            self.locals.insert(name, local);
+                            self.instructions.push(WasmInstruction::LocalTee(local));
                             return Ok(());
                         }
                         return self.compile_closure(&items[1..]);
@@ -2204,22 +2169,10 @@ impl<'a> FnCtx<'a> {
                 }
                 self.compile_call(items)
             }
-            ExprKind::Vec(items) => {
-                // #[a b c] desugars to vec-new + a vec-push per element.
-                self.compiler.ensure_collections_runtime();
-                let rt = self.compiler.collections_runtime.clone().unwrap();
-                self.instructions
-                    .push(WasmInstruction::Call(rt.vec_new_idx));
-                for item in items {
-                    self.compile_expr(item)?;
-                    self.instructions
-                        .push(WasmInstruction::Call(rt.vec_push_idx));
-                }
-                Ok(())
-            }
-            ExprKind::Tuple(items) => {
-                // (a b …) — represented like a vector so destructuring and
-                // pair access (vec-get) work uniformly.
+            ExprKind::Vec(items) | ExprKind::Tuple(items) => {
+                // #[a b c] / (a, b, c) desugar to vec-new + a vec-push per
+                // element. Tuples share the vector representation, so positional
+                // destructuring (`[fn [[a b]] …]`) reads them uniformly.
                 self.compiler.ensure_collections_runtime();
                 let rt = self.compiler.collections_runtime.clone().unwrap();
                 self.instructions
@@ -2232,20 +2185,108 @@ impl<'a> FnCtx<'a> {
                 Ok(())
             }
             ExprKind::Map(pairs) => {
-                // {:k v …} desugars to map-new + a map-set per pair.
-                self.compiler.ensure_map_runtime();
-                let rt = self.compiler.map_runtime.clone().unwrap();
-                self.instructions.push(WasmInstruction::Call(rt.map_new_idx));
+                // {} / {:k v …} desugars to map-new (an empty pair-vector) plus
+                // a map_assoc per entry, preserving insertion order.
+                self.compiler.ensure_maps_runtime();
+                let cr = self.compiler.collections_runtime.clone().unwrap();
+                let mr = self.compiler.maps_runtime.clone().unwrap();
+                self.instructions
+                    .push(WasmInstruction::Call(cr.vec_new_idx));
                 for (k, v) in pairs {
-                    let is_str = self.expr_is_string(k) as i64;
                     self.compile_expr(k)?;
                     self.compile_expr(v)?;
-                    self.instructions.push(WasmInstruction::I64Const(is_str));
-                    self.instructions.push(WasmInstruction::Call(rt.map_set_idx));
+                    self.instructions
+                        .push(WasmInstruction::Call(mr.map_assoc_idx));
                 }
                 Ok(())
             }
             _ => Err(format!("codegen: unsupported expression: {:?}", expr.kind)),
+        }
+    }
+    /// Compile `expr` in tail position. A call to a top-level function in tail
+    /// position becomes a `return_call` (proper tail call — constant stack), so
+    /// named/mutual recursion through `if`/`do`/`when`/`match` runs in O(1)
+    /// stack. Control forms recurse into their tail sub-expressions; anything
+    /// else falls back to a normal compile (its value is the function result).
+    fn compile_tail(&mut self, expr: &Expr) -> Result<(), String> {
+        use WasmInstruction as W;
+        if let ExprKind::List(items) = &expr.kind {
+            if let Some(ExprKind::Symbol(s)) = items.first().map(|e| &e.kind) {
+                match s.as_str() {
+                    "if" if items.len() >= 3 => {
+                        // `I64Eqz` inverts the test, so the truthy arm is the
+                        // `else` (mirrors the non-tail `if`).
+                        self.compile_expr(&items[1])?;
+                        self.instructions.push(W::I64Eqz);
+                        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+                        if items.len() > 3 {
+                            self.compile_tail(&items[3])?;
+                        } else {
+                            self.instructions.push(W::I64Const(0));
+                        }
+                        self.instructions.push(W::Else);
+                        self.compile_tail(&items[2])?;
+                        self.instructions.push(W::End);
+                        return Ok(());
+                    }
+                    "do" if items.len() >= 2 => {
+                        let last = items.len() - 1;
+                        for item in &items[1..last] {
+                            self.compile_expr(item)?;
+                            self.instructions.push(W::Drop);
+                        }
+                        return self.compile_tail(&items[last]);
+                    }
+                    "when" if items.len() >= 3 => {
+                        self.compile_expr(&items[1])?;
+                        self.instructions.push(W::I64Eqz);
+                        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+                        self.instructions.push(W::I64Const(0));
+                        self.instructions.push(W::Else);
+                        let last = items.len() - 1;
+                        for item in &items[2..last] {
+                            self.compile_expr(item)?;
+                            self.instructions.push(W::Drop);
+                        }
+                        self.compile_tail(&items[last])?;
+                        self.instructions.push(W::End);
+                        return Ok(());
+                    }
+                    "match" if items.len() >= 2 => {
+                        self.compile_expr(&items[1])?;
+                        let sc = self.alloc_local();
+                        self.instructions.push(W::LocalSet(sc));
+                        return self.compile_match_arms(sc, &items[2..], true);
+                    }
+                    // `recur` is the loop-based self-tail-call; leave it to the
+                    // normal path (a branch to the function's loop header).
+                    "recur" => {}
+                    name => {
+                        let argc = items.len() - 1;
+                        let fn_def = self.compiler.fn_map.get(name).cloned().or_else(|| {
+                            self.compiler.fn_map.get(&format!("{name}#{argc}")).cloned()
+                        });
+                        if let Some(fn_def) = fn_def {
+                            if !fn_def.is_closure {
+                                for arg in &items[1..] {
+                                    self.compile_expr(arg)?;
+                                }
+                                self.instructions.push(W::ReturnCall(fn_def.func_idx));
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.compile_expr(expr)
+    }
+    /// Compile a match-arm body, in tail position when `tail` is set.
+    fn compile_maybe_tail(&mut self, body: &Expr, tail: bool) -> Result<(), String> {
+        if tail {
+            self.compile_tail(body)
+        } else {
+            self.compile_expr(body)
         }
     }
     fn compile_call(&mut self, items: &[Expr]) -> Result<(), String> {
@@ -2255,105 +2296,44 @@ impl<'a> FnCtx<'a> {
         if let ExprKind::Symbol(s) = &items[0].kind {
             match s.as_str() {
                 "+" => {
-                    return self.compile_arith(
-                        &items[1],
-                        &items[2],
-                        WasmInstruction::I64Add,
-                        WasmInstruction::F64Add,
-                    );
+                    use WasmInstruction::*;
+                    return self.compile_num_binop(&items[1], &items[2], I64Add, F64Add, false);
                 }
                 "-" => {
-                    return self.compile_arith(
-                        &items[1],
-                        &items[2],
-                        WasmInstruction::I64Sub,
-                        WasmInstruction::F64Sub,
-                    );
+                    use WasmInstruction::*;
+                    return self.compile_num_binop(&items[1], &items[2], I64Sub, F64Sub, false);
                 }
                 "*" => {
-                    return self.compile_arith(
-                        &items[1],
-                        &items[2],
-                        WasmInstruction::I64Mul,
-                        WasmInstruction::F64Mul,
-                    );
-                }
-                "/" => {
-                    return self.compile_arith(
-                        &items[1],
-                        &items[2],
-                        WasmInstruction::I64DivS,
-                        WasmInstruction::F64Div,
-                    );
+                    use WasmInstruction::*;
+                    return self.compile_num_binop(&items[1], &items[2], I64Mul, F64Mul, false);
                 }
                 ">" => {
-                    return self.compile_cmp(
-                        &items[1],
-                        &items[2],
-                        WasmInstruction::I64GtS,
-                        WasmInstruction::F64Gt,
-                    );
+                    use WasmInstruction::*;
+                    return self.compile_num_binop(&items[1], &items[2], I64GtS, F64Gt, true);
                 }
                 "<" => {
-                    return self.compile_cmp(
-                        &items[1],
-                        &items[2],
-                        WasmInstruction::I64LtS,
-                        WasmInstruction::F64Lt,
-                    );
+                    use WasmInstruction::*;
+                    return self.compile_num_binop(&items[1], &items[2], I64LtS, F64Lt, true);
                 }
                 "=" => {
-                    // String equality is structural (str_eq), not pointer
-                    // identity — type-directed when either side is a string.
-                    if self.expr_is_string(&items[1]) || self.expr_is_string(&items[2]) {
-                        self.compiler.ensure_string_runtime();
-                        let rt = self.compiler.string_runtime.clone().unwrap();
-                        self.compile_expr(&items[1])?;
-                        self.compile_expr(&items[2])?;
-                        self.instructions.push(WasmInstruction::Call(rt.str_eq_idx));
-                        return Ok(());
-                    }
-                    return self.compile_cmp(
-                        &items[1],
-                        &items[2],
-                        WasmInstruction::I64Eq,
-                        WasmInstruction::F64Eq,
-                    );
+                    use WasmInstruction::*;
+                    return self.compile_num_binop(&items[1], &items[2], I64Eq, F64Eq, true);
                 }
                 "!=" => {
-                    if self.expr_is_string(&items[1]) || self.expr_is_string(&items[2]) {
-                        self.compiler.ensure_string_runtime();
-                        let rt = self.compiler.string_runtime.clone().unwrap();
-                        self.compile_expr(&items[1])?;
-                        self.compile_expr(&items[2])?;
-                        self.instructions.push(WasmInstruction::Call(rt.str_eq_idx));
-                        // negate: (str_eq == 0)
-                        self.instructions.push(WasmInstruction::I64Eqz);
-                        self.instructions.push(WasmInstruction::I64ExtendI32U);
-                        return Ok(());
-                    }
-                    return self.compile_cmp(
-                        &items[1],
-                        &items[2],
-                        WasmInstruction::I64Ne,
-                        WasmInstruction::F64Ne,
-                    );
+                    use WasmInstruction::*;
+                    return self.compile_num_binop(&items[1], &items[2], I64Ne, F64Ne, true);
                 }
                 "<=" => {
-                    return self.compile_cmp(
-                        &items[1],
-                        &items[2],
-                        WasmInstruction::I64LeS,
-                        WasmInstruction::F64Le,
-                    );
+                    use WasmInstruction::*;
+                    return self.compile_num_binop(&items[1], &items[2], I64LeS, F64Le, true);
                 }
                 ">=" => {
-                    return self.compile_cmp(
-                        &items[1],
-                        &items[2],
-                        WasmInstruction::I64GeS,
-                        WasmInstruction::F64Ge,
-                    );
+                    use WasmInstruction::*;
+                    return self.compile_num_binop(&items[1], &items[2], I64GeS, F64Ge, true);
+                }
+                "/" => {
+                    use WasmInstruction::*;
+                    return self.compile_num_binop(&items[1], &items[2], I64DivS, F64Div, false);
                 }
                 "%" | "mod" => {
                     self.compile_expr(&items[1])?;
@@ -2463,8 +2443,11 @@ impl<'a> FnCtx<'a> {
                     return Ok(());
                 }
                 "str-concat" | "str" => {
-                    // Variadic: stringify each arg (type-directed Display) and
-                    // fold str_concat. [str] -> "", [str a] -> a.
+                    // Variadic: fold str_concat left-to-right over all args.
+                    // [str] -> "", [str a] -> a, [str a b c] -> concat(concat(a,b),c).
+                    // Each argument is coerced through `to_str`, so non-string
+                    // values (e.g. integers) are formatted rather than read as
+                    // bogus string pointers.
                     let args = &items[1..];
                     if args.is_empty() {
                         let (offset, len) = self.compiler.intern_string("");
@@ -2472,24 +2455,14 @@ impl<'a> FnCtx<'a> {
                             .push(WasmInstruction::I64Const(((offset as i64) << 32) | len as i64));
                         return Ok(());
                     }
-                    self.compile_as_string(&args[0])?;
-                    if args.len() > 1 {
-                        self.compiler.ensure_string_runtime();
-                        let rt = self.compiler.string_runtime.clone().unwrap();
-                        for arg in &args[1..] {
-                            self.compile_as_string(arg)?;
-                            self.instructions
-                                .push(WasmInstruction::Call(rt.str_concat_idx));
-                        }
-                    }
-                    return Ok(());
-                }
-                "lowercase" => {
                     self.compiler.ensure_string_runtime();
                     let rt = self.compiler.string_runtime.clone().unwrap();
-                    self.compile_expr(&items[1])?;
-                    self.instructions
-                        .push(WasmInstruction::Call(rt.lowercase_idx));
+                    self.compile_str_arg(&args[0])?;
+                    for arg in &args[1..] {
+                        self.compile_str_arg(arg)?;
+                        self.instructions
+                            .push(WasmInstruction::Call(rt.str_concat_idx));
+                    }
                     return Ok(());
                 }
                 "substring" => {
@@ -2540,75 +2513,62 @@ impl<'a> FnCtx<'a> {
                         .push(WasmInstruction::Call(rt.vec_push_idx));
                     return Ok(());
                 }
-                "split" => {
-                    // [split s sep] -> vector of substrings (sep is one char).
-                    let idx = self.compiler.ensure_split_runtime();
+                "cons" => {
+                    // [cons val coll] — prepend (deque front, amortized O(1)).
+                    self.compiler.ensure_collections_runtime();
+                    let rt = self.compiler.collections_runtime.clone().unwrap();
                     self.compile_expr(&items[1])?;
                     self.compile_expr(&items[2])?;
+                    self.instructions
+                        .push(WasmInstruction::Call(rt.vec_cons_idx));
+                    return Ok(());
+                }
+                "assoc" => {
+                    self.compiler.ensure_maps_runtime();
+                    let mr = self.compiler.maps_runtime.clone().unwrap();
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.compile_expr(&items[3])?;
+                    self.instructions
+                        .push(WasmInstruction::Call(mr.map_assoc_idx));
+                    return Ok(());
+                }
+                "get" => {
+                    self.compiler.ensure_maps_runtime();
+                    let mr = self.compiler.maps_runtime.clone().unwrap();
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.instructions
+                        .push(WasmInstruction::Call(mr.map_get_idx));
+                    return Ok(());
+                }
+                "entries" => {
+                    // A map *is* an insertion-ordered vector of [k v] pairs, so
+                    // `entries` is the identity on its argument.
+                    self.compile_expr(&items[1])?;
+                    return Ok(());
+                }
+                "split" => {
+                    let split_idx = self.compiler.ensure_split_runtime();
+                    self.compile_expr(&items[1])?;
+                    self.compile_expr(&items[2])?;
+                    self.instructions.push(WasmInstruction::Call(split_idx));
+                    return Ok(());
+                }
+                "lowercase" | "uppercase" => {
+                    let idx = self.compiler.ensure_str_case(s == "uppercase");
+                    self.compile_expr(&items[1])?;
                     self.instructions.push(WasmInstruction::Call(idx));
                     return Ok(());
                 }
-                "cons" => {
-                    // [cons x v] -> new vector with x prepended.
-                    self.compiler.ensure_collections_runtime();
-                    let rt = self.compiler.collections_runtime.clone().unwrap();
-                    let xl = self.alloc_local();
-                    self.compile_expr(&items[1])?;
-                    self.instructions.push(WasmInstruction::LocalSet(xl));
-                    self.compile_expr(&items[2])?;
-                    let vl = self.alloc_local();
-                    self.instructions.push(WasmInstruction::LocalSet(vl));
-                    // r = vec_push(vec_new(), x)
-                    self.instructions
-                        .push(WasmInstruction::Call(rt.vec_new_idx));
-                    self.instructions.push(WasmInstruction::LocalGet(xl));
-                    self.instructions
-                        .push(WasmInstruction::Call(rt.vec_push_idx));
-                    let rl = self.alloc_local();
-                    self.instructions.push(WasmInstruction::LocalSet(rl));
-                    // append each element of v
-                    let (n, d) = self.emit_vec_header(vl);
-                    let iv = self.alloc_local();
-                    let el = self.alloc_local();
-                    use WasmInstruction as W;
-                    self.instructions.push(W::I64Const(0));
-                    self.instructions.push(W::LocalSet(iv));
-                    self.instructions.push(W::Block(BlockType::Empty));
-                    self.instructions.push(W::Loop(BlockType::Empty));
-                    self.instructions.push(W::LocalGet(iv));
-                    self.instructions.push(W::LocalGet(n));
-                    self.instructions.push(W::I64LtS);
-                    self.instructions.push(W::I32Eqz);
-                    self.instructions.push(W::BrIf(1));
-                    // el = d[iv]
-                    self.instructions.push(W::LocalGet(d));
-                    self.instructions.push(W::LocalGet(iv));
-                    self.instructions.push(W::I64Const(8));
-                    self.instructions.push(W::I64Mul);
-                    self.instructions.push(W::I64Add);
-                    self.instructions.push(W::I32WrapI64);
-                    self.instructions.push(W::I64Load(3, 0));
-                    self.instructions.push(W::LocalSet(el));
-                    // r = vec_push(r, el)
-                    self.instructions.push(W::LocalGet(rl));
-                    self.instructions.push(W::LocalGet(el));
-                    self.instructions.push(W::Call(rt.vec_push_idx));
-                    self.instructions.push(W::LocalSet(rl));
-                    self.instructions.push(W::LocalGet(iv));
-                    self.instructions.push(W::I64Const(1));
-                    self.instructions.push(W::I64Add);
-                    self.instructions.push(W::LocalSet(iv));
-                    self.instructions.push(W::Br(0));
-                    self.instructions.push(W::End);
-                    self.instructions.push(W::End);
-                    self.instructions.push(W::LocalGet(rl));
-                    return Ok(());
+                "unit" | "magnitude" => {
+                    // Dimensions are compile-time only; at runtime both are the
+                    // identity on the underlying numeric value.
+                    return self.compile_expr(&items[1]);
                 }
                 "len" | "count" | "vec-len" => {
-                    // Vector length lives at header offset 0.
                     self.compile_expr(&items[1])?;
-                    self.instructions.push(WasmInstruction::I32WrapI64);
-                    self.instructions.push(WasmInstruction::I64Load(3, 0));
+                    self.emit_seq_len();
                     return Ok(());
                 }
                 "vec-get" => {
@@ -2618,151 +2578,6 @@ impl<'a> FnCtx<'a> {
                     self.compile_expr(&items[2])?;
                     self.instructions
                         .push(WasmInstruction::Call(rt.vec_get_idx));
-                    return Ok(());
-                }
-                "assoc" => {
-                    // [assoc m k v] — copy-on-write insert; string keys use
-                    // structural equality (is_str flag).
-                    self.compiler.ensure_map_runtime();
-                    let rt = self.compiler.map_runtime.clone().unwrap();
-                    let is_str = self.expr_is_string(&items[2]) as i64;
-                    self.compile_expr(&items[1])?;
-                    self.compile_expr(&items[2])?;
-                    self.compile_expr(&items[3])?;
-                    self.instructions.push(WasmInstruction::I64Const(is_str));
-                    self.instructions.push(WasmInstruction::Call(rt.map_set_idx));
-                    return Ok(());
-                }
-                "update" => {
-                    // [update m k f] = assoc m k (f (get m k)).
-                    self.compiler.ensure_map_runtime();
-                    let rt = self.compiler.map_runtime.clone().unwrap();
-                    let fr = self.prepare_fn_arg(&items[3])?;
-                    let ml = self.alloc_local();
-                    self.compile_expr(&items[1])?;
-                    self.instructions.push(WasmInstruction::LocalSet(ml));
-                    let kl = self.alloc_local();
-                    self.compile_expr(&items[2])?;
-                    self.instructions.push(WasmInstruction::LocalSet(kl));
-                    // cur = map_get(m, k, 0)
-                    let curl = self.alloc_local();
-                    self.instructions.push(WasmInstruction::LocalGet(ml));
-                    self.instructions.push(WasmInstruction::LocalGet(kl));
-                    self.instructions.push(WasmInstruction::I64Const(0));
-                    self.instructions.push(WasmInstruction::Call(rt.map_get_idx));
-                    self.instructions.push(WasmInstruction::LocalSet(curl));
-                    // newv = f(cur)
-                    let newv = self.alloc_local();
-                    self.emit_apply1(&fr, curl);
-                    self.instructions.push(WasmInstruction::LocalSet(newv));
-                    // map_set(m, k, newv, 0)
-                    self.instructions.push(WasmInstruction::LocalGet(ml));
-                    self.instructions.push(WasmInstruction::LocalGet(kl));
-                    self.instructions.push(WasmInstruction::LocalGet(newv));
-                    self.instructions.push(WasmInstruction::I64Const(0));
-                    self.instructions.push(WasmInstruction::Call(rt.map_set_idx));
-                    return Ok(());
-                }
-                "get" => {
-                    // [get m k] — map lookup (UNIT if absent).
-                    self.compiler.ensure_map_runtime();
-                    let rt = self.compiler.map_runtime.clone().unwrap();
-                    let is_str = self.expr_is_string(&items[2]) as i64;
-                    self.compile_expr(&items[1])?;
-                    self.compile_expr(&items[2])?;
-                    self.instructions.push(WasmInstruction::I64Const(is_str));
-                    self.instructions.push(WasmInstruction::Call(rt.map_get_idx));
-                    return Ok(());
-                }
-                "contains?" | "has-key?" => {
-                    self.compiler.ensure_map_runtime();
-                    let rt = self.compiler.map_runtime.clone().unwrap();
-                    let is_str = self.expr_is_string(&items[2]) as i64;
-                    self.compile_expr(&items[1])?;
-                    self.compile_expr(&items[2])?;
-                    self.instructions.push(WasmInstruction::I64Const(is_str));
-                    self.instructions.push(WasmInstruction::Call(rt.map_has_idx));
-                    return Ok(());
-                }
-                "keys" => {
-                    self.compiler.ensure_map_runtime();
-                    let rt = self.compiler.map_runtime.clone().unwrap();
-                    self.compile_expr(&items[1])?;
-                    self.instructions.push(WasmInstruction::Call(rt.map_keys_idx));
-                    return Ok(());
-                }
-                "entries" => {
-                    self.compiler.ensure_map_runtime();
-                    let rt = self.compiler.map_runtime.clone().unwrap();
-                    self.compile_expr(&items[1])?;
-                    self.instructions
-                        .push(WasmInstruction::Call(rt.map_entries_idx));
-                    return Ok(());
-                }
-                "merge" => {
-                    self.compiler.ensure_map_runtime();
-                    let rt = self.compiler.map_runtime.clone().unwrap();
-                    self.compile_expr(&items[1])?;
-                    self.compile_expr(&items[2])?;
-                    self.instructions
-                        .push(WasmInstruction::Call(rt.map_merge_idx));
-                    return Ok(());
-                }
-                "take" => {
-                    // [take n v] -> new vector of the first min(n, len) elems.
-                    self.compiler.ensure_collections_runtime();
-                    let rt = self.compiler.collections_runtime.clone().unwrap();
-                    use WasmInstruction as W;
-                    let nl = self.alloc_local();
-                    self.compile_expr(&items[1])?;
-                    self.instructions.push(W::LocalSet(nl));
-                    self.compile_expr(&items[2])?;
-                    let vl = self.alloc_local();
-                    self.instructions.push(W::LocalSet(vl));
-                    let (len, d) = self.emit_vec_header(vl);
-                    // limit = min(n, len)
-                    let lim = self.alloc_local();
-                    self.instructions.push(W::LocalGet(nl));
-                    self.instructions.push(W::LocalGet(len));
-                    self.instructions.push(W::I64LtS);
-                    self.instructions
-                        .push(W::If(BlockType::Result(ValType::I64)));
-                    self.instructions.push(W::LocalGet(nl));
-                    self.instructions.push(W::Else);
-                    self.instructions.push(W::LocalGet(len));
-                    self.instructions.push(W::End);
-                    self.instructions.push(W::LocalSet(lim));
-                    self.instructions.push(W::Call(rt.vec_new_idx));
-                    let rl = self.alloc_local();
-                    self.instructions.push(W::LocalSet(rl));
-                    let iv = self.alloc_local();
-                    self.instructions.push(W::I64Const(0));
-                    self.instructions.push(W::LocalSet(iv));
-                    self.instructions.push(W::Block(BlockType::Empty));
-                    self.instructions.push(W::Loop(BlockType::Empty));
-                    self.instructions.push(W::LocalGet(iv));
-                    self.instructions.push(W::LocalGet(lim));
-                    self.instructions.push(W::I64LtS);
-                    self.instructions.push(W::I32Eqz);
-                    self.instructions.push(W::BrIf(1));
-                    self.instructions.push(W::LocalGet(rl));
-                    self.instructions.push(W::LocalGet(d));
-                    self.instructions.push(W::LocalGet(iv));
-                    self.instructions.push(W::I64Const(8));
-                    self.instructions.push(W::I64Mul);
-                    self.instructions.push(W::I64Add);
-                    self.instructions.push(W::I32WrapI64);
-                    self.instructions.push(W::I64Load(3, 0));
-                    self.instructions.push(W::Call(rt.vec_push_idx));
-                    self.instructions.push(W::LocalSet(rl));
-                    self.instructions.push(W::LocalGet(iv));
-                    self.instructions.push(W::I64Const(1));
-                    self.instructions.push(W::I64Add);
-                    self.instructions.push(W::LocalSet(iv));
-                    self.instructions.push(W::Br(0));
-                    self.instructions.push(W::End);
-                    self.instructions.push(W::End);
-                    self.instructions.push(W::LocalGet(rl));
                     return Ok(());
                 }
                 "first" => {
@@ -2776,35 +2591,11 @@ impl<'a> FnCtx<'a> {
                     return Ok(());
                 }
                 "empty?" => {
-                    // Self-describing: a string value packs its length in the
-                    // low 32 bits (high bits = ptr >= 1024); a vector value is a
-                    // small header address (high bits 0). So check string length
-                    // for the former and the vector's len field for the latter.
-                    use WasmInstruction as W;
-                    let x = self.alloc_local();
+                    // len(v) == 0, handling both strings and vectors/maps.
                     self.compile_expr(&items[1])?;
-                    self.instructions.push(W::LocalSet(x));
-                    self.instructions.push(W::LocalGet(x));
-                    self.instructions.push(W::I64Const(32));
-                    self.instructions.push(W::I64ShrU);
-                    self.instructions.push(W::I64Const(1024));
-                    self.instructions.push(W::I64GeS); // i32: looks like a string
-                    self.instructions
-                        .push(W::If(BlockType::Result(ValType::I64)));
-                    // string: (x & 0xffffffff) == 0
-                    self.instructions.push(W::LocalGet(x));
-                    self.instructions.push(W::I64Const(0xFFFF_FFFF));
-                    self.instructions.push(W::I64And);
-                    self.instructions.push(W::I64Eqz);
-                    self.instructions.push(W::I64ExtendI32U);
-                    self.instructions.push(W::Else);
-                    // vector/map: mem[addr].len == 0
-                    self.instructions.push(W::LocalGet(x));
-                    self.instructions.push(W::I32WrapI64);
-                    self.instructions.push(W::I64Load(3, 0));
-                    self.instructions.push(W::I64Eqz);
-                    self.instructions.push(W::I64ExtendI32U);
-                    self.instructions.push(W::End);
+                    self.emit_seq_len();
+                    self.instructions.push(WasmInstruction::I64Eqz);
+                    self.instructions.push(WasmInstruction::I64ExtendI32U);
                     return Ok(());
                 }
                 "if" => {
@@ -2832,15 +2623,16 @@ impl<'a> FnCtx<'a> {
                         ExprKind::Symbol(s) => s.clone(),
                         _ => return Err("let binding must be a symbol".into()),
                     };
-                    // Remember float/string bindings so later uses dispatch.
-                    if self.expr_is_float(&items[vi]) {
-                        self.float_locals.insert(name.clone());
-                    }
-                    if self.expr_is_string(&items[vi]) {
-                        self.string_locals.insert(name.clone());
-                    }
+                    let is_float = self.expr_is_float(&items[vi]);
+                    let is_string = self.expr_is_string(&items[vi]);
                     self.compile_expr(&items[vi])?;
                     let local = self.alloc_local();
+                    if is_float {
+                        self.float_locals.insert(name.clone());
+                    }
+                    if is_string {
+                        self.string_locals.insert(name.clone());
+                    }
                     self.locals.insert(name, local);
                     self.instructions.push(WasmInstruction::LocalSet(local));
                     self.instructions.push(WasmInstruction::LocalGet(local));
@@ -2956,6 +2748,14 @@ impl<'a> FnCtx<'a> {
                 "println" | "print" => {
                     let nl = s == "println";
                     if let Some(arg) = items.get(1) {
+                        if nl && self.expr_is_float(arg) {
+                            // Floats are i64 bit patterns; hand them to the host
+                            // formatter so output matches the VM exactly.
+                            let idx = self.compiler.ensure_print_f64_import();
+                            self.compile_expr(arg)?;
+                            self.instructions.push(WasmInstruction::Call(idx));
+                            return Ok(());
+                        }
                         if let ExprKind::Str(s) = &arg.kind {
                             let msg = if nl { format!("{s}\n") } else { s.clone() };
                             let (offset, len) = self.compiler.intern_string(&msg);
@@ -2980,38 +2780,11 @@ impl<'a> FnCtx<'a> {
                             self.compile_expr(arg)?;
                             self.emit_print_str(nl);
                             return Ok(());
-                        } else if self.expr_is_float(arg) {
-                            self.compile_expr(arg)?;
-                            self.emit_print_f64(nl);
-                            return Ok(());
-                        } else if matches!(
-                            self.compiler.node_type(arg),
-                            Some(t) if !matches!(t, Type::Var(_))
-                        ) {
-                            // Statically a concrete non-string type: print as int.
-                            self.compile_expr(arg)?;
-                            self.emit_print_i64(nl);
-                            return Ok(());
                         } else {
-                            // Unknown static type (e.g. a `handle` result): print
-                            // self-describingly — string bytes if it looks like a
-                            // string pointer at runtime, else a decimal int.
-                            use WasmInstruction as W;
-                            let x = self.alloc_local();
+                            // A computed (non-literal) argument: evaluate it to
+                            // an i64 and print it as a decimal at runtime.
                             self.compile_expr(arg)?;
-                            self.instructions.push(W::LocalSet(x));
-                            self.instructions.push(W::LocalGet(x));
-                            self.instructions.push(W::I64Const(32));
-                            self.instructions.push(W::I64ShrU);
-                            self.instructions.push(W::I64Const(1024));
-                            self.instructions.push(W::I64GeS);
-                            self.instructions.push(W::If(BlockType::Result(ValType::I64)));
-                            self.instructions.push(W::LocalGet(x));
-                            self.emit_print_str(nl);
-                            self.instructions.push(W::Else);
-                            self.instructions.push(W::LocalGet(x));
                             self.emit_print_i64(nl);
-                            self.instructions.push(W::End);
                             return Ok(());
                         }
                     }
@@ -3025,7 +2798,7 @@ impl<'a> FnCtx<'a> {
                     self.compile_expr(&items[1])?;
                     let sc = self.alloc_local();
                     self.instructions.push(WasmInstruction::LocalSet(sc));
-                    self.compile_match_arms(sc, &items[2..])?;
+                    self.compile_match_arms(sc, &items[2..], false)?;
                     return Ok(());
                 }
                 "loop" => {
@@ -3118,22 +2891,26 @@ impl<'a> FnCtx<'a> {
                     }
                     return Err("codegen: fold requires init, function, collection".into());
                 }
+                "update" => {
+                    // [update m k f] — assoc m k (f (get m k)).
+                    if items.len() >= 4 {
+                        return self.compile_update(&items[1], &items[2], &items[3]);
+                    }
+                    return Err("codegen: update requires a map, key, and function".into());
+                }
                 "group-by" => {
-                    // [group-by f coll] -> map from f(elem) to a vector of the
-                    // elements with that key.
+                    // [group-by f coll] — map of key → vector of elements.
                     if items.len() >= 3 {
                         return self.compile_group_by(&items[1], &items[2]);
                     }
-                    return Err("codegen: group-by requires function, collection".into());
+                    return Err("codegen: group-by requires a function and a collection".into());
                 }
-                "sort-by" => {
-                    // [sort-by f order coll] — sort coll by integer key f(elem).
-                    if items.len() >= 4 {
-                        let order_desc =
-                            matches!(&items[2].kind, ExprKind::Keyword(k) if k == "desc");
-                        return self.compile_sort_by(&items[1], order_desc, &items[3]);
+                "merge" => {
+                    // [merge a b] — a with b's entries assoc'd in.
+                    if items.len() >= 3 {
+                        return self.compile_merge(&items[1], &items[2]);
                     }
-                    return Err("codegen: sort-by requires function, order, collection".into());
+                    return Err("codegen: merge requires two maps".into());
                 }
                 "range" => {
                     // [range a b] — vector of a, a+1, …, b-1.
@@ -3142,15 +2919,33 @@ impl<'a> FnCtx<'a> {
                     }
                     return Err("codegen: range requires start and end".into());
                 }
+                "take" => {
+                    // [take n coll] — a vector of the first min(n, len) elements.
+                    if items.len() >= 3 {
+                        return self.compile_take(&items[1], &items[2]);
+                    }
+                    return Err("codegen: take requires a count and a collection".into());
+                }
+                "sort-by" => {
+                    // [sort-by f coll] or [sort-by f :desc coll].
+                    if items.len() >= 3 {
+                        let keyfn = &items[1];
+                        let coll = items.last().unwrap();
+                        let desc = items.len() >= 4
+                            && matches!(&items[2].kind, ExprKind::Keyword(k) if k == "desc");
+                        return self.compile_sort_by(keyfn, coll, desc);
+                    }
+                    return Err("codegen: sort-by requires a function and a collection".into());
+                }
                 "type" | "use" | "effect" => {
                     self.instructions.push(WasmInstruction::I64Const(0));
                     return Ok(());
                 }
                 "resume" => {
-                    // Tail-resumptive: `[resume v]` makes the effect operation
-                    // return v, so it compiles to just v (the handler closure's
-                    // return value becomes the op result). Non-tail / escaping
-                    // resume (the State pattern) is not supported here.
+                    // Tail-resumptive handlers: `[resume v]` makes the effect
+                    // operation that invoked the handler return `v`. With the
+                    // handler compiled as an ordinary function whose result is
+                    // the operation's result, `resume` is the identity.
                     if let Some(v) = items.get(1) {
                         return self.compile_expr(v);
                     }
@@ -3158,31 +2953,10 @@ impl<'a> FnCtx<'a> {
                     return Ok(());
                 }
                 "handle" => {
-                    return self.compile_handle(&items[1..]);
+                    return self.compile_handle(items);
                 }
                 "try" => {
-                    // [try expr handler] — run expr; if it raises `fail`
-                    // (Fail.fail), apply handler to the failure value. Lowers to
-                    // a wasm exception try_table.
-                    use WasmInstruction as W;
-                    self.compiler.uses_exceptions = true;
-                    let fr = self.prepare_fn_arg(&items[2])?;
-                    self.instructions
-                        .push(W::Block(BlockType::Result(ValType::I64))); // $done
-                    self.instructions
-                        .push(W::Block(BlockType::Result(ValType::I64))); // $onfail
-                    // The catch label is resolved in the context enclosing the
-                    // try_table, so $onfail is label 0 here.
-                    self.instructions.push(W::TryTable { catch_label: 0 }); // catch fail -> $onfail
-                    self.compile_expr(&items[1])?;
-                    self.instructions.push(W::End); // try_table
-                    self.instructions.push(W::Br(1)); // normal: result -> $done
-                    self.instructions.push(W::End); // $onfail: fail value on stack
-                    let fv = self.alloc_local();
-                    self.instructions.push(W::LocalSet(fv));
-                    self.emit_apply1(&fr, fv); // handler(failval) -> $done
-                    self.instructions.push(W::End); // $done
-                    return Ok(());
+                    return self.compile_try(items);
                 }
                 name => {
                     if let Some((tag, arity)) = self.compiler.adt_constructors.get(name).cloned() {
@@ -3214,260 +2988,104 @@ impl<'a> FnCtx<'a> {
         // Check for DotAccess head (Effect.op pattern)
         if let ExprKind::DotAccess(obj, op) = &items[0].kind {
             if let ExprKind::Symbol(effect) = &obj.kind {
+                // `IO.println` writes a line to stdout exactly like the
+                // `println` builtin — lower it to the same inline WASI path
+                // rather than an (unlinked) effect import, so IO-printing
+                // programs run on wasm. (`IO.print` is left alone: the VM emits
+                // nothing for it, so lowering it would diverge.)
+                if effect == "IO" && op == "println" {
+                    let mut rewritten = Vec::with_capacity(items.len());
+                    rewritten.push(Expr::new(ExprKind::Symbol("println".into()), items[0].span));
+                    rewritten.extend(items[1..].iter().cloned());
+                    return self.compile_call(&rewritten);
+                }
+                // The standard `State` handler (get returns the state, put
+                // replaces it — the continuation-passing definition of a mutable
+                // cell) is realized directly as a memory cell. `[handle … State
+                // …]` sets the cell to the initial state (see compile_handle);
+                // here `State.get`/`State.put` read/write it. STATE_CELL lives
+                // just below the effect-handler slots.
+                const STATE_CELL: i32 = 248;
+                if effect == "State" && op == "get" {
+                    self.instructions.push(WasmInstruction::I32Const(STATE_CELL));
+                    self.instructions.push(WasmInstruction::I64Load(3, 0));
+                    return Ok(());
+                }
+                if effect == "State" && op == "put" {
+                    self.instructions.push(WasmInstruction::I32Const(STATE_CELL));
+                    self.compile_expr(&items[1])?;
+                    self.instructions.push(WasmInstruction::I64Store(3, 0));
+                    self.instructions.push(WasmInstruction::I64Const(0));
+                    return Ok(());
+                }
                 if effect.starts_with(char::is_uppercase) {
-                    return self.emit_effect_op(effect, op, &items[1..]);
-                }
-            }
-        }
-        // Computed head: the head expression evaluates to a closure value, which
-        // we call through the table (currying / functions returned from calls,
-        // e.g. `[[adder 10] 5]`).
-        {
-            use WasmInstruction as W;
-            let cl = self.alloc_local();
-            self.compile_expr(&items[0])?;
-            self.instructions.push(W::LocalSet(cl));
-            // env = cl & 0xffffffff
-            self.instructions.push(W::LocalGet(cl));
-            self.instructions.push(W::I64Const(0xFFFF_FFFF));
-            self.instructions.push(W::I64And);
-            for arg in &items[1..] {
-                self.compile_expr(arg)?;
-            }
-            self.instructions.push(W::LocalGet(cl));
-            self.instructions.push(W::I64Const(32));
-            self.instructions.push(W::I64ShrU);
-            self.instructions.push(W::I32WrapI64);
-            let ty = self.get_or_create_indirect_type(1 + (items.len() - 1));
-            self.instructions.push(W::CallIndirect(ty));
-            Ok(())
-        }
-    }
-    /// Compile an effect operation `Effect.op args`. If a matching handler is
-    /// installed on the dynamic handler stack at runtime, call it (tail-
-    /// resumptive); otherwise fall back to the host import.
-    fn emit_effect_op(&mut self, effect: &str, op: &str, args: &[Expr]) -> Result<(), String> {
-        use WasmInstruction as W;
-        // Abort: `Fail.fail v` raises the `fail` exception (caught by `try`).
-        if effect == "Fail" && op == "fail" {
-            self.compiler.uses_exceptions = true;
-            if let Some(a) = args.first() {
-                self.compile_expr(a)?;
-            } else {
-                self.instructions.push(WasmInstruction::I64Const(0));
-            }
-            self.instructions.push(WasmInstruction::Throw);
-            // Unreachable after throw, but keep the "leaves i64" contract.
-            self.instructions.push(WasmInstruction::I64Const(0));
-            return Ok(());
-        }
-        let key = format!("{effect}.{op}");
-        let op_id = self.compiler.intern_effect_op(&key);
-        let import_idx = self.compiler.get_or_create_effect_import(effect, op);
-        self.compiler.force_heap = true;
-        self.compiler.force_table = true; // the handler-closure path uses call_indirect
-        // Evaluate args into locals (reused by either call path).
-        let mut arglocs = Vec::new();
-        for a in args {
-            self.compile_expr(a)?;
-            let l = self.alloc_local();
-            self.instructions.push(W::LocalSet(l));
-            arglocs.push(l);
-        }
-        // Scan the handler stack top-down for op_id. Track `found` separately:
-        // a capture-less closure value can legitimately be 0 (table index 0).
-        let cl = self.alloc_local();
-        let found = self.alloc_local();
-        let f = self.alloc_local();
-        self.instructions.push(W::I64Const(0));
-        self.instructions.push(W::LocalSet(cl));
-        self.instructions.push(W::I64Const(0));
-        self.instructions.push(W::LocalSet(found));
-        // f = count - 1
-        self.instructions.push(W::I32Const(HANDLER_COUNT_ADDR));
-        self.instructions.push(W::I32Load(2, 0));
-        self.instructions.push(W::I64ExtendI32U);
-        self.instructions.push(W::I64Const(1));
-        self.instructions.push(W::I64Sub);
-        self.instructions.push(W::LocalSet(f));
-        self.instructions.push(W::Block(BlockType::Empty));
-        self.instructions.push(W::Loop(BlockType::Empty));
-        self.instructions.push(W::LocalGet(f));
-        self.instructions.push(W::I64Const(0));
-        self.instructions.push(W::I64LtS);
-        self.instructions.push(W::BrIf(1)); // f < 0: not found
-        // addr = HANDLER_BASE + f*16  (kept as i64; wrapped at memory ops)
-        let addr = self.alloc_local();
-        self.instructions.push(W::LocalGet(f));
-        self.instructions.push(W::I64Const(16));
-        self.instructions.push(W::I64Mul);
-        self.instructions.push(W::I64Const(HANDLER_BASE as i64));
-        self.instructions.push(W::I64Add);
-        self.instructions.push(W::LocalSet(addr));
-        // entry op_id == op_id ?
-        self.instructions.push(W::LocalGet(addr));
-        self.instructions.push(W::I32WrapI64);
-        self.instructions.push(W::I64Load(3, 0));
-        self.instructions.push(W::I64Const(op_id));
-        self.instructions.push(W::I64Eq);
-        self.instructions.push(W::If(BlockType::Empty));
-        self.instructions.push(W::LocalGet(addr));
-        self.instructions.push(W::I32WrapI64);
-        self.instructions.push(W::I64Load(3, 8));
-        self.instructions.push(W::LocalSet(cl));
-        self.instructions.push(W::I64Const(1));
-        self.instructions.push(W::LocalSet(found));
-        self.instructions.push(W::Br(2)); // found: exit scan
-        self.instructions.push(W::End);
-        self.instructions.push(W::LocalGet(f));
-        self.instructions.push(W::I64Const(1));
-        self.instructions.push(W::I64Sub);
-        self.instructions.push(W::LocalSet(f));
-        self.instructions.push(W::Br(0));
-        self.instructions.push(W::End);
-        self.instructions.push(W::End);
-        // if !found: import(args) else closure(env, args) via the table.
-        self.instructions.push(W::LocalGet(found));
-        self.instructions.push(W::I64Eqz);
-        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
-        for &l in &arglocs {
-            self.instructions.push(W::LocalGet(l));
-        }
-        self.instructions.push(W::Call(import_idx));
-        self.instructions.push(W::Else);
-        // env = cl & 0xffffffff
-        self.instructions.push(W::LocalGet(cl));
-        self.instructions.push(W::I64Const(0xFFFF_FFFF));
-        self.instructions.push(W::I64And);
-        for &l in &arglocs {
-            self.instructions.push(W::LocalGet(l));
-        }
-        self.instructions.push(W::LocalGet(cl));
-        self.instructions.push(W::I64Const(32));
-        self.instructions.push(W::I64ShrU);
-        self.instructions.push(W::I32WrapI64);
-        let ty = self.get_or_create_indirect_type(1 + arglocs.len());
-        self.instructions.push(W::CallIndirect(ty));
-        self.instructions.push(W::End);
-        Ok(())
-    }
-    /// Compile `[handle body clause…]` for tail-resumptive handlers. Each
-    /// `[E.op params] hbody` clause installs a handler closure on the dynamic
-    /// stack for the duration of `body`; a `[return x]` clause post-processes
-    /// the body's value.
-    fn compile_handle(&mut self, args: &[Expr]) -> Result<(), String> {
-        use WasmInstruction as W;
-        if args.is_empty() {
-            self.instructions.push(W::I64Const(0));
-            return Ok(());
-        }
-        let body = &args[0];
-        let clauses = &args[1..];
-        self.compiler.force_heap = true;
-        let mut return_clause: Option<(String, &Expr)> = None;
-        let mut pushed = 0i32;
-        let mut i = 0;
-        while i + 1 < clauses.len() {
-            let pat = &clauses[i];
-            let hbody = &clauses[i + 1];
-            i += 2;
-            // A handler clause that *returns a function* is the escaping /
-            // parameter-passing pattern (e.g. the State effect) — that needs
-            // reified, non-tail-resumptive continuations, which this backend
-            // can't express. Fail clearly rather than miscompile.
-            if matches!(&hbody.kind, ExprKind::List(h)
-                if matches!(h.first().map(|e| &e.kind), Some(ExprKind::Symbol(s)) if s == "fn"))
-            {
-                return Err("codegen: escaping/multi-shot continuations (a handler \
-                            returning a function) are not supported by the wasm \
-                            backend; run on the VM with `loon run`"
-                    .into());
-            }
-            let parts = match &pat.kind {
-                ExprKind::List(p) if !p.is_empty() => p,
-                _ => continue,
-            };
-            // [return x] clause
-            if let ExprKind::Symbol(s) = &parts[0].kind {
-                if s == "return" {
-                    if let Some(ExprKind::Symbol(x)) = parts.get(1).map(|e| &e.kind) {
-                        return_clause = Some((x.clone(), hbody));
+                    // Zero- or one-argument ops may be intercepted by a
+                    // tail-resumptive `handle`: if a handler closure is installed
+                    // in this op's slot, call it; otherwise fall back to the host
+                    // import. Only programs that use `handle` get this
+                    // (table-using) dispatch — others call the import directly.
+                    if (items.len() == 1 || items.len() == 2) && self.compiler.uses_handlers {
+                        use WasmInstruction as W;
+                        let addr = self.compiler.handler_slot_addr(&format!("{effect}.{op}"));
+                        let h = self.alloc_local();
+                        self.instructions.push(W::I32Const(addr));
+                        self.instructions.push(W::I64Load(3, 0));
+                        self.instructions.push(W::LocalTee(h));
+                        self.instructions.push(W::I64Eqz);
+                        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+                        // No handler installed → default host import.
+                        let import_idx = self.compiler.get_or_create_effect_import(effect, op);
+                        for arg in &items[1..] {
+                            self.compile_expr(arg)?;
+                        }
+                        self.instructions.push(W::Call(import_idx));
+                        self.instructions.push(W::Else);
+                        // Handler installed → call it with the operation args.
+                        if items.len() == 2 {
+                            self.compile_expr(&items[1])?;
+                            let arg = self.alloc_local();
+                            self.instructions.push(W::LocalSet(arg));
+                            self.emit_apply1(&FnRepr::Closure(h), arg);
+                        } else {
+                            self.emit_apply0(h);
+                        }
+                        self.instructions.push(W::End);
+                        return Ok(());
                     }
-                    continue;
-                }
-            }
-            // [E.op params…] clause
-            if let ExprKind::DotAccess(obj, op) = &parts[0].kind {
-                if let ExprKind::Symbol(effect) = &obj.kind {
-                    let key = format!("{effect}.{op}");
-                    let op_id = self.compiler.intern_effect_op(&key);
-                    // handler closure: [fn [params…] hbody]
-                    let sp = pat.span;
-                    let params_list =
-                        Expr::new(ExprKind::List(parts[1..].to_vec()), sp);
-                    self.compile_closure(&[params_list, hbody.clone()])?;
-                    let cval = self.alloc_local();
-                    self.instructions.push(W::LocalSet(cval));
-                    // cnt = count (kept as i64); addr = HANDLER_BASE + cnt*16
-                    let cnt = self.alloc_local();
-                    self.instructions.push(W::I32Const(HANDLER_COUNT_ADDR));
-                    self.instructions.push(W::I32Load(2, 0));
-                    self.instructions.push(W::I64ExtendI32U);
-                    self.instructions.push(W::LocalSet(cnt));
-                    let addr = self.alloc_local();
-                    self.instructions.push(W::LocalGet(cnt));
-                    self.instructions.push(W::I64Const(16));
-                    self.instructions.push(W::I64Mul);
-                    self.instructions.push(W::I64Const(HANDLER_BASE as i64));
-                    self.instructions.push(W::I64Add);
-                    self.instructions.push(W::LocalSet(addr));
-                    // mem[addr] = op_id ; mem[addr+8] = cval
-                    self.instructions.push(W::LocalGet(addr));
-                    self.instructions.push(W::I32WrapI64);
-                    self.instructions.push(W::I64Const(op_id));
-                    self.instructions.push(W::I64Store(3, 0));
-                    self.instructions.push(W::LocalGet(addr));
-                    self.instructions.push(W::I32WrapI64);
-                    self.instructions.push(W::LocalGet(cval));
-                    self.instructions.push(W::I64Store(3, 8));
-                    // count += 1
-                    self.instructions.push(W::I32Const(HANDLER_COUNT_ADDR));
-                    self.instructions.push(W::LocalGet(cnt));
-                    self.instructions.push(W::I32WrapI64);
-                    self.instructions.push(W::I32Const(1));
-                    self.instructions.push(W::I32Add);
-                    self.instructions.push(W::I32Store(2, 0));
-                    pushed += 1;
+                    let import_idx = self.compiler.get_or_create_effect_import(effect, op);
+                    for arg in &items[1..] {
+                        self.compile_expr(arg)?;
+                    }
+                    self.instructions.push(WasmInstruction::Call(import_idx));
+                    return Ok(());
                 }
             }
         }
-        // Compile the body, then pop the installed frames.
-        self.compile_expr(body)?;
-        let bodyval = self.alloc_local();
-        self.instructions.push(W::LocalSet(bodyval));
-        if pushed > 0 {
-            self.instructions.push(W::I32Const(HANDLER_COUNT_ADDR));
-            self.instructions.push(W::I32Const(HANDLER_COUNT_ADDR));
-            self.instructions.push(W::I32Load(2, 0));
-            self.instructions.push(W::I32Const(pushed));
-            self.instructions.push(W::I32Sub);
-            self.instructions.push(W::I32Store(2, 0));
-        }
-        // Apply the [return x] clause, if any.
-        if let Some((x, hbody)) = return_clause {
-            self.locals.insert(x, bodyval);
-            self.compile_expr(hbody)?;
-        } else {
-            self.instructions.push(W::LocalGet(bodyval));
-        }
-        Ok(())
-    }
-    fn compile_match_arms(&mut self, scrutinee: u32, arms: &[Expr]) -> Result<(), String> {
-        let parsed = self.parse_arms(arms);
-        if self.try_compile_br_table(scrutinee, &parsed)? {
+        // The callee is itself an expression that evaluates to a closure, e.g.
+        // `[[handle …] init]` or `[[resume s] s]` — compile it and call it.
+        if matches!(&items[0].kind, ExprKind::List(_)) && items.len() == 2 {
+            self.compile_expr(&items[0])?;
+            let cl = self.alloc_local();
+            self.instructions.push(WasmInstruction::LocalSet(cl));
+            self.compile_expr(&items[1])?;
+            let arg = self.alloc_local();
+            self.instructions.push(WasmInstruction::LocalSet(arg));
+            self.emit_apply1(&FnRepr::Closure(cl), arg);
             return Ok(());
         }
-        self.compile_match_arms_ifelse(scrutinee, arms)
+        Err("codegen: unsupported call form".into())
+    }
+    fn compile_match_arms(
+        &mut self,
+        scrutinee: u32,
+        arms: &[Expr],
+        tail: bool,
+    ) -> Result<(), String> {
+        let parsed = self.parse_arms(arms);
+        if self.try_compile_br_table(scrutinee, &parsed, tail)? {
+            return Ok(());
+        }
+        self.compile_match_arms_ifelse(scrutinee, arms, tail)
     }
     fn parse_arms<'b>(&self, arms: &'b [Expr]) -> Vec<(&'b Expr, &'b Expr)> {
         let mut r = Vec::new();
@@ -3482,6 +3100,7 @@ impl<'a> FnCtx<'a> {
         &mut self,
         scrutinee: u32,
         parsed: &[(&Expr, &Expr)],
+        tail: bool,
     ) -> Result<bool, String> {
         if parsed.is_empty() {
             return Ok(false);
@@ -3531,7 +3150,7 @@ impl<'a> FnCtx<'a> {
         ));
         for (ci, (_, body)) in int_arms.iter().enumerate() {
             self.instructions.push(WasmInstruction::End);
-            self.compile_expr(body)?;
+            self.compile_maybe_tail(body, tail)?;
             self.instructions
                 .push(WasmInstruction::Br((nc - ci) as u32));
         }
@@ -3544,14 +3163,19 @@ impl<'a> FnCtx<'a> {
                 self.instructions.push(WasmInstruction::LocalGet(scrutinee));
                 self.instructions.push(WasmInstruction::LocalSet(local));
             }
-            self.compile_expr(body)?;
+            self.compile_maybe_tail(body, tail)?;
         } else {
             self.instructions.push(WasmInstruction::I64Const(0));
         }
         self.instructions.push(WasmInstruction::End);
         Ok(true)
     }
-    fn compile_match_arms_ifelse(&mut self, scrutinee: u32, arms: &[Expr]) -> Result<(), String> {
+    fn compile_match_arms_ifelse(
+        &mut self,
+        scrutinee: u32,
+        arms: &[Expr],
+        tail: bool,
+    ) -> Result<(), String> {
         // Right-nested if/else chain, each `if` producing an i64:
         //   t1; if {b1} else { t2; if {b2} else { … default } } …
         // Every conditional arm opens one `if (Result I64)` and its `else`; a
@@ -3586,7 +3210,7 @@ impl<'a> FnCtx<'a> {
                         self.instructions.push(WasmInstruction::LocalSet(local));
                     }
                 }
-                self.compile_expr(body)?;
+                self.compile_maybe_tail(body, tail)?;
                 have_default = true;
                 break;
             }
@@ -3611,11 +3235,15 @@ impl<'a> FnCtx<'a> {
                 self.instructions.push(WasmInstruction::I64Eq);
                 self.instructions
                     .push(WasmInstruction::If(BlockType::Result(ValType::I64)));
+                let field_floats = self.compiler.adt_float_fields.get(&cn).cloned();
                 for (fi, fp) in pat_items[1..].iter().enumerate() {
                     if let ExprKind::Symbol(fn_) = &fp.kind {
                         if fn_ != "_" {
                             let local = self.alloc_local();
                             self.locals.insert(fn_.clone(), local);
+                            if field_floats.as_ref().and_then(|f| f.get(fi)).copied() == Some(true) {
+                                self.float_locals.insert(fn_.clone());
+                            }
                             self.instructions.push(WasmInstruction::LocalGet(scrutinee));
                             self.instructions.push(WasmInstruction::I32WrapI64);
                             self.instructions
@@ -3624,7 +3252,7 @@ impl<'a> FnCtx<'a> {
                         }
                     }
                 }
-                self.compile_expr(body)?;
+                self.compile_maybe_tail(body, tail)?;
                 self.instructions.push(WasmInstruction::Else);
                 open += 1;
                 i += 2;
@@ -3656,7 +3284,7 @@ impl<'a> FnCtx<'a> {
             }
             self.instructions
                 .push(WasmInstruction::If(BlockType::Result(ValType::I64)));
-            self.compile_expr(body)?;
+            self.compile_maybe_tail(body, tail)?;
             self.instructions.push(WasmInstruction::Else);
             open += 1;
             i += 2;
@@ -3675,32 +3303,45 @@ impl<'a> FnCtx<'a> {
         if args.is_empty() {
             return Err("closure requires params".into());
         }
-        // Params may be plain symbols or destructuring patterns ([a b] for a
-        // pair). `param_exprs` keeps the raw forms; `bound_names` is the flat
-        // list of names they bind (used to exclude them from captures).
-        let param_exprs: Vec<Expr> = match &args[0].kind {
-            ExprKind::List(items) => items.clone(),
+        // Each parameter is either a plain symbol or a positional destructuring
+        // pattern `[a b …]` (used for `[k v]` map entries), where `_` ignores a
+        // slot. A destructuring param still occupies exactly one argument slot.
+        let raw_params = match &args[0].kind {
+            ExprKind::List(items) => items,
             _ => return Err("closure params must be a list".into()),
         };
-        let mut bound_names: Vec<String> = Vec::new();
-        for p in &param_exprs {
+        let mut params: Vec<ClosureParam> = Vec::new();
+        for p in raw_params {
             match &p.kind {
-                ExprKind::Symbol(s) => bound_names.push(s.clone()),
-                ExprKind::List(sub) | ExprKind::Tuple(sub) => {
-                    for e in sub {
-                        if let ExprKind::Symbol(s) = &e.kind {
-                            if s != "_" {
-                                bound_names.push(s.clone());
-                            }
-                        }
-                    }
+                ExprKind::Symbol(s) => params.push(ClosureParam::Simple(s.clone())),
+                ExprKind::List(subs) => {
+                    let names = subs
+                        .iter()
+                        .map(|e| match &e.kind {
+                            ExprKind::Symbol(s) if s != "_" => Some(s.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    params.push(ClosureParam::Destructure(names));
                 }
-                _ => {}
+                _ => {
+                    return Err("closure param must be a symbol or destructuring list".into());
+                }
             }
         }
-        let params = bound_names.clone();
         let body = &args[1..];
-        let free = capture::free_vars(&params, body);
+        // All names bound by params (including destructured sub-names) are
+        // excluded from the free-variable set.
+        let mut bound: Vec<String> = Vec::new();
+        for p in &params {
+            match p {
+                ClosureParam::Simple(s) => bound.push(s.clone()),
+                ClosureParam::Destructure(names) => {
+                    bound.extend(names.iter().flatten().cloned());
+                }
+            }
+        }
+        let free = capture::free_vars(&bound, body);
         let mut captures: Vec<(String, u32)> = Vec::new();
         for name in &free {
             if let Some(&idx) = self.locals.get(name) {
@@ -3709,7 +3350,7 @@ impl<'a> FnCtx<'a> {
         }
         let lname = format!("__closure_{}", self.compiler.lambda_counter);
         self.compiler.lambda_counter += 1;
-        let tp = 1 + param_exprs.len();
+        let tp = 1 + params.len();
         let idx = self.compiler.next_fn_idx;
         self.compiler.fn_map.insert(
             lname,
@@ -3732,31 +3373,9 @@ impl<'a> FnCtx<'a> {
             string_locals: std::collections::HashSet::new(),
         };
         cctx.locals.insert("__env_ptr".to_string(), 0);
-        for (i, p) in param_exprs.iter().enumerate() {
-            let pos = (i + 1) as u32; // positional local (after __env_ptr)
-            match &p.kind {
-                ExprKind::Symbol(s) => {
-                    cctx.locals.insert(s.clone(), pos);
-                }
-                ExprKind::List(sub) | ExprKind::Tuple(sub) => {
-                    // Destructure a pair/tuple arg: name_j = vec-get(arg, j).
-                    cctx.compiler.ensure_collections_runtime();
-                    let vget = cctx.compiler.collections_runtime.clone().unwrap().vec_get_idx;
-                    for (j, e) in sub.iter().enumerate() {
-                        if let ExprKind::Symbol(s) = &e.kind {
-                            if s == "_" {
-                                continue;
-                            }
-                            let l = cctx.alloc_local();
-                            cctx.instructions.push(WasmInstruction::LocalGet(pos));
-                            cctx.instructions.push(WasmInstruction::I64Const(j as i64));
-                            cctx.instructions.push(WasmInstruction::Call(vget));
-                            cctx.instructions.push(WasmInstruction::LocalSet(l));
-                            cctx.locals.insert(s.clone(), l);
-                        }
-                    }
-                }
-                _ => {}
+        for (i, p) in params.iter().enumerate() {
+            if let ClosureParam::Simple(s) = p {
+                cctx.locals.insert(s.clone(), (i + 1) as u32);
             }
         }
         for (ci, (cn, _)) in captures.iter().enumerate() {
@@ -3768,8 +3387,33 @@ impl<'a> FnCtx<'a> {
                 .push(WasmInstruction::I64Load(3, (ci * 8) as u32));
             cctx.instructions.push(WasmInstruction::LocalSet(l));
         }
-        for expr in body {
-            cctx.compile_expr(expr)?;
+        // Bind destructured sub-names by loading positional elements from the
+        // pair/tuple in the param slot (vectors store data ptr at offset 16).
+        for (i, p) in params.iter().enumerate() {
+            if let ClosureParam::Destructure(names) = p {
+                let slot = (i + 1) as u32;
+                for (j, name) in names.iter().enumerate() {
+                    let Some(name) = name else { continue };
+                    let l = cctx.alloc_local();
+                    cctx.instructions.push(WasmInstruction::LocalGet(slot));
+                    cctx.instructions.push(WasmInstruction::I32WrapI64);
+                    cctx.instructions.push(WasmInstruction::I64Load(3, 16));
+                    cctx.instructions.push(WasmInstruction::I64Const((j * 8) as i64));
+                    cctx.instructions.push(WasmInstruction::I64Add);
+                    cctx.instructions.push(WasmInstruction::I32WrapI64);
+                    cctx.instructions.push(WasmInstruction::I64Load(3, 0));
+                    cctx.instructions.push(WasmInstruction::LocalSet(l));
+                    cctx.locals.insert(name.clone(), l);
+                }
+            }
+        }
+        for (i, expr) in body.iter().enumerate() {
+            if i + 1 == body.len() {
+                cctx.compile_tail(expr)?; // tail calls in a closure become return_call
+            } else {
+                cctx.compile_expr(expr)?;
+                cctx.instructions.push(WasmInstruction::Drop); // statement: discard value
+            }
         }
         let cinstrs = cctx.instructions.clone();
         let clc = cctx.local_count;
@@ -3832,27 +3476,12 @@ impl<'a> FnCtx<'a> {
                     Ok(FnRepr::Named(def.func_idx))
                 } else if let Some(&l) = self.locals.get(name) {
                     Ok(FnRepr::Closure(l))
+                } else if name == "lowercase" || name == "uppercase" {
+                    // Unary string builtins usable as HOF arguments, e.g.
+                    // `[map lowercase words]`.
+                    Ok(FnRepr::Named(self.compiler.ensure_str_case(name == "uppercase")))
                 } else {
-                    // A builtin (or otherwise non-fn symbol) used as a HOF value:
-                    // wrap it in a unary lambda `[fn [g] [name g]]` and compile
-                    // that closure, so e.g. `[map lowercase coll]` works.
-                    let sp = f.span;
-                    let g = "__hof_arg".to_string();
-                    let params = Expr::new(
-                        ExprKind::List(vec![Expr::new(ExprKind::Symbol(g.clone()), sp)]),
-                        sp,
-                    );
-                    let body = Expr::new(
-                        ExprKind::List(vec![
-                            Expr::new(ExprKind::Symbol(name.clone()), sp),
-                            Expr::new(ExprKind::Symbol(g), sp),
-                        ]),
-                        sp,
-                    );
-                    self.compile_closure(&[params, body])?;
-                    let l = self.alloc_local();
-                    self.instructions.push(WasmInstruction::LocalSet(l));
-                    Ok(FnRepr::Closure(l))
+                    Err(format!("codegen: HOF function '{name}' not found"))
                 }
             }
             _ => Err("codegen: HOF requires a function argument".into()),
@@ -3881,6 +3510,19 @@ impl<'a> FnCtx<'a> {
                 self.instructions.push(W::CallIndirect(ty));
             }
         }
+    }
+    /// Invoke a zero-argument closure (just its env), leaving the result.
+    fn emit_apply0(&mut self, cl: u32) {
+        use WasmInstruction as W;
+        self.instructions.push(W::LocalGet(cl));
+        self.instructions.push(W::I64Const(0xFFFF_FFFF));
+        self.instructions.push(W::I64And);
+        self.instructions.push(W::LocalGet(cl));
+        self.instructions.push(W::I64Const(32));
+        self.instructions.push(W::I64ShrU);
+        self.instructions.push(W::I32WrapI64);
+        let ty = self.get_or_create_indirect_type(1);
+        self.instructions.push(W::CallIndirect(ty));
     }
     /// Load `len` (offset 0) and `data_ptr` (offset 16) of the vector held in
     /// `vloc` into freshly allocated locals, returning (len_local, data_local).
@@ -3974,6 +3616,584 @@ impl<'a> FnCtx<'a> {
         }
         Ok(())
     }
+    /// `[update m k f]` — a new map with `k` bound to `f` applied to its
+    /// current value (0 if absent, per `map_get`).
+    fn compile_update(&mut self, m: &Expr, k: &Expr, f: &Expr) -> Result<(), String> {
+        use WasmInstruction as W;
+        self.compiler.ensure_maps_runtime();
+        let mr = self.compiler.maps_runtime.clone().unwrap();
+        self.compile_expr(m)?;
+        let mloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(mloc));
+        self.compile_expr(k)?;
+        let kloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(kloc));
+        let fr = self.prepare_fn_arg(f)?;
+        // cur = map_get(m, k)
+        self.instructions.push(W::LocalGet(mloc));
+        self.instructions.push(W::LocalGet(kloc));
+        self.instructions.push(W::Call(mr.map_get_idx));
+        let eloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(eloc));
+        // newval = f(cur)
+        self.emit_apply1(&fr, eloc);
+        let vloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(vloc));
+        // map_assoc(m, k, newval)
+        self.instructions.push(W::LocalGet(mloc));
+        self.instructions.push(W::LocalGet(kloc));
+        self.instructions.push(W::LocalGet(vloc));
+        self.instructions.push(W::Call(mr.map_assoc_idx));
+        Ok(())
+    }
+    /// `[take n coll]` — the first `min(n, len)` elements of `coll` as a new
+    /// vector.
+    fn compile_take(&mut self, n: &Expr, coll: &Expr) -> Result<(), String> {
+        use WasmInstruction as W;
+        self.compiler.ensure_collections_runtime();
+        let rt = self.compiler.collections_runtime.clone().unwrap();
+        self.compile_expr(coll)?;
+        let vloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(vloc));
+        self.compile_expr(n)?;
+        let nloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(nloc));
+        let (lenloc, dloc) = self.emit_vec_header(vloc);
+        let rloc = self.alloc_local();
+        self.instructions.push(W::Call(rt.vec_new_idx));
+        self.instructions.push(W::LocalSet(rloc));
+        let iloc = self.alloc_local();
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(iloc));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        // if i >= len break
+        self.instructions.push(W::LocalGet(iloc));
+        self.instructions.push(W::LocalGet(lenloc));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // if i >= n break
+        self.instructions.push(W::LocalGet(iloc));
+        self.instructions.push(W::LocalGet(nloc));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // result = vec_push(result, data[i])
+        self.instructions.push(W::LocalGet(rloc));
+        self.instructions.push(W::LocalGet(dloc));
+        self.instructions.push(W::LocalGet(iloc));
+        self.instructions.push(W::I64Const(8));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::Call(rt.vec_push_idx));
+        self.instructions.push(W::LocalSet(rloc));
+        // i++
+        self.instructions.push(W::LocalGet(iloc));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(iloc));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        self.instructions.push(W::LocalGet(rloc));
+        Ok(())
+    }
+    /// `[merge a b]` — `a` with every `[k v]` entry of `b` assoc'd in.
+    fn compile_merge(&mut self, a: &Expr, b: &Expr) -> Result<(), String> {
+        use WasmInstruction as W;
+        self.compiler.ensure_maps_runtime();
+        let mr = self.compiler.maps_runtime.clone().unwrap();
+        self.compile_expr(a)?;
+        let result = self.alloc_local();
+        self.instructions.push(W::LocalSet(result));
+        self.compile_expr(b)?;
+        let bvec = self.alloc_local();
+        self.instructions.push(W::LocalSet(bvec));
+        let (n, d) = self.emit_vec_header(bvec);
+        let i = self.alloc_local();
+        let pair = self.alloc_local();
+        let pdata = self.alloc_local();
+        let k = self.alloc_local();
+        let v = self.alloc_local();
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::LocalGet(n));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // pair = data[i]
+        self.instructions.push(W::LocalGet(d));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(8));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalSet(pair));
+        // pdata = pair.data_ptr; k = pdata[0]; v = pdata[1]
+        self.instructions.push(W::LocalGet(pair));
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 16));
+        self.instructions.push(W::LocalSet(pdata));
+        self.instructions.push(W::LocalGet(pdata));
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalSet(k));
+        self.instructions.push(W::LocalGet(pdata));
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 8));
+        self.instructions.push(W::LocalSet(v));
+        // result = map_assoc(result, k, v)
+        self.instructions.push(W::LocalGet(result));
+        self.instructions.push(W::LocalGet(k));
+        self.instructions.push(W::LocalGet(v));
+        self.instructions.push(W::Call(mr.map_assoc_idx));
+        self.instructions.push(W::LocalSet(result));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        self.instructions.push(W::LocalGet(result));
+        Ok(())
+    }
+    /// `[group-by f coll]` — a map from each key `f` returns to the vector of
+    /// elements producing it, keys in first-occurrence order (matching the VM,
+    /// whose maps are insertion-ordered).
+    fn compile_group_by(&mut self, keyfn: &Expr, coll: &Expr) -> Result<(), String> {
+        use WasmInstruction as W;
+        self.compiler.ensure_maps_runtime();
+        let mr = self.compiler.maps_runtime.clone().unwrap();
+        let rt = self.compiler.collections_runtime.clone().unwrap();
+        self.compile_expr(coll)?;
+        let vloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(vloc));
+        let fr = self.prepare_fn_arg(keyfn)?;
+        let (nloc, dloc) = self.emit_vec_header(vloc);
+        let result = self.alloc_local();
+        self.instructions.push(W::Call(rt.vec_new_idx)); // empty map == empty vector of pairs
+        self.instructions.push(W::LocalSet(result));
+        let i = self.alloc_local();
+        let elem = self.alloc_local();
+        let key = self.alloc_local();
+        let group = self.alloc_local();
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::LocalGet(nloc));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // elem = data[i]
+        self.instructions.push(W::LocalGet(dloc));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(8));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalSet(elem));
+        // key = f(elem)
+        self.emit_apply1(&fr, elem);
+        self.instructions.push(W::LocalSet(key));
+        // group = map_get(result, key) (0/UNIT if absent → fresh vector)
+        self.instructions.push(W::LocalGet(result));
+        self.instructions.push(W::LocalGet(key));
+        self.instructions.push(W::Call(mr.map_get_idx));
+        self.instructions.push(W::LocalSet(group));
+        self.instructions.push(W::LocalGet(group));
+        self.instructions.push(W::I64Eqz);
+        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+        self.instructions.push(W::Call(rt.vec_new_idx));
+        self.instructions.push(W::Else);
+        self.instructions.push(W::LocalGet(group));
+        self.instructions.push(W::End);
+        self.instructions.push(W::LocalSet(group));
+        // group = vec_push(group, elem)
+        self.instructions.push(W::LocalGet(group));
+        self.instructions.push(W::LocalGet(elem));
+        self.instructions.push(W::Call(rt.vec_push_idx));
+        self.instructions.push(W::LocalSet(group));
+        // result = map_assoc(result, key, group)
+        self.instructions.push(W::LocalGet(result));
+        self.instructions.push(W::LocalGet(key));
+        self.instructions.push(W::LocalGet(group));
+        self.instructions.push(W::Call(mr.map_assoc_idx));
+        self.instructions.push(W::LocalSet(result));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        self.instructions.push(W::LocalGet(result));
+        Ok(())
+    }
+    /// `[try body handler]` — run `body`; if it performs `Fail.fail`, the
+    /// `handler` function receives the failure value and its result becomes the
+    /// `try`'s result. Compiled as a single-clause tail-resumptive `handle` for
+    /// `Fail.fail`: install the handler closure in `Fail.fail`'s slot for the
+    /// body's dynamic extent (correct when the failing op is in tail position,
+    /// which `try` desugaring guarantees).
+    fn compile_try(&mut self, items: &[Expr]) -> Result<(), String> {
+        use WasmInstruction as W;
+        if items.len() < 3 {
+            return Err("codegen: try requires a body and a handler".into());
+        }
+        self.compiler.force_heap = true;
+        let addr = self.compiler.handler_slot_addr("Fail.fail");
+        match &items[2].kind {
+            ExprKind::List(hitems)
+                if matches!(hitems.first().map(|e| &e.kind), Some(ExprKind::Symbol(s)) if s == "fn") =>
+            {
+                self.compile_closure(&hitems[1..])?;
+            }
+            _ => return Err("codegen: try handler must be a function".into()),
+        }
+        let htmp = self.alloc_local();
+        self.instructions.push(W::LocalSet(htmp));
+        let save = self.alloc_local();
+        self.instructions.push(W::I32Const(addr));
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalSet(save));
+        self.instructions.push(W::I32Const(addr));
+        self.instructions.push(W::LocalGet(htmp));
+        self.instructions.push(W::I64Store(3, 0));
+        self.compile_expr(&items[1])?;
+        let result = self.alloc_local();
+        self.instructions.push(W::LocalSet(result));
+        self.instructions.push(W::I32Const(addr));
+        self.instructions.push(W::LocalGet(save));
+        self.instructions.push(W::I64Store(3, 0));
+        self.instructions.push(W::LocalGet(result));
+        Ok(())
+    }
+    /// `[handle body  [E.op param] hbody …  [return v] rbody]` — tail-resumptive
+    /// effect handlers. Each handler clause is compiled to a one-argument
+    /// closure (its result is the operation's result; `resume` is the identity)
+    /// and installed in the op's handler slot for the dynamic extent of `body`;
+    /// the previous slot value is restored afterwards. This covers handlers that
+    /// resume once in tail position (and `return` transforms); it does not
+    /// implement aborting or multi-shot handlers (those need full continuations
+    /// and run on the VM).
+    fn compile_handle(&mut self, items: &[Expr]) -> Result<(), String> {
+        use WasmInstruction as W;
+        self.compiler.force_heap = true;
+        // The standard `State` handler is the continuation-passing definition of
+        // a mutable cell, so `[handle body … State.get … State.put …]` is
+        // exactly "a function of the initial state that runs `body` with
+        // `State.get`/`State.put` backed by the cell". Compile it to the closure
+        //   [fn [s] [State.put s] body]
+        // — `[State.put s]` seeds the cell, `body` then reads/writes it. This is
+        // the one escaping-continuation pattern the samples use; general
+        // continuations still run on the VM.
+        let is_state_handle = items[2..].iter().step_by(2).any(|clause| {
+            matches!(&clause.kind, ExprKind::List(p)
+                if matches!(p.first().map(|e| &e.kind),
+                    Some(ExprKind::DotAccess(obj, _))
+                        if matches!(&obj.kind, ExprKind::Symbol(s) if s == "State")))
+        });
+        if is_state_handle {
+            let span = items[0].span;
+            let s = "__loon_state".to_string();
+            let paramlist = Expr::new(
+                ExprKind::List(vec![Expr::new(ExprKind::Symbol(s.clone()), span)]),
+                span,
+            );
+            let put = Expr::new(
+                ExprKind::List(vec![
+                    Expr::new(
+                        ExprKind::DotAccess(
+                            Box::new(Expr::new(ExprKind::Symbol("State".into()), span)),
+                            "put".into(),
+                        ),
+                        span,
+                    ),
+                    Expr::new(ExprKind::Symbol(s), span),
+                ]),
+                span,
+            );
+            return self.compile_closure(&[paramlist, put, items[1].clone()]);
+        }
+        let body = &items[1];
+        let mut installed: Vec<(i32, u32)> = Vec::new(); // (slot addr, saved-old local)
+        let mut return_clause: Option<(String, Expr)> = None;
+        let mut i = 2;
+        while i + 1 < items.len() {
+            let pat = &items[i];
+            let hbody = &items[i + 1];
+            if let ExprKind::List(pitems) = &pat.kind {
+                match pitems.first().map(|e| &e.kind) {
+                    Some(ExprKind::DotAccess(obj, op)) => {
+                        if let ExprKind::Symbol(eff) = &obj.kind {
+                            let addr = self.compiler.handler_slot_addr(&format!("{eff}.{op}"));
+                            // The handler closure takes the operation's parameters
+                            // (zero or more), matching the call site.
+                            let paramlist = Expr::new(
+                                ExprKind::List(pitems[1..].to_vec()),
+                                pat.span,
+                            );
+                            // Build + store the handler closure, save old slot.
+                            self.compile_closure(&[paramlist, hbody.clone()])?;
+                            let htmp = self.alloc_local();
+                            self.instructions.push(W::LocalSet(htmp));
+                            let save = self.alloc_local();
+                            self.instructions.push(W::I32Const(addr));
+                            self.instructions.push(W::I64Load(3, 0));
+                            self.instructions.push(W::LocalSet(save));
+                            self.instructions.push(W::I32Const(addr));
+                            self.instructions.push(W::LocalGet(htmp));
+                            self.instructions.push(W::I64Store(3, 0));
+                            installed.push((addr, save));
+                        }
+                    }
+                    Some(ExprKind::Symbol(s)) if s == "return" => {
+                        let var = match pitems.get(1).map(|e| &e.kind) {
+                            Some(ExprKind::Symbol(p)) => p.clone(),
+                            _ => "_".to_string(),
+                        };
+                        return_clause = Some((var, hbody.clone()));
+                    }
+                    _ => {}
+                }
+            }
+            i += 2;
+        }
+        self.compile_expr(body)?;
+        let result = self.alloc_local();
+        self.instructions.push(W::LocalSet(result));
+        // Restore the previous handler slots.
+        for (addr, save) in &installed {
+            self.instructions.push(W::I32Const(*addr));
+            self.instructions.push(W::LocalGet(*save));
+            self.instructions.push(W::I64Store(3, 0));
+        }
+        if let Some((var, rbody)) = return_clause {
+            self.locals.insert(var, result); // bind the return var to the result
+            self.compile_expr(&rbody)?;
+        } else {
+            self.instructions.push(W::LocalGet(result));
+        }
+        Ok(())
+    }
+    /// `[sort-by f coll]` / `[sort-by f :desc coll]` — a stable sort of `coll`
+    /// by the integer key `f` returns for each element. Matches the EIR VM:
+    /// the key function is evaluated once per element, the sort is stable, and
+    /// comparison is by integer key (`:desc` reverses). Implemented as an
+    /// insertion sort over a scratch buffer of interleaved (key, value) i64
+    /// pairs — fine for the small collections this targets.
+    fn compile_sort_by(&mut self, keyfn: &Expr, coll: &Expr, desc: bool) -> Result<(), String> {
+        use WasmInstruction as W;
+        self.compiler.ensure_collections_runtime();
+        let rt = self.compiler.collections_runtime.clone().unwrap();
+        self.compile_expr(coll)?;
+        let vloc = self.alloc_local();
+        self.instructions.push(W::LocalSet(vloc));
+        let fr = self.prepare_fn_arg(keyfn)?;
+        let (nloc, dloc) = self.emit_vec_header(vloc);
+        // base = heap_ptr; heap_ptr += n * 16 (scratch for n (key,val) pairs)
+        let base = self.alloc_local();
+        self.instructions.push(W::GlobalGet(0));
+        self.instructions.push(W::I64ExtendI32U);
+        self.instructions.push(W::LocalSet(base));
+        self.instructions.push(W::GlobalGet(0));
+        self.instructions.push(W::LocalGet(nloc));
+        self.instructions.push(W::I64Const(16));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I32Add);
+        self.instructions.push(W::GlobalSet(0));
+        let i = self.alloc_local();
+        let e = self.alloc_local();
+        // address helper: push (base + idx*stride + off) as i32
+        // (emitted inline below since closures can't borrow self here)
+        // ── fill: scratch[i] = (f(data[i]), data[i]) ──
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::LocalGet(nloc));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // e = data[i]
+        self.instructions.push(W::LocalGet(dloc));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(8));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalSet(e));
+        // scratch[i].key = f(e)
+        self.emit_pair_addr(base, i);
+        self.emit_apply1(&fr, e);
+        self.instructions.push(W::I64Store(3, 0));
+        // scratch[i].val = e
+        self.emit_pair_addr(base, i);
+        self.instructions.push(W::LocalGet(e));
+        self.instructions.push(W::I64Store(3, 8));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        // ── insertion sort (stable) ──
+        let j = self.alloc_local();
+        let key_i = self.alloc_local();
+        let val_i = self.alloc_local();
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::LocalGet(nloc));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // key_i = scratch[i].key; val_i = scratch[i].val
+        self.emit_pair_addr(base, i);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalSet(key_i));
+        self.emit_pair_addr(base, i);
+        self.instructions.push(W::I64Load(3, 8));
+        self.instructions.push(W::LocalSet(val_i));
+        // j = i - 1
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Sub);
+        self.instructions.push(W::LocalSet(j));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        // if j < 0 break
+        self.instructions.push(W::LocalGet(j));
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::BrIf(1));
+        // if not (scratch[j].key {>|<} key_i) break  — strict, so equal stays (stable)
+        self.emit_pair_addr(base, j);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::LocalGet(key_i));
+        self.instructions
+            .push(if desc { W::I64LtS } else { W::I64GtS });
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        // scratch[j+1] = scratch[j]  (shift the larger/smaller element right)
+        self.emit_pair_addr_succ(base, j); // dst = scratch[j+1]
+        self.emit_pair_addr(base, j); // src = scratch[j]
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::I64Store(3, 0));
+        self.emit_pair_addr_succ(base, j);
+        self.emit_pair_addr(base, j);
+        self.instructions.push(W::I64Load(3, 8));
+        self.instructions.push(W::I64Store(3, 8));
+        // j--
+        self.instructions.push(W::LocalGet(j));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Sub);
+        self.instructions.push(W::LocalSet(j));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        // scratch[j+1] = (key_i, val_i)
+        self.emit_pair_addr_succ(base, j);
+        self.instructions.push(W::LocalGet(key_i));
+        self.instructions.push(W::I64Store(3, 0));
+        self.emit_pair_addr_succ(base, j);
+        self.instructions.push(W::LocalGet(val_i));
+        self.instructions.push(W::I64Store(3, 8));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        // ── build result vector from sorted values ──
+        let r = self.alloc_local();
+        self.instructions.push(W::Call(rt.vec_new_idx));
+        self.instructions.push(W::LocalSet(r));
+        self.instructions.push(W::I64Const(0));
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Block(BlockType::Empty));
+        self.instructions.push(W::Loop(BlockType::Empty));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::LocalGet(nloc));
+        self.instructions.push(W::I64LtS);
+        self.instructions.push(W::I32Eqz);
+        self.instructions.push(W::BrIf(1));
+        self.instructions.push(W::LocalGet(r));
+        self.emit_pair_addr(base, i);
+        self.instructions.push(W::I64Load(3, 8));
+        self.instructions.push(W::Call(rt.vec_push_idx));
+        self.instructions.push(W::LocalSet(r));
+        self.instructions.push(W::LocalGet(i));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::LocalSet(i));
+        self.instructions.push(W::Br(0));
+        self.instructions.push(W::End);
+        self.instructions.push(W::End);
+        self.instructions.push(W::LocalGet(r));
+        Ok(())
+    }
+    /// Consume a sequence value on the stack and leave its length (i64). A
+    /// packed string (value ≥ 2³², pointer in the high bits) carries its length
+    /// in the low 32 bits; a vector/map is a heap pointer whose length lives at
+    /// header offset 0.
+    fn emit_seq_len(&mut self) {
+        use WasmInstruction as W;
+        let v = self.alloc_local();
+        self.instructions.push(W::LocalSet(v));
+        self.instructions.push(W::LocalGet(v));
+        self.instructions.push(W::I64Const(0x1_0000_0000));
+        self.instructions.push(W::I64GeS);
+        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+        self.instructions.push(W::LocalGet(v));
+        self.instructions.push(W::I64Const(0xFFFF_FFFF));
+        self.instructions.push(W::I64And);
+        self.instructions.push(W::Else);
+        self.instructions.push(W::LocalGet(v));
+        self.instructions.push(W::I32WrapI64);
+        self.instructions.push(W::I64Load(3, 0));
+        self.instructions.push(W::End);
+    }
+    /// Push `(base + idx*16)` as an i32 address (the start of pair `idx`).
+    fn emit_pair_addr(&mut self, base: u32, idx: u32) {
+        use WasmInstruction as W;
+        self.instructions.push(W::LocalGet(base));
+        self.instructions.push(W::LocalGet(idx));
+        self.instructions.push(W::I64Const(16));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+    }
+    /// Push `(base + (idx+1)*16)` as an i32 address (pair `idx+1`).
+    fn emit_pair_addr_succ(&mut self, base: u32, idx: u32) {
+        use WasmInstruction as W;
+        self.instructions.push(W::LocalGet(base));
+        self.instructions.push(W::LocalGet(idx));
+        self.instructions.push(W::I64Const(1));
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I64Const(16));
+        self.instructions.push(W::I64Mul);
+        self.instructions.push(W::I64Add);
+        self.instructions.push(W::I32WrapI64);
+    }
     fn compile_fold(&mut self, init: &Expr, f: &Expr, coll: &Expr) -> Result<(), String> {
         use WasmInstruction as W;
         self.compiler.ensure_collections_runtime();
@@ -4041,280 +4261,6 @@ impl<'a> FnCtx<'a> {
                 self.instructions.push(W::CallIndirect(ty));
             }
         }
-    }
-    /// `[sort-by f order coll]` — stable-ish insertion sort of `coll` by the key
-    /// `f(elem)` (an integer key), ascending unless `order` is `:desc`. Keys are
-    /// precomputed once into a scratch array, then the element array is sorted.
-    fn compile_sort_by(
-        &mut self,
-        f: &Expr,
-        order_desc: bool,
-        coll: &Expr,
-    ) -> Result<(), String> {
-        use WasmInstruction as W;
-        self.compiler.ensure_collections_runtime();
-        let rt = self.compiler.collections_runtime.clone().unwrap();
-        let fr = self.prepare_fn_arg(f)?;
-        self.compile_expr(coll)?;
-        let vl = self.alloc_local();
-        self.instructions.push(W::LocalSet(vl));
-        let (n, data) = self.emit_vec_header(vl);
-        // elems = alloc n*8 ; keys = alloc n*8  (heap offsets as i64)
-        let elems = self.alloc_local();
-        let keys = self.alloc_local();
-        for slot in [elems, keys] {
-            self.instructions.push(W::GlobalGet(0));
-            self.instructions.push(W::I64ExtendI32U);
-            self.instructions.push(W::LocalSet(slot));
-            self.instructions.push(W::GlobalGet(0));
-            self.instructions.push(W::LocalGet(n));
-            self.instructions.push(W::I64Const(8));
-            self.instructions.push(W::I64Mul);
-            self.instructions.push(W::I32WrapI64);
-            self.instructions.push(W::I32Add);
-            self.instructions.push(W::GlobalSet(0));
-        }
-        let iv = self.alloc_local();
-        let eloc = self.alloc_local();
-        // copy elems[i] = data[i]; keys[i] = f(elems[i])
-        self.instructions.push(W::I64Const(0));
-        self.instructions.push(W::LocalSet(iv));
-        self.instructions.push(W::Block(BlockType::Empty));
-        self.instructions.push(W::Loop(BlockType::Empty));
-        self.instructions.push(W::LocalGet(iv));
-        self.instructions.push(W::LocalGet(n));
-        self.instructions.push(W::I64LtS);
-        self.instructions.push(W::I32Eqz);
-        self.instructions.push(W::BrIf(1));
-        // el = data[i]
-        self.instructions.push(W::LocalGet(data));
-        self.instructions.push(W::LocalGet(iv));
-        self.instructions.push(W::I64Const(8));
-        self.instructions.push(W::I64Mul);
-        self.instructions.push(W::I64Add);
-        self.instructions.push(W::I32WrapI64);
-        self.instructions.push(W::I64Load(3, 0));
-        self.instructions.push(W::LocalSet(eloc));
-        // elems[i] = el
-        self.instructions.push(W::LocalGet(elems));
-        self.instructions.push(W::LocalGet(iv));
-        self.instructions.push(W::I64Const(8));
-        self.instructions.push(W::I64Mul);
-        self.instructions.push(W::I64Add);
-        self.instructions.push(W::I32WrapI64);
-        self.instructions.push(W::LocalGet(eloc));
-        self.instructions.push(W::I64Store(3, 0));
-        // keys[i] = f(el)
-        self.instructions.push(W::LocalGet(keys));
-        self.instructions.push(W::LocalGet(iv));
-        self.instructions.push(W::I64Const(8));
-        self.instructions.push(W::I64Mul);
-        self.instructions.push(W::I64Add);
-        self.instructions.push(W::I32WrapI64);
-        self.emit_apply1(&fr, eloc);
-        self.instructions.push(W::I64Store(3, 0));
-        self.instructions.push(W::LocalGet(iv));
-        self.instructions.push(W::I64Const(1));
-        self.instructions.push(W::I64Add);
-        self.instructions.push(W::LocalSet(iv));
-        self.instructions.push(W::Br(0));
-        self.instructions.push(W::End);
-        self.instructions.push(W::End);
-        // insertion sort: for i in 1..n { ek=elems[i]; kk=keys[i]; j=i-1;
-        //   while j>=0 && cmp(keys[j], kk) { shift; j-- } place }
-        let jv = self.alloc_local();
-        let ek = self.alloc_local();
-        let kk = self.alloc_local();
-        let addr = self.alloc_local(); // scratch addr (i64)
-        self.instructions.push(W::I64Const(1));
-        self.instructions.push(W::LocalSet(iv));
-        self.instructions.push(W::Block(BlockType::Empty));
-        self.instructions.push(W::Loop(BlockType::Empty));
-        self.instructions.push(W::LocalGet(iv));
-        self.instructions.push(W::LocalGet(n));
-        self.instructions.push(W::I64LtS);
-        self.instructions.push(W::I32Eqz);
-        self.instructions.push(W::BrIf(1));
-        // ek = elems[i]; kk = keys[i]
-        let load_at = |s: &mut Vec<WasmInstruction>, base: u32, idx: u32| {
-            s.push(W::LocalGet(base));
-            s.push(W::LocalGet(idx));
-            s.push(W::I64Const(8));
-            s.push(W::I64Mul);
-            s.push(W::I64Add);
-            s.push(W::I32WrapI64);
-            s.push(W::I64Load(3, 0));
-        };
-        load_at(&mut self.instructions, elems, iv);
-        self.instructions.push(W::LocalSet(ek));
-        load_at(&mut self.instructions, keys, iv);
-        self.instructions.push(W::LocalSet(kk));
-        // j = i - 1
-        self.instructions.push(W::LocalGet(iv));
-        self.instructions.push(W::I64Const(1));
-        self.instructions.push(W::I64Sub);
-        self.instructions.push(W::LocalSet(jv));
-        // inner while
-        self.instructions.push(W::Block(BlockType::Empty));
-        self.instructions.push(W::Loop(BlockType::Empty));
-        // cond: j >= 0
-        self.instructions.push(W::LocalGet(jv));
-        self.instructions.push(W::I64Const(0));
-        self.instructions.push(W::I64GeS); // i32
-        // && cmp(keys[j], kk)
-        load_at(&mut self.instructions, keys, jv);
-        self.instructions.push(W::LocalSet(addr)); // reuse addr to hold keys[j]
-        self.instructions.push(W::LocalGet(addr));
-        self.instructions.push(W::LocalGet(kk));
-        if order_desc {
-            self.instructions.push(W::I64LtS); // keys[j] < kk -> move (larger first)
-        } else {
-            self.instructions.push(W::I64GtS); // keys[j] > kk
-        }
-        self.instructions.push(W::I32And);
-        self.instructions.push(W::I32Eqz);
-        self.instructions.push(W::BrIf(1)); // exit inner when cond false
-        // elems[j+1] = elems[j]; keys[j+1] = keys[j]
-        for base in [elems, keys] {
-            // dest addr = base + (j+1)*8
-            self.instructions.push(W::LocalGet(base));
-            self.instructions.push(W::LocalGet(jv));
-            self.instructions.push(W::I64Const(1));
-            self.instructions.push(W::I64Add);
-            self.instructions.push(W::I64Const(8));
-            self.instructions.push(W::I64Mul);
-            self.instructions.push(W::I64Add);
-            self.instructions.push(W::I32WrapI64);
-            // value = base[j]
-            load_at(&mut self.instructions, base, jv);
-            self.instructions.push(W::I64Store(3, 0));
-        }
-        // j--
-        self.instructions.push(W::LocalGet(jv));
-        self.instructions.push(W::I64Const(1));
-        self.instructions.push(W::I64Sub);
-        self.instructions.push(W::LocalSet(jv));
-        self.instructions.push(W::Br(0));
-        self.instructions.push(W::End);
-        self.instructions.push(W::End);
-        // place: elems[j+1] = ek ; keys[j+1] = kk
-        for (base, val) in [(elems, ek), (keys, kk)] {
-            self.instructions.push(W::LocalGet(base));
-            self.instructions.push(W::LocalGet(jv));
-            self.instructions.push(W::I64Const(1));
-            self.instructions.push(W::I64Add);
-            self.instructions.push(W::I64Const(8));
-            self.instructions.push(W::I64Mul);
-            self.instructions.push(W::I64Add);
-            self.instructions.push(W::I32WrapI64);
-            self.instructions.push(W::LocalGet(val));
-            self.instructions.push(W::I64Store(3, 0));
-        }
-        self.instructions.push(W::LocalGet(iv));
-        self.instructions.push(W::I64Const(1));
-        self.instructions.push(W::I64Add);
-        self.instructions.push(W::LocalSet(iv));
-        self.instructions.push(W::Br(0));
-        self.instructions.push(W::End);
-        self.instructions.push(W::End);
-        // build result vector from sorted elems
-        self.instructions.push(W::Call(rt.vec_new_idx));
-        let rl = self.alloc_local();
-        self.instructions.push(W::LocalSet(rl));
-        self.instructions.push(W::I64Const(0));
-        self.instructions.push(W::LocalSet(iv));
-        self.instructions.push(W::Block(BlockType::Empty));
-        self.instructions.push(W::Loop(BlockType::Empty));
-        self.instructions.push(W::LocalGet(iv));
-        self.instructions.push(W::LocalGet(n));
-        self.instructions.push(W::I64LtS);
-        self.instructions.push(W::I32Eqz);
-        self.instructions.push(W::BrIf(1));
-        self.instructions.push(W::LocalGet(rl));
-        load_at(&mut self.instructions, elems, iv);
-        self.instructions.push(W::Call(rt.vec_push_idx));
-        self.instructions.push(W::LocalSet(rl));
-        self.instructions.push(W::LocalGet(iv));
-        self.instructions.push(W::I64Const(1));
-        self.instructions.push(W::I64Add);
-        self.instructions.push(W::LocalSet(iv));
-        self.instructions.push(W::Br(0));
-        self.instructions.push(W::End);
-        self.instructions.push(W::End);
-        self.instructions.push(W::LocalGet(rl));
-        Ok(())
-    }
-    fn compile_group_by(&mut self, f: &Expr, coll: &Expr) -> Result<(), String> {
-        use WasmInstruction as W;
-        self.compiler.ensure_map_runtime();
-        let mr = self.compiler.map_runtime.clone().unwrap();
-        let cr = self.compiler.collections_runtime.clone().unwrap();
-        let fr = self.prepare_fn_arg(f)?;
-        self.compile_expr(coll)?;
-        let vl = self.alloc_local();
-        self.instructions.push(W::LocalSet(vl));
-        let (n, data) = self.emit_vec_header(vl);
-        let ml = self.alloc_local();
-        self.instructions.push(W::Call(mr.map_new_idx));
-        self.instructions.push(W::LocalSet(ml));
-        let iv = self.alloc_local();
-        let eloc = self.alloc_local();
-        let kloc = self.alloc_local();
-        let vecloc = self.alloc_local();
-        self.instructions.push(W::I64Const(0));
-        self.instructions.push(W::LocalSet(iv));
-        self.instructions.push(W::Block(BlockType::Empty));
-        self.instructions.push(W::Loop(BlockType::Empty));
-        self.instructions.push(W::LocalGet(iv));
-        self.instructions.push(W::LocalGet(n));
-        self.instructions.push(W::I64LtS);
-        self.instructions.push(W::I32Eqz);
-        self.instructions.push(W::BrIf(1));
-        // elem = data[i]
-        self.instructions.push(W::LocalGet(data));
-        self.instructions.push(W::LocalGet(iv));
-        self.instructions.push(W::I64Const(8));
-        self.instructions.push(W::I64Mul);
-        self.instructions.push(W::I64Add);
-        self.instructions.push(W::I32WrapI64);
-        self.instructions.push(W::I64Load(3, 0));
-        self.instructions.push(W::LocalSet(eloc));
-        // k = f(elem)
-        self.emit_apply1(&fr, eloc);
-        self.instructions.push(W::LocalSet(kloc));
-        // cur = map_get(m, k, 0); vec = (cur == 0 ? vec_new() : cur)
-        self.instructions.push(W::LocalGet(ml));
-        self.instructions.push(W::LocalGet(kloc));
-        self.instructions.push(W::I64Const(0));
-        self.instructions.push(W::Call(mr.map_get_idx));
-        self.instructions.push(W::LocalSet(vecloc));
-        self.instructions.push(W::LocalGet(vecloc));
-        self.instructions.push(W::I64Eqz);
-        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
-        self.instructions.push(W::Call(cr.vec_new_idx));
-        self.instructions.push(W::Else);
-        self.instructions.push(W::LocalGet(vecloc));
-        self.instructions.push(W::End);
-        // vec2 = vec_push(vec, elem)
-        self.instructions.push(W::LocalGet(eloc));
-        self.instructions.push(W::Call(cr.vec_push_idx));
-        self.instructions.push(W::LocalSet(vecloc));
-        // m = map_set(m, k, vec2, 0)
-        self.instructions.push(W::LocalGet(ml));
-        self.instructions.push(W::LocalGet(kloc));
-        self.instructions.push(W::LocalGet(vecloc));
-        self.instructions.push(W::I64Const(0));
-        self.instructions.push(W::Call(mr.map_set_idx));
-        self.instructions.push(W::LocalSet(ml));
-        self.instructions.push(W::LocalGet(iv));
-        self.instructions.push(W::I64Const(1));
-        self.instructions.push(W::I64Add);
-        self.instructions.push(W::LocalSet(iv));
-        self.instructions.push(W::Br(0));
-        self.instructions.push(W::End);
-        self.instructions.push(W::End);
-        self.instructions.push(W::LocalGet(ml));
-        Ok(())
     }
     fn compile_range(&mut self, a: &Expr, b: &Expr) -> Result<(), String> {
         use WasmInstruction as W;
@@ -4542,105 +4488,6 @@ mod tests {
         valid(r#"[fn main [] [println [len [conj [conj #[] 5] 9]]]]"#);
     }
     #[test]
-    fn compile_nested_named_fn_is_valid() {
-        valid(
-            r#"[fn outer [n] [fn dbl [x] [* x 2]] [+ [dbl n] [dbl 1]]]
-               [fn main [] [println [outer 10]]]"#,
-        );
-    }
-    #[test]
-    fn compile_lowercase_and_builtin_hof_are_valid() {
-        valid(r#"[fn main [] [println [lowercase "Hello WORLD"]]]"#);
-        valid(r#"[fn main [] [each [fn [w] [println w]] [map lowercase [split "A B" " "]]]]"#);
-        valid(r#"[fn main [] [each [fn [x] [println x]] [map inc #[1 2 3]]]]"#);
-    }
-    #[test]
-    fn compile_sort_by_is_valid() {
-        valid(r#"[fn id [x] x] [fn main [] [each [fn [x] [println x]] [sort-by id :asc #[3 1 2]]]]"#);
-        valid(
-            r#"[fn main [] [each [fn [[k v]] [println v]]
-                 [sort-by [fn [[_ n]] n] :desc [entries {:a 1 :b 2}]]]]"#,
-        );
-    }
-    #[test]
-    fn compile_entries_and_destructuring_are_valid() {
-        valid(r#"[fn main [] [println [len [entries {:a 1 :b 2 :c 3}]]]]"#);
-        valid(r#"[fn main [] [each [fn [[k v]] [println v]] [entries {:a 10 :b 20}]]]"#);
-        valid(r#"[fn main [] [each [fn [[_ v]] [println v]] [entries {:x 7}]]]"#);
-    }
-    #[test]
-    fn compile_merge_is_valid() {
-        valid(
-            r#"[fn main [] [let m [merge {:a 1 :b 2} {:b 9 :c 3}]]
-               [println [get m :a]] [println [get m :b]] [println [get m :c]]]"#,
-        );
-    }
-    #[test]
-    fn compile_update_is_valid() {
-        valid(r#"[fn main [] [println [get [update {:a 5} :a [fn [n] [+ n 10]]] :a]]]"#);
-        valid(
-            r#"[fn bump [m k] [update m k [fn [n] [+ [or n 0] 1]]]]
-               [fn main [] [println [get [fold {} bump [split "a b a" " "]] "a"]]]"#,
-        );
-    }
-    #[test]
-    fn compile_take_is_valid() {
-        valid(r#"[fn main [] [println [len [take 3 #[10 20 30 40 50]]]]]"#);
-        valid(r#"[fn main [] [println [len [take 9 #[1 2]]]]]"#);
-    }
-    #[test]
-    fn compile_str_stringifies_ints() {
-        // Type-directed Display: non-string args to `str` render via int_to_str.
-        valid(r#"[fn main [] [println [str "k" 42]]]"#);
-        valid(r#"[fn main [] [println [str "n=" 7 "!"]]]"#);
-        valid(r#"[fn main [] [println [str 123]]]"#);
-    }
-    #[test]
-    fn compile_split_and_cons_are_valid() {
-        valid(r#"[fn main [] [println [len [split "a b c d" " "]]]]"#);
-        valid(r#"[fn main [] [each [fn [w] [println w]] [split "the quick fox" " "]]]"#);
-        valid(r#"[fn main [] [println [len [cons 1 [cons 2 #[3 4]]]]]]"#);
-    }
-    #[test]
-    fn compile_string_param_equality_is_valid() {
-        // A directly-called fn with string params gets structural `=`.
-        valid(r#"[fn same [a b] [if [= a b] 1 0]] [fn main [] [println [same "xy" [str "x" "y"]]]]"#);
-    }
-    #[test]
-    fn compile_maps_are_valid() {
-        // literals, assoc/get/contains?/keys, keyword + computed-string keys,
-        // and a fold building a frequency map (the word-count pattern).
-        valid(r#"[fn main [] [let m {:x 10 :y 20}] [println [get m :y]]]"#);
-        valid(r#"[fn main [] [let m [assoc {} "hi" 7]] [println [get m [str "h" "i"]]]]"#);
-        valid(r#"[fn main [] [let m {:a 1}] [println [if [contains? m :a] 1 0]]]"#);
-        valid(r#"[fn main [] [println [len [keys {:a 1 :b 2}]]]]"#);
-        valid(
-            r#"[fn add1 [m k] [assoc m k [+ [get m k] 1]]]
-               [fn main [] [let m [fold {} add1 #[5 5 7]]] [println [get m 5]]]"#,
-        );
-        // String keys through a generic accumulator passed to fold — relies on
-        // the self-describing key comparison, not a static key-type flag.
-        valid(
-            r#"[fn add1 [m k] [assoc m k [+ [get m k] 1]]]
-               [fn main [] [let m [fold {} add1 [split "a b a" " "]]] [println [get m "a"]]]"#,
-        );
-    }
-    #[test]
-    fn compile_string_equality_is_structural() {
-        // `=` on strings must compare content (str_eq), not pointer identity.
-        valid(r#"[fn main [] [println [if [= [str "a" "b"] "ab"] 1 0]]]"#);
-        valid(r#"[fn main [] [println [if [!= [str "a" "b"] "ac"] 1 0]]]"#);
-    }
-    #[test]
-    fn compile_floats_are_valid() {
-        // Float literals, arithmetic, comparison, and println (incl. through a
-        // function body whose param the checker generalizes).
-        valid(r#"[fn main [] [println 3.14] [println [+ 1.5 2.0]]]"#);
-        valid(r#"[fn main [] [println [if [< 1.5 2.5] 1 0]]]"#);
-        valid(r#"[fn area [r] [* [* 3.14 r] r]] [fn main [] [println [area 2.0]]]"#);
-        valid(r#"[fn add [a b] [+ a b]] [fn main [] [println [if [= [add 1.5 2.0] 3.5] 1 0]]]"#);
-    }
-    #[test]
     fn compile_char_at_is_valid() {
         valid(r#"[fn main [] [println [char-at "abc" 0]] [println [char-at "abc" 2]]]"#);
     }
@@ -4779,6 +4626,105 @@ mod tests {
         ok(r#"[fn main [] [str "foo" "bar"]]"#);
     }
     #[test]
+    fn compile_split_is_valid() {
+        valid(r#"[fn main [] [println [len [split "a b c" " "]]]]"#);
+        valid(r#"[fn main [] [println [str "first=" [first [split "x,y,z" ","]]]]]"#);
+    }
+    #[test]
+    fn compile_destructuring_params_are_valid() {
+        valid(
+            r#"[fn main [] [each [fn [[word n]] [println [str word ": " n]]]
+                 [entries [assoc [assoc {} "a" 5] "b" 7]]]]"#,
+        );
+        valid(r#"[fn main [] [println [len [map [fn [[_ n]] n] [entries {}]]]]]"#);
+    }
+    #[test]
+    fn compile_sort_by_is_valid() {
+        valid(r#"[fn main [] [println [len [sort-by [fn [x] x] #[3 1 2]]]]]"#);
+        valid(r#"[fn main [] [println [len [sort-by [fn [[_ n]] n] :desc [entries {}]]]]]"#);
+    }
+    #[test]
+    fn compile_tail_resumptive_handlers_are_valid() {
+        valid(
+            r#"[effect E [op [String] String]]
+               [fn use [] [E.op "x"]]
+               [fn main [] [println [handle [use] [E.op p] [resume "GOT"]]]]"#,
+        );
+    }
+    #[test]
+    fn compile_floats_are_valid() {
+        valid(r#"[fn main [] [println [* 3.0 4.0]]]"#);
+        valid(r#"[fn main [] [let x 2.5] [println [+ x 1.5]]]"#);
+        valid(
+            r#"[type Shape [Circle f64] Point]
+               [fn area [s] [match s [Circle r] [* 3.14 [* r r]] Point 0.0]]
+               [fn main [] [println [area [Circle 2.0]]]]"#,
+        );
+    }
+    #[test]
+    fn compile_tuples_and_named_destructuring_are_valid() {
+        valid(r#"[fn main [] [each [fn [[a b]] [println [str a b]]] #[(1 2) (3 4)]]]"#);
+        valid(r#"[fn fmtp [[word n]] [str word "=" n]] [fn main [] [println [fmtp (5 9)]]]"#);
+    }
+    #[test]
+    fn compile_group_by_is_valid() {
+        valid(r#"[fn main [] [println [len [group-by [fn [w] w] [split "a b a" " "]]]]]"#);
+        valid(
+            r#"[fn main [] [let es [entries [group-by [fn [w] w] #["a" "b" "a"]]]]
+                 [each [fn [[k vs]] [println [str k "=" [len vs]]]] es]]"#,
+        );
+    }
+    #[test]
+    fn compile_lowercase_uppercase_are_valid() {
+        valid(r#"[fn main [] [println [lowercase "ABc"]]]"#);
+        valid(r#"[fn main [] [println [uppercase "abC"]]]"#);
+        valid(r#"[fn main [] [println [len [map lowercase #["A" "B"]]]]]"#);
+    }
+    #[test]
+    fn compile_string_len_and_empty_are_valid() {
+        valid(r#"[fn main [] [println [len "hello"]]]"#);
+        valid(r#"[fn main [] [println [if [empty? "hi"] 1 0]]]"#);
+    }
+    #[test]
+    fn compile_take_is_valid() {
+        valid(r#"[fn main [] [println [len [take 3 [range 0 10]]]]]"#);
+        // taking more than exists yields the whole collection (no overflow).
+        valid(r#"[fn main [] [println [len [take 99 [range 0 4]]]]]"#);
+    }
+    #[test]
+    fn compile_update_is_valid() {
+        valid(
+            r#"[fn main [] [let m [update {} "a" [fn [n] [+ [or n 0] 1]]]] [println [get m "a"]]]"#,
+        );
+    }
+    #[test]
+    fn compile_map_operations_are_valid() {
+        // Empty + non-empty literals, assoc, get, len, entries — string keys
+        // (structural equality) and integer keys (raw equality).
+        valid(r#"[fn main [] [println [len {}]]]"#);
+        valid(r#"[fn main [] [let m {"x" 10 "y" 20}] [println [get m "x"]]]"#);
+        valid(r#"[fn main [] [let m [assoc [assoc {} "a" 1] "b" 2]] [println [len m]]]"#);
+        valid(r#"[fn main [] [let m [assoc {} 1 100]] [println [get m 1]]]"#);
+        valid(r#"[fn main [] [println [len [entries {"a" 1 "b" 2}]]]]"#);
+    }
+    #[test]
+    fn str_coerces_integers_to_decimal() {
+        // Mixed string literals and integer values (incl. negatives/zero) must
+        // produce a valid module; the int args route through to_str/int_to_str.
+        valid(r#"[fn main [] [println [str "n=" 42]]]"#);
+        valid(r#"[fn main [] [println [str "neg=" -7 " zero=" 0]]]"#);
+        // A string-valued variable must still pass through unchanged.
+        valid(r#"[fn greet [name] [str "hi, " name]] [fn main [] [println [greet "x"]]]"#);
+    }
+    #[test]
+    fn synthesizes_main_from_toplevel_statements() {
+        // No explicit `main`: the top-level statements become the entry point.
+        valid(r#"[let x 5] [println [* x 2]]"#);
+        // A `test` block is a definition, not a statement: with nothing else to
+        // run, no `main` is synthesized (stays a valid, entry-less module).
+        valid(r#"[fn f [n] [str "x" n]] [test t [] [assert-eq [f 1] "x1"]]"#);
+    }
+    #[test]
     fn compile_match_br_table() {
         ok(r#"[fn dispatch [x] [match x 0 100  1 200  2 300  _ 0]] [fn main [] [dispatch 1]]"#);
     }
@@ -4875,54 +4821,6 @@ mod tests {
         assert!(
             wasm_str.contains("read-file"),
             "should contain effect op name"
-        );
-    }
-    #[test]
-    fn compile_escaping_continuations_are_valid() {
-        // Escaping/multi-shot continuations (the State effect): a handler clause
-        // returns a function of state, `resume` is a reified continuation used
-        // non-tail. Compiled via the CPS transform.
-        valid(
-            r#"[effect State [get [] Int] [put [Int] Unit]]
-               [fn run-state [thunk init]
-                 [[handle [thunk]
-                     [return x]    [fn [s] x]
-                     [State.get]   [fn [s] [[resume s] s]]
-                     [State.put n] [fn [s] [[resume 0] n]]]
-                   init]]
-               [fn counter [] [let a [State.get]] [State.put [+ a 1]] [State.get]]
-               [fn main [] [println [run-state counter 0]]]"#,
-        );
-    }
-    #[test]
-    fn compile_try_abort_is_valid() {
-        // Abort via wasm exceptions: Fail.fail raises, try catches & handles.
-        valid(
-            r#"[effect Fail [fail [Int] Int]]
-               [fn risky [n] [if [> n 5] [Fail.fail n] n]]
-               [fn main [] [println [try [risky 10] [fn [msg] [+ msg 100]]]]]"#,
-        );
-        // Recursive abort handling (the tco-stress pattern).
-        valid(
-            r#"[effect Fail [fail [Int] Int]]
-               [fn down [n] [if [= n 0] 999 [try [Fail.fail n] [fn [m] [down [- m 1]]]]]]
-               [fn main [] [println [down 5]]]"#,
-        );
-    }
-    #[test]
-    fn compile_tail_resumptive_handlers_are_valid() {
-        // A handler that `resume`s in tail position is installed on the dynamic
-        // handler stack and intercepts the op (even through a function call).
-        valid(
-            r#"[effect Log [ask [] Int]]
-               [fn use-log [] [+ [Log.ask] 1]]
-               [fn main [] [println [handle [use-log] [Log.ask] [resume 41]]]]"#,
-        );
-        // `[return x]` clause and multiple ops.
-        valid(
-            r#"[effect E [a [] Int] [b [] Int]]
-               [fn main [] [println [handle [+ [E.a] [E.b]]
-                 [return x] [* x 2] [E.a] [resume 10] [E.b] [resume 20]]]]"#,
         );
     }
     #[test]

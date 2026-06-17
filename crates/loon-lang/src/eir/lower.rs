@@ -1630,17 +1630,36 @@ impl<'a> Lower<'a> {
             self.next_reg = saved_next_reg;
             self.scopes = saved_scopes;
 
-            // Create handler closure and bind as evidence for Fail.fail
+            // Create handler closure for Fail.fail.
             let handler_reg = self.reg();
             self.emit(Op::Close(handler_reg, handler_fn_id, Vec::new(), span));
 
-            let saved_evidence = self.evidence_scope.clone();
-            self.evidence_scope
-                .insert("Fail.fail".to_string(), handler_reg);
+            // Install it on the *dynamic* handler stack — which is what
+            // `Op::Perform` consults (it ignores `evidence_scope`). The previous
+            // code only set evidence, so a `Fail.fail` performed inside the body
+            // (especially across a function call / under recursion) never found
+            // the handler and fell through to unit. Mirror `handle`: PushHandler,
+            // run the body as a zero-arg thunk so it has a clean prompt boundary,
+            // then PopHandler.
+            let eff_id = self.intern("Fail");
+            let op_id = self.intern("fail");
+            self.emit(Op::PushHandler(handler_reg, eff_id, op_id, span));
 
-            let result = self.lower_expr(body);
-
+            let saved_evidence = std::mem::take(&mut self.evidence_scope);
+            let thunk_expr = Expr::new(
+                ExprKind::List(vec![
+                    Expr::new(ExprKind::Symbol("fn".to_string()), span),
+                    Expr::new(ExprKind::List(Vec::new()), span),
+                    body.clone(),
+                ]),
+                span,
+            );
+            let thunk_reg = self.lower_expr(&thunk_expr);
+            let result = self.reg();
+            self.emit(Op::Invoke(result, thunk_reg, Vec::new(), span));
             self.evidence_scope = saved_evidence;
+
+            self.emit(Op::PopHandler(span));
             result
         } else {
             self.lower_expr(body)

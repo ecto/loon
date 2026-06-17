@@ -1,0 +1,71 @@
+; ─────────────────────────────────────────────────────────────────────────
+; loon-hdl — piecewise-linear activation unit (the LLM "vector unit" op).
+; A configurable PWL function (here approximating SiLU) evaluated as nested
+; muxes: out = slope*x/divisor + intercept, segment chosen by comparators.
+; This is how real accelerators do activations. Signed division by a constant
+; truncates toward zero in BOTH Verilog and Loon, so the hardware and the
+; pure-Loon golden model are bit-exact.
+; ─────────────────────────────────────────────────────────────────────────
+
+; ── L0 IR (Expr extended: Sub, Div, Ge comparison, Mux ternary) ──────────
+[type BinOp Add Sub Mul Div Ge]
+[type Expr
+  [Ref String]
+  [Lit Int]                       ; plain signed decimal constant
+  [Bin BinOp Expr Expr]
+  [Mux Expr Expr Expr]]           ; cond ? then : else
+[type Dir In Out]
+[type Kind Wire Reg]
+[type Port [Port Dir Kind Int String]]
+[type Stmt [Assign String Expr]]
+[type Module [Module String (Vec Port) (Vec Stmt)]]
+
+; ── emitter ──────────────────────────────────────────────────────────────
+[fn bin-sym  [op] [match op Add "+" Sub "-" Mul "*" Div "/" Ge ">="]]
+[fn dir-str  [d]  [match d In "input " Out "output"]]
+[fn kind-str [k]  [match k Wire "wire" Reg "reg "]]
+[fn range-str  [w] [if [= w 1] "" [str "[" [- w 1] ":0] "]]]
+[fn signed-str [w] [if [= w 1] "" "signed "]]
+[fn emit-expr [e]
+  [match e
+    [Ref n]      n
+    [Lit v]      [str v]
+    [Bin op a b] [str "(" [emit-expr a] " " [bin-sym op] " " [emit-expr b] ")"]
+    [Mux c t f]  [str "(" [emit-expr c] " ? " [emit-expr t] " : " [emit-expr f] ")"]]]
+[fn emit-port [p]
+  [match p [Port d k w n]
+    [str "  " [dir-str d] " " [kind-str k] " " [signed-str w] [range-str w] n]]]
+[fn emit-stmt [s] [match s [Assign lhs e] [str "  assign " lhs " = " [emit-expr e] ";"]]]
+[fn emit-module [m]
+  [match m [Module name ports stmts]
+    [str "module " name " (\n" [join ",\n" [map emit-port ports]] "\n);\n"
+         [join "\n" [map emit-stmt stmts]] "\nendmodule\n"]]]
+
+; ── the activation generator ─────────────────────────────────────────────
+;   out = x>=64 ? x : x>=0 ? 3x/4 : x>=-64 ? x/4 : 0   (PWL ~SiLU)
+[fn seg-id [] [Ref "x"]]
+[fn seg-hi [] [Bin Div [Bin Mul [Lit 3] [Ref "x"]] [Lit 4]]]
+[fn seg-lo [] [Bin Div [Ref "x"] [Lit 4]]]
+[fn act-expr []
+  [Mux [Bin Ge [Ref "x"] [Lit 64]] [seg-id]
+    [Mux [Bin Ge [Ref "x"] [Lit 0]] [seg-hi]
+      [Mux [Bin Ge [Ref "x"] [Lit -64]] [seg-lo] [Lit 0]]]]]
+[fn act-unit []
+  [Module "act_silu"
+    #[[Port In Wire 8 "x"] [Port Out Wire 16 "y"]]
+    #[[Assign "y" [act-expr]]]]]
+
+; ── golden model: the SAME PWL, pure Loon (signed / truncates toward 0) ──
+[fn act-ref [x]
+  [if [>= x 64] x
+    [if [>= x 0] [/ [* 3 x] 4]
+      [if [>= x -64] [/ x 4] 0]]]]
+
+[fn show [x] [println [str "  x=" x "  ->  y=" [act-ref x]]]]
+
+[fn main []
+  [println "=== loon-hdl: piecewise-linear activation unit (~SiLU) ==="]
+  [println [emit-module [act-unit]]]
+  [println "=== golden model: y the Verilog must reproduce ==="]
+  [show -100] [show -64] [show -10] [show -1] [show 0]
+  [show 1] [show 10] [show 50] [show 64] [show 100]]

@@ -1,0 +1,162 @@
+; ─────────────────────────────────────────────────────────────────────────
+; loon-hdl — GET A TOKEN OUT. A full transformer decode step that emits a
+; next-token id, composing every verified block plus the two missing pieces
+; (LM head + argmax):
+;   attention(q=h, K, V) -> c ; a = h + c          (attention + residual)
+;   FFN: g = SiLU(W_up·a); f = W_down·g; o = a + f  (FFN + residual)
+;   logits = W_lm·o ; token = argmax(logits)        (LM head + argmax)
+; head-dim 2, 2 KV tokens, vocab 3. Co-sim'd bit-exact: the emitted token id
+; equals the pure-Loon transformer golden.
+; ─────────────────────────────────────────────────────────────────────────
+
+[fn vcat [xs ys] [fold xs [fn [acc x] [conj acc x]] ys]]
+
+[type BinOp Add Sub Mul Div Ge Eq]
+[type Expr [Ref String] [Lit Int] [Bin BinOp Expr Expr] [Mux Expr Expr Expr]]
+[type Dir In Out]
+[type Kind Wire Reg]
+[type Port [Port Dir Kind Int String]]
+[type Decl [Net Kind Int String]]
+[type Stmt [Assign String Expr]]
+[type Module [Module String (Vec Port) (Vec Decl) (Vec Stmt)]]
+
+[fn bin-sym  [op] [match op Add "+" Sub "-" Mul "*" Div "/" Ge ">=" Eq "=="]]
+[fn dir-str  [d]  [match d In "input " Out "output"]]
+[fn kind-str [k]  [match k Wire "wire" Reg "reg "]]
+[fn range-str  [w] [if [= w 1] "" [str "[" [- w 1] ":0] "]]]
+[fn signed-str [w] [if [= w 1] "" "signed "]]
+[fn emit-expr [e]
+  [match e
+    [Ref n]      n
+    [Lit v]      [str v]
+    [Bin op a b] [str "(" [emit-expr a] " " [bin-sym op] " " [emit-expr b] ")"]
+    [Mux c t f]  [str "(" [emit-expr c] " ? " [emit-expr t] " : " [emit-expr f] ")"]]]
+[fn emit-port [p]
+  [match p [Port d k w n]
+    [str "  " [dir-str d] " " [kind-str k] " " [signed-str w] [range-str w] n]]]
+[fn emit-decl [d]
+  [match d [Net k w n] [str "  " [kind-str k] " " [signed-str w] [range-str w] n ";\n"]]]
+[fn emit-stmt [s] [match s [Assign lhs e] [str "  assign " lhs " = " [emit-expr e] ";"]]]
+[fn emit-module [m]
+  [match m [Module name ports decls stmts]
+    [str "module " name " (\n" [join ",\n" [map emit-port ports]] "\n);\n"
+         [join "" [map emit-decl decls]] [join "\n" [map emit-stmt stmts]]
+         "\nendmodule\n"]]]
+
+; ── building blocks (all build Expr trees) ───────────────────────────────
+[fn r [n] [Ref n]]
+[fn mul [a b] [Bin Mul a b]]
+[fn add [a b] [Bin Add a b]]
+[fn dot2 [a0 a1 b0 b1] [add [mul a0 b0] [mul a1 b1]]]
+[fn vmax [a b] [Mux [Bin Ge a b] a b]]
+[fn lutexp [d]
+  [Mux [Bin Eq d [Lit 0]] [Lit 256]
+    [Mux [Bin Eq d [Lit -1]] [Lit 94]
+      [Mux [Bin Eq d [Lit -2]] [Lit 35]
+        [Mux [Bin Eq d [Lit -3]] [Lit 13]
+          [Mux [Bin Eq d [Lit -4]] [Lit 5]
+            [Mux [Bin Eq d [Lit -5]] [Lit 2]
+              [Mux [Bin Eq d [Lit -6]] [Lit 1] [Lit 0]]]]]]]]]
+[fn silu [x]                                  ; PWL SiLU (matches act.oo)
+  [Mux [Bin Ge x [Lit 64]] x
+    [Mux [Bin Ge x [Lit 0]] [Bin Div [Bin Mul [Lit 3] x] [Lit 4]]
+      [Mux [Bin Ge x [Lit -64]] [Bin Div x [Lit 4]] [Lit 0]]]]]
+[fn argmax3 [a b c]                           ; index of the max (ties -> lower)
+  [Mux [Bin Ge a b] [Mux [Bin Ge a c] [Lit 0] [Lit 2]]
+                    [Mux [Bin Ge b c] [Lit 1] [Lit 2]]]]
+
+; ── the decode step -> token ─────────────────────────────────────────────
+[fn token-gen []
+  [let ins #[[Port In Wire 16 "h0"] [Port In Wire 16 "h1"]
+             [Port In Wire 16 "k00"] [Port In Wire 16 "k01"]
+             [Port In Wire 16 "k10"] [Port In Wire 16 "k11"]
+             [Port In Wire 16 "v00"] [Port In Wire 16 "v01"]
+             [Port In Wire 16 "v10"] [Port In Wire 16 "v11"]
+             [Port In Wire 16 "wu00"] [Port In Wire 16 "wu01"]
+             [Port In Wire 16 "wu10"] [Port In Wire 16 "wu11"]
+             [Port In Wire 16 "wd00"] [Port In Wire 16 "wd01"]
+             [Port In Wire 16 "wd10"] [Port In Wire 16 "wd11"]
+             [Port In Wire 16 "wl00"] [Port In Wire 16 "wl01"]
+             [Port In Wire 16 "wl10"] [Port In Wire 16 "wl11"]
+             [Port In Wire 16 "wl20"] [Port In Wire 16 "wl21"]]]
+  [let outs #[[Port Out Wire 8 "token"]
+              [Port Out Wire 16 "l0"] [Port Out Wire 16 "l1"] [Port Out Wire 16 "l2"]]]
+  [let ports [vcat ins outs]]
+  [let decls
+    #[[Net Wire 16 "s0"] [Net Wire 16 "s1"] [Net Wire 16 "m"]
+      [Net Wire 16 "e0"] [Net Wire 16 "e1"] [Net Wire 16 "sm"]
+      [Net Wire 16 "p0"] [Net Wire 16 "p1"] [Net Wire 16 "c0"] [Net Wire 16 "c1"]
+      [Net Wire 16 "a0"] [Net Wire 16 "a1"] [Net Wire 16 "u0"] [Net Wire 16 "u1"]
+      [Net Wire 16 "g0"] [Net Wire 16 "g1"] [Net Wire 16 "f0"] [Net Wire 16 "f1"]
+      [Net Wire 16 "o0"] [Net Wire 16 "o1"]]]
+  [let stmts
+    #[; --- attention: scores, softmax, A·V ---
+      [Assign "s0" [dot2 [r "h0"] [r "h1"] [r "k00"] [r "k01"]]]
+      [Assign "s1" [dot2 [r "h0"] [r "h1"] [r "k10"] [r "k11"]]]
+      [Assign "m"  [vmax [r "s0"] [r "s1"]]]
+      [Assign "e0" [lutexp [Bin Sub [r "s0"] [r "m"]]]]
+      [Assign "e1" [lutexp [Bin Sub [r "s1"] [r "m"]]]]
+      [Assign "sm" [add [r "e0"] [r "e1"]]]
+      [Assign "p0" [Bin Div [mul [r "e0"] [Lit 256]] [r "sm"]]]
+      [Assign "p1" [Bin Div [mul [r "e1"] [Lit 256]] [r "sm"]]]
+      [Assign "c0" [Bin Div [dot2 [r "p0"] [r "p1"] [r "v00"] [r "v10"]] [Lit 256]]]
+      [Assign "c1" [Bin Div [dot2 [r "p0"] [r "p1"] [r "v01"] [r "v11"]] [Lit 256]]]
+      ; --- residual ---
+      [Assign "a0" [add [r "h0"] [r "c0"]]]
+      [Assign "a1" [add [r "h1"] [r "c1"]]]
+      ; --- FFN: up, SiLU, down, residual ---
+      [Assign "u0" [dot2 [r "wu00"] [r "wu01"] [r "a0"] [r "a1"]]]
+      [Assign "u1" [dot2 [r "wu10"] [r "wu11"] [r "a0"] [r "a1"]]]
+      [Assign "g0" [silu [r "u0"]]]
+      [Assign "g1" [silu [r "u1"]]]
+      [Assign "f0" [dot2 [r "wd00"] [r "wd01"] [r "g0"] [r "g1"]]]
+      [Assign "f1" [dot2 [r "wd10"] [r "wd11"] [r "g0"] [r "g1"]]]
+      [Assign "o0" [add [r "a0"] [r "f0"]]]
+      [Assign "o1" [add [r "a1"] [r "f1"]]]
+      ; --- LM head + argmax -> token ---
+      [Assign "l0" [dot2 [r "wl00"] [r "wl01"] [r "o0"] [r "o1"]]]
+      [Assign "l1" [dot2 [r "wl10"] [r "wl11"] [r "o0"] [r "o1"]]]
+      [Assign "l2" [dot2 [r "wl20"] [r "wl21"] [r "o0"] [r "o1"]]]
+      [Assign "token" [argmax3 [r "l0"] [r "l1"] [r "l2"]]]]]
+  [Module "token_gen" ports decls stmts]]
+
+; ── golden model: the SAME decode step, pure Loon ───────────────────────
+[fn gmax [a b] [if [>= a b] a b]]
+[fn gexp [d]
+  [if [= d 0] 256 [if [= d -1] 94 [if [= d -2] 35 [if [= d -3] 13
+    [if [= d -4] 5 [if [= d -5] 2 [if [= d -6] 1 0]]]]]]]]
+[fn gsilu [x] [if [>= x 64] x [if [>= x 0] [/ [* 3 x] 4] [if [>= x -64] [/ x 4] 0]]]]
+[fn gargmax3 [a b c] [if [>= a b] [if [>= a c] 0 2] [if [>= b c] 1 2]]]
+[fn gforward [h0 h1 k v wu wd wl]
+  [let s0 [+ [* h0 [nth [nth k 0] 0]] [* h1 [nth [nth k 0] 1]]]]
+  [let s1 [+ [* h0 [nth [nth k 1] 0]] [* h1 [nth [nth k 1] 1]]]]
+  [let m [gmax s0 s1]]
+  [let e0 [gexp [- s0 m]]] [let e1 [gexp [- s1 m]]]
+  [let sm [+ e0 e1]]
+  [let p0 [/ [* e0 256] sm]] [let p1 [/ [* e1 256] sm]]
+  [let c0 [/ [+ [* p0 [nth [nth v 0] 0]] [* p1 [nth [nth v 1] 0]]] 256]]
+  [let c1 [/ [+ [* p0 [nth [nth v 0] 1]] [* p1 [nth [nth v 1] 1]]] 256]]
+  [let a0 [+ h0 c0]] [let a1 [+ h1 c1]]
+  [let u0 [+ [* [nth [nth wu 0] 0] a0] [* [nth [nth wu 0] 1] a1]]]
+  [let u1 [+ [* [nth [nth wu 1] 0] a0] [* [nth [nth wu 1] 1] a1]]]
+  [let g0 [gsilu u0]] [let g1 [gsilu u1]]
+  [let f0 [+ [* [nth [nth wd 0] 0] g0] [* [nth [nth wd 0] 1] g1]]]
+  [let f1 [+ [* [nth [nth wd 1] 0] g0] [* [nth [nth wd 1] 1] g1]]]
+  [let o0 [+ a0 f0]] [let o1 [+ a1 f1]]
+  [let l0 [+ [* [nth [nth wl 0] 0] o0] [* [nth [nth wl 0] 1] o1]]]
+  [let l1 [+ [* [nth [nth wl 1] 0] o0] [* [nth [nth wl 1] 1] o1]]]
+  [let l2 [+ [* [nth [nth wl 2] 0] o0] [* [nth [nth wl 2] 1] o1]]]
+  #[[gargmax3 l0 l1 l2] l0 l1 l2]]
+
+[fn main []
+  [println "=== loon-hdl: GET A TOKEN OUT — full decode step -> next token ==="]
+  [println [emit-module [token-gen]]]
+  [println "=== golden: the token id the hardware must emit ==="]
+  [let k #[#[1 0] #[0 1]]]
+  [let v #[#[5 1] #[2 4]]]
+  [let wu #[#[1 0] #[0 1]]]
+  [let wd #[#[1 1] #[1 0]]]
+  [let wl #[#[1 0] #[0 1] #[1 1]]]
+  [let res [gforward 4 2 k v wu wd wl]]
+  [println [str "  logits = [" [nth res 1] " " [nth res 2] " " [nth res 3] "]"]]
+  [println [str "  >>> NEXT TOKEN = " [nth res 0] " <<<"]]]

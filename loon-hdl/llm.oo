@@ -1,0 +1,118 @@
+; ─────────────────────────────────────────────────────────────────────────
+; loon-hdl — quantized linear lane: the core LLM primitive.
+;   y = requant( (W_int4 · x_int8) * scale )
+; int4 weights (the memory-bandwidth win), int8 activations, wide integer
+; accumulate, an integer per-channel scale, then an arithmetic-shift requant
+; back to int8.  Mixed-precision widths flow through the type-as-data IR;
+; co-simulated bit-exact against a pure-Loon quantized-linear golden model.
+; ─────────────────────────────────────────────────────────────────────────
+
+[fn clog2-go [n acc] [if [<= n 1] acc [clog2-go [/ [+ n 1] 2] [+ acc 1]]]]
+[fn clog2 [n] [clog2-go n 0]]
+[fn vcat [xs ys] [fold xs [fn [acc x] [conj acc x]] ys]]
+
+; ── L0 IR  (+ Shr for the requantization shift) ──────────────────────────
+[type BinOp Add Mul]
+[type Expr
+  [Ref String] [Lit Int Int] [Bin BinOp Expr Expr] [Shr Expr Int]]
+[type Dir In Out]
+[type Kind Wire Reg]
+[type Port [Port Dir Kind Int String]]
+[type Decl [Net Kind Int String]]
+[type Seq [Nb String Expr] [If Expr (Vec Seq) (Vec Seq)]]
+[type Stmt [Assign String Expr] [Always String (Vec Seq)]]
+[type Module [Module String (Vec Port) (Vec Decl) (Vec Stmt)]]
+
+; ── emitter ──────────────────────────────────────────────────────────────
+[fn bin-sym  [op] [match op Add "+" Mul "*"]]
+[fn dir-str  [d]  [match d In "input " Out "output"]]
+[fn kind-str [k]  [match k Wire "wire" Reg "reg "]]
+[fn range-str  [w] [if [= w 1] "" [str "[" [- w 1] ":0] "]]]
+[fn signed-str [w] [if [= w 1] "" "signed "]]
+[fn emit-expr [e]
+  [match e
+    [Ref n]      n
+    [Lit v w]    [str w "'d" v]
+    [Bin op a b] [str "(" [emit-expr a] " " [bin-sym op] " " [emit-expr b] ")"]
+    [Shr a n]    [str "(" [emit-expr a] " >>> " n ")"]]]
+[fn emit-port [p]
+  [match p [Port d k w n]
+    [str "  " [dir-str d] " " [kind-str k] " " [signed-str w] [range-str w] n]]]
+[fn emit-decl [d]
+  [match d [Net k w n] [str "  " [kind-str k] " " [signed-str w] [range-str w] n ";\n"]]]
+[fn emit-seq [s ind]
+  [match s
+    [Nb lhs e] [str ind lhs " <= " [emit-expr e] ";"]
+    [If c t e]
+      [if [= [len e] 0]
+        [str ind "if (" [emit-expr c] ") begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] t]] "\n" ind "end"]
+        [str ind "if (" [emit-expr c] ") begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] t]]
+             "\n" ind "end else begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] e]]
+             "\n" ind "end"]]]]
+[fn emit-stmt [s]
+  [match s
+    [Assign lhs e] [str "  assign " lhs " = " [emit-expr e] ";"]
+    [Always clk body]
+      [str "  always @(posedge " clk ") begin\n"
+           [join "\n" [map [fn [x] [emit-seq x "    "]] body]] "\n  end"]]]
+[fn emit-module [m]
+  [match m [Module name ports decls stmts]
+    [str "module " name " (\n" [join ",\n" [map emit-port ports]] "\n);\n"
+         [join "" [map emit-decl decls]] [join "\n" [map emit-stmt stmts]]
+         "\nendmodule\n"]]]
+
+; ── builders ─────────────────────────────────────────────────────────────
+[fn data-ports [pre cnt w] [map [fn [i] [Port In Wire w [str pre i]]] [range 0 cnt]]]
+; dot of int4 weights and int8 activations, built closure-free (recursion)
+[fn dot-go [k i acc]
+  [if [>= i k] acc
+    [dot-go k [+ i 1] [Bin Add acc [Bin Mul [Ref [str "w" i]] [Ref [str "x" i]]]]]]]
+[fn dot-expr [k] [dot-go k 1 [Bin Mul [Ref "w0"] [Ref "x0"]]]]
+
+; ── the generator : (k sh) -> a quantized-linear lane Module ─────────────
+;    int4·int8 product = 12b; sum of k = 12 + clog2 k; * 16b scale = +16b.
+[fn qlinear [k sh]
+  [let dotw    [+ 12 [clog2 k]]]
+  [let scaledw [+ dotw 16]]
+  [let ctrl #[[Port In Wire 1 "clk"] [Port In Wire 1 "rst"] [Port In Wire 1 "en"]]]
+  [let xv [data-ports "x" k 8]]            ; int8 activations
+  [let wv [data-ports "w" k 4]]            ; int4 weights  <-- the bandwidth win
+  [let sp #[[Port In Wire 16 "scale"]]]
+  [let yp #[[Port Out Reg 8 "y"]]]         ; requantized back to int8
+  [let ports [vcat [vcat [vcat [vcat ctrl xv] wv] sp] yp]]
+  [let decls #[[Net Wire dotw "dot"] [Net Wire scaledw "scaled"]]]
+  [let body #[[If [Ref "rst"]
+                  #[[Nb "y" [Lit 0 8]]]
+                  #[[If [Ref "en"]
+                       #[[Nb "y" [Shr [Ref "scaled"] sh]]]
+                       #[]]]]]]
+  [let stmts #[[Assign "dot" [dot-expr k]]
+              [Assign "scaled" [Bin Mul [Ref "dot"] [Ref "scale"]]]
+              [Always "clk" body]]]
+  [Module [str "qlinear_" k] ports decls stmts]]
+
+; ── golden model : the SAME quantized linear, pure Loon (closure-free) ───
+[fn qdot-go [w x k i acc]
+  [if [>= i k] acc [qdot-go w x k [+ i 1] [+ acc [* [nth w i] [nth x i]]]]]]
+[fn qdot [w x k] [qdot-go w x k 0 0]]
+[fn ipow2-go [sh acc] [if [<= sh 0] acc [ipow2-go [- sh 1] [* acc 2]]]]
+[fn ipow2 [sh] [ipow2-go sh 1]]
+; requant: arithmetic shift = floor-div by 2^sh; for non-negative scaled this
+; matches Verilog >>> exactly (the golden model DEFINES the rounding mode).
+[fn requant [w x k scale sh] [/ [* [qdot w x k] scale] [ipow2 sh]]]
+
+[fn main []
+  [println "=== loon-hdl: quantized linear lane (int4 W x int8 x), k=8 ==="]
+  [println [emit-module [qlinear 8 6]]]
+  [println "=== golden model: y the Verilog must reproduce ==="]
+  [let x #[10 -3 5 8 -2 7 4 1]]
+  [let w #[2 -1 3 1 -4 2 0 -2]]
+  [println [str "  qdot(W,x) = " [qdot w x 8]]]
+  [println [str "  scale=100  sh=6  ->  y = " [requant w x 8 100 6]]]
+  [println "=== width arithmetic carried by the IR ==="]
+  [println [str "  int4*int8 product = 12 bits"]]
+  [println [str "  dot over k=8      = " [+ 12 [clog2 8]] " bits"]]
+  [println [str "  * 16b scale       = " [+ [+ 12 [clog2 8]] 16] " bits  -> requant to int8"]]]

@@ -1,0 +1,147 @@
+; ─────────────────────────────────────────────────────────────────────────
+; loon-hdl — L0 prototype: a pure-data netlist IR that emits synthesizable
+; Verilog, plus a parameterized int8 multiply-accumulate accelerator and its
+; bit-exact pure-Loon golden model.  Runs on the default Loon EIR VM.
+; ─────────────────────────────────────────────────────────────────────────
+
+; ── tiny numeric helpers (no mod / bit builtins on the VM) ───────────────
+[fn imod [a b] [- a [* b [/ a b]]]]
+[fn clog2-go [n acc] [if [<= n 1] acc [clog2-go [/ [+ n 1] 2] [+ acc 1]]]]
+[fn clog2 [n] [clog2-go n 0]]
+[fn vcat [xs ys] [fold xs [fn [acc x] [conj acc x]] ys]]
+
+; ── L0 IR  (ordered Vec children → byte-stable emission) ─────────────────
+[type BinOp Add Mul]
+[type Expr
+  [Ref String]            ; a named net
+  [Lit Int Int]           ; value, width  -> W'dV
+  [Bin BinOp Expr Expr]]  ; a + b, a * b
+
+[type Dir  In Out]
+[type Kind Wire Reg]
+[type Port [Port Dir Kind Int String]]   ; dir, kind, width, name
+[type Decl [Net Kind Int String]]        ; kind, width, name
+[type Seq
+  [Nb String Expr]                       ; lhs <= rhs;        (nonblocking)
+  [If Expr (Vec Seq) (Vec Seq)]]         ; cond, then, else
+[type Stmt
+  [Assign String Expr]                   ; assign lhs = rhs;  (continuous)
+  [Always String (Vec Seq)]]             ; always @(posedge clk) ...
+[type Module [Module String (Vec Port) (Vec Decl) (Vec Stmt)]]
+
+; ── emitter : IR -> Verilog text  (pure, total match) ────────────────────
+[fn bin-sym  [op] [match op Add "+" Mul "*"]]
+[fn dir-str  [d]  [match d In "input " Out "output"]]
+[fn kind-str [k]  [match k Wire "wire" Reg "reg "]]
+[fn range-str  [w] [if [= w 1] "" [str "[" [- w 1] ":0] "]]]
+[fn signed-str [w] [if [= w 1] "" "signed "]]
+
+[fn emit-expr [e]
+  [match e
+    [Ref n]      n
+    [Lit v w]    [str w "'d" v]
+    [Bin op a b] [str "(" [emit-expr a] " " [bin-sym op] " " [emit-expr b] ")"]]]
+
+[fn emit-port [p]
+  [match p [Port d k w n]
+    [str "  " [dir-str d] " " [kind-str k] " " [signed-str w] [range-str w] n]]]
+
+[fn emit-decl [d]
+  [match d [Net k w n]
+    [str "  " [kind-str k] " " [signed-str w] [range-str w] n ";\n"]]]
+
+[fn emit-seq [s ind]
+  [match s
+    [Nb lhs e] [str ind lhs " <= " [emit-expr e] ";"]
+    [If c t e]
+      [if [= [len e] 0]
+        [str ind "if (" [emit-expr c] ") begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] t]]
+             "\n" ind "end"]
+        [str ind "if (" [emit-expr c] ") begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] t]]
+             "\n" ind "end else begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] e]]
+             "\n" ind "end"]]]]
+
+[fn emit-stmt [s]
+  [match s
+    [Assign lhs e] [str "  assign " lhs " = " [emit-expr e] ";"]
+    [Always clk body]
+      [str "  always @(posedge " clk ") begin\n"
+           [join "\n" [map [fn [x] [emit-seq x "    "]] body]]
+           "\n  end"]]]
+
+[fn emit-module [m]
+  [match m [Module name ports decls stmts]
+    [str "module " name " (\n"
+         [join ",\n" [map emit-port ports]]
+         "\n);\n"
+         [join "" [map emit-decl decls]]
+         [join "\n" [map emit-stmt stmts]]
+         "\nendmodule\n"]]]
+
+; ── the accelerator generator : n -> a Module describing an n-lane ───────
+;    int8·int8 multiply-accumulate.  THE point: the accumulator width is
+;    DERIVED from n  (16 + clog2 n)  so it can never overflow — the typed
+;    relationship, expressed in data today, a type tomorrow.
+[fn prod [i] [Bin Mul [Ref [str "a" i]] [Ref [str "b" i]]]]
+[fn sum-expr [n]
+  [fold [prod 0] [fn [acc i] [Bin Add acc [prod i]]] [range 1 n]]]
+
+; data-port builders live in their own frames — a non-capturing map closure
+; clobbers a slot in its caller, so isolating it here protects mac-accel's `n`.
+[fn data-ports [pre n] [map [fn [i] [Port In Wire 8 [str pre i]]] [range 0 n]]]
+
+[fn mac-accel [n]
+  [let accw [+ 16 [clog2 n]]]
+  [let ctrl #[[Port In Wire 1 "clk"] [Port In Wire 1 "rst"] [Port In Wire 1 "en"]]]
+  [let av   [data-ports "a" n]]
+  [let bv   [data-ports "b" n]]
+  [let outp #[[Port Out Reg accw "acc"]]]
+  [let ports [vcat [vcat [vcat ctrl av] bv] outp]]
+  [let decls #[[Net Wire accw "sum"]]]
+  [let body  #[[If [Ref "rst"]
+                   #[[Nb "acc" [Lit 0 accw]]]
+                   #[[If [Ref "en"]
+                        #[[Nb "acc" [Bin Add [Ref "acc"] [Ref "sum"]]]]
+                        #[]]]]]]
+  [let stmts #[[Assign "sum" [sum-expr n]] [Always "clk" body]]]
+  [Module [str "mac_accel_" n] ports decls stmts]]
+
+; ── golden model : the SAME computation, pure Loon, bit-exact reference ──
+[fn dot [a b]
+  [fold 0 [fn [acc i] [+ acc [* [nth a i] [nth b i]]]] [range 0 [len a]]]]
+
+; n vectors fed over n cycles with en=1 → acc = sum of per-cycle dots
+[fn accumulate [vecs-a vecs-b]
+  [fold 0 [fn [acc i] [+ acc [dot [nth vecs-a i] [nth vecs-b i]]]]
+          [range 0 [len vecs-a]]]]
+
+[fn check [label got want]
+  [if [= got want]
+    [println [str "  PASS  " label " = " got]]
+    [println [str "  FAIL  " label " : got " got " want " want]]]]
+
+[fn main []
+  [println "=== loon-hdl: emitted Verilog (4-lane MAC accelerator) ==="]
+  [println [emit-module [mac-accel 4]]]
+  [println "=== accumulator width auto-scales with lane count ==="]
+  [println [str "  mac_accel_4  -> acc width " [+ 16 [clog2 4]]  " bits"]]
+  [println [str "  mac_accel_8  -> acc width " [+ 16 [clog2 8]]  " bits"]]
+  [println [str "  mac_accel_64 -> acc width " [+ 16 [clog2 64]] " bits"]]
+  [println "=== golden model (bit-exact reference, same language) ==="]
+  [check "dot [1 2 3 4]·[2 0 1 5]" [dot #[1 2 3 4] #[2 0 1 5]] 25]
+  [check "dot [-4 7]·[3 -2]"       [dot #[-4 7] #[3 -2]]       -26]
+  [check "accumulate 2 cycles"
+         [accumulate #[#[1 2] #[3 4]] #[#[5 6] #[7 8]]]
+         [+ [+ 5 12] [+ 21 32]]]
+  [println "=== co-sim: cumulative acc the Verilog must reproduce ==="]
+  [let va #[#[1 2 3 4] #[-4 7 0 2] #[5 5 5 5]]]
+  [let vb #[#[2 0 1 5] #[3 -2 1 1] #[1 2 3 4]]]
+  [let d0 [dot [nth va 0] [nth vb 0]]]
+  [let d1 [dot [nth va 1] [nth vb 1]]]
+  [let d2 [dot [nth va 2] [nth vb 2]]]
+  [println [str "  cycle0 acc=" d0]]
+  [println [str "  cycle1 acc=" [+ d0 d1]]]
+  [println [str "  cycle2 acc=" [+ [+ d0 d1] d2]]]]

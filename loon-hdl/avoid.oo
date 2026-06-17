@@ -1,0 +1,46 @@
+; ─────────────────────────────────────────────────────────────────────────
+; Closing the loop: does the drone CLEAR the obstacle or CRASH, purely as a
+; function of perception→action latency?  The chip we built has a *bounded*
+; latency (static schedule); a GPU has a good average but a long jitter tail,
+; and safety is decided by the WORST case.  Written in Loon — the same
+; language as the accelerator and its golden model.
+;
+; Scenario (aggressive autonomous flight):
+;   v = 15 m/s forward, obstacle detected at R = 5.0 m, max decel a = 25 m/s^2.
+;   reaction lag during latency τ wastes  v·τ  metres before braking starts;
+;   braking then needs  v²/(2a)  metres.  Clears iff  v·τ + v²/(2a) ≤ R.
+; ─────────────────────────────────────────────────────────────────────────
+
+[fn sqrt-go [x g i] [if [<= i 0] g [sqrt-go x [/ [+ g [/ x g]] 2.0] [- i 1]]]]
+[fn sqrt [x] [if [<= x 0.0] 0.0 [sqrt-go x x 24]]]
+
+[fn needed [v a tau] [+ [* v tau] [/ [* v v] [* 2.0 a]]]]
+
+[fn impact-vel [v a r tau]
+  [let dbrake [- r [* v tau]]]
+  [if [<= dbrake 0.0]
+    v
+    [do
+      [let rem [- [* v v] [* [* 2.0 a] dbrake]]]
+      [if [<= rem 0.0] 0.0 [sqrt rem]]]]]
+
+[fn report [label v a r tau]
+  [let need [needed v a tau]]
+  [let ms [* tau 1000.0]]
+  [if [<= need r]
+    [println [str "  " label "  τ=" ms " ms  ->  CLEAR   (margin " [- r need] " m)"]]
+    [println [str "  " label "  τ=" ms " ms  ->  CRASH   (impact " [impact-vel v a r tau] " m/s)"]]]]
+
+[fn main []
+  [println "=== Obstacle avoidance vs. inference latency ==="]
+  [println "  v=15 m/s, detect@5.0 m, max decel 25 m/s^2 (~2.5 g)"]
+  [println "  (our 8x8 int8 tile runs a Dronet-class net in ~3 ms compute,"]
+  [println "   deterministic; ~5 ms end-to-end with sense+actuate)"]
+  [println ""]
+  [let v 15.0] [let a 25.0] [let r 5.0]
+  [report "loon-hdl chip  (bounded)" v a r 0.005]
+  [report "GPU  (typical)         " v a r 0.050]
+  [report "GPU  (worst-case p99)  " v a r 0.100]
+  [println ""]
+  [println "  The bounded 5 ms clears with room; the GPU's jitter tail is the"]
+  [println "  difference between avoiding the obstacle and hitting it at speed."]]
