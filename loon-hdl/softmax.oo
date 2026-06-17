@@ -1,0 +1,106 @@
+; ─────────────────────────────────────────────────────────────────────────
+; loon-hdl — softmax unit (the attention datapath softmax needs).
+; Numerically-stable fixed-point softmax over 4 scores: m=max(x); e_i =
+; LUTexp(x_i - m)  (Q8, exp table, x_i-m ≤ 0); S = Σe_i; p_i = e_i·256 / S
+; (Q8 probabilities, sum ≈ 256). exp via a shared integer LUT so the pure-Loon
+; golden and the emitted Verilog are bit-exact. With Q·Kᵀ and A·V already
+; covered by the GEMM/stream engines, this completes a full attention head.
+;   refs: softmax-is-the-new-datapath flag; MLA arXiv:2405.04434
+; ─────────────────────────────────────────────────────────────────────────
+
+; ── L0 IR (combinational: Bin + comparisons + Mux) ──────────────────────
+[type BinOp Add Sub Mul Div Ge Eq]
+[type Expr [Ref String] [Lit Int] [Bin BinOp Expr Expr] [Mux Expr Expr Expr]]
+[type Dir In Out]
+[type Kind Wire Reg]
+[type Port [Port Dir Kind Int String]]
+[type Decl [Net Kind Int String]]
+[type Stmt [Assign String Expr]]
+[type Module [Module String (Vec Port) (Vec Decl) (Vec Stmt)]]
+
+; ── emitter ──────────────────────────────────────────────────────────────
+[fn bin-sym  [op] [match op Add "+" Sub "-" Mul "*" Div "/" Ge ">=" Eq "=="]]
+[fn dir-str  [d]  [match d In "input " Out "output"]]
+[fn kind-str [k]  [match k Wire "wire" Reg "reg "]]
+[fn range-str  [w] [if [= w 1] "" [str "[" [- w 1] ":0] "]]]
+[fn signed-str [w] [if [= w 1] "" "signed "]]
+[fn emit-expr [e]
+  [match e
+    [Ref n]      n
+    [Lit v]      [str v]
+    [Bin op a b] [str "(" [emit-expr a] " " [bin-sym op] " " [emit-expr b] ")"]
+    [Mux c t f]  [str "(" [emit-expr c] " ? " [emit-expr t] " : " [emit-expr f] ")"]]]
+[fn emit-port [p]
+  [match p [Port d k w n]
+    [str "  " [dir-str d] " " [kind-str k] " " [signed-str w] [range-str w] n]]]
+[fn emit-decl [d]
+  [match d [Net k w n] [str "  " [kind-str k] " " [signed-str w] [range-str w] n ";\n"]]]
+[fn emit-stmt [s] [match s [Assign lhs e] [str "  assign " lhs " = " [emit-expr e] ";"]]]
+[fn emit-module [m]
+  [match m [Module name ports decls stmts]
+    [str "module " name " (\n" [join ",\n" [map emit-port ports]] "\n);\n"
+         [join "" [map emit-decl decls]] [join "\n" [map emit-stmt stmts]]
+         "\nendmodule\n"]]]
+
+; ── building blocks ──────────────────────────────────────────────────────
+[fn vmax [a b] [Mux [Bin Ge a b] a b]]                    ; (a>=b ? a : b)
+[fn lutexp [d]                                            ; Q8 exp table on d≤0
+  [Mux [Bin Eq d [Lit 0]]  [Lit 256]
+    [Mux [Bin Eq d [Lit -1]] [Lit 94]
+      [Mux [Bin Eq d [Lit -2]] [Lit 35]
+        [Mux [Bin Eq d [Lit -3]] [Lit 13]
+          [Mux [Bin Eq d [Lit -4]] [Lit 5]
+            [Mux [Bin Eq d [Lit -5]] [Lit 2]
+              [Mux [Bin Eq d [Lit -6]] [Lit 1] [Lit 0]]]]]]]]]
+
+; ── the softmax-4 generator ──────────────────────────────────────────────
+[fn softmax-unit []
+  [let ports
+    #[[Port In Wire 16 "x0"] [Port In Wire 16 "x1"]
+      [Port In Wire 16 "x2"] [Port In Wire 16 "x3"]
+      [Port Out Wire 16 "p0"] [Port Out Wire 16 "p1"]
+      [Port Out Wire 16 "p2"] [Port Out Wire 16 "p3"]]]
+  [let decls
+    #[[Net Wire 16 "m01"] [Net Wire 16 "m23"] [Net Wire 16 "m"]
+      [Net Wire 16 "d0"] [Net Wire 16 "d1"] [Net Wire 16 "d2"] [Net Wire 16 "d3"]
+      [Net Wire 16 "e0"] [Net Wire 16 "e1"] [Net Wire 16 "e2"] [Net Wire 16 "e3"]
+      [Net Wire 16 "s"]]]
+  [let stmts
+    #[[Assign "m01" [vmax [Ref "x0"] [Ref "x1"]]]
+      [Assign "m23" [vmax [Ref "x2"] [Ref "x3"]]]
+      [Assign "m"   [vmax [Ref "m01"] [Ref "m23"]]]
+      [Assign "d0" [Bin Sub [Ref "x0"] [Ref "m"]]]
+      [Assign "d1" [Bin Sub [Ref "x1"] [Ref "m"]]]
+      [Assign "d2" [Bin Sub [Ref "x2"] [Ref "m"]]]
+      [Assign "d3" [Bin Sub [Ref "x3"] [Ref "m"]]]
+      [Assign "e0" [lutexp [Ref "d0"]]]
+      [Assign "e1" [lutexp [Ref "d1"]]]
+      [Assign "e2" [lutexp [Ref "d2"]]]
+      [Assign "e3" [lutexp [Ref "d3"]]]
+      [Assign "s" [Bin Add [Bin Add [Ref "e0"] [Ref "e1"]] [Bin Add [Ref "e2"] [Ref "e3"]]]]
+      [Assign "p0" [Bin Div [Bin Mul [Ref "e0"] [Lit 256]] [Ref "s"]]]
+      [Assign "p1" [Bin Div [Bin Mul [Ref "e1"] [Lit 256]] [Ref "s"]]]
+      [Assign "p2" [Bin Div [Bin Mul [Ref "e2"] [Lit 256]] [Ref "s"]]]
+      [Assign "p3" [Bin Div [Bin Mul [Ref "e3"] [Lit 256]] [Ref "s"]]]]]
+  [Module "softmax4" ports decls stmts]]
+
+; ── golden model: the SAME fixed-point softmax, pure Loon ────────────────
+[fn imax [a b] [if [>= a b] a b]]
+[fn gexp [d]
+  [if [= d 0] 256 [if [= d -1] 94 [if [= d -2] 35 [if [= d -3] 13
+    [if [= d -4] 5 [if [= d -5] 2 [if [= d -6] 1 0]]]]]]]]
+[fn softmax4 [x]
+  [let m [imax [imax [nth x 0] [nth x 1]] [imax [nth x 2] [nth x 3]]]]
+  [let e0 [gexp [- [nth x 0] m]]]
+  [let e1 [gexp [- [nth x 1] m]]]
+  [let e2 [gexp [- [nth x 2] m]]]
+  [let e3 [gexp [- [nth x 3] m]]]
+  [let s [+ [+ e0 e1] [+ e2 e3]]]
+  #[[/ [* e0 256] s] [/ [* e1 256] s] [/ [* e2 256] s] [/ [* e3 256] s]]]
+
+[fn main []
+  [println "=== loon-hdl: fixed-point softmax unit (attention datapath) ==="]
+  [println [emit-module [softmax-unit]]]
+  [println "=== golden: Q8 probabilities (x256) the Verilog must reproduce ==="]
+  [let x #[3 1 0 2]]
+  [println [str "  scores " x "  ->  p = " [softmax4 x] "   (sum ~256)"]]]

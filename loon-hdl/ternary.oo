@@ -1,0 +1,89 @@
+; ─────────────────────────────────────────────────────────────────────────
+; loon-hdl — ternary-weight × int8-activation MAC lane (BitNet b1.58 datapath).
+; Each weight w ∈ {-1,0,+1} (2-bit signed); the "multiply" collapses to a
+; SELECT — +x, -x, or 0 — so the per-MAC multipliers VANISH (only one ×scale
+; multiplier remains for the whole lane). ~0.2 B/param, ~71× less matmul energy.
+; Co-simulated bit-exact against a pure-Loon ternary golden model.
+;   refs: BitNet b1.58 arXiv:2402.17764, PTQTP arXiv:2509.16989
+; ─────────────────────────────────────────────────────────────────────────
+
+[fn ipow2-go [s a] [if [<= s 0] a [ipow2-go [- s 1] [* a 2]]]]
+[fn ipow2 [s] [ipow2-go s 1]]
+
+; ── L0 IR (+ TSel: the ternary-select primitive — the whole point) ───────
+[type BinOp Add Sub Mul Div]
+[type Expr
+  [Ref String]
+  [Lit Int]
+  [Bin BinOp Expr Expr]
+  [TSel Expr Expr]]          ; (w==1 ? x : w==-1 ? -x : 0)  — no multiplier
+[type Dir In Out]
+[type Kind Wire Reg]
+[type Port [Port Dir Kind Int String]]
+[type Decl [Net Kind Int String]]
+[type Stmt [Assign String Expr]]
+[type Module [Module String (Vec Port) (Vec Decl) (Vec Stmt)]]
+
+; ── emitter ──────────────────────────────────────────────────────────────
+[fn bin-sym  [op] [match op Add "+" Sub "-" Mul "*" Div "/"]]
+[fn dir-str  [d]  [match d In "input " Out "output"]]
+[fn kind-str [k]  [match k Wire "wire" Reg "reg "]]
+[fn range-str  [w] [if [= w 1] "" [str "[" [- w 1] ":0] "]]]
+[fn signed-str [w] [if [= w 1] "" "signed "]]
+[fn emit-expr [e]
+  [match e
+    [Ref n]      n
+    [Lit v]      [str v]
+    [Bin op a b] [str "(" [emit-expr a] " " [bin-sym op] " " [emit-expr b] ")"]
+    [TSel w x]   [str "(" [emit-expr w] " == 1 ? " [emit-expr x]
+                      " : (" [emit-expr w] " == -1 ? -" [emit-expr x] " : 0))"]]]
+[fn emit-port [p]
+  [match p [Port d k w n]
+    [str "  " [dir-str d] " " [kind-str k] " " [signed-str w] [range-str w] n]]]
+[fn emit-decl [d]
+  [match d [Net k w n] [str "  " [kind-str k] " " [signed-str w] [range-str w] n ";\n"]]]
+[fn emit-stmt [s] [match s [Assign lhs e] [str "  assign " lhs " = " [emit-expr e] ";"]]]
+[fn emit-module [m]
+  [match m [Module name ports decls stmts]
+    [str "module " name " (\n" [join ",\n" [map emit-port ports]] "\n);\n"
+         [join "" [map emit-decl decls]] [join "\n" [map emit-stmt stmts]]
+         "\nendmodule\n"]]]
+
+; ── builders ─────────────────────────────────────────────────────────────
+[fn data-ports [pre cnt w] [map [fn [i] [Port In Wire w [str pre i]]] [range 0 cnt]]]
+[fn vcat [xs ys] [fold xs [fn [acc x] [conj acc x]] ys]]
+; tdot = sum_i TSel(w_i, x_i), built closure-free (recursion)
+[fn tprod [i] [TSel [Ref [str "w" i]] [Ref [str "x" i]]]]
+[fn tdot-go [k i acc]
+  [if [>= i k] acc [tdot-go k [+ i 1] [Bin Add acc [tprod i]]]]]
+[fn tdot-expr [k] [tdot-go k 1 [tprod 0]]]
+
+; ── generator : (k sh) -> a ternary MAC lane Module ──────────────────────
+[fn ternary-lane [k sh]
+  [let xv [data-ports "x" k 8]]            ; int8 activations
+  [let wv [data-ports "w" k 2]]            ; ternary weights, 2-bit signed {-1,0,1}
+  [let sp #[[Port In Wire 16 "scale"]]]
+  [let yp #[[Port Out Wire 24 "y"]]]
+  [let ports [vcat [vcat [vcat xv wv] sp] yp]]
+  [let decls #[[Net Wire 12 "tdot"] [Net Wire 28 "scaled"]]]
+  [let stmts
+    #[[Assign "tdot" [tdot-expr k]]
+      [Assign "scaled" [Bin Mul [Ref "tdot"] [Ref "scale"]]]
+      [Assign "y" [Bin Div [Ref "scaled"] [Lit [ipow2 sh]]]]]]
+  [Module [str "ternary_lane_" k] ports decls stmts]]
+
+; ── golden model: the SAME ternary lane, pure Loon (closure-free) ────────
+[fn tsel [w x] [if [= w 1] x [if [= w -1] [- 0 x] 0]]]
+[fn tdot-g [w x k i acc]
+  [if [>= i k] acc [tdot-g w x k [+ i 1] [+ acc [tsel [nth w i] [nth x i]]]]]]
+[fn tdot [w x k] [tdot-g w x k 0 0]]
+[fn requant [w x k scale sh] [/ [* [tdot w x k] scale] [ipow2 sh]]]
+
+[fn main []
+  [println "=== loon-hdl: ternary-weight x int8 MAC lane (BitNet b1.58), k=8 ==="]
+  [println [emit-module [ternary-lane 8 6]]]
+  [println "=== golden model: y the multiplier-free Verilog must reproduce ==="]
+  [let x #[10 -3 5 8 -2 7 4 1]]
+  [let w #[1 -1 0 1 -1 1 0 -1]]
+  [println [str "  ternary dot(W,x) = " [tdot w x 8] "   (add/sub/skip only, no multiplier)"]]
+  [println [str "  scale=100  sh=6  ->  y = " [requant w x 8 100 6]]]]

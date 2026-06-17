@@ -1,0 +1,102 @@
+; ─────────────────────────────────────────────────────────────────────────
+; loon-hdl — the memory-array IR primitive (the long pole for the brick).
+; Adds addressable memory to L0: a `Mem` decl (reg [W-1:0] m [0:D-1]), an
+; indexed write `MemNb` (m[addr] <= data), and an indexed read `Index`
+; (m[addr]). With these, the prefetch FIFO, hot-expert cache, and KV ring all
+; become expressible. Demonstrated as a synchronous RAM, co-sim'd bit-exact
+; against a pure-Loon memory model.
+; ─────────────────────────────────────────────────────────────────────────
+
+[fn clog2-go [n acc] [if [<= n 1] acc [clog2-go [/ [+ n 1] 2] [+ acc 1]]]]
+[fn clog2 [n] [clog2-go n 0]]
+
+; ── L0 IR  (+ Index expr, + Mem decl, + MemNb indexed write) ─────────────
+[type BinOp Add Sub]
+[type Expr
+  [Ref String]
+  [Lit Int]
+  [Bin BinOp Expr Expr]
+  [Index String Expr]]            ; mem[idx]  — indexed read
+[type Dir In Out]
+[type Kind Wire Reg]
+[type Port [Port Dir Kind Int String]]
+[type Decl
+  [Net Kind Int String]
+  [Mem Int Int String]]           ; width, depth, name  -> reg [W-1:0] m [0:D-1]
+[type Seq
+  [Nb String Expr]
+  [MemNb String Expr Expr]        ; mem[idx] <= val  — indexed write
+  [If Expr (Vec Seq) (Vec Seq)]]
+[type Stmt [Assign String Expr] [Always String (Vec Seq)]]
+[type Module [Module String (Vec Port) (Vec Decl) (Vec Stmt)]]
+
+; ── emitter (memory is unsigned bit-vectors — no `signed`) ───────────────
+[fn bin-sym  [op] [match op Add "+" Sub "-"]]
+[fn dir-str  [d]  [match d In "input " Out "output"]]
+[fn kind-str [k]  [match k Wire "wire" Reg "reg "]]
+[fn range-str [w] [if [= w 1] "" [str "[" [- w 1] ":0] "]]]
+[fn emit-expr [e]
+  [match e
+    [Ref n]      n
+    [Lit v]      [str v]
+    [Bin op a b] [str "(" [emit-expr a] " " [bin-sym op] " " [emit-expr b] ")"]
+    [Index m i]  [str m "[" [emit-expr i] "]"]]]
+[fn emit-port [p]
+  [match p [Port d k w n] [str "  " [dir-str d] " " [kind-str k] " " [range-str w] n]]]
+[fn emit-decl [d]
+  [match d
+    [Net k w n]  [str "  " [kind-str k] " " [range-str w] n ";\n"]
+    [Mem w dp n] [str "  reg " [range-str w] n " [0:" [- dp 1] "];\n"]]]
+[fn emit-seq [s ind]
+  [match s
+    [Nb lhs e]     [str ind lhs " <= " [emit-expr e] ";"]
+    [MemNb m i e]  [str ind m "[" [emit-expr i] "] <= " [emit-expr e] ";"]
+    [If c t e]
+      [if [= [len e] 0]
+        [str ind "if (" [emit-expr c] ") begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] t]] "\n" ind "end"]
+        [str ind "if (" [emit-expr c] ") begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] t]]
+             "\n" ind "end else begin\n"
+             [join "\n" [map [fn [x] [emit-seq x [str ind "  "]]] e]]
+             "\n" ind "end"]]]]
+[fn emit-stmt [s]
+  [match s
+    [Assign lhs e] [str "  assign " lhs " = " [emit-expr e] ";"]
+    [Always clk body]
+      [str "  always @(posedge " clk ") begin\n"
+           [join "\n" [map [fn [x] [emit-seq x "    "]] body]] "\n  end"]]]
+[fn emit-module [m]
+  [match m [Module name ports decls stmts]
+    [str "module " name " (\n" [join ",\n" [map emit-port ports]] "\n);\n"
+         [join "" [map emit-decl decls]] [join "\n" [map emit-stmt stmts]]
+         "\nendmodule\n"]]]
+
+; ── generator : (width depth) -> a synchronous RAM Module ────────────────
+[fn ram [width depth]
+  [let aw [clog2 depth]]
+  [let ports
+    #[[Port In Wire 1 "clk"] [Port In Wire 1 "we"]
+      [Port In Wire aw "waddr"] [Port In Wire width "wdata"]
+      [Port In Wire aw "raddr"] [Port Out Wire width "rdata"]]]
+  [let decls #[[Mem width depth "mem"]]]
+  [let wr [Always "clk"
+            #[[If [Ref "we"] #[[MemNb "mem" [Ref "waddr"] [Ref "wdata"]]] #[]]]]]
+  [let rd [Assign "rdata" [Index "mem" [Ref "raddr"]]]]
+  [Module [str "ram_" width "x" depth] ports decls #[wr rd]]]
+
+; ── golden model: pure-Loon memory — last write to addr wins (closure-free)
+[fn lw-go [writes addr i acc]
+  [if [>= i [len writes]] acc
+    [if [= [nth [nth writes i] 0] addr]
+      [lw-go writes addr [+ i 1] [nth [nth writes i] 1]]
+      [lw-go writes addr [+ i 1] acc]]]]
+[fn mem-read [writes addr] [lw-go writes addr 0 0]]
+
+[fn main []
+  [println "=== loon-hdl: synchronous RAM (memory-array IR primitive) ==="]
+  [println [emit-module [ram 8 8]]]
+  [println "=== golden: reads after write sequence {2<-42, 5<-99, 2<-7} ==="]
+  [let writes #[#[2 42] #[5 99] #[2 7]]]
+  [println [str "  mem[2] = " [mem-read writes 2] "   (last write wins)"]]
+  [println [str "  mem[5] = " [mem-read writes 5]]]]
