@@ -86,15 +86,23 @@ Still open: real `Net` (sockets/HTTP) is not yet wired into the EIR VM, and
 cannot construct a program-defined ADT tag from a builtin). Sockets are the
 Stage-1 server's concern.
 
-## EFF-LIMITATION-5 — multi-file `use` doesn't run on the EIR VM
+## EFF-LIMITATION-5 — multi-file `use` doesn't run on the EIR VM — FIXED
 
-`[use math]` resolves at check time but is "value is not callable" at run time on
-the EIR VM (the self-hosted frontend hit this too: "the whole frontend is one
-file; later stages are concatenated, not imported"). Impact: Stage 0/1/2 share
-definitions by living in one file / concatenation, not `use`, until fixed.
+`loon run` now resolves `[use ...]` on the EIR VM. The lowering inlines each
+imported module's macro-expanded definitions ahead of the program, registering
+imported pub functions under their bare name (internal refs resolve) and a
+qualified `alias.name` (so `[module.fn ...]` resolves). Qualified, selective
+(`[use mod [f]]`), `as`-aliased, and transitive imports all work; cycles are
+broken by a visited-set. Plumbing: `eval_eir_with_base_dir` threads the file's
+directory; `lower::collect_imports` does the resolution. Regression test:
+`vm_multi_file_use`.
+
+Caveats: imported modules are linked into one flat namespace, so a name defined
+in two modules collides (last wins) — distinct names, or qualified access, avoid
+it. Stages can now `use` a shared `eff` module instead of concatenating.
 
 Also: the Rust prelude's `Option`/`Result` are not loaded on the EIR VM — define
-shared types in-file.
+shared types in-file (or `use` a module that does).
 
 ## Async / scheduler status
 

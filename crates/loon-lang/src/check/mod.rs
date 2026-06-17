@@ -142,6 +142,11 @@ impl Checker {
         c
     }
 
+    /// The base directory used to resolve `[use ...]`, if any.
+    pub fn base_dir(&self) -> Option<&Path> {
+        self.base_dir.as_deref()
+    }
+
     /// Internal: create a checker for a sub-module that shares the module cache.
     fn for_module(base_dir: &Path, cache: Rc<RefCell<TypeModuleCache>>) -> Self {
         let mut c = Self::new();

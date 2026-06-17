@@ -2329,12 +2329,23 @@ impl std::fmt::Display for VmError {
 
 /// Run a Loon program through the EIR pipeline: parse → check → lower → VM.
 pub fn eval_eir(src: &str) -> Result<VmResult, VmError> {
+    eval_eir_impl(src, crate::check::Checker::new())
+}
+
+/// Like `eval_eir`, but resolves `[use ...]` modules relative to `base_dir`.
+pub fn eval_eir_with_base_dir(
+    src: &str,
+    base_dir: &std::path::Path,
+) -> Result<VmResult, VmError> {
+    eval_eir_impl(src, crate::check::Checker::with_base_dir(base_dir))
+}
+
+fn eval_eir_impl(src: &str, mut checker: crate::check::Checker) -> Result<VmResult, VmError> {
     let exprs = crate::parser::parse(src).map_err(|e| VmError {
         kind: VmErrorKind::Trap,
         span: Some(e.span),
         context: Some(format!("parse error: {}", e.message)),
     })?;
-    let mut checker = crate::check::Checker::new();
     let _errors = checker.check_program(&exprs);
     let module = crate::eir::lower::lower(&checker);
     let mut vm = Vm::new(module);
@@ -2445,6 +2456,29 @@ mod tests {
             .as_int(),
             315
         );
+    }
+
+    #[test]
+    fn vm_multi_file_use() {
+        // Multi-file `use` runs on the EIR VM (LIM-5): an imported module's pub
+        // functions are callable both qualified (`mod.fn`) and via selective
+        // import. Module files are resolved relative to base_dir.
+        let dir = std::env::temp_dir().join(format!("loon_use_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("mymath.oo"), "[pub fn add [a b] [+ a b]]\n").unwrap();
+        let r = eval_eir_with_base_dir(
+            "[use mymath] [fn main [] [println [mymath.add 40 2]]]",
+            &dir,
+        )
+        .expect("vm error");
+        assert_eq!(r.output, vec!["42".to_string()]);
+        let r2 = eval_eir_with_base_dir(
+            "[use mymath [add]] [fn main [] [println [add 1 2]]]",
+            &dir,
+        )
+        .expect("vm error");
+        assert_eq!(r2.output, vec!["3".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
