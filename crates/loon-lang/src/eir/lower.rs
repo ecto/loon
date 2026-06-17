@@ -1604,12 +1604,50 @@ impl<'a> Lower<'a> {
                                 })
                                 .collect();
 
+                            // Collect free variables of the clause body so the
+                            // handler closure captures enclosing locals (e.g. a
+                            // parameterized handler that uses an outer binding).
+                            // Locals are the op params plus the implicit `resume`.
+                            let mut locals = std::collections::HashSet::new();
+                            for p in &param_names {
+                                locals.insert(p.clone());
+                            }
+                            locals.insert("resume".to_string());
+                            let mut capture_regs = Vec::new();
+                            let mut capture_names = Vec::new();
+                            {
+                                let ctor_map_ref = &self.ctor_map;
+                                let func_map_ref = &self.func_map;
+                                let resolve = |name: &str| -> bool {
+                                    self.resolve_builtin(name).is_some() || is_operator(name)
+                                };
+                                let mut free_vars = Vec::new();
+                                let mut seen = std::collections::HashSet::new();
+                                collect_free_vars(
+                                    &handler_args[i + 1],
+                                    &locals,
+                                    &resolve,
+                                    ctor_map_ref,
+                                    func_map_ref,
+                                    &mut free_vars,
+                                    &mut seen,
+                                );
+                                for name in &free_vars {
+                                    if let Some(r) = self.lookup(name) {
+                                        capture_regs.push(r);
+                                        capture_names.push(name.clone());
+                                    }
+                                }
+                            }
+
                             let saved_func = self.cur_func;
                             let saved_block = self.cur_block;
                             let saved_next_reg = self.next_reg;
                             let saved_scopes = std::mem::take(&mut self.scopes);
 
                             let handler_fn_id = self.begin_func(None, handler_args[i + 1].span);
+                            self.module.funcs[handler_fn_id.0 as usize].is_closure =
+                                !capture_names.is_empty();
 
                             self.scopes = vec![HashMap::new()];
                             // Add "resume" as first param
@@ -1627,6 +1665,13 @@ impl<'a> Lower<'a> {
                             self.module.funcs[handler_fn_id.0 as usize].params =
                                 vec![Ty::Any; total_params];
 
+                            // Load captured upvalues into scope.
+                            for (idx, cap_name) in capture_names.iter().enumerate() {
+                                let r = self.reg();
+                                self.emit(Op::Upval(r, idx as u16, span));
+                                self.bind(cap_name, r);
+                            }
+
                             let handler_body = &handler_args[i + 1];
                             let val = self.lower_expr(handler_body);
                             self.seal(End::Ret(val));
@@ -1636,9 +1681,9 @@ impl<'a> Lower<'a> {
                             self.next_reg = saved_next_reg;
                             self.scopes = saved_scopes;
 
-                            // Create closure for handler
+                            // Create closure for handler (capturing enclosing locals)
                             let handler_reg = self.reg();
-                            self.emit(Op::Close(handler_reg, handler_fn_id, Vec::new(), span));
+                            self.emit(Op::Close(handler_reg, handler_fn_id, capture_regs, span));
 
                             // Install as dynamic handler (accessible to called functions)
                             let eff_id = self.intern(effect);
