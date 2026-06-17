@@ -1,0 +1,33 @@
+; ───────────────────────────────────────────────────────────────────────────
+; Cooperative coroutines via escaping continuations — the SUPPORTED subset.
+;
+; A producer performs `Gen.yield`; the `collect` handler resumes it once per
+; yield, threading an accumulator (the answer is `Vec -> Vec`). This is a
+; multi-shot/escaping handler that both type-checks (BUG-2) and runs on the
+; default EIR VM.
+;
+; Scope: LINEAR, single-consumer coroutines work (each continuation is captured
+; and resumed once, in order). INTERLEAVED scheduling — `fork` plus yields where
+; a continuation captured inside one resumed task is resumed from within another
+; — is EFF-BUG-6 in NOTES.md (re-entrant capture), still pending the deeper
+; continuation-engine work. This file stays within the supported subset.
+;
+; Run: loon run src/eff/coroutine.oo
+; ───────────────────────────────────────────────────────────────────────────
+[effect Gen
+  [yield [Int] Unit]]
+
+; Run a producer to completion, collecting every yielded value in order.
+[fn collect [thunk]
+  [[handle
+    [thunk]
+    [return _]
+    [fn [acc] acc]
+    [Gen.yield n]
+    [fn [acc] [[resume []] [conj acc n]]]]
+    #[]]]
+
+; A producer of a small sequence — pure-looking code that just performs yields.
+[fn squares [] [Gen.yield 1] [Gen.yield 4] [Gen.yield 9] [Gen.yield 16]]
+
+[fn main [] [println [collect squares]]] ; #[1 4 9 16]

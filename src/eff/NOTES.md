@@ -108,13 +108,27 @@ it. Stages can now `use` a shared `eff` module instead of concatenating.
 Also: the Rust prelude's `Option`/`Result` are not loaded on the EIR VM — define
 shared types in-file (or `use` a module that does).
 
-## Async / scheduler status
+## EFF-BUG-6 — re-entrant continuation capture (interleaved scheduling) — MITIGATED, not fully fixed
 
-A cooperative scheduler-as-a-handler (`Co.fork`/`Co.yield`, run-queue threaded as
-the answer) **runs** on the VM (escaping continuations work) but: (a) does not
-type-check (EFF-BUG-2), and (b) a multi-task run still drops later tasks (a
-two-worker fork prints `P a`/`C a` but not the post-yield `P b`/`C b`). This is
-a **separate** issue from EFF-BUG-3 (now fixed) — it involves re-capturing a
-continuation that was itself created inside a resumed segment (EFF-BUG-6,
-nested/re-entrant capture), and is the next thing to chase before async ships.
-Async is therefore still deferred rather than shipped half-working.
+The escaping/answer-passing style now type-checks (BUG-2) and runs for LINEAR,
+single-consumer continuations — see `src/eff/coroutine.oo` (a multi-yield
+generator collecting `#[1 4 9 16]`), `samples/state.oo`, and the pure-State
+encoding. Each continuation there is captured and resumed once, in order.
+
+What still fails: INTERLEAVED scheduling. A cooperative scheduler
+(`Co.fork`/`Co.yield`, run-queue threaded as the answer) runs the first round
+(`P a`/`C a`) but drops the post-yield round (`P b`/`C b`). The failing shape is
+a continuation captured *inside* a resumed segment and later resumed from
+*within another* resumed segment (re-entrant capture). Root cause: a captured
+`Obj::Continuation` snapshots one prompt's handlers and records absolute frame
+indices; when such a continuation is resumed at a different stack depth than it
+was captured, the prompt/return bookkeeping for the *nested* capture is
+inconsistent, so the innermost continuation's tail is dropped.
+
+A correct fix is a continuation-engine change (capture the full handler chain;
+rebase frame/prompt indices on resume), which is precisely what the in-progress
+bytecode VM provides. Rather than rush a risky rework of the now-solid
+tree/EIR VM, this is documented with the minimal repro (the scheduler in the
+Stage-0 probes) and bounded: LINEAR coroutines are supported; INTERLEAVED
+fork-scheduling awaits the bytecode VM. Async (cooperative scheduler as a
+handler) is therefore deferred behind EFF-BUG-6.
