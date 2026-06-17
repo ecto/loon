@@ -107,9 +107,14 @@ enum Obj {
     Tuple(Vec<Val>),           // fixed-size, no persistence needed
     Adt(u16, Vec<Val>),        // tag + fields
     Closure(FuncId, Vec<Val>), // func + captured values
-    /// A reified one-shot delimited continuation captured at a `perform`: the
+    /// A reified multi-shot delimited continuation captured at a `perform`: the
     /// frame segment between the perform and its handler's prompt, plus the
-    /// execution point to resume at. `used` enforces the one-shot discipline.
+    /// execution point to resume at. `resume_continuation` clones this segment on
+    /// every invocation, so the same continuation may be resumed zero, one, or
+    /// many times (multi-shot) — the functional substrate the agent framework's
+    /// backtracking needs. As with the WASM/CPS backend, soundness holds for the
+    /// functional case; a re-resumed segment that mutates shared heap state in
+    /// place would observe that sharing.
     Continuation {
         saved: Vec<Frame>,
         func: FuncId,
@@ -121,7 +126,6 @@ enum Obj {
         /// The handle's handlers, so a continuation resumed AFTER its `handle`
         /// has exited (an escaping continuation) can re-establish them.
         prompt_handlers: Vec<DynHandler>,
-        used: bool,
     },
 }
 
@@ -452,9 +456,10 @@ impl Vm {
         Ok(())
     }
 
-    /// Resume a one-shot delimited continuation `k` with value `v`: re-install
-    /// the captured frame segment and continue at the perform point with `v`
-    /// plugged in. One-shot: errors if `k` was already resumed.
+    /// Resume a multi-shot delimited continuation `k` with value `v`: re-install
+    /// a *clone* of the captured frame segment and continue at the perform point
+    /// with `v` plugged in. Because the segment is cloned (not consumed) on each
+    /// call, `k` may be resumed any number of times.
     ///
     /// `base` distinguishes how the continuation's result is delivered:
     /// - `Some(dst)` (non-tail resume): push the current (handler) frame as a
@@ -467,10 +472,6 @@ impl Vm {
     fn resume_continuation(&mut self, k: Val, v: Val, base: Option<u32>) -> Result<(), VmError> {
         let (saved, func, block, ip, mut regs, captures, perform_dst, prompt_handlers) =
             match self.get_obj(k) {
-                Some(Obj::Continuation { used: true, .. }) => {
-                    return Err(VmError::new(VmErrorKind::ContinuationUsed)
-                        .with_span(self.current_span));
-                }
                 Some(Obj::Continuation {
                     saved,
                     func,
@@ -480,7 +481,6 @@ impl Vm {
                     captures,
                     perform_dst,
                     prompt_handlers,
-                    used: false,
                 }) => (
                     saved.clone(),
                     *func,
@@ -497,9 +497,6 @@ impl Vm {
                     );
                 }
             };
-        if let Some(Obj::Continuation { used, .. }) = self.heap.get_mut(k.as_ptr()) {
-            *used = true;
-        }
         if let Some(dst) = base {
             // Push the handler frame as a fresh prompt and re-establish the
             // handle's handlers at it, so performs inside the resumed segment
@@ -887,7 +884,7 @@ impl Vm {
                 if let Some((hval, prompt_depth)) = found {
                     // Capture the continuation: every frame above the prompt,
                     // plus the current execution point (already advanced past
-                    // this perform), as a one-shot Obj::Continuation. Snapshot
+                    // this perform), as a multi-shot Obj::Continuation. Snapshot
                     // this handle's handlers too, so the continuation can
                     // re-establish them if resumed after the handle exits.
                     let prompt_handlers: Vec<DynHandler> = self
@@ -906,7 +903,6 @@ impl Vm {
                         captures: std::mem::take(&mut self.captures),
                         perform_dst: dst.0,
                         prompt_handlers,
-                        used: false,
                     };
                     let k = self.alloc(cont);
                     // Restore the prompt frame (the `handle`'s frame) as current;
@@ -2169,8 +2165,6 @@ pub enum VmErrorKind {
     NotCallable,
     /// Hit an unreachable `End::Trap` (non-exhaustive match, etc.).
     Trap,
-    /// A one-shot continuation (`resume`) was invoked more than once.
-    ContinuationUsed,
     /// Call stack exceeded the limit.
     StackOverflow,
     /// `assert-eq` failed with mismatched values.
@@ -2199,9 +2193,6 @@ impl std::fmt::Display for VmError {
         match &self.kind {
             VmErrorKind::NotCallable => write!(f, "value is not callable"),
             VmErrorKind::Trap => write!(f, "unreachable code"),
-            VmErrorKind::ContinuationUsed => {
-                write!(f, "continuation resumed more than once (one-shot)")
-            }
             VmErrorKind::StackOverflow => write!(f, "stack overflow"),
             VmErrorKind::AssertFailed(actual, expected) => {
                 write!(f, "assertion failed: {actual} != {expected}")
@@ -2313,13 +2304,23 @@ mod tests {
     }
 
     #[test]
-    fn vm_effect_one_shot() {
-        // A one-shot continuation resumed twice is an error.
-        let r = eval_eir(
-            "[effect E [op [Int] Int]] [fn d [x] #{E} [+ 100 [E.op x]]] \
-             [handle [d 5] [E.op v] [+ [resume v] [resume v]]]",
+    fn vm_effect_multi_shot() {
+        // A multi-shot continuation may be resumed more than once. The captured
+        // segment ([+ 100 _]) is cloned per resume, so each `[resume 5]` yields
+        // 105 independently: [+ 105 105] = 210.
+        assert_eq!(
+            run("[effect E [op [Int] Int]] [fn d [x] #{E} [+ 100 [E.op x]]] \
+                 [handle [d 5] [E.op v] [+ [resume v] [resume v]]]")
+            .as_int(),
+            210
         );
-        assert!(r.is_err(), "expected one-shot violation");
+        // Three resumes compose the same way: [+ 105 [+ 105 105]] = 315.
+        assert_eq!(
+            run("[effect E [op [Int] Int]] [fn d [x] #{E} [+ 100 [E.op x]]] \
+                 [handle [d 5] [E.op v] [+ [resume v] [+ [resume v] [resume v]]]]")
+            .as_int(),
+            315
+        );
     }
 
     #[test]

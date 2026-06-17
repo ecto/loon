@@ -1,0 +1,30 @@
+; Multi-shot delimited continuations on the default EIR VM.
+;
+; `Choice.pick` is a nondeterministic choice. A handler decides how many
+; times to resume the captured continuation — WITHOUT the program changing.
+; This is the substrate the agent framework's backtracking / retry handlers
+; are built on: the same control loop, the handler picks the strategy.
+[effect Choice
+  [pick [] Int]]
+
+; `explore` resumes the continuation once per candidate {1,2,3} and sums the
+; resulting worlds — visiting the entire search tree (multi-shot: with two
+; picks below, the body runs 3x3 = 9 times from a single source program).
+[fn explore [thunk]
+  [handle
+    [thunk]
+    [return x]
+    x
+    [Choice.pick]
+    [+ [resume 1] [+ [resume 2] [resume 3]]]]]
+
+; `greedy` resumes exactly once (a one-shot use of the very same
+; continuation) — it always takes candidate 1.
+[fn greedy [thunk] [handle [thunk] [return x] x [Choice.pick] [resume 1]]]
+
+; One program. It performs choices; it does not know the strategy.
+[fn prog [] [let a [Choice.pick]] [let b [Choice.pick]] [+ [* a 10] b]]
+
+[fn main []
+  [println [explore prog]] ; sum over all 9 worlds: 198
+  [println [greedy prog]]] ; greedy a=1 b=1:        11

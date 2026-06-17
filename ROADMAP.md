@@ -8,7 +8,7 @@
 - [x] Tree-walking interpreter with 30+ builtins
 - [x] Hindley-Milner type inference (Algorithm W)
 - [x] Ownership & borrowing checker (lexical)
-- [x] Algebraic effects with one-shot continuations
+- [x] Algebraic effects with multi-shot delimited continuations (EIR VM + WASM/CPS)
 - [x] REPL with time travel and forking
 - [x] Basic WASM codegen (integers, functions, strings, println)
 - [x] CLI: `new`, `run`, `build`, `check`, `test`, `repl`, `explain`
@@ -249,7 +249,9 @@ What's left to finish v0.2 properly.
 - Native (non-WASM) compilation target
 - Backward compat with any existing LISP
 - GUI framework (provide FFI, frameworks are packages)
-- Multi-shot continuations (one-shot only, like Koka)
+- Full HM typing of escaping/answer-passing handlers (the runtime is multi-shot;
+  the checker still types `resume : a -> a`, so the answer-passing style runs but
+  does not yet type-check — see `samples/state.oo`)
 
 ---
 
