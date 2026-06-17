@@ -185,7 +185,8 @@ fn run_file(path: &PathBuf) {
         }
     };
 
-    match loon_lang::eir::vm::eval_eir(&source) {
+    let base_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    match loon_lang::eir::vm::eval_eir_with_base_dir(&source, base_dir) {
         Ok(_result) => {}
         Err(e) => {
             let filename = path.display().to_string();

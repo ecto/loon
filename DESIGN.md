@@ -522,7 +522,7 @@ The ownership model prevents data races: you can't share mutable references acro
 
 ### Effects + Ownership
 
-Algebraic effects involve capturing continuations. Continuations can duplicate references that are supposed to be unique. Loon handles this the same way Koka does: **effect handlers consume their continuation linearly.** A handler must call `[resume ...]` exactly once (or zero times, if it doesn't resume). The compiler enforces this. Multi-shot continuations require explicit cloning, which only works for `Copy` types.
+Algebraic effects involve capturing continuations. A handler may call `[resume ...]` zero times (abort), once (the common case), or **many times (multi-shot)** — the runtime clones the captured frame segment on each resume, so a single `perform` can drive a whole search tree (see `samples/multishot.oo`). This is the substrate backtracking and retry handlers are built on. Multi-shot is sound for the functional case; a re-resumed continuation that mutates shared heap state in place would observe that sharing, so prefer immutable values across a resumption boundary (the ownership checker already steers code toward moves rather than aliasing).
 
 ### Why Effects Are Legendary
 

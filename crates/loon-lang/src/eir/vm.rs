@@ -107,9 +107,14 @@ enum Obj {
     Tuple(Vec<Val>),           // fixed-size, no persistence needed
     Adt(u16, Vec<Val>),        // tag + fields
     Closure(FuncId, Vec<Val>), // func + captured values
-    /// A reified one-shot delimited continuation captured at a `perform`: the
+    /// A reified multi-shot delimited continuation captured at a `perform`: the
     /// frame segment between the perform and its handler's prompt, plus the
-    /// execution point to resume at. `used` enforces the one-shot discipline.
+    /// execution point to resume at. `resume_continuation` clones this segment on
+    /// every invocation, so the same continuation may be resumed zero, one, or
+    /// many times (multi-shot) — the functional substrate the agent framework's
+    /// backtracking needs. As with the WASM/CPS backend, soundness holds for the
+    /// functional case; a re-resumed segment that mutates shared heap state in
+    /// place would observe that sharing.
     Continuation {
         saved: Vec<Frame>,
         func: FuncId,
@@ -121,7 +126,6 @@ enum Obj {
         /// The handle's handlers, so a continuation resumed AFTER its `handle`
         /// has exited (an escaping continuation) can re-establish them.
         prompt_handlers: Vec<DynHandler>,
-        used: bool,
     },
 }
 
@@ -160,6 +164,40 @@ struct Frame {
     captures: Vec<Val>,
 }
 
+/// Generate a v4-format UUID string using only std (no optional `uuid` dep, so
+/// host `IO.uuid` works in every build). 122 bits come from the wall clock and
+/// a process-global counter; the version (4) and variant bits are set so the
+/// shape is a valid v4 UUID. Not cryptographically random, fine for ids/keys.
+fn gen_uuid_v4() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let c = COUNTER.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+    // Mix the two 64-bit sources (splitmix-style) into two halves.
+    let mut hi = nanos
+        .wrapping_mul(0xD1B5_4A32_D192_ED03)
+        .rotate_left(31)
+        .wrapping_add(c);
+    let mut lo = c
+        .wrapping_mul(0x94D0_49BB_1331_11EB)
+        .rotate_left(29)
+        .wrapping_add(nanos);
+    // Set version (4) and variant (RFC 4122) bits.
+    hi = (hi & 0xFFFF_FFFF_FFFF_0FFF) | 0x0000_0000_0000_4000;
+    lo = (lo & 0x3FFF_FFFF_FFFF_FFFF) | 0x8000_0000_0000_0000;
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        hi >> 32,
+        (hi >> 16) & 0xFFFF,
+        hi & 0xFFFF,
+        lo >> 48,
+        lo & 0xFFFF_FFFF_FFFF
+    )
+}
+
 // ─── VM ────────────────────────────────────────────────────────────────────
 
 /// Dynamic effect handler entry.
@@ -173,6 +211,13 @@ struct DynHandler {
     /// Frame-stack depth at the `handle` (the prompt). The continuation captured
     /// by a `perform` is the frames above this depth.
     prompt_depth: usize,
+    /// True for handlers re-established by a non-tail resume (base=Some). These
+    /// are not bracketed by lexical PushHandler/PopHandler, so they are pruned
+    /// automatically when their prompt frame leaves the stack — by ANY path
+    /// (normal return or a `perform` that discards frames). Lexical handlers
+    /// (ephemeral=false) are managed solely by PopHandler. Pruning ephemeral
+    /// handlers is what stops a completed handle from shadowing a later one.
+    ephemeral: bool,
 }
 
 /// The register VM. Executes an EIR Module.
@@ -470,9 +515,10 @@ impl Vm {
         Ok(())
     }
 
-    /// Resume a one-shot delimited continuation `k` with value `v`: re-install
-    /// the captured frame segment and continue at the perform point with `v`
-    /// plugged in. One-shot: errors if `k` was already resumed.
+    /// Resume a multi-shot delimited continuation `k` with value `v`: re-install
+    /// a *clone* of the captured frame segment and continue at the perform point
+    /// with `v` plugged in. Because the segment is cloned (not consumed) on each
+    /// call, `k` may be resumed any number of times.
     ///
     /// `base` distinguishes how the continuation's result is delivered:
     /// - `Some(dst)` (non-tail resume): push the current (handler) frame as a
@@ -485,10 +531,6 @@ impl Vm {
     fn resume_continuation(&mut self, k: Val, v: Val, base: Option<u32>) -> Result<(), VmError> {
         let (saved, func, block, ip, mut regs, captures, perform_dst, prompt_handlers) =
             match self.get_obj(k) {
-                Some(Obj::Continuation { used: true, .. }) => {
-                    return Err(VmError::new(VmErrorKind::ContinuationUsed)
-                        .with_span(self.current_span));
-                }
                 Some(Obj::Continuation {
                     saved,
                     func,
@@ -498,7 +540,6 @@ impl Vm {
                     captures,
                     perform_dst,
                     prompt_handlers,
-                    used: false,
                 }) => (
                     saved.clone(),
                     *func,
@@ -515,13 +556,13 @@ impl Vm {
                     );
                 }
             };
-        if let Some(Obj::Continuation { used, .. }) = self.heap.get_mut(k.as_ptr()) {
-            *used = true;
-        }
         if let Some(dst) = base {
             // Push the handler frame as a fresh prompt and re-establish the
             // handle's handlers at it, so performs inside the resumed segment
-            // are handled (even though the original `handle` may be gone).
+            // are handled (even though the original `handle` may be gone). The
+            // re-established handlers are scoped to this prompt frame: they are
+            // popped when it returns (see return_val), so they do not leak onto
+            // the dynamic handler stack and shadow a later, unrelated handle.
             self.frames.push(Frame {
                 func: self.func,
                 block: self.block,
@@ -534,6 +575,7 @@ impl Vm {
             for h in prompt_handlers {
                 self.handlers.push(DynHandler {
                     prompt_depth: prompt,
+                    ephemeral: true,
                     ..h
                 });
             }
@@ -563,10 +605,25 @@ impl Vm {
             self.block = frame.block;
             self.ip = frame.ip;
             self.regs[ret_reg as usize] = val;
+            // A resumed segment may have left ephemeral handlers scoped to a
+            // prompt frame that is now gone; drop them so they cannot shadow a
+            // later handle for the same effect.
+            self.prune_ephemeral_handlers();
             Ok(None) // keep executing
         } else {
             Ok(Some(val)) // top-level return
         }
+    }
+
+    /// Remove ephemeral (resume-re-established) handlers whose prompt frame is
+    /// no longer on the stack. A handler at prompt depth P is in scope only
+    /// while some frame sits above it (frames.len() > P); once we are back at or
+    /// below P its delimited region has been exited. Lexical handlers are left
+    /// to PopHandler.
+    fn prune_ephemeral_handlers(&mut self) {
+        let depth = self.frames.len();
+        self.handlers
+            .retain(|h| !h.ephemeral || h.prompt_depth < depth);
     }
 
     // ── Main dispatch loop ─────────────────────────────────────────────
@@ -905,7 +962,7 @@ impl Vm {
                 if let Some((hval, prompt_depth)) = found {
                     // Capture the continuation: every frame above the prompt,
                     // plus the current execution point (already advanced past
-                    // this perform), as a one-shot Obj::Continuation. Snapshot
+                    // this perform), as a multi-shot Obj::Continuation. Snapshot
                     // this handle's handlers too, so the continuation can
                     // re-establish them if resumed after the handle exits.
                     let prompt_handlers: Vec<DynHandler> = self
@@ -924,7 +981,6 @@ impl Vm {
                         captures: std::mem::take(&mut self.captures),
                         perform_dst: dst.0,
                         prompt_handlers,
-                        used: false,
                     };
                     let k = self.alloc(cont);
                     // Restore the prompt frame (the `handle`'s frame) as current;
@@ -936,6 +992,11 @@ impl Vm {
                     self.ip = f0.ip;
                     self.regs = f0.regs;
                     self.captures = f0.captures;
+                    // Capturing the continuation discarded every frame above the
+                    // prompt; drop ephemeral handlers re-established at those
+                    // (now-gone) prompts so they cannot shadow this or a later
+                    // handle.
+                    self.prune_ephemeral_handlers();
                     // Run the handler at the prompt with `resume` := k. If it
                     // returns without invoking k, that value becomes the handle's
                     // result (abort / 0-shot).
@@ -971,6 +1032,7 @@ impl Vm {
                     op: *op_sid,
                     closure,
                     prompt_depth: self.frames.len(),
+                    ephemeral: false,
                 });
             }
 
@@ -2084,6 +2146,42 @@ impl Vm {
                     Val::UNIT
                 }
             }
+            ("IO", "write-file") => {
+                if let (Some(path), Some(contents)) = (args.first(), args.get(1)) {
+                    let p = self.val_to_string(*path);
+                    let c = self.val_to_string(*contents);
+                    let _ = std::fs::write(&p, c);
+                }
+                Val::UNIT
+            }
+            // Clock: real wall-clock time. `now` in whole seconds, `millis` in
+            // milliseconds since the Unix epoch (both fit in a 48-bit int).
+            ("IO", "now") => {
+                let secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                self.safe_int(secs)
+            }
+            ("IO", "millis") => {
+                let ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                self.safe_int(ms)
+            }
+            ("IO", "uuid") => self.alloc_str(gen_uuid_v4()),
+            // Env / Process: read an environment variable. Returns the value, or
+            // "" when unset (the EIR VM cannot construct an Option here — the
+            // tag is program-defined — so callers branch on the empty string).
+            ("Env", "lookup") | ("Env", "get") | ("Process", "env") => {
+                if let Some(key) = args.first() {
+                    let k = self.val_to_string(*key);
+                    self.alloc_str(std::env::var(&k).unwrap_or_default())
+                } else {
+                    self.alloc_str(String::new())
+                }
+            }
             ("Const", "c") => Val::float(299_792_458.0),
             ("Physics", "yield-strength") => Val::float(250.0),
             ("Physics", "gravity") => Val::float(9.80665),
@@ -2191,8 +2289,6 @@ pub enum VmErrorKind {
     NotCallable,
     /// Hit an unreachable `End::Trap` (non-exhaustive match, etc.).
     Trap,
-    /// A one-shot continuation (`resume`) was invoked more than once.
-    ContinuationUsed,
     /// Call stack exceeded the limit.
     StackOverflow,
     /// `assert-eq` failed with mismatched values.
@@ -2221,9 +2317,6 @@ impl std::fmt::Display for VmError {
         match &self.kind {
             VmErrorKind::NotCallable => write!(f, "value is not callable"),
             VmErrorKind::Trap => write!(f, "unreachable code"),
-            VmErrorKind::ContinuationUsed => {
-                write!(f, "continuation resumed more than once (one-shot)")
-            }
             VmErrorKind::StackOverflow => write!(f, "stack overflow"),
             VmErrorKind::AssertFailed(actual, expected) => {
                 write!(f, "assertion failed: {actual} != {expected}")
@@ -2236,12 +2329,23 @@ impl std::fmt::Display for VmError {
 
 /// Run a Loon program through the EIR pipeline: parse → check → lower → VM.
 pub fn eval_eir(src: &str) -> Result<VmResult, VmError> {
+    eval_eir_impl(src, crate::check::Checker::new())
+}
+
+/// Like `eval_eir`, but resolves `[use ...]` modules relative to `base_dir`.
+pub fn eval_eir_with_base_dir(
+    src: &str,
+    base_dir: &std::path::Path,
+) -> Result<VmResult, VmError> {
+    eval_eir_impl(src, crate::check::Checker::with_base_dir(base_dir))
+}
+
+fn eval_eir_impl(src: &str, mut checker: crate::check::Checker) -> Result<VmResult, VmError> {
     let exprs = crate::parser::parse(src).map_err(|e| VmError {
         kind: VmErrorKind::Trap,
         span: Some(e.span),
         context: Some(format!("parse error: {}", e.message)),
     })?;
-    let mut checker = crate::check::Checker::new();
     let _errors = checker.check_program(&exprs);
     let module = crate::eir::lower::lower(&checker);
     let mut vm = Vm::new(module);
@@ -2335,13 +2439,91 @@ mod tests {
     }
 
     #[test]
-    fn vm_effect_one_shot() {
-        // A one-shot continuation resumed twice is an error.
-        let r = eval_eir(
-            "[effect E [op [Int] Int]] [fn d [x] #{E} [+ 100 [E.op x]]] \
-             [handle [d 5] [E.op v] [+ [resume v] [resume v]]]",
+    fn vm_effect_multi_shot() {
+        // A multi-shot continuation may be resumed more than once. The captured
+        // segment ([+ 100 _]) is cloned per resume, so each `[resume 5]` yields
+        // 105 independently: [+ 105 105] = 210.
+        assert_eq!(
+            run("[effect E [op [Int] Int]] [fn d [x] #{E} [+ 100 [E.op x]]] \
+                 [handle [d 5] [E.op v] [+ [resume v] [resume v]]]")
+            .as_int(),
+            210
         );
-        assert!(r.is_err(), "expected one-shot violation");
+        // Three resumes compose the same way: [+ 105 [+ 105 105]] = 315.
+        assert_eq!(
+            run("[effect E [op [Int] Int]] [fn d [x] #{E} [+ 100 [E.op x]]] \
+                 [handle [d 5] [E.op v] [+ [resume v] [+ [resume v] [resume v]]]]")
+            .as_int(),
+            315
+        );
+    }
+
+    #[test]
+    fn vm_multi_file_use() {
+        // Multi-file `use` runs on the EIR VM (LIM-5): an imported module's pub
+        // functions are callable both qualified (`mod.fn`) and via selective
+        // import. Module files are resolved relative to base_dir.
+        let dir = std::env::temp_dir().join(format!("loon_use_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("mymath.oo"), "[pub fn add [a b] [+ a b]]\n").unwrap();
+        let r = eval_eir_with_base_dir(
+            "[use mymath] [fn main [] [println [mymath.add 40 2]]]",
+            &dir,
+        )
+        .expect("vm error");
+        assert_eq!(r.output, vec!["42".to_string()]);
+        let r2 = eval_eir_with_base_dir(
+            "[use mymath [add]] [fn main [] [println [add 1 2]]]",
+            &dir,
+        )
+        .expect("vm error");
+        assert_eq!(r2.output, vec!["3".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vm_host_effects() {
+        // Host effects are wired into the EIR VM (LIM-4): unhandled IO.now /
+        // IO.uuid / Process.env reach real implementations. now is a positive
+        // Unix timestamp; uuid is a 36-char string; env reads the environment.
+        assert!(run("[IO.now]").as_int() > 1_000_000_000);
+        assert!(run("[IO.millis]").as_int() > 1_000_000_000_000);
+        let uuid = &run_output("[println [IO.uuid]]")[0];
+        assert_eq!(uuid.len(), 36, "uuid: {uuid}");
+        assert_eq!(uuid.matches('-').count(), 4);
+        std::env::set_var("LOON_TEST_VAR", "hello-env");
+        assert_eq!(
+            run_output(r#"[println [Process.env "LOON_TEST_VAR"]]"#),
+            vec!["hello-env".to_string()]
+        );
+    }
+
+    #[test]
+    fn vm_handler_isolation_across_handles() {
+        // Regression: a non-tail resume re-establishes the handle's handlers on
+        // the dynamic stack (so the continuation is self-contained). Those
+        // ephemeral handlers must be dropped when their prompt frame leaves —
+        // otherwise a completed handle shadows a *later* one for the same
+        // effect. Here `flat` (R+L, with a NON-tail resume for L) runs first,
+        // then a NESTED handle (outer L, inner R) for the same program. The
+        // nested R must reach the inner handler (2), not the stale flat one (1).
+        let src = "[effect R [ask [] Int]] [effect L [note [] Int]] \
+                   [fn prog [] [L.note] [R.ask]] \
+                   [fn flat [b] [handle [b] \
+                       [R.ask]  [resume 1] \
+                       [L.note] [+ 0 [resume 0]]]] \
+                   [fn nested [b] \
+                     [handle [[fn [] [handle [b] [R.ask] [resume 2]]]] \
+                        [L.note] [resume 0]]] \
+                   [fn main [] [flat prog] [nested prog]]";
+        assert_eq!(run(src).as_int(), 2);
+        // And the symmetric multi-clause flat-then-flat case stays correct.
+        let src2 = "[effect R [ask [] Int]] [effect L [note [] Int]] \
+                    [fn prog [] [L.note] [R.ask]] \
+                    [fn a [b] [handle [b] [R.ask] [resume 10] [L.note] [+ 0 [resume 0]]]] \
+                    [fn c [b] [handle [b] [R.ask] [resume 20] [L.note] [+ 0 [resume 0]]]] \
+                    [fn main [] [a prog] [c prog]]";
+        assert_eq!(run(src2).as_int(), 20);
     }
 
     #[test]

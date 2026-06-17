@@ -1,0 +1,162 @@
+; ───────────────────────────────────────────────────────────────────────────
+; Stage 0 — Shared effect substrate (synchronous core).
+;
+; This file defines the algebraic-effect interfaces that BOTH the HTTP
+; framework (Stage 1) and the agent framework (Stage 2) build on. An effect is
+; an interface of operations with no implementation; a `handle` block supplies
+; the implementation. The thesis the whole project protects: ONE program runs
+; unchanged under different handler towers — prod / test / replay differ only
+; in the tower, never in the app.
+;
+; Everything here is tail-resumptive (each clause calls `[resume v]` in tail
+; position), so it type-checks under the current checker and runs on the
+; default EIR VM. The async/scheduler substrate (cooperative spawn/await/cancel
+; as a handler) needs escaping continuations and lives separately — see
+; src/eff/NOTES.md for its status and the foundation gaps it depends on.
+;
+; Run:   loon run src/eff/eff.oo
+; Check: loon check src/eff/eff.oo
+; ───────────────────────────────────────────────────────────────────────────
+; ── Shared algebraic types ───────────────────────────────────────────────────
+; The Rust prelude's Option/Result are not loaded on the EIR VM, so the shared
+; substrate declares them once, here, for every consumer.
+[type Option
+  T
+  [Some T]
+  None]
+
+[type Result
+  T
+  E
+  [Ok T]
+  [Err E]]
+
+; ── Core effect interfaces ───────────────────────────────────────────────────
+; Each is an interface only. No handler is named at the definition site; the
+; caller chooses one. Fail REPLACES exceptions: there is no throw/catch anywhere
+; in this project, only `Fail.fail` performed as an effect and resolved by a
+; handler (abort = a clause that does not resume).
+[effect IO
+  [println [String] Unit]]
+
+[effect Clock
+  [now [] Int]]
+
+[effect Random
+  [gen [] Int]]
+
+[effect Env
+  [lookup [String] [Option String]]]
+
+[effect Reader
+  [ask [] String]]
+
+[effect Log
+  [info [String] Unit]]
+
+[effect Fail
+  [fail [String] String]]
+
+[effect State
+  [get [] Int]
+  [put [Int] Unit]]
+
+; ── A representative program ─────────────────────────────────────────────────
+; `make-session-id` performs Reader, Env, Clock, Random, Log and Fail. It never
+; names a handler, so its INFERRED required-effect row is exactly:
+;
+;     #{Reader Env Clock Random Log Fail}
+;
+; A reviewer reads the capabilities straight off the signature: this function
+; can read config and the environment, observe the clock and randomness, log,
+; and fail — and it can do nothing else. It cannot touch the network or a DB,
+; because those effects do not appear in its row.
+[fn make-session-id []
+  [Log.info "creating session id"]
+  ; prefix from the env if set, else the Reader config — Option, not null.
+  [let prefix
+  [match [Env.lookup "SID_PREFIX"]
+    [Some p] p
+    None [Reader.ask]]]
+  [let t [Clock.now]]
+  [let r [Random.gen]]
+  [if [< r 0] [Fail.fail "random source exhausted"] [str prefix "-" t "-" r]]]
+
+; ── Handler towers ───────────────────────────────────────────────────────────
+; The SAME `make-session-id` runs under each. Only the tower changes.
+; TEST / REPLAY tower: fully deterministic, no host access, no IO. This is what
+; makes integration tests need no mocking framework and no network — the effects
+; ARE the seam. Fail aborts to a tagged string (the clause does not resume).
+[fn under-test [body]
+  [handle
+    [body]
+    [Reader.ask]
+    [resume "test"]
+    [Env.lookup k]
+    [resume None]
+    [Clock.now]
+    [resume 1000]
+    [Random.gen]
+    [resume 7]
+    [Log.info m]
+    [resume []]
+    [Fail.fail msg]
+    [str "ERR: " msg]]]
+
+; PROD-ish tower: logging is a real side effect (stdout via println). Config and
+; clock/random stand in for host sources — wiring them to real host builtins is
+; a Stage-1 backend task (the EIR VM does not yet expose now/random/env). The
+; point: swapping the tower needs ZERO change to the app.
+[fn under-prod [body]
+  [handle
+    [body]
+    [Reader.ask]
+    [resume "prod"]
+    [Env.lookup k]
+    [resume [Some "from-env"]]
+    [Clock.now]
+    [resume 1717200000]
+    [Random.gen]
+    [resume 4242]
+    [Log.info m]
+    [do [println [str "[log] " m]] [resume []]]
+    [Fail.fail msg]
+    [str "ERR: " msg]]]
+
+; ── Handler-stack composition ────────────────────────────────────────────────
+; Towers are not monolithic: a `handle` intercepts only the effects it names
+; and lets the rest propagate to the enclosing handler. So a tower is a STACK of
+; small handlers. Here an outer layer owns Log+Fail (cross-cutting) and an inner
+; layer owns the deterministic sources; Log/Fail performed deep inside the inner
+; layer propagate OUT to the outer one.
+[fn with-observability [body]
+  [handle
+    [body]
+    [Log.info m]
+    [do [println [str "[log] " m]] [resume []]]
+    [Fail.fail msg]
+    [str "ERR: " msg]]]
+
+[fn with-deterministic-world [body]
+  [handle
+    [body]
+    [Reader.ask]
+    [resume "layered"]
+    [Env.lookup k]
+    [resume None]
+    [Clock.now]
+    [resume 2000]
+    [Random.gen]
+    [resume 9]]]
+
+[fn under-layered [body]
+  [with-observability [fn [] [with-deterministic-world body]]]]
+
+; ── Demo ─────────────────────────────────────────────────────────────────────
+; The same `make-session-id` runs under each tower, in any order. (Sequencing a
+; flat tower before the nested one used to misroute via EFF-BUG-3; that EIR
+; handler-stack leak is now fixed — see NOTES.md.)
+[fn main []
+  [println [str "test:    " [under-test make-session-id]]]
+  [println [str "prod:    " [under-prod make-session-id]]]
+  [println [str "layered: " [under-layered make-session-id]]]]

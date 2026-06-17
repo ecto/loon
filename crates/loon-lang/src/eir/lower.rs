@@ -14,7 +14,8 @@ use crate::ast::{Expr, ExprKind};
 use crate::check::Checker;
 use crate::eir::*;
 use crate::syntax::Span;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 /// Lower a checked program into an EIR Module.
 pub fn lower(checker: &Checker) -> Module {
@@ -160,8 +161,25 @@ impl<'a> Lower<'a> {
     // ── Top-level lowering ─────────────────────────────────────────────
 
     fn lower_program(&mut self) {
+        // Resolve `[use ...]` modules by inlining their (macro-expanded) top-level
+        // definitions ahead of the main program, so a multi-file program runs on
+        // the EIR VM. Imported functions are registered under their bare name (so
+        // their internal references resolve) and additionally under a qualified
+        // `alias.name` (so `[module.fn ...]` resolves). See LIM-5 in
+        // src/eff/NOTES.md for the supported subset.
+        let main_forms = self.checker.expanded_program.clone();
+        let mut imported: Vec<Expr> = Vec::new();
+        let mut qualified: Vec<(String, String)> = Vec::new();
+        if let Some(base) = self.checker.base_dir() {
+            let base = base.to_path_buf();
+            let mut visited: HashSet<PathBuf> = HashSet::new();
+            self.collect_imports(&main_forms, &base, &mut visited, &mut imported, &mut qualified);
+        }
+        let mut all_forms = imported;
+        all_forms.extend(main_forms);
+
         // First pass: collect all ADT constructors
-        for expr in &self.checker.expanded_program {
+        for expr in &all_forms {
             if let ExprKind::List(items) = &expr.kind {
                 if let Some(ExprKind::Symbol(s)) = items.first().map(|e| &e.kind) {
                     if s == "type" {
@@ -174,7 +192,7 @@ impl<'a> Lower<'a> {
         // Second pass: pre-create ALL top-level named functions as stubs.
         // This assigns real FuncIds (via begin_func) before any body is lowered,
         // enabling mutual recursion without ID mismatch from anonymous lambdas.
-        for expr in &self.checker.expanded_program.clone() {
+        for expr in &all_forms.clone() {
             if let ExprKind::List(items) = &expr.kind {
                 if items.len() >= 3 {
                     if let Some(ExprKind::Symbol(kw)) = items.first().map(|e| &e.kind) {
@@ -198,14 +216,21 @@ impl<'a> Lower<'a> {
             }
         }
 
+        // Expose imported functions under their qualified `alias.name` too, so
+        // `[module.fn ...]` resolves to the same FuncId as the bare name.
+        for (alias, name) in &qualified {
+            if let Some(&fid) = self.func_map.get(name) {
+                self.func_map.insert(format!("{alias}.{name}"), fid);
+            }
+        }
+
         // Create the entry function (__main)
         let main_id = self.begin_func(Some("__main"), Span::ZERO);
         self.module.entry = main_id;
 
-        // Lower each top-level expression
-        let exprs = self.checker.expanded_program.clone();
+        // Lower each top-level expression (imported defs first, then main).
         let mut last = None;
-        for expr in &exprs {
+        for expr in &all_forms {
             last = Some(self.lower_expr(expr));
         }
 
@@ -223,6 +248,91 @@ impl<'a> Lower<'a> {
             r
         });
         self.seal(End::Ret(ret));
+    }
+
+    /// Walk `forms` for `[use ...]` declarations, recursively load each module's
+    /// macro-expanded definitions, and accumulate them in `imported` (with
+    /// `qualified` recording each imported pub fn as `(alias, name)`). `visited`
+    /// dedups by canonical path and breaks cycles.
+    fn collect_imports(
+        &self,
+        forms: &[Expr],
+        base: &std::path::Path,
+        visited: &mut HashSet<PathBuf>,
+        imported: &mut Vec<Expr>,
+        qualified: &mut Vec<(String, String)>,
+    ) {
+        for form in forms {
+            let ExprKind::List(items) = &form.kind else {
+                continue;
+            };
+            let Some(ExprKind::Symbol(head)) = items.first().map(|e| &e.kind) else {
+                continue;
+            };
+            if head != "use" || items.len() < 2 {
+                continue;
+            }
+            let Some(modpath) = items[1].as_dotted_path() else {
+                continue;
+            };
+            // Alias: `[use a/b as c]` → c, else the last path segment.
+            let alias = if items.len() >= 4 {
+                if let (ExprKind::Symbol(kw), ExprKind::Symbol(a)) =
+                    (&items[2].kind, &items[3].kind)
+                {
+                    if kw == "as" {
+                        a.clone()
+                    } else {
+                        modpath.rsplit('/').next().unwrap_or(&modpath).to_string()
+                    }
+                } else {
+                    modpath.rsplit('/').next().unwrap_or(&modpath).to_string()
+                }
+            } else {
+                modpath.rsplit('/').next().unwrap_or(&modpath).to_string()
+            };
+
+            let file = crate::module::ModuleCache::resolve_path(&modpath, base);
+            let canonical = file.canonicalize().unwrap_or_else(|_| file.clone());
+            if !visited.insert(canonical) {
+                continue; // already imported (or cycle)
+            }
+            let Ok(src) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            let Ok(exprs) = crate::parser::parse(&src) else {
+                continue;
+            };
+            let dir = file.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| base.to_path_buf());
+            // Run a sub-checker to macro-expand (and type) the module.
+            let mut sub = Checker::with_base_dir(&dir);
+            let _ = sub.check_program(&exprs);
+            let module_forms = sub.expanded_program.clone();
+            // Recurse first so transitive imports land before this module.
+            self.collect_imports(&module_forms, &dir, visited, imported, qualified);
+            for mf in &module_forms {
+                if let ExprKind::List(mitems) = &mf.kind {
+                    match mitems.first().map(|e| &e.kind) {
+                        // Skip the module's own `use` lines (handled by recursion).
+                        Some(ExprKind::Symbol(s)) if s == "use" => continue,
+                        _ => {}
+                    }
+                    // Record qualified names for `pub fn` exports.
+                    if let Some(ExprKind::Symbol(s)) = mitems.first().map(|e| &e.kind) {
+                        if s == "pub" && mitems.len() >= 3 {
+                            if let (Some(ExprKind::Symbol(inner)), Some(ExprKind::Symbol(name))) =
+                                (mitems.get(1).map(|e| &e.kind), mitems.get(2).map(|e| &e.kind))
+                            {
+                                if inner == "fn" {
+                                    qualified.push((alias.clone(), name.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+                imported.push(mf.clone());
+            }
+        }
     }
 
     fn collect_ctors(&mut self, args: &[Expr]) {
@@ -377,6 +487,13 @@ impl<'a> Lower<'a> {
                 // Try qualified name lookup first
                 if let Some(path) = expr.as_dotted_path() {
                     if let Some(r) = self.lookup(&path) {
+                        return r;
+                    }
+                    // A qualified imported function, e.g. `math.add` from
+                    // `[use math]` — materialize it as a closure value.
+                    if let Some(&fid) = self.func_map.get(&path) {
+                        let r = self.reg();
+                        self.emit(Op::Close(r, fid, Vec::new(), expr.span));
                         return r;
                     }
                 }
