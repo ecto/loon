@@ -143,13 +143,16 @@ resumption — two workers yielding twice round-robin produce
 continuations are sound for this; no engine rework is needed, and async is NOT
 blocked.
 
-### Remaining gap: type-checking a recursive answer type
+### Type-checking the recursive answer type — RESOLVED via a nominal wrapper
 
-The scheduler RUNS but does not yet `loon check`: its answer type is genuinely
-recursive — the queue is a `Vec` of resumptions, each a function *of the queue*
-(`Queue = Vec (Queue -> Unit)`), i.e. `t ~ Vec t -> u`. Hindley-Milner rejects
-the infinite type (E0203). This is a *type-system* limitation (no iso-recursive
-types), independent of the runtime; the State-style escaping handlers (BUG-2)
-type-check because their answer type is non-recursive. A nominal/iso-recursive
-wrapper around the queue element (boxing `Queue -> Unit` in an ADT) would give
-HM a finite type; that's the remaining work to make the scheduler `check`-clean.
+The scheduler's answer type is recursive — the queue is a `Vec` of resumptions,
+each a function *of the queue* (`Queue = Vec (Queue -> Unit)`), i.e.
+`t ~ Vec t -> u`, which Hindley-Milner rejects as infinite (E0203). Boxing the
+resumption in a nominal type — `[type Cont [MkCont [-> [Vec Cont] Unit]]]` —
+makes the queue type finite (`Vec Cont`), since HM treats the named `Cont`
+nominally and does not expand it. `run-next` then `match`es `[MkCont f]` to
+unwrap. With that, `src/eff/scheduler.oo` BOTH `loon check`s clean AND runs.
+
+Net: the cooperative scheduler-as-a-handler — the async substrate — is complete
+on the default EIR VM (type-checks + runs, interleaved multi-shot). No engine
+rework and no bytecode VM were needed for it.

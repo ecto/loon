@@ -1,42 +1,50 @@
 ; ───────────────────────────────────────────────────────────────────────────
-; Cooperative scheduler as an effect handler — INTERLEAVED multi-shot.
+; Cooperative scheduler as an effect handler — INTERLEAVED, multi-shot, TYPED.
 ;
 ; `Co.fork` returns true in the parent and false in a freshly-spawned child
 ; (Unix-style); `Co.yield` cooperatively hands off. The scheduler is a handler
 ; that threads a run-queue of continuations as its answer; `resume` is a
-; first-class, multi-shot continuation captured at each fork/yield.
+; first-class, multi-shot delimited continuation captured at each fork/yield.
 ;
 ; This is the async substrate the agent framework's retry/cancellation handlers
-; wrap. It RUNS correctly on the default EIR VM — interleaved, re-entrant
-; continuations work (an earlier "BUG-6" was a bug in the test harness, not the
-; VM: `drop` is count-first `[drop n coll]`). See src/eff/NOTES.md.
+; wrap. It both `loon check`s clean and runs on the default EIR VM, with correct
+; interleaved re-entrant resumption.
 ;
-; Note: it does not yet `loon check` — the answer type is genuinely recursive
-; (Queue = Vec of (Queue -> Unit)), which Hindley-Milner rejects without a
-; nominal/iso-recursive wrapper. The runtime is unaffected.
+; The one subtlety: a resumption is a function OF the run-queue, and the queue is
+; a vector of resumptions — a recursive type (`Queue = Vec (Queue -> Unit)`) that
+; Hindley-Milner would reject as infinite. Boxing the resumption in a nominal
+; type `Cont` makes the queue type finite (`Vec Cont`), so it type-checks.
 ;
-; Run: loon run src/eff/scheduler.oo
+; Run:   loon run   src/eff/scheduler.oo
+; Check: loon check src/eff/scheduler.oo
 ; ───────────────────────────────────────────────────────────────────────────
 [effect Co
   [fork [] Bool]
   [yield [] Unit]]
 
-; The run-queue is a vector of resumptions (each a function of the queue).
-; run-next pops the head and runs it with the remaining queue.
-[fn run-next [q] [if [empty? q] [] [do [let k [nth q 0]] [k [drop 1 q]]]]]
+; A resumption boxed nominally so the queue type is finite under HM.
+[type Cont
+  [MkCont [-> [Vec Cont] Unit]]]
+
+; run-next pops the head resumption and runs it with the remaining queue.
+[fn run-next [q]
+  [if [empty? q]
+    []
+    [match [nth q 0]
+      [MkCont f] [f [drop 1 q]]]]]
 
 ; The scheduler handler. `fork` resumes the parent immediately (true) and
-; enqueues the child (false); `yield` enqueues the current continuation and
-; runs the next ready task. The whole thing is applied to an empty queue.
+; enqueues the child (false); `yield` enqueues the current continuation and runs
+; the next ready task. The whole computation is applied to an empty queue.
 [fn scheduler [entry]
   [[handle
     [entry]
     [return _]
     [fn [q] [run-next q]]
     [Co.yield]
-    [fn [q] [run-next [conj q [fn [qp] [[resume []] qp]]]]]
+    [fn [q] [run-next [conj q [MkCont [fn [qp] [[resume []] qp]]]]]]
     [Co.fork]
-    [fn [q] [[resume true] [conj q [fn [qp] [[resume false] qp]]]]]]
+    [fn [q] [[resume true] [conj q [MkCont [fn [qp] [[resume false] qp]]]]]]]
     #[]]]
 
 ; Two workers, each yielding twice — they interleave round-robin.
