@@ -37,6 +37,22 @@
 
 ---
 
+## What's done (v0.7) — Effects substrate & frameworks
+
+- [x] Multi-shot delimited continuations on the default register VM
+- [x] Handler-stack isolation across sequential/nested handles (correctness)
+- [x] Escaping/answer-passing handlers type-check; generic ADT construction fixed
+- [x] Host effects in the VM: clock, millis, uuid, env, file read/write
+- [x] Real TCP/HTTP sockets in the VM (`Net.listen`/`accept`/`send`) — serve HTTP from Loon
+- [x] Multi-file `use` runs on the register VM (qualified, selective, transitive)
+- [x] Shared effect substrate (`src/eff`): IO/Clock/Random/Env/Reader/Log/Fail/State, prod/test/replay towers, composition
+- [x] Async as effects: cooperative scheduler (`spawn`/`yield`/`cancel`), structured concurrency
+- [x] HTTP framework (`src/http`): capability-typed routes, prod/test/trace towers, consume-on-send bodies
+- [x] Agent framework (`src/agent`): Llm/Tool/Approval/Memory, test/trace/deny/explore towers, durable replay-resume, served over HTTP
+- [x] Backend differential-parity suite (EIR VM vs interpreter); 5 higher-order builtin fixes
+
+---
+
 ## v0.2.1 — Close the gaps
 
 What's left to finish v0.2 properly.

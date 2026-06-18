@@ -1,157 +1,222 @@
 ; effects.loon — Concepts: Understanding Effects
-
 [fn concepts-effects-page []
-  [doc-page "Understanding Effects" "How algebraic effects unify IO, errors, and state."
-
-    [doc-section "The Problem"
-      [doc-text "Side effects break two things programmers care deeply about: "
+  [doc-page
+    "Understanding Effects"
+    "How algebraic effects unify IO, errors, and state."
+    
+    [doc-section
+      "The Problem"
+      [doc-text
+        "Side effects break the two things programmers care about most: "
         "composition and testing."]
-      [doc-text "Think about it concretely. A function that reads from the network cannot be "
-        "composed cleanly with a function that reads from a file, because both need to know "
-        "about IO. A function that throws an exception cannot be composed with one that returns "
-        "an error value, because the caller has to juggle two different error conventions. "
-        "A function that mutates global state cannot be tested reliably, "
-        "because you have to reset that state between runs and hope nothing leaks."]
-      [doc-text "The root cause is always the same: the function does something beyond "
-        "computing a return value, and the language gives you no structured way to describe, "
-        "intercept, or replace that behavior."]]
-
-    [doc-section "Traditional Solutions"
-      [doc-subsection "Exceptions"
-        [doc-text "Exceptions let you signal errors without threading return values through "
-          "your code, which is convenient. But they are invisible in the type system "
-          "(in most languages), they break control flow in surprising ways, and they "
-          "cannot be resumed. When a function throws, it is done. The caller can catch "
-          "the exception, but cannot tell the function to try a different approach."]]
-
-      [doc-subsection "Monads"
-        [doc-text "Haskell's approach is to wrap effects in types like " [doc-code "IO"]
-          ", " [doc-code "State"] ", and " [doc-code "Either"]
-          ". This is principled and the type system tracks what effects you use. "
-          "But it comes with real syntactic overhead: do-notation, monad transformers, "
-          "and the genuine difficulty of combining multiple effects. "
-          "Monad transformer stacks are a recurring source of frustration, "
-          "even for experienced Haskell programmers."]]
-
-      [doc-subsection "Async/await"
-        [doc-text "Async/await solves one specific effect, concurrency, but it creates "
-          "a \"function color\" problem. Async functions cannot be called from sync functions "
-          "without ceremony. Every function in the call chain must decide whether it is async, "
-          "and changing that decision later ripples through the entire codebase. "
-          "You end up with two parallel worlds of functions that do not mix easily."]]]
-
-    [doc-section "The Effect Solution"
-      [doc-text "Algebraic effects solve all of these problems with a single mechanism. "
-        "The idea has three parts."]
-      [doc-subsection "Declare"
-        [doc-text "You define an effect as a set of operations. "
-          "This is like declaring an interface, but for side effects:"]
-        [code-block {} [str
-          "[effect Console\n"
-          "  [fn readline [prompt] -> Str]\n"
-          "  [fn writeline [text] -> Unit]]"]]]
-
-      [doc-subsection "Perform"
-        [doc-text "Code that needs the effect simply calls its operations. "
-          "No special imports, no wrapping in monadic types, no ceremony at all:"]
-        [code-block {} [str
-          "[fn greet []\n"
-          "  [let name [perform Console.readline \"Name: \"]]\n"
-          "  [perform Console.writeline [str \"Hello, \" name \"!\"]]]"]]]
-
-      [doc-subsection "Handle"
-        [doc-text "A handler intercepts effect operations and decides what to do with them. "
-          "This is where things get powerful:"]
-        [code-block {} [str
-          "[handle [greet]\n"
-          "  [Console.readline prompt] [resume \"World\"]\n"
-          "  [Console.writeline text]  [do\n"
-          "    [println text]\n"
-          "    [resume]]]"]]
-        [doc-text "The handler sees each operation as it happens and provides an "
-          "implementation. The code that performed the effect does not know "
-          "or care which handler is installed. It just asks for a readline "
-          "and gets back a string."]]]
-
-    [doc-section "How Resume Works"
-      [doc-text "Here is the key feature that separates algebraic effects from exceptions: "
-        [doc-code "resume"] ". When a handler calls " [doc-code "resume"]
+      [doc-text
+        "Consider the failures one at a time. A function that reads from the network "
+        "will not compose cleanly with one that reads from a file, because both must reach out "
+        "to the world. A function that throws will not compose with one that returns an error "
+        "value, because the caller has to juggle two conventions at once. And a function that "
+        "mutates global state resists testing, because you must reset that state between runs "
+        "and pray nothing leaks across the seam."]
+      [doc-text
+        "The root cause never changes: the function does something beyond computing "
+        "a return value, and the language offers no structured way to name that something, "
+        "intercept it, or swap it out."]]
+    
+    [doc-section
+      "Traditional Solutions"
+      [doc-subsection
+        "Exceptions"
+        [doc-text
+          "Exceptions let you signal an error without threading return values through "
+          "every layer of code. The convenience is real. But in most languages they are "
+          "invisible to the type system, they bend control flow in surprising ways, and they "
+          "cannot be resumed. When a function throws, it is finished. The caller can catch the "
+          "exception, but it cannot hand the function a value and ask it to carry on."]]
+      
+      [doc-subsection
+        "Monads"
+        [doc-text
+          "Haskell's approach is to wrap effects in types like "
+          [doc-code "IO"]
+          ", "
+          [doc-code "State"]
+          ", and "
+          [doc-code "Either"]
+          ". The approach is principled, and the type system faithfully tracks which effects "
+          "you use. But it carries real syntactic weight: do-notation, monad transformers, and "
+          "the genuine difficulty of combining several effects at once. Transformer stacks are a "
+          "recurring source of friction, even for seasoned Haskell programmers."]]
+      
+      [doc-subsection
+        "Async/await"
+        [doc-text
+          "Async/await solves a single effect, concurrency, and in doing so creates "
+          "the \"function color\" problem. An async function cannot be called from a sync one "
+          "without ceremony. Every function in the call chain must declare a color, and changing "
+          "that choice later ripples outward through the whole codebase. You end up maintaining "
+          "two parallel worlds that refuse to mix."]]]
+    
+    [doc-section
+      "The Effect Solution"
+      [doc-text
+        "Algebraic effects answer every one of these problems with a single mechanism. "
+        "The idea has three parts: declare, perform, handle."]
+      [doc-subsection
+        "Declare"
+        [doc-text
+          "You define an effect as a set of operations, the way you would declare an "
+          "interface, except the interface is for side effects:"]
+        [code-block
+          {}
+          [str
+            "[effect Console\n"
+            "  [fn readline [prompt] -> Str]\n"
+            "  [fn writeline [text] -> Unit]]"]]]
+      
+      [doc-subsection
+        "Perform"
+        [doc-text
+          "Code that needs the effect calls its operations directly. "
+          "No special imports, no wrapping in monadic types, no ceremony:"]
+        [code-block
+          {}
+          [str
+            "[fn greet []\n"
+            "  [let name [perform Console.readline \"Name: \"]]\n"
+            "  [perform Console.writeline [str \"Hello, \" name \"!\"]]]"]]]
+      
+      [doc-subsection
+        "Handle"
+        [doc-text
+          "A handler intercepts those operations and decides what each one means. "
+          "This is where the power lives:"]
+        [code-block
+          {}
+          [str
+            "[handle [greet]\n"
+            "  [Console.readline prompt] [resume \"World\"]\n"
+            "  [Console.writeline text]  [do\n"
+            "    [println text]\n"
+            "    [resume]]]"]]
+        [doc-text
+          "The handler sees each operation as it happens and supplies an "
+          "implementation. The code that performed the effect neither knows nor cares "
+          "which handler is installed. It asks for a readline and receives a string."]]]
+    
+    [doc-section
+      "How Resume Works"
+      [doc-text
+        "One feature sets algebraic effects apart from exceptions: "
+        [doc-code "resume"]
+        ". When a handler calls "
+        [doc-code "resume"]
         ", it sends a value back to the exact point where the effect was performed, "
-        "and the function continues executing from there."]
-      [code-block {} [str
-        "[fn ask-age []\n"
-        "  [let input [perform Console.readline \"Age: \"]]\n"
-        "  [parse-int input]]\n"
-        "\n"
-        "; Handler that provides a fake input for testing\n"
-        "[handle [ask-age]\n"
-        "  [Console.readline _] [resume \"25\"]]"]]
-      [doc-text "When " [doc-code "ask-age"] " performs " [doc-code "Console.readline"]
-        ", control transfers to the handler. The handler calls " [doc-code "[resume \"25\"]"]
-        ", which sends " [doc-code "\"25\""] " back to " [doc-code "ask-age"]
-        " as the return value of " [doc-code "perform"] ". The function continues as if "
-        "a real console had returned that string."]
-      [doc-text "This is something exceptions fundamentally cannot do. An exception unwinds "
-        "the stack and destroys the context. An effect handler pauses the computation, "
-        "provides a value, and lets it keep running. That difference is everything."]
-      [doc-note "info" "This is what makes effects testable. You replace real IO with a handler that provides canned responses. The code under test does not change at all."]]
-
-    [doc-section "The Unification"
-      [doc-text "The real power of effects is that IO, errors, state, and concurrency "
-        "are all just effects. There is no special syntax for any of them. "
-        "Once you understand the perform/handle pattern, you understand all of them."]
-
-      [doc-subsection "IO as an effect"
-        [doc-text "File reads, network calls, and console interaction are effects. "
-          "Your code performs them; a handler at the program's boundary "
-          "provides the real implementation. In tests, a different handler "
-          "provides fake responses."]
-        [code-block {} [str
-          "[effect Http\n"
-          "  [fn get [url] -> Result Str HttpError]]"]]]
-
-      [doc-subsection "Errors as an effect"
-        [doc-text "Instead of throwing exceptions or returning Result everywhere, "
-          "you can perform an error effect. The handler then decides whether "
-          "to retry the operation, log the error and return a default, "
-          "or propagate the failure:"]
-        [code-block {} [str
-          "[effect Fail\n"
-          "  [fn fail [err] -> Nothing]]\n"
+        "and the function picks up from there as though nothing had interrupted it."]
+      [code-block
+        {}
+        [str
+          "[fn ask-age []\n"
+          "  [let input [perform Console.readline \"Age: \"]]\n"
+          "  [parse-int input]]\n"
           "\n"
-          "[handle [parse-config path]\n"
-          "  [Fail.fail err] [do\n"
-          "    [log-error err]\n"
-          "    default-config]]"]]]
-
-      [doc-subsection "State as an effect"
-        [doc-text "You can model mutable state without actual mutation. "
-          "The handler threads the state value through resume calls, "
-          "so from the code's perspective it looks like mutable state, "
-          "but underneath it is purely functional:"]
-        [code-block {} [str
-          "[effect State\n"
-          "  [fn get [] -> a]\n"
-          "  [fn put [val] -> Unit]]"]]]
-
-      [doc-subsection "Async as an effect"
-        [doc-text "This is perhaps the most elegant application. There is no function coloring "
-          "in Loon because concurrency is just another effect. A function does not need to "
-          "declare itself async. It performs an async operation, and the runtime handler "
-          "manages scheduling. Sync and async code compose freely."]]]
-
-    [doc-section "Research Lineage"
-      [doc-text "Algebraic effects are not a Loon invention. They come from a line of "
-        "programming language research going back to Plotkin and Power (2003). "
-        "The idea has been explored by several languages, each contributing "
-        "different insights:"]
+          "; Handler that provides a fake input for testing\n"
+          "[handle [ask-age]\n"
+          "  [Console.readline _] [resume \"25\"]]"]]
+      [doc-text
+        "When "
+        [doc-code "ask-age"]
+        " performs "
+        [doc-code "Console.readline"]
+        ", control transfers to the handler. The handler calls "
+        [doc-code "[resume \"25\"]"]
+        ", which sends "
+        [doc-code "\"25\""]
+        " back to "
+        [doc-code "ask-age"]
+        " as the return value of "
+        [doc-code "perform"]
+        ". The function proceeds as if "
+        "a real console had handed it that string."]
+      [doc-text
+        "An exception cannot do this. It unwinds the stack and destroys the context it "
+        "leaves behind. An effect handler does the opposite: it pauses the computation, supplies "
+        "a value, and lets it run on. That single difference is everything."]
+      [doc-note
+        "info"
+        "This is what makes effects testable. Swap real IO for a handler that returns canned responses, and the code under test does not change by a single character."]]
+    
+    [doc-section
+      "The Unification"
+      [doc-text
+        "The deeper payoff is that IO, errors, state, and concurrency are all the same "
+        "thing: effects. None of them gets special syntax. Learn the perform-and-handle pattern "
+        "once, and you have learned every one of them."]
+      
+      [doc-subsection
+        "IO as an effect"
+        [doc-text
+          "File reads, network calls, and console interaction are effects. "
+          "Your code performs them; a handler at the program's boundary supplies the real "
+          "implementation. In tests, a different handler stands in with fake responses."]
+        [code-block
+          {}
+          [str "[effect Http\n" "  [fn get [url] -> Result Str HttpError]]"]]]
+      
+      [doc-subsection
+        "Errors as an effect"
+        [doc-text
+          "Rather than throwing exceptions or threading Result through every call, "
+          "you perform an error effect. The handler decides what failure means here: "
+          "retry the operation, log it and fall back to a default, or let it propagate:"]
+        [code-block
+          {}
+          [str
+            "[effect Fail\n"
+            "  [fn fail [err] -> Nothing]]\n"
+            "\n"
+            "[handle [parse-config path]\n"
+            "  [Fail.fail err] [do\n"
+            "    [log-error err]\n"
+            "    default-config]]"]]]
+      
+      [doc-subsection
+        "State as an effect"
+        [doc-text
+          "You can model mutable state with no mutation underneath. "
+          "The handler threads the state value through its resume calls, so the code reads as "
+          "though it were mutating a variable, while the machinery stays purely functional:"]
+        [code-block
+          {}
+          [str
+            "[effect State\n"
+            "  [fn get [] -> a]\n"
+            "  [fn put [val] -> Unit]]"]]]
+      
+      [doc-subsection
+        "Async as an effect"
+        [doc-text
+          "This may be the most elegant application of all. Loon has no function coloring, "
+          "because concurrency is simply another effect. A function never declares itself async. "
+          "It performs an async operation, the runtime handler manages scheduling, and sync and "
+          "async code compose without a seam between them."]]]
+    
+    [doc-section
+      "Research Lineage"
+      [doc-text
+        "Algebraic effects are not a Loon invention. They descend from a line of "
+        "programming-language research reaching back to Plotkin and Power in 2003, and several "
+        "languages have explored the idea since, each adding an insight of its own:"]
       [doc-list
         "Eff, the original research language for algebraic effects."
         "Koka, which introduced evidence-based compilation, by Daan Leijen at Microsoft Research."
         "Frank, which explored effects as an extension of call-by-push-value."
         "OCaml 5, which brought shallow effect handlers to a mainstream language."]
-      [doc-text "Loon builds on this body of work with a focus on ergonomics: "
-        "full inference of effect types (so you never annotate them), concise syntax, "
+      [doc-text
+        "Loon builds on this work with ergonomics as its north star: "
+        "full inference of effect types, so you never annotate them; concise syntax; "
         "and tight integration with ownership semantics."]]
-
-    [doc-prev-next "Why Invisible Types" "/concepts/invisible-types" "Ownership Mental Model" "/concepts/ownership"]]]
+    
+    [doc-prev-next
+      "Why Invisible Types"
+      "/concepts/invisible-types"
+      "Ownership Mental Model"
+      "/concepts/ownership"]]]

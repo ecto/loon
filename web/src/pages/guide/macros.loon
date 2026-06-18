@@ -1,54 +1,178 @@
 ; macros.loon — Macro system guide
-
 [fn guide-macros-page []
-  [doc-page "Macros" "Template macros, quasiquoting, and compile-time code generation."
-
-    [doc-section "Template Macros"
-      [doc-text "Macros let you extend the language itself. They run at compile time, taking in raw syntax and producing new syntax that gets compiled in its place. You define them with " [doc-code "macro"] "."]
-      [code-block {:label "LOON"} [str "[macro unless [cond body]\n" "  `[if [not ~cond] ~body]]\n" "\n" "[unless false [println \"runs!\"]]"]]
-      [doc-text "When the compiler sees " [doc-code "[unless false [println \"runs!\"]]"] ", it does not try to call a function. Instead, it hands the raw syntax to your macro, which rewrites it into " [doc-code "[if [not false] [println \"runs!\"]]"] ". By the time the code actually runs, the macro is gone and only the expanded code remains."]
-      [doc-text "This is powerful because it means you can create new control flow, new syntax patterns, and new abstractions that feel native to the language."]]
-
-    [doc-section "Quasiquoting"
-      [doc-text "Writing macros means building syntax trees, and quasiquoting makes that process feel natural. There are three pieces to learn."]
-      [doc-subsection "Backtick"
-        [doc-text "The backtick " [doc-code "`"] " quotes a template. Everything inside is treated as literal syntax rather than code to execute. It is like saying \"give me this exact structure, do not evaluate it.\""]
+  [doc-page
+    "Macros"
+    "Template macros, quasiquoting, and compile-time code generation."
+    
+    [doc-section
+      "Template Macros"
+      [doc-text
+        "A function takes values and returns a value. A macro takes syntax and returns syntax. It runs at compile time, reading the raw shape of your code and rewriting it into new code that gets compiled in its place. You define one with "
+        [doc-code "macro"]
+        "."]
+      [code-block
+        {:label "LOON"}
+        [str
+          "[macro unless [cond body]\n"
+          "  `[if [not ~cond] ~body]]\n"
+          "\n"
+          "[unless false [println \"runs!\"]]"]]
+      [doc-text
+        "When the compiler sees "
+        [doc-code "[unless false [println \"runs!\"]]"]
+        ", it does not call a function. It hands the raw syntax to your macro, which rewrites it into "
+        [doc-code "[if [not false] [println \"runs!\"]]"]
+        ". By the time the program runs, the macro has vanished and only the expansion remains."]
+      [doc-text
+        "That is the source of the power: you can grow new control flow, new syntax, and new abstractions that read as if they were built into the language all along."]]
+    
+    [doc-section
+      "Quasiquoting"
+      [doc-text
+        "Writing a macro means assembling a syntax tree by hand, and quasiquoting lets you draw that tree instead of constructing it node by node. Three marks do all the work."]
+      [doc-subsection
+        "Backtick"
+        [doc-text
+          "The backtick "
+          [doc-code "`"]
+          " quotes a template. Everything inside is taken as literal syntax rather than code to run. Read it as: give me this exact structure, untouched."]
         [code-block {:label "LOON"} "`[+ 1 2]  ; produces the syntax [+ 1 2]"]]
-      [doc-subsection "Unquote ~"
-        [doc-text "But a static template is not very useful. You need to punch holes in it where computed values go. That is what " [doc-code "~"] " (unquote) does: it evaluates the expression and splices the result into the template."]
+      [doc-subsection
+        "Unquote ~"
+        [doc-text
+          "A frozen template is a stencil with no openings. To let computed syntax in, you punch holes with "
+          [doc-code "~"]
+          " (unquote): it evaluates the expression and drops the result into the template at that spot."]
         [code-block {:label "LOON"} [str "[macro double [x]\n" "  `[+ ~x ~x]]"]]
-        [doc-text "Here, " [doc-code "~x"] " means \"insert whatever syntax was passed as " [doc-code "x"] ".\" If you call " [doc-code "[double 5]"] ", the macro produces " [doc-code "[+ 5 5]"] "."]]
-      [doc-subsection "Unquote-splicing ~@"
-        [doc-text "Sometimes you have a list of syntax elements and you want to inline them into a form, not insert the list itself. " [doc-code "~@"] " (unquote-splicing) does exactly that."]
-        [code-block {:label "LOON"} [str "[macro do-all [& forms]\n" "  `[do ~@forms]]"]]
-        [doc-text "The " [doc-code "& forms"] " collects all arguments into a list. Then " [doc-code "~@forms"] " flattens that list into the " [doc-code "do"] " block. So " [doc-code "[do-all a b c]"] " becomes " [doc-code "[do a b c]"] ", not " [doc-code "[do [a b c]]"] ". The difference matters."]]]
-
-    [doc-section "Procedural Macros"
-      [doc-text "Template macros with quasiquoting handle most cases, but sometimes you need to compute the output programmatically. Since macro bodies are regular Loon code, you can use the full language to build your syntax."]
-      [code-block {:label "LOON"} [str "[macro repeat [n body]\n" "  [let forms [map [range 0 n] [fn [_] body]]]\n" "  `[do ~@forms]]"]]
-      [doc-text "This macro takes a number " [doc-code "n"] " and a body, then generates " [doc-code "n"] " copies of that body wrapped in a " [doc-code "do"] " block. It calls " [doc-code "map"] " and " [doc-code "range"] " at compile time to build the list, then uses quasiquoting with " [doc-code "~@"] " to splice the result into the output. You have the full power of the language available; the only constraint is that it all happens before runtime."]]
-
-    [doc-section "Type-Aware Macros"
-      [doc-text "Regular macros run before type checking, so they only see raw syntax. Sometimes that is not enough. " [doc-code "macro+"] " macros run after the type checker, which means they can inspect types and generate type-specific code."]
-      [code-block {:label "LOON"} [str "[macro+ derive-debug [t]\n" "  `[fn debug [val] [str [type-name ~t] \": \" [inspect val]]]]]"]]
-      [doc-text "This is how you build things like automatic serializers, debug formatters, or derive macros that need to know the structure of a type. Most macros do not need this, but when you do, it is there."]
-      [doc-note "info" "macro+ macros run after type checking, so they can inspect types and generate type-specific code. Use regular macro when you do not need type information."]]
-
-    [doc-section "Debugging with macroexpand"
-      [doc-text "Macros can be tricky to get right because you are writing code that writes code. When things go wrong, " [doc-code "macroexpand"] " is your best friend. It shows you exactly what a macro produces without actually running the result."]
-      [code-block {:label "LOON"} [str "[macroexpand [unless false [println \"hi\"]]]\n" "; [if [not false] [println \"hi\"]]"]]
-      [doc-text "If the expanded code looks wrong, you know the bug is in your macro. If it looks right, the bug is somewhere else. This simple tool saves enormous amounts of debugging time, especially with complex nested macros."]]
-
-    [doc-section "Common Patterns"
-      [doc-text "Here are a few macros that show up in almost every Loon project. They are good examples of what macros are best at: eliminating repetitive patterns and creating expressive abstractions."]
-      [doc-subsection "When / Unless"
-        [doc-text "A cleaner conditional when you only care about one branch. The " [doc-code "& body"] " with " [doc-code "~@body"] " lets you write multiple expressions without an explicit " [doc-code "do"] "."]
-        [code-block {:label "LOON"} [str "[macro when [cond & body]\n" "  `[if ~cond [do ~@body]]]"]]]
-      [doc-subsection "Thread-First"
-        [doc-text "The thread-first macro " [doc-code "->"] " takes a value and pipes it through a series of function calls, inserting it as the first argument to each one. It turns deeply nested calls into a readable pipeline."]
-        [code-block {:label "LOON"} [str "[macro -> [x & forms]\n" "  [fold forms x [fn [acc form]\n" "    `[~[first form] ~acc ~@[rest form]]]]]"]]]
-      [doc-subsection "Swap"
-        [doc-text "A classic utility that swaps two mutable bindings. Without macros, you would need to write the temporary variable dance every time."]
-        [code-block {:label "LOON"} [str "[macro swap! [a b]\n" "  `[do [let tmp ~a]\n" "     [set! ~a ~b]\n" "     [set! ~b tmp]]]"]]]]
-
+        [doc-text
+          "Here "
+          [doc-code "~x"]
+          " means \"insert whatever syntax was passed as "
+          [doc-code "x"]
+          ".\" Call "
+          [doc-code "[double 5]"]
+          " and the macro produces "
+          [doc-code "[+ 5 5]"]
+          "."]]
+      [doc-subsection
+        "Unquote-splicing ~@"
+        [doc-text
+          "When you hold a list of syntax elements, you usually want them poured into a form one by one, not dropped in as a single nested list. "
+          [doc-code "~@"]
+          " (unquote-splicing) does exactly that."]
+        [code-block
+          {:label "LOON"}
+          [str "[macro do-all [& forms]\n" "  `[do ~@forms]]"]]
+        [doc-text
+          "The "
+          [doc-code "& forms"]
+          " gathers every argument into a list, and "
+          [doc-code "~@forms"]
+          " spreads that list flat into the "
+          [doc-code "do"]
+          " block. So "
+          [doc-code "[do-all a b c]"]
+          " becomes "
+          [doc-code "[do a b c]"]
+          ", not "
+          [doc-code "[do [a b c]]"]
+          ". The difference is the whole point."]]]
+    
+    [doc-section
+      "Procedural Macros"
+      [doc-text
+        "Templates carry you a long way, but some output cannot be drawn ahead of time; it has to be computed. Since a macro body is ordinary Loon code, the entire language is available to build the syntax you return."]
+      [code-block
+        {:label "LOON"}
+        [str
+          "[macro repeat [n body]\n"
+          "  [let forms [map [range 0 n] [fn [_] body]]]\n"
+          "  `[do ~@forms]]"]]
+      [doc-text
+        "This macro takes a number "
+        [doc-code "n"]
+        " and a body, then emits "
+        [doc-code "n"]
+        " copies of that body wrapped in a "
+        [doc-code "do"]
+        " block. It runs "
+        [doc-code "map"]
+        " and "
+        [doc-code "range"]
+        " at compile time to build the list, then splices it into the output with "
+        [doc-code "~@"]
+        ". The full language is at your disposal; the only rule is that it all happens before runtime."]]
+    
+    [doc-section
+      "Type-Aware Macros"
+      [doc-text
+        "A regular macro runs before type checking and sees only raw syntax, never the meaning behind it. When you need to know what a value actually is, reach for "
+        [doc-code "macro+"]
+        ": it runs after the type checker, so it can inspect types and generate code tailored to them."]
+      [code-block
+        {:label "LOON"}
+        [str
+          "[macro+ derive-debug [t]\n"
+          "  `[fn debug [val] [str [type-name ~t] \": \" [inspect val]]]]]"]]
+      [doc-text
+        "This is the foundation for automatic serializers, debug formatters, and derive macros — anything that must read the structure of a type to write code for it. Most macros never need it; the few that do would be impossible without it."]
+      [doc-note
+        "info"
+        "macro+ macros run after type checking, so they can inspect types and generate type-specific code. Use regular macro when you do not need type information."]]
+    
+    [doc-section
+      "Debugging with macroexpand"
+      [doc-text
+        "Code that writes code fails in a peculiar way: the bug lives in syntax you never typed. "
+        [doc-code "macroexpand"]
+        " makes that hidden syntax visible, showing exactly what a macro produces without running the result."]
+      [code-block
+        {:label "LOON"}
+        [str
+          "[macroexpand [unless false [println \"hi\"]]]\n"
+          "; [if [not false] [println \"hi\"]]"]]
+      [doc-text
+        "If the expansion looks wrong, the bug is in your macro. If it looks right, the bug is elsewhere. That single distinction collapses most of the guesswork, and it is worth its weight when macros nest inside macros."]]
+    
+    [doc-section
+      "Common Patterns"
+      [doc-text
+        "A handful of macros earn their place in nearly every Loon project. Each one shows what macros do best: erase a repetitive shape and leave an abstraction that reads like intent."]
+      [doc-subsection
+        "When / Unless"
+        [doc-text
+          "A conditional for when you care about only one branch. Pairing "
+          [doc-code "& body"]
+          " with "
+          [doc-code "~@body"]
+          " lets the caller write several expressions without spelling out a "
+          [doc-code "do"]
+          "."]
+        [code-block
+          {:label "LOON"}
+          [str "[macro when [cond & body]\n" "  `[if ~cond [do ~@body]]]"]]]
+      [doc-subsection
+        "Thread-First"
+        [doc-text
+          "The thread-first macro "
+          [doc-code "->"]
+          " takes a value and threads it through a series of calls, slotting it in as the first argument to each. Nested calls that read inside-out become a pipeline that reads top-to-bottom."]
+        [code-block
+          {:label "LOON"}
+          [str
+            "[macro -> [x & forms]\n"
+            "  [fold forms x [fn [acc form]\n"
+            "    `[~[first form] ~acc ~@[rest form]]]]]"]]]
+      [doc-subsection
+        "Swap"
+        [doc-text
+          "The classic exchange of two mutable bindings. Without a macro, you would rewrite the temporary-variable shuffle by hand at every call site."]
+        [code-block
+          {:label "LOON"}
+          [str
+            "[macro swap! [a b]\n"
+            "  `[do [let tmp ~a]\n"
+            "     [set! ~a ~b]\n"
+            "     [set! ~b tmp]]]"]]]]
+    
     [doc-prev-next "Modules" "/guide/modules" "Testing" "/guide/testing"]]]

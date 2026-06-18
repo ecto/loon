@@ -1,178 +1,236 @@
 ; from-js.loon — Concepts: Coming from JavaScript
-
 [fn concepts-from-js-page []
-  [doc-page "Coming from JavaScript" "What's familiar, what's new, and why it's worth it."
-
-    [doc-section "What's Familiar"
-      [doc-text "JavaScript and Loon share more than you might expect. If you write modern, "
-        "functional-style JS (lots of map/filter/reduce, const everywhere, arrow functions "
-        "instead of classes), you are already thinking in patterns that transfer directly to Loon."]
+  [doc-page
+    "Coming from JavaScript"
+    "What's familiar, what's new, and why it's worth it."
+    
+    [doc-section
+      "What's Familiar"
+      [doc-text
+        "JavaScript and Loon share more than the distance between them suggests. "
+        "If you write modern, functional JS (map/filter/reduce, const by default, arrow "
+        "functions in place of classes), you are already thinking in patterns that carry "
+        "straight into Loon."]
       [doc-list
         "First-class functions: functions are values, passed around freely."
         "Closures: inner functions capture variables from the enclosing scope."
         "Map, filter, reduce: the same higher-order patterns you already use."
         "Expression-oriented thinking: ternaries, short-circuits, and arrow functions all point toward \"everything is an expression.\" Loon makes that fully consistent."
         "Immutable-first style: if you use const by default and avoid mutation, you are already thinking in Loon."]
-      [doc-text "The functional subset of JavaScript (the part without classes, "
-        [doc-code "this"] ", prototypes, and mutation) maps almost directly to Loon. "
-        "If you have been gravitating toward that style anyway, this will feel like a natural next step."]]
-
-    [doc-section "What's Different"
-      [doc-subsection "Bracket syntax"
-        [doc-text "This is the most visible change and the one that takes the most adjustment. "
-          "Every function call is " [doc-code "[function arg1 arg2]"] " instead of "
-          [doc-code "function(arg1, arg2)"] ". There are no commas, no semicolons, "
-          "and no operator precedence rules to remember."]
-        [code-block {} [str
-          "; JavaScript: Math.max(a + b, c * d)\n"
-          "; Loon:\n"
-          "[max [+ a b] [* c d]]"]]
-        [doc-text "The syntax feels unfamiliar for about a day. Then it clicks, and you "
-          "start to appreciate the uniformity. Everything is a function call. There is no "
-          "special syntax for operators, no method calls versus function calls, just one "
-          "consistent pattern everywhere."]]
-
-      [doc-subsection "Immutable by default"
-        [doc-text "In JavaScript, " [doc-code "const"]
-          " prevents reassignment but not mutation. You can still " [doc-code "push"]
-          " to a const array or set properties on a const object. In Loon, values are "
-          "truly immutable unless you explicitly declare them " [doc-code "mut"]
-          ". Data structures are immutable. There is no equivalent of "
-          [doc-code "array.push()"] " on an immutable vector; instead, you create a new "
-          "vector with the extra element."]]
-
-      [doc-subsection "No null or undefined"
-        [doc-text "JavaScript has two kinds of nothing: " [doc-code "null"]
-          " and " [doc-code "undefined"] ". Loon has zero. "
-          "When a value might be absent, you use the " [doc-code "Option"]
-          " type, which is either " [doc-code "[Some value]"]
-          " or " [doc-code "None"] ". The compiler forces you to handle both cases "
-          "explicitly, so you will never see "
-          [doc-code "Cannot read property of undefined"] " at runtime. "
-          "That entire category of bugs simply does not exist."]]
-
-      [doc-subsection "Ownership"
-        [doc-text "This is probably the most unfamiliar concept if you are coming from "
-          "JavaScript. In JS, you create objects and the garbage collector eventually frees "
-          "them, sometime, whenever it feels like it. In Loon, each value has exactly one "
-          "owner, and memory is freed deterministically when that owner goes out of scope. "
-          "The compiler handles most of the details automatically, but you will occasionally "
-          "see \"value moved\" errors when you try to use something that has already been consumed."]
-        [doc-note "info" "Ownership errors are always caught at compile time. You will never get a use-after-free bug at runtime. The compiler is being strict so your production code does not have to be."]]
-
-      [doc-subsection "Effects instead of async/await"
-        [doc-text "JavaScript uses async/await for asynchronous operations, which creates "
-          "a \"function color\" problem: async functions can only be awaited from other async "
-          "functions, so the async-ness spreads through your entire codebase. In Loon, IO, "
-          "errors, and concurrency are all handled through algebraic effects. No function "
-          "coloring. No Promise chains. No forgetting to await."]]]
-
-    [doc-section "Syntax Mapping"
+      [doc-text
+        "The functional subset of JavaScript (the part without classes, "
+        [doc-code "this"]
+        ", prototypes, and mutation) maps almost directly onto Loon. "
+        "If you have been drifting toward that style for years, Loon is where it arrives."]]
+    
+    [doc-section
+      "What's Different"
+      [doc-subsection
+        "Bracket syntax"
+        [doc-text
+          "The most visible change, and the one that takes the most adjustment. "
+          "Every call is "
+          [doc-code "[function arg1 arg2]"]
+          ", not "
+          [doc-code "function(arg1, arg2)"]
+          ". No commas, no semicolons, "
+          "no precedence rules to keep in your head."]
+        [code-block
+          {}
+          [str
+            "; JavaScript: Math.max(a + b, c * d)\n"
+            "; Loon:\n"
+            "[max [+ a b] [* c d]]"]]
+        [doc-text
+          "The syntax feels foreign for about a day. Then it clicks, and the "
+          "uniformity starts to feel like a relief. Everything is a function call. No special "
+          "syntax for operators, no line between methods and functions, one shape "
+          "everywhere you look."]]
+      
+      [doc-subsection
+        "Immutable by default"
+        [doc-text
+          "In JavaScript, "
+          [doc-code "const"]
+          " freezes the binding, not the value. You can still "
+          [doc-code "push"]
+          " to a const array or set fields on a const object. In Loon, a value is "
+          "genuinely immutable unless you declare it "
+          [doc-code "mut"]
+          ". Data structures hold still. There is no "
+          [doc-code "array.push()"]
+          " on an immutable vector; you derive a new "
+          "vector that carries the extra element."]]
+      
+      [doc-subsection
+        "No null or undefined"
+        [doc-text
+          "JavaScript has two kinds of nothing: "
+          [doc-code "null"]
+          " and "
+          [doc-code "undefined"]
+          ". Loon has none. "
+          "When a value might be absent, you name that possibility with "
+          [doc-code "Option"]
+          ", which is either "
+          [doc-code "[Some value]"]
+          " or "
+          [doc-code "None"]
+          ". The compiler makes you handle both cases, "
+          "so "
+          [doc-code "Cannot read property of undefined"]
+          " never reaches runtime. That whole family of bugs has nowhere to live."]]
+      
+      [doc-subsection
+        "Ownership"
+        [doc-text
+          "Coming from JavaScript, this is the least familiar idea. In JS you "
+          "create objects and the garbage collector reclaims them eventually, on its own "
+          "schedule. In Loon, each value has exactly one owner, and its memory is freed the "
+          "moment that owner leaves scope. The compiler manages most of this for you, though "
+          "now and then a \"value moved\" error appears when you reach for something already consumed."]
+        [doc-note
+          "info"
+          "Ownership errors are caught at compile time, every time. A use-after-free cannot reach runtime. The compiler is strict here so your production code never has to be."]]
+      
+      [doc-subsection
+        "Effects instead of async/await"
+        [doc-text
+          "JavaScript leans on async/await, which introduces the "
+          "function-color problem: async functions can only be awaited from other async "
+          "functions, so async-ness seeps through the whole codebase. In Loon, IO, "
+          "errors, and concurrency all flow through algebraic effects. No coloring. "
+          "No Promise chains. No await you forgot to write."]]]
+    
+    [doc-section
+      "Syntax Mapping"
       [doc-table-header "JavaScript" "Loon"]
-      [doc-row
-        "const x = 42"
-        "[let x 42]"]
-      [doc-row
-        "let arr = [1, 2, 3]"
-        "[let arr #[1 2 3]]"]
-      [doc-row
-        "const obj = \{ name: \"Ada\" \}"
-        "[let obj \{:name \"Ada\"\}]"]
-      [doc-row
-        "function add(a, b) \{ return a + b \}"
-        "[fn add [a b] [+ a b]]"]
-      [doc-row
-        "(x) x * 2"
-        "[fn [x] [* x 2]]"]
-      [doc-row
-        "arr.map(x x * 2)"
-        "[map [fn [x] [* x 2]] arr]"]
-      [doc-row
-        "arr.filter(x x > 2)"
-        "[filter [fn [x] [> x 2]] arr]"]
-      [doc-row
-        "x > 0 ? \"pos\" : \"neg\""
-        "[if [> x 0] \"pos\" \"neg\"]"]
-      [doc-row
-        "`hello $\{name\}`"
-        "[str \"hello \" name]"]
-      [doc-row
-        "console.log(x)"
-        "[println x]"]
+      [doc-row "const x = 42" "[let x 42]"]
+      [doc-row "let arr = [1, 2, 3]" "[let arr #[1 2 3]]"]
+      [doc-row "const obj = { name: \"Ada\" }" "[let obj {:name \"Ada\"}]"]
+      [doc-row "function add(a, b) { return a + b }" "[fn add [a b] [+ a b]]"]
+      [doc-row "(x) x * 2" "[fn [x] [* x 2]]"]
+      [doc-row "arr.map(x x * 2)" "[map [fn [x] [* x 2]] arr]"]
+      [doc-row "arr.filter(x x > 2)" "[filter [fn [x] [> x 2]] arr]"]
+      [doc-row "x > 0 ? \"pos\" : \"neg\"" "[if [> x 0] \"pos\" \"neg\"]"]
+      [doc-row "`hello ${name}`" "[str \"hello \" name]"]
+      [doc-row "console.log(x)" "[println x]"]
       [doc-row
         "x?.foo ?? defaultVal"
         "[match x [Some f] [get f :foo] None default-val]"]
       [doc-row
-        "try \{ ... \} catch (e) \{ ... \}"
+        "try { ... } catch (e) { ... }"
         "[handle [...] [Fail.fail e] ...]"]]
-
-    [doc-section "What You Can Stop Worrying About"
-      [doc-text "If you have spent time debugging production JavaScript, you have probably "
-        "hit every one of these. They are all gone in Loon."]
-
-      [doc-subsection "Null and undefined checks"
-        [doc-text "No " [doc-code "if (x !== null && x !== undefined)"]
-          " guards scattered through your code. The " [doc-code "Option"]
-          " type and pattern matching make absent values explicit and compiler-checked. "
-          "If you forget to handle the None case, your code does not compile."]]
-
-      [doc-subsection "Type coercion"
-        [doc-text "No " [doc-code "\"\" == false"] " surprises. No "
-          [doc-code "[1] + [2]"] " producing " [doc-code "\"12\""]
-          ". Loon is statically typed with no implicit conversions. "
-          "What you see is what you get."]]
-
-      [doc-subsection "this binding"
-        [doc-text "No " [doc-code "this"] ", no " [doc-code "bind"]
-          ", no arrow-function-vs-regular-function gotchas. "
-          "Functions are just functions. They close over their environment, and that is it."]]
-
-      [doc-subsection "Async/await complexity"
-        [doc-text "No colored functions. No unhandled promise rejections. "
-          "No forgetting to await. Effects handle concurrency uniformly, and the "
-          "compiler will not let you forget to handle an effect."]]
-
-      [doc-subsection "Runtime type errors"
-        [doc-text "No " [doc-code "TypeError: x is not a function"]
+    
+    [doc-section
+      "What You Can Stop Worrying About"
+      [doc-text
+        "If you have debugged production JavaScript, you have met every one of "
+        "these. In Loon they are gone."]
+      
+      [doc-subsection
+        "Null and undefined checks"
+        [doc-text
+          "No "
+          [doc-code "if (x !== null && x !== undefined)"]
+          " guards salted through your code. "
+          [doc-code "Option"]
+          " and pattern matching make absence explicit and compiler-checked. "
+          "Forget the None case and the code does not compile."]]
+      
+      [doc-subsection
+        "Type coercion"
+        [doc-text
+          "No "
+          [doc-code "\"\" == false"]
+          " surprises. No "
+          [doc-code "[1] + [2]"]
+          " quietly becoming "
+          [doc-code "\"12\""]
+          ". Loon is statically typed and converts nothing on your behalf. "
+          "What you wrote is what runs."]]
+      
+      [doc-subsection
+        "this binding"
+        [doc-text
+          "No "
+          [doc-code "this"]
+          ", no "
+          [doc-code "bind"]
+          ", no arrow-versus-regular-function gotchas. "
+          "A function is a function. It closes over its environment, and nothing more is asked of you."]]
+      
+      [doc-subsection
+        "Async/await complexity"
+        [doc-text
+          "No colored functions. No unhandled promise rejections. "
+          "No await you meant to write. Effects handle concurrency uniformly, and the "
+          "compiler will not let an unhandled effect slip past."]]
+      
+      [doc-subsection
+        "Runtime type errors"
+        [doc-text
+          "No "
+          [doc-code "TypeError: x is not a function"]
           " in production at 3am. Every type error is caught at compile time, "
-          "with no annotations required from you."]]]
-
-    [doc-section "New Things to Learn"
-      [doc-text "Loon introduces a few concepts that do not have direct JavaScript equivalents. "
-        "They are all learnable, and they all pay for themselves quickly."]
-
-      [doc-subsection "Pattern matching"
-        [doc-text "Pattern matching replaces if/else chains, switch statements, "
-          "and optional chaining with a single, powerful construct. You destructure values "
-          "and the compiler ensures you handle every possible case. No default fallthrough, "
-          "no forgotten branches."]
-        [code-block {} [str
-          "[match result\n"
-          "  [Ok value]  [println [str \"got: \" value]]\n"
-          "  [Err msg]   [println [str \"error: \" msg]]]"]]]
-
-      [doc-subsection "Algebraic data types"
-        [doc-text "ADTs replace the combination of objects, classes, and TypeScript union types. "
-          "They define a closed set of variants, each of which can carry different data. "
-          "Think of them as enums on steroids, where each variant can hold its own fields."]
-        [code-block {} [str
-          "[type Shape\n"
-          "  [Circle Float]\n"
-          "  [Rect Float Float]\n"
-          "  [Point]]"]]]
-
-      [doc-subsection "Effects"
-        [doc-text "Effects replace callbacks, promises, async/await, and try/catch "
-          "with a single, composable mechanism. Think of them as structured side effects "
-          "that the type system tracks and handlers implement. The code that performs "
-          "effects does not need to know how they are handled, which makes it trivially testable."]]
-
-      [doc-subsection "Ownership"
-        [doc-text "This is the genuinely new concept if you come from garbage-collected "
-          "languages. Values have one owner and are consumed when passed around. "
-          "The compiler infers borrows where safe, so most of the time you do not "
-          "think about it. The learning curve is real but much shorter than Rust's "
-          "because you never write lifetime annotations."]
-        [doc-note "tip" "Start by writing code normally. When the compiler says \"value moved,\" clone the value. Over time, you will develop an intuition for when moves happen and structure your code accordingly."]]]
-
-    [doc-prev-next "Coming from Rust" "/concepts/from-rust" "Coming from Clojure" "/concepts/from-clojure"]]]
+          "and you write no annotations to earn it."]]]
+    
+    [doc-section
+      "New Things to Learn"
+      [doc-text
+        "Loon brings a few concepts with no direct JavaScript equivalent. "
+        "Each is learnable, and each earns its keep quickly."]
+      
+      [doc-subsection
+        "Pattern matching"
+        [doc-text
+          "Pattern matching folds if/else chains, switch statements, "
+          "and optional chaining into one construct. You destructure a value, "
+          "and the compiler checks that every case is handled. No accidental fallthrough, "
+          "no branch left behind."]
+        [code-block
+          {}
+          [str
+            "[match result\n"
+            "  [Ok value]  [println [str \"got: \" value]]\n"
+            "  [Err msg]   [println [str \"error: \" msg]]]"]]]
+      
+      [doc-subsection
+        "Algebraic data types"
+        [doc-text
+          "ADTs do the work you split across objects, classes, and TypeScript union types. "
+          "They define a closed set of variants, each carrying its own data. "
+          "Think of an enum whose every case can hold fields of its own."]
+        [code-block
+          {}
+          [str
+            "[type Shape\n"
+            "  [Circle Float]\n"
+            "  [Rect Float Float]\n"
+            "  [Point]]"]]]
+      
+      [doc-subsection
+        "Effects"
+        [doc-text
+          "Effects gather callbacks, promises, async/await, and try/catch "
+          "into one composable mechanism. Think of them as structured side effects "
+          "the type system tracks and handlers implement. Code that performs an effect "
+          "never learns how that effect is served, which is precisely why it is easy to test."]]
+      
+      [doc-subsection
+        "Ownership"
+        [doc-text
+          "Coming from a garbage-collected language, this is the genuinely new idea. "
+          "A value has one owner and is consumed when passed along. "
+          "The compiler infers borrows where they are safe, so most of the time it stays "
+          "out of your way. The curve is real, but far gentler than Rust's, "
+          "because you never write a lifetime annotation."]
+        [doc-note
+          "tip"
+          "Write code the way you always have. When the compiler says \"value moved,\" clone the value. The intuition for when moves happen builds on its own, and soon you structure code around it without thinking."]]]
+    
+    [doc-prev-next
+      "Coming from Rust"
+      "/concepts/from-rust"
+      "Coming from Clojure"
+      "/concepts/from-clojure"]]]
