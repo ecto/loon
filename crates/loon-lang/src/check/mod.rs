@@ -3038,6 +3038,7 @@ impl Checker {
             "Float" => Type::Float,
             "Bool" => Type::Bool,
             "String" | "Str" => Type::Str,
+            "Keyword" => Type::Keyword,
             "Unit" => Type::Unit,
             // Named physical quantities → Dim types
             "Length" => Type::Dim(Dimension::length()),

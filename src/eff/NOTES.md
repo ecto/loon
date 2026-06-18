@@ -1,5 +1,45 @@
 # Stage 0 substrate — status and foundation gaps
 
+## Durable execution as a handler (idea from Vercel's eve)
+
+Eve's headline feature is durable execution: each step is checkpointed so a
+session can pause, survive a crash, and resume — built on a separate Workflow
+SDK. On an effect substrate it is just another tower: `src/agent/durable.oo`'s
+`run-resume` replays a journal of recorded effect results (returning them
+without re-performing the side effects), then goes live once the journal is
+exhausted. A journal truncated by a "crash" replays its prefix and continues
+live to the SAME final state. The agent loop is unchanged; the journal is
+threaded as the handler's answer. Regression test: `vm_durable_resume`.
+
+Footgun noted while building it: do not name a function `resume` — it shadows
+the continuation binding inside handler clauses (a `[resume v]` then recurses
+into the function). Use a different name (`run-resume`).
+
+## Agent framework — control loop as effects, tower decides everything
+
+`src/agent/agent.oo`: the agent control loop is plain code performing
+`Llm`/`Tool`/`Approval`/`Memory`/`Log` effects; the handler tower supplies the
+model, tools, approval policy, and memory. The SAME loop runs under four towers
+unchanged — `under-test` (scripted model + mocked tools, deterministic and
+offline), `under-trace` (records every interaction), `under-deny` (a
+human-in-the-loop approval that denies one action — the `Approval.request`
+suspend/resume round trip), and `explore` (multi-shot: resume each approval BOTH
+ways to visit every approve/deny world — backtracking from one program).
+Regression test: `vm_agent_under_towers`.
+
+The prod tower (real LLM API + MCP tools) needs an outbound HTTP client wired
+into the VM (the server side — `Net.listen`/`accept`/`send` — is done; the
+client `Net.get`/`post` is behind the `pkg-fetch`/ureq feature and not yet wired
+into the EIR builtin effects). The offline test/trace/deny/explore towers — the
+ship-gate items (deterministic multi-step replay; approval round trip) — work
+today with no network.
+
+A checker fix this needed: `resolve_type_name` was missing the `Keyword` case
+(only `name_to_type` had it), so a user-effect op declared to return `Keyword`
+got a fresh type var, which defeated the ownership checker's Copy detection and
+produced a false use-after-move when the result was used in two effects. Added
+the arm; effect-result keywords are now Copy as expected.
+
 ## Async substrate (Stage 0) — cooperative scheduler as a handler
 
 `src/eff/async.oo` completes Stage 0's async story: concurrency is ordinary code
