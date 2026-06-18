@@ -13,7 +13,9 @@
 
 [fn sidebar [current-path]
   [nav-el {:class "sidebar"}
-    [a-el {:href "/" :class "sidebar-wordmark"} "loon"]
+    [a-el {:href "/" :class "sidebar-wordmark"}
+      [img-el {:src "/loon-bird.svg" :class "sidebar-mark" :alt ""}]
+      [span "loon"]]
 
     [sidebar-section "Learn"
       [sidebar-link "Tour" "/tour" current-path]
