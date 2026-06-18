@@ -231,34 +231,46 @@ a:hover {
 .sidebar {
   width: 244px;
   flex-shrink: 0;
-  padding: 2.25rem 1.5rem;
+  padding: 2.25rem 1.25rem 1.25rem;
   border-right: 1px solid var(--border);
   position: sticky;
   top: 0;
   height: 100vh;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .sidebar-wordmark {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 0.05rem;
   font-family: var(--font-mono);
-  font-size: 1.3rem;
+  font-size: 1.35rem;
   font-weight: 600;
   letter-spacing: -0.03em;
   color: var(--fg);
   text-decoration: none;
-  margin-bottom: 2.25rem;
+  margin: 0 0 2.25rem 0.65rem;
 }
 .sidebar-wordmark:hover { color: var(--accent); }
-.sidebar-mark {
-  width: 22px;
-  height: 22px;
-  opacity: 0.9;
+.sidebar-wordmark:hover .sidebar-dot { transform: scale(1.25); }
+.sidebar-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-bottom: 0.3rem;
+  transition: transform 0.15s;
 }
-@media (prefers-color-scheme: dark) {
-  .sidebar-mark { filter: invert(1); opacity: 0.85; }
+
+/* Scrollable nav region — footer stays pinned below it */
+.sidebar-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin-right: -0.5rem;
+  padding-right: 0.5rem;
 }
 
 .sidebar-section { margin-bottom: 1.6rem; }
@@ -268,7 +280,7 @@ a:hover {
   text-transform: uppercase;
   letter-spacing: 0.11em;
   color: var(--muted);
-  margin-bottom: 0.55rem;
+  margin-bottom: 0.5rem;
   padding-left: 0.65rem;
 }
 
@@ -277,8 +289,8 @@ a:hover {
   font: 0.85rem var(--font-mono);
   color: var(--fg);
   text-decoration: none;
-  padding: 0.28rem 0.65rem;
-  border-radius: 5px;
+  padding: 0.3rem 0.65rem;
+  border-radius: 6px;
   border-left: 2px solid transparent;
   transition: color 0.12s, background 0.12s, border-color 0.12s;
 }
@@ -292,10 +304,25 @@ a:hover {
   color: var(--accent);
   background: var(--accent-soft);
   border-left-color: var(--accent);
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
+  border-top-left-radius: 2px;
+  border-bottom-left-radius: 2px;
   font-weight: 600;
 }
+
+/* Pinned meta links */
+.sidebar-footer {
+  flex-shrink: 0;
+  margin-top: 0.75rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+.sidebar-footer .sidebar-link {
+  font-size: 0.8rem;
+  color: var(--muted);
+  padding-top: 0.22rem;
+  padding-bottom: 0.22rem;
+}
+.sidebar-footer .sidebar-link:hover { color: var(--accent); }
 
 .sidebar-placeholder {
   display: block;
@@ -427,8 +454,9 @@ a:hover {
 .doc-note { margin-bottom: 1.5rem; }
 
 /* Sidebar scrollbar */
-.sidebar::-webkit-scrollbar { width: 4px; }
-.sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.sidebar-scroll::-webkit-scrollbar { width: 4px; }
+.sidebar-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.sidebar-scroll { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 
 /* Landing page — Hero */
 .hero {
