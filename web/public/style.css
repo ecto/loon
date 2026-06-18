@@ -280,9 +280,8 @@ a:hover {
 .sidebar-section { margin-bottom: 1.6rem; }
 
 .sidebar-section-label {
-  font: 600 0.68rem var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.11em;
+  font: 600 0.74rem var(--font-sans);
+  letter-spacing: -0.002em;
   color: var(--muted);
   margin-bottom: 0.5rem;
   padding-left: 0.65rem;
@@ -701,7 +700,6 @@ html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
   font-family: var(--font-display);
   font-size: 1.2rem;
   font-weight: 400;
-  font-style: italic;
   letter-spacing: -0.008em;
   color: var(--muted);
   line-height: 1.5;
@@ -788,10 +786,9 @@ html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
   background: var(--white);
 }
 .doc-note-label {
-  font: 600 0.7rem var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  margin-bottom: 0.35rem;
+  font: 600 0.8rem var(--font-sans);
+  letter-spacing: -0.004em;
+  margin-bottom: 0.3rem;
   color: var(--muted);
 }
 .doc-note-text {
@@ -881,9 +878,8 @@ html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
   padding-top: 2rem;
 }
 .doc-toc-label {
-  font: 600 0.68rem var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.11em;
+  font: 600 0.74rem var(--font-sans);
+  letter-spacing: -0.002em;
   color: var(--muted);
   margin-bottom: 0.75rem;
 }
