@@ -1,13 +1,16 @@
 ; from-rust.loon — Concepts: Coming from Rust
-
 [fn concepts-from-rust-page []
-  [doc-page "Coming from Rust" "What's the same, what's different, and what you can stop worrying about."
-
-    [doc-section "What's Similar"
-      [doc-text "If you know Rust, you already get the philosophy. Loon is built on the same "
-        "core beliefs: ownership is better than garbage collection, types should be algebraic, "
-        "null is a mistake, and the compiler should catch as much as possible. Specifically, "
-        "these ideas carry over directly:"]
+  [doc-page
+    "Coming from Rust"
+    "What's the same, what's different, and what you can stop worrying about."
+    
+    [doc-section
+      "What's Similar"
+      [doc-text
+        "If you know Rust, you already hold the philosophy. Loon rests on the same "
+        "convictions: ownership beats garbage collection, types should be algebraic, "
+        "null was a mistake, and the compiler should catch all it can. These ideas "
+        "cross over without translation:"]
       [doc-list
         "Ownership and move semantics: values have one owner, moves are the default."
         "Pattern matching: exhaustive, first-class, with destructuring."
@@ -15,143 +18,193 @@
         "No null: Option replaces null, Result replaces exceptions."
         "Immutable by default: mutation is explicit and controlled."
         "Zero-cost abstractions: high-level code compiles to efficient output."]
-      [doc-text "If these ideas are already second nature to you, Loon will feel familiar "
-        "at the conceptual level. The differences are mostly about what the compiler handles "
-        "for you versus what you have to spell out."]]
-
-    [doc-section "What's Different"
-      [doc-subsection "No lifetime annotations"
-        [doc-text "This is the big one. Loon's compiler infers all borrows and lifetimes "
-          "automatically. You never write " [doc-code "'a"]
-          ", " [doc-code "&"] ", or " [doc-code "&mut"]
-          ". Consider the classic \"longest string\" example:"]
-        [code-block {} [str
-          "; Rust:\n"
-          "; fn longest<'a>(x: &'a str, y: &'a str) -> &'a str\n"
-          "\n"
-          "; Loon:\n"
-          "[fn longest [x y]\n"
-          "  [if [> [len x] [len y]] x y]]"]]
-        [doc-text "The compiler figures out the borrowing. You just write the logic. "
-          "This is not a simplification that sacrifices safety; the same ownership rules "
-          "apply, they are just inferred rather than annotated."]]
-
-      [doc-subsection "Bracket syntax"
-        [doc-text "Loon uses Lisp-style bracket syntax instead of C-style curly braces. "
-          "Every call is " [doc-code "[function arg1 arg2]"]
-          ". There are no operators with special syntax, no precedence rules to remember, "
-          "and no ambiguity about what is a function call versus what is a keyword."]
-        [doc-note "info" "This is a genuine tradeoff. Bracket syntax is more uniform and much easier to parse (both for compilers and for macros), but less familiar visually. Most Rust programmers adjust within a day or two."]]
-
-      [doc-subsection "Hindley-Milner inference"
-        [doc-text "Rust has local type inference, meaning it can figure out types within "
-          "a function but requires annotations at function boundaries. Loon uses global "
-          "Hindley-Milner inference. You never annotate a function signature unless you "
-          "want to for documentation purposes. The compiler infers everything, including "
-          "generic type parameters."]]
-
-      [doc-subsection "Effects instead of traits for IO"
-        [doc-text "Where Rust uses traits like " [doc-code "Read"]
-          ", " [doc-code "Write"] ", and " [doc-code "Future"]
-          ", Loon uses algebraic effects. Effects serve a similar purpose (abstracting "
-          "over behavior) but with built-in support for resumption and handler composition. "
-          "Think of them as a more structured version of dependency injection that the type "
-          "system understands."]]]
-
-    [doc-section "Syntax Mapping"
+      [doc-text
+        "If these ideas are already second nature, Loon will feel familiar at the "
+        "conceptual level. The differences come down to one question: how much does the "
+        "compiler work out for you, and how much must you spell out?"]]
+    
+    [doc-section
+      "What's Different"
+      [doc-subsection
+        "No lifetime annotations"
+        [doc-text
+          "This is the headline. Loon's compiler infers every borrow and lifetime "
+          "for you. You never write "
+          [doc-code "'a"]
+          ", "
+          [doc-code "&"]
+          ", or "
+          [doc-code "&mut"]
+          ". Take the classic \"longest string\" example:"]
+        [code-block
+          {}
+          [str
+            "; Rust:\n"
+            "; fn longest<'a>(x: &'a str, y: &'a str) -> &'a str\n"
+            "\n"
+            "; Loon:\n"
+            "[fn longest [x y]\n"
+            "  [if [> [len x] [len y]] x y]]"]]
+        [doc-text
+          "The compiler works out the borrowing; you write the logic. "
+          "Nothing is given up for the convenience. The same ownership rules hold, "
+          "inferred rather than spelled out."]]
+      
+      [doc-subsection
+        "Bracket syntax"
+        [doc-text
+          "Loon trades C-style curly braces for Lisp-style brackets. "
+          "Every call is "
+          [doc-code "[function arg1 arg2]"]
+          ". No operators with special syntax, no precedence to memorize, "
+          "no ambiguity about where a function call ends and a keyword begins."]
+        [doc-note
+          "info"
+          "This is a real tradeoff. Bracket syntax is more uniform and far easier to parse, for compilers and for macros alike, but it reads as unfamiliar at first. Most Rust programmers settle in within a day or two."]]
+      
+      [doc-subsection
+        "Hindley-Milner inference"
+        [doc-text
+          "Rust's inference is local: it resolves types inside a function but "
+          "asks for annotations at the boundaries. Loon's inference is global, "
+          "Hindley-Milner. You annotate a signature only when you want to, for the reader's "
+          "sake. Everything else, generic type parameters included, the compiler works out."]]
+      
+      [doc-subsection
+        "Effects instead of traits for IO"
+        [doc-text
+          "Where Rust reaches for traits like "
+          [doc-code "Read"]
+          ", "
+          [doc-code "Write"]
+          ", and "
+          [doc-code "Future"]
+          ", Loon reaches for algebraic effects. They serve the same end, abstracting "
+          "over behavior, but with resumption and handler composition built in. "
+          "Think of dependency injection the type system understands, with more structure."]]]
+    
+    [doc-section
+      "Syntax Mapping"
       [doc-table-header "Rust" "Loon"]
+      [doc-row "let x = 42;" "[let x 42]"]
+      [doc-row "let mut v = vec![1,2,3];" "[let mut v #[1 2 3]]"]
       [doc-row
-        "let x = 42;"
-        "[let x 42]"]
-      [doc-row
-        "let mut v = vec![1,2,3];"
-        "[let mut v #[1 2 3]]"]
-      [doc-row
-        "fn add(a: i32, b: i32) -> i32 \{ a + b \}"
+        "fn add(a: i32, b: i32) -> i32 { a + b }"
         "[fn add [a b] [+ a b]]"]
       [doc-row
-        "if x > 0 \{ \"pos\" \} else \{ \"neg\" \}"
+        "if x > 0 { \"pos\" } else { \"neg\" }"
         "[if [> x 0] \"pos\" \"neg\"]"]
       [doc-row
-        "match opt \{ Some(x) x, None 0 \}"
+        "match opt { Some(x) x, None 0 }"
         "[match opt [Some x] x None 0]"]
+      [doc-row "v.iter().map(|x| x * 2).collect()" "[map [fn [x] [* x 2]] v]"]
+      [doc-row "x.foo().bar().baz()" "[pipe x [foo] [bar] [baz]]"]
       [doc-row
-        "v.iter().map(|x| x * 2).collect()"
-        "[map [fn [x] [* x 2]] v]"]
-      [doc-row
-        "x.foo().bar().baz()"
-        "[pipe x [foo] [bar] [baz]]"]
-      [doc-row
-        "println!(\"hello \{\}\", name);"
+        "println!(\"hello {}\", name);"
         "[println [str \"hello \" name]]"]
-      [doc-row
-        "struct / enum"
-        "type / ADT"]
-      [doc-row
-        "impl Trait for Type"
-        "[effect Name ...]"]]
-
-    [doc-section "What You Can Stop Worrying About"
-      [doc-text "If you have spent time fighting the Rust compiler, this section will feel "
-        "like a weight off your shoulders. These are the things Loon handles for you."]
-
-      [doc-subsection "Lifetimes"
-        [doc-text "No " [doc-code "'a"] ", no " [doc-code "'static"]
-          ", no \"does not live long enough\" errors with cryptic suggestions about adding "
-          "lifetime bounds. The compiler infers all of this. You will never see a lifetime "
-          "annotation in Loon code because the syntax for them does not exist."]]
-
-      [doc-subsection "Trait bounds"
-        [doc-text "No " [doc-code "where T: Clone + Send + Sync + 'static"]
-          " cascades. Loon's type inference and effect system replace the need for most "
-          "trait bounds. When you write a generic function, the compiler figures out what "
-          "capabilities the type parameter needs."]]
-
-      [doc-subsection "Turbofish"
-        [doc-text "No " [doc-code "::<Type>"] " syntax anywhere. The compiler always "
-          "infers type parameters from context. If you have ever debugged a turbofish issue, "
-          "you will appreciate this."]]
-
-      [doc-subsection "The borrow checker fight"
-        [doc-text "Loon's ownership model is designed so that the compiler resolves "
-          "borrowing questions silently. You will not find yourself restructuring perfectly "
-          "good code just to make the borrow checker happy. If the code is logically correct, "
-          "it should compile."]]
-
-      [doc-subsection "Async coloring"
-        [doc-text "No " [doc-code "async"] "/" [doc-code ".await"]
+      [doc-row "struct / enum" "type / ADT"]
+      [doc-row "impl Trait for Type" "[effect Name ...]"]]
+    
+    [doc-section
+      "What You Can Stop Worrying About"
+      [doc-text
+        "If you have gone a few rounds with the Rust compiler, this section reads "
+        "like setting down a heavy pack. Here is what Loon carries for you."]
+      
+      [doc-subsection
+        "Lifetimes"
+        [doc-text
+          "No "
+          [doc-code "'a"]
+          ", no "
+          [doc-code "'static"]
+          ", no \"does not live long enough\" trailed by a cryptic hint about adding "
+          "lifetime bounds. The compiler infers all of it. You will never read a lifetime "
+          "annotation in Loon, because the syntax for one does not exist."]]
+      
+      [doc-subsection
+        "Trait bounds"
+        [doc-text
+          "No "
+          [doc-code "where T: Clone + Send + Sync + 'static"]
+          " cascades. Loon's inference and effect system retire most trait bounds. "
+          "Write a generic function and the compiler works out what capabilities the "
+          "type parameter needs."]]
+      
+      [doc-subsection
+        "Turbofish"
+        [doc-text
+          "No "
+          [doc-code "::<Type>"]
+          " anywhere. The compiler always "
+          "infers type parameters from context. Anyone who has untangled a turbofish "
+          "knows the quiet relief of its absence."]]
+      
+      [doc-subsection
+        "Fighting the borrow checker"
+        [doc-text
+          "Loon's ownership model is built so the compiler settles borrowing "
+          "questions silently. You will not rearrange sound code to appease a borrow "
+          "checker. If the logic is correct, it should compile."]]
+      
+      [doc-subsection
+        "Async coloring"
+        [doc-text
+          "No "
+          [doc-code "async"]
+          "/"
+          [doc-code ".await"]
           " coloring problem. Concurrency is an effect, handled at the boundary. "
-          "Functions do not need to declare themselves async, and you do not need separate "
-          "sync and async versions of your APIs."]]]
-
-    [doc-section "New Things to Learn"
-      [doc-text "Loon is not just \"Rust with less syntax.\" There are a few genuinely new "
-        "concepts that are worth spending time with."]
-
-      [doc-subsection "Effects"
-        [doc-text "Algebraic effects replace traits for IO, error handling, and state management. "
-          "The mental model is: declare what operations you need, perform them wherever you want, "
-          "and let a handler at the boundary decide the actual implementation. This is powerful "
-          "for testing (swap the handler, not the code) and for composition (effects compose "
-          "without the \"monad transformer\" headaches you might know from Haskell)."]
-        [doc-note "tip" "If you think of effects as \"dependency injection that the type system tracks,\" you will have the right intuition."]]
-
-      [doc-subsection "Bracket syntax"
-        [doc-text "Every call is " [doc-code "[f x y]"]
-          ". There is no operator precedence, so " [doc-code "[+ 1 [* 2 3]]"]
-          " is completely unambiguous. This feels weird for about a day, then it becomes "
-          "invisible, and eventually you start to appreciate that there is only one syntax "
+          "Functions never declare themselves async, and you never maintain parallel "
+          "sync and async versions of an API."]]]
+    
+    [doc-section
+      "New Things to Learn"
+      [doc-text
+        "Loon is not \"Rust with less syntax.\" A few concepts here are genuinely "
+        "new, and worth the time it takes to make them yours."]
+      
+      [doc-subsection
+        "Effects"
+        [doc-text
+          "Algebraic effects take over the work traits do for IO, error handling, "
+          "and state. The mental model: declare the operations you need, perform them wherever "
+          "you like, and let a handler at the boundary choose the implementation. That pays off "
+          "twice over, in testing (swap the handler, not the code) and in composition (effects "
+          "combine without the monad-transformer headaches you may recall from Haskell)."]
+        [doc-note
+          "tip"
+          "Picture effects as dependency injection the type system tracks, and your intuition will point the right way."]]
+      
+      [doc-subsection
+        "Bracket syntax"
+        [doc-text
+          "Every call is "
+          [doc-code "[f x y]"]
+          ". There is no operator precedence, so "
+          [doc-code "[+ 1 [* 2 3]]"]
+          " is unambiguous on its face. It feels odd for about a day, then turns "
+          "invisible, and in time you come to value having a single syntax "
           "for \"call this thing with these arguments.\""]]
-
-      [doc-subsection "Pipe"
-        [doc-text "Where Rust uses method chains, Loon uses " [doc-code "pipe"]
-          ". The result of each step is passed as the last argument to the next function. "
-          "It is surprisingly natural once you get used to it, and it works with any function, "
-          "not just methods on a type."]
-        [code-block {} [str
-          "[pipe data\n"
-          "  [filter even?]\n"
-          "  [map [fn [x] [* x 2]]]\n"
-          "  [take 10]]"]]]]
-
-    [doc-prev-next "Ownership Mental Model" "/concepts/ownership" "Coming from JS/TS" "/concepts/from-js"]]]
+      
+      [doc-subsection
+        "Pipe"
+        [doc-text
+          "Where Rust chains methods, Loon uses "
+          [doc-code "pipe"]
+          ". Each step's result becomes the last argument to the next function. "
+          "It reads naturally once it is in your hands, and it works with any function, "
+          "not only methods bound to a type."]
+        [code-block
+          {}
+          [str
+            "[pipe data\n"
+            "  [filter even?]\n"
+            "  [map [fn [x] [* x 2]]]\n"
+            "  [take 10]]"]]]]
+    
+    [doc-prev-next
+      "Ownership Mental Model"
+      "/concepts/ownership"
+      "Coming from JS/TS"
+      "/concepts/from-js"]]]

@@ -7,28 +7,28 @@
     [doc-section
       "The Problem"
       [doc-text
-        "Here is the oldest question in programming: how do you test code that talks to databases, reads files, or makes network calls? Most languages answer this with mocking frameworks, dependency injection containers, and layers of interfaces. It works, but it is a lot of ceremony for a simple idea."]
+        "One question has haunted programming since the beginning: how do you test code that talks to a database, reads a file, or makes a network call? The usual answer is mocking frameworks, dependency injection containers, and layers of interfaces. It works, and it buries a simple idea under an enormous amount of ceremony."]
       [doc-text
-        "Loon takes a different path. With algebraic effects, your functions declare what they need (\"I want to read from a store\") without specifying how it happens. The caller decides the implementation. This might sound abstract right now, but it is surprisingly intuitive once you see it in action."]]
+        "Loon takes a different path. With algebraic effects, a function declares what it needs — \"I want to read from a store\" — and says nothing about how that happens. The caller supplies the how. It sounds abstract on the page; it becomes obvious the moment you see it run."]]
     
     [doc-section
       "Declaring Effects"
       [doc-text
-        "An effect is a set of operations with no implementation. Think of it like an interface or trait, but lighter weight."]
+        "An effect is a set of operations with no implementation behind them. Picture an interface or a trait, stripped down to its essence."]
       [code-block
         {:label "LOON"}
         [str "[effect Store\n" "  [fn get [key]]\n" "  [fn set [key value]]]"]]
       [doc-text
-        "This says \"there exists a thing called Store with "
+        "This declares that there is a thing called Store with "
         [doc-code "get"]
         " and "
         [doc-code "set"]
-        " operations.\" It says nothing about where data lives, whether it is in memory, on disk, or across the network. That decision belongs to whoever handles the effect."]]
+        " operations, and nothing more. Where the data lives — memory, disk, the far side of a network — is left wide open. That choice belongs to whoever handles the effect."]]
     
     [doc-section
       "Performing Effects"
       [doc-text
-        "Once you have declared an effect, you call its operations with dot syntax, just like calling a method. It looks completely natural."]
+        "With an effect declared, you call its operations through dot syntax, the same way you would call a method. Nothing about the call site hints that anything unusual is happening."]
       [code-block
         {:label "LOON"}
         [str
@@ -36,18 +36,17 @@
           "  [Store.set \"user\" name]\n"
           "  [Store.get \"user\"]]"]]
       [doc-text
-        "Notice that "
         [doc-code "save-user"]
         " has no idea how "
         [doc-code "Store"]
-        " works. It just uses it. This is the key insight: the function describes its intent, not its mechanism."]]
+        " works, and it never asks. It states what it wants and trusts someone else to deliver it. That gap between intent and mechanism is the whole idea."]]
     
     [doc-section
       "Handling Effects"
       [doc-text
         "A "
         [doc-code "handle"]
-        " block intercepts effect operations and gives them concrete behavior. This is where you wire an effect to a real implementation."]
+        " block intercepts effect operations and gives them concrete behavior. This is where an abstract effect meets a real implementation."]
       [code-block
         {:label "LOON"}
         [str
@@ -55,18 +54,18 @@
           "  [Store.get key] [get db key]\n"
           "  [Store.set key val] [insert db key val]]"]]
       [doc-text
-        "Each clause pattern-matches on an effect operation and provides the actual logic. When "
+        "Each clause pattern-matches an effect operation and supplies its logic. When "
         [doc-code "save-user"]
         " calls "
         [doc-code "Store.set"]
-        ", execution jumps to the matching handler clause, runs it, and then returns the result back to the function."]]
+        ", execution jumps to the matching clause, runs it, and hands the result back to the function as if it had been there all along."]]
     
     [doc-section
       "Resume"
       [doc-text
-        "Handlers receive an implicit "
+        "Every handler receives an implicit "
         [doc-code "resume"]
-        " function that continues execution right where the effect was performed. This is what makes effects fundamentally different from exceptions."]
+        " function that continues execution at the exact point the effect was performed. This is the single feature that sets effects apart from exceptions."]
       [code-block
         {:label "LOON"}
         [str
@@ -74,9 +73,9 @@
           "  [Store.get key] [resume [get state key]]\n"
           "  [Store.set key val] [resume None]]"]]
       [doc-text
-        "When an exception fires, the stack unwinds and you lose your place. When an effect fires and you call "
+        "An exception is a one-way door: the stack unwinds, your place is gone. An effect leaves the door open. Call "
         [doc-code "resume"]
-        ", you pick up exactly where you left off. The effectful function does not even know it was interrupted."]
+        " and you step back through to the precise spot you left, carrying a value with you. The effectful function never learns it was interrupted. If throwing is jumping out, resuming is jumping back in."]
       [doc-note
         "tip"
         "Calling resume is what makes effects different from exceptions. Execution continues where it left off, as if the effect operation simply returned a value."]]
@@ -84,15 +83,15 @@
     [doc-section
       "Multi-shot Continuations"
       [doc-text
-        "Here is where effects go beyond anything exceptions can do. A handler is not limited to calling "
+        "Here effects leave exceptions behind entirely. A handler is under no obligation to call "
         [doc-code "resume"]
-        " once. It can resume zero times (abort), once (the usual case), or many times — and each resume replays the rest of the computation from the point the effect was performed."]
+        " exactly once. It can resume zero times and abort, once for the ordinary case, or many times — and every resume replays the rest of the computation from the point the effect was performed."]
       [doc-text
-        "Resuming more than once turns a single program into a search. Suppose an effect asks for a boolean choice, and the handler resumes once with "
+        "Resume more than once and a single program becomes a search. Say an effect asks for a boolean choice, and the handler resumes once with "
         [doc-code "true"]
         " and once with "
         [doc-code "false"]
-        ". The continuation runs twice, once down each branch, and the handler collects both answers."]
+        ". The continuation runs twice, once down each branch, and the handler gathers both answers into one result."]
       [code-block
         {:label "LOON"}
         [str
@@ -109,7 +108,7 @@
           "  [Choice.pick] [concat [resume true] [resume false]]\n"
           "  [return v] #[v]]"]]
       [doc-text
-        "The same machinery powers backtracking solvers, generators, and — when the continuation is captured and stored rather than run immediately — durable replay, where a computation is paused, persisted, and later resumed from exactly where it stopped."]
+        "The same machinery powers backtracking solvers and generators, and — when the continuation is captured and stored rather than run on the spot — durable replay: a computation paused, written to disk, and resumed days later from exactly where it stopped."]
       [doc-note
         "tip"
         "Loon's continuations are multi-shot on the default runtime. A handler clause may call resume as many times as it likes; each call gets its own independent copy of the rest of the computation."]]
@@ -117,11 +116,11 @@
     [doc-section
       "Handler Towers"
       [doc-text
-        "Because a function never names the handler that serves its effects, you can stack different handlers around the exact same code. This is the single most useful consequence of the whole design: one program, many runtimes, chosen at the call site."]
+        "Because a function never names the handler that serves its effects, you can wrap the very same code in different handlers. This is the most useful consequence of the whole design: one program, many runtimes, chosen at the call site."]
       [doc-text
         "A "
         [doc-code "tower"]
-        " is just the stack of handlers wrapping a program. Swap the tower and the program's behavior changes completely without touching the program:"]
+        " is the stack of handlers wrapping a program. Swap the tower and the program behaves completely differently, while the program itself is never touched:"]
       [doc-list
         "Production — handlers perform real IO: open sockets, read files, call the clock."
         "Test — handlers serve scripted inputs and record outputs, so a run is deterministic and offline."
@@ -145,18 +144,18 @@
         [doc-code "src/http"]
         " and "
         [doc-code "src/agent"]
-        " are built entirely on this idea. A route handler or an agent loop is plain effectful code; the prod, test, and replay towers decide whether its effects hit the network and a live model, or a fixture and a recording."]]
+        " rest entirely on this idea. A route handler or an agent loop is plain effectful code; the prod, test, and replay towers decide whether those effects reach the network and a live model, or a fixture and a recording."]]
     
     [doc-section
       "Built-in Effects"
       [doc-text
-        "Loon ships with a few built-in effects for common operations so you do not have to define them yourself."]
+        "A few effects come built in, covering the operations almost every program reaches for, so you never have to redeclare them yourself."]
       [doc-subsection
         "IO"
         [doc-text
           "The "
           [doc-code "IO"]
-          " effect covers the basics: printing, reading files, and network access. Anything that touches the outside world goes through "
+          " effect covers the essentials: printing, reading files, reaching the network. Anything that touches the world beyond the program passes through "
           [doc-code "IO"]
           "."]
         [code-block
@@ -169,9 +168,9 @@
         [doc-text
           "The "
           [doc-code "Fail"]
-          " effect represents recoverable errors. Instead of throwing exceptions that might go uncaught, you perform a "
+          " effect represents recoverable errors. Rather than throw an exception that might slip past every catch, you perform a "
           [doc-code "Fail"]
-          " effect that a handler somewhere up the call stack will deal with."]
+          " effect, and a handler somewhere up the call stack decides what to do about it."]
         [code-block
           {:label "LOON"}
           [str
@@ -183,13 +182,13 @@
     [doc-section
       "The ? Operator"
       [doc-text
-        "Unwrapping Results manually gets tedious fast. The "
+        "Unwrapping Results by hand grows tedious quickly. The "
         [doc-code "?"]
-        " operator is syntactic sugar that unwraps a "
+        " operator is sugar for the common case: it unwraps a "
         [doc-code "Result"]
-        " on success, and automatically performs "
+        " on success and performs "
         [doc-code "Fail"]
-        " on error. It is Loon's version of the \"try\" pattern you may know from Rust or Swift."]
+        " on error. If you know the \"try\" pattern from Rust or Swift, this is Loon's take on it."]
       [code-block
         {:label "LOON"}
         [str
@@ -199,26 +198,26 @@
       [doc-text
         "Without "
         [doc-code "?"]
-        ", you would need to match on each Result and handle the error case explicitly. With it, the happy path reads top to bottom, and errors propagate automatically."]]
+        ", every Result demands its own match and its own explicit error branch. With it, the happy path reads straight down the page, and errors find their way out on their own."]]
     
     [doc-section
       "Effect Annotations"
       [doc-text
-        "By convention, functions that perform effects end with "
+        "By convention, a function that performs effects ends its name with "
         [doc-code "!"]
-        " in their name. The compiler does not enforce this, but your teammates will thank you for it."]
+        ". The compiler does not require it, but everyone reading your code later will be glad you followed it."]
       [code-block
         {:label "LOON"}
         [str "[fn save-user! [name]\n" "  [Store.set \"user\" name]]"]]
       [doc-text
-        "When you see a "
+        "A "
         [doc-code "!"]
-        " at the end of a function name, you immediately know it does something beyond pure computation. It might write to a database, print to the console, or launch a rocket. The bang is a social contract: \"this function has side effects, handle with care.\""]]
+        " at the end of a name tells you, at a glance, that the function does more than compute. It might write to a database, print to the console, or launch a rocket. The bang is a quiet promise between authors: this one has side effects, handle with care."]]
     
     [doc-section
       "Testing with Effects"
       [doc-text
-        "This is where algebraic effects really shine. Testing effectful code is trivial because you just swap in a different handler. No mocking libraries. No dependency injection frameworks. No test doubles that implement twelve interface methods when you only care about two."]
+        "This is where algebraic effects pay for themselves. Testing effectful code costs almost nothing, because testing is only a matter of swapping in a different handler. No mocking libraries. No dependency injection frameworks. No test double that implements twelve interface methods when you care about exactly two."]
       [code-block
         {:label "LOON"}
         [str
@@ -229,6 +228,6 @@
           "    [Store.get k] [resume \"Bob\"]]\n"
           "  [assert-eq log #[\"Bob\"]]]"]]
       [doc-text
-        "In production, your handler talks to a real database. In tests, it records calls into a vector. The function under test is identical in both cases. It has no idea who is handling its effects, and that is exactly the point."]]
+        "In production the handler talks to a real database. In the test it records each call into a vector. The function under test is byte-for-byte the same in both runs, blind to who is serving its effects. That blindness is the entire point."]]
     
     [doc-prev-next "Ownership" "/guide/ownership" "Modules" "/guide/modules"]]]

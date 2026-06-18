@@ -1,75 +1,182 @@
 ; errors.loon — Error handling guide
-
 [fn guide-errors-page []
-  [doc-page "Error Handling" "Option, Result, and the ? operator."
-
-    [doc-section "Option Type"
-      [doc-text "Loon has no " [doc-code "nil"] " and no " [doc-code "null"]
-        ". If a value might not exist, the type system makes that explicit through "
-        [doc-code "Option"] ". This means you will never hit a null pointer exception "
-        "at runtime, because the compiler forces you to handle the absent case."]
-      [code-block {:label "LOON"} [str "[let found [get \{:a 1\} :b]]\n" "; found is None\n" "\n" "[let found [get \{:a 1\} :a]]\n" "; found is [Some 1]"]]
-      [doc-text "Use " [doc-code "Some"] " to wrap a value that exists, and "
-        [doc-code "None"] " when there is nothing. Looking up a missing key in a map "
-        "gives you " [doc-code "None"] ", not some silent null that blows up later."]]
-
-    [doc-section "Result Type"
-      [doc-text "When an operation can fail, Loon uses " [doc-code "Result"]
-        " to represent the outcome. This is similar to Rust's approach, and for good reason: "
-        "it makes error handling explicit without the downsides of exceptions."]
-      [code-block {:label "LOON"} [str "[fn parse-int [s]\n" "  [match [try-parse s]\n" "    [Some n] [Ok n]\n" "    None [Err \"not a number\"]]]"]]
-      [doc-text [doc-code "Ok"] " wraps a success value. " [doc-code "Err"]
-        " wraps an error. The caller always knows that this function can fail, "
-        "because the return type says so."]]
-
-    [doc-section "Pattern Matching on Results"
-      [doc-text "The most direct way to handle a " [doc-code "Result"]
-        " is with " [doc-code "match"] ". You spell out what happens in both cases, "
-        "and the compiler ensures you do not forget one."]
-      [code-block {:label "LOON"} [str "[match [parse-int \"42\"]\n" "  [Ok n] [println [str \"got: \" n]]\n" "  [Err e] [println [str \"error: \" e]]]"]]
-      [doc-text "This is verbose, but intentionally so. When you match on a Result, "
-        "you are making a deliberate decision about how to handle failure. "
-        "The compiler will not let you ignore it."]]
-
-    [doc-section "The ? Operator"
-      [doc-text "Matching on every Result gets tedious when you have a chain of operations "
-        "that can each fail. The " [doc-code "?"] " operator is Loon's answer to this: "
-        "it unwraps " [doc-code "Ok"] " values and propagates " [doc-code "Err"]
-        " values to the caller automatically."]
-      [code-block {:label "LOON"} [str "[fn load-config [path]\n" "  [let text [IO.read-file path]?]\n" "  [let data [parse-json text]?]\n" "  [Ok data]]"]]
-      [doc-text "If " [doc-code "IO.read-file"] " returns an " [doc-code "Err"]
-        ", the function returns that error immediately without running the rest of the body. "
-        "If it returns " [doc-code "Ok"] ", the inner value gets bound to " [doc-code "text"]
-        " and execution continues. This gives you the conciseness of exceptions "
-        "with the explicitness of Result types."]
-      [doc-note "info" "The ? operator works on both Result and Option. On None it returns None early."]]
-
-    [doc-section "Try Blocks"
-      [doc-text "Sometimes you want to use " [doc-code "?"] " inside a block "
-        "but catch the error locally instead of propagating it. "
-        "That is what " [doc-code "try"] " is for. It wraps a block of code "
-        "and gives you a Result back."]
-      [code-block {:label "LOON"} [str "[let result [try\n" "  [let a [parse-int \"10\"]?]\n" "  [let b [parse-int \"bad\"]?]\n" "  [+ a b]]]\n" "; result is [Err \"not a number\"]"]]
-      [doc-text "Inside a " [doc-code "try"] " block, you can use " [doc-code "?"]
-        " freely. If any operation fails, the whole block evaluates to that error. "
-        "If everything succeeds, you get " [doc-code "Ok"] " with the block's final value."]]
-
-    [doc-section "Handle for Effects"
-      [doc-text "For errors that need to cross handler boundaries, "
-        "Loon provides the " [doc-code "Fail"] " effect. This bridges "
-        "effect-based code with error handling."]
-      [code-block {:label "LOON"} [str "[handle [divide 10 0]\n" "  [Fail.raise msg] [println [str \"caught: \" msg]]]"]]
-      [doc-text "The handler intercepts the failure and can decide what to do: "
-        "log it, return a default value, retry, or propagate further."]
-      [doc-note "tip" "Prefer Result and ? for local error handling. Use Fail for errors that need to cross handler boundaries."]]
-
-    [doc-section "Error Codes"
-      [doc-text "When the compiler reports an error, it includes an alphanumeric code. "
-        "If the message is not enough to understand the problem, run "
-        [doc-code "loon explain"] " with the code to get a detailed breakdown."]
-      [code-block {:label "SHELL"} [str "$ loon explain E0042\n" "E0042: Use after move\n" "\n" "A value was used after its ownership\n" "was transferred to another binding.\n" "..."]]
-      [doc-text "Each explanation includes the rule being enforced, a minimal example "
-        "that triggers the error, and a suggested fix. These are worth reading, "
-        "especially when you are learning the ownership system."]]
-
+  [doc-page
+    "Error Handling"
+    "Option, Result, and the ? operator."
+    
+    [doc-section
+      "Option Type"
+      [doc-text
+        "Loon has no "
+        [doc-code "nil"]
+        " and no "
+        [doc-code "null"]
+        ". When a value might not exist, the type system says so out loud through "
+        [doc-code "Option"]
+        ". A null pointer exception can never reach you at runtime, "
+        "because the compiler will not let the absent case go unhandled."]
+      [code-block
+        {:label "LOON"}
+        [str
+          "[let found [get {:a 1} :b]]\n"
+          "; found is None\n"
+          "\n"
+          "[let found [get {:a 1} :a]]\n"
+          "; found is [Some 1]"]]
+      [doc-text
+        "Wrap a present value in "
+        [doc-code "Some"]
+        ", and reach for "
+        [doc-code "None"]
+        " when there is nothing to wrap. Looking up a missing key in a map "
+        "hands you "
+        [doc-code "None"]
+        ", not a silent null waiting to detonate later."]]
+    
+    [doc-section
+      "Result Type"
+      [doc-text
+        "When an operation can fail, Loon carries the outcome in a "
+        [doc-code "Result"]
+        ". The approach echoes Rust's, and for the same reason: "
+        "failure becomes explicit, with none of the action-at-a-distance of exceptions."]
+      [code-block
+        {:label "LOON"}
+        [str
+          "[fn parse-int [s]\n"
+          "  [match [try-parse s]\n"
+          "    [Some n] [Ok n]\n"
+          "    None [Err \"not a number\"]]]"]]
+      [doc-text
+        [doc-code "Ok"]
+        " wraps a success; "
+        [doc-code "Err"]
+        " wraps a failure. The caller is never caught off guard, "
+        "because the return type announces that this function can fail."]]
+    
+    [doc-section
+      "Pattern Matching on Results"
+      [doc-text
+        "The most direct way to handle a "
+        [doc-code "Result"]
+        " is "
+        [doc-code "match"]
+        ". You spell out both outcomes, "
+        "and the compiler makes sure neither slips through."]
+      [code-block
+        {:label "LOON"}
+        [str
+          "[match [parse-int \"42\"]\n"
+          "  [Ok n] [println [str \"got: \" n]]\n"
+          "  [Err e] [println [str \"error: \" e]]]"]]
+      [doc-text
+        "The verbosity is the point. Matching on a Result is you "
+        "deciding, in the open, what failure means here. "
+        "The compiler will not let you wave it away."]]
+    
+    [doc-section
+      "The ? Operator"
+      [doc-text
+        "Matching by hand wears thin when a chain of operations can each fail in turn. "
+        "The "
+        [doc-code "?"]
+        " operator is Loon's relief: "
+        "it unwraps an "
+        [doc-code "Ok"]
+        " in place and hands any "
+        [doc-code "Err"]
+        " straight back to the caller."]
+      [code-block
+        {:label "LOON"}
+        [str
+          "[fn load-config [path]\n"
+          "  [let text [IO.read-file path]?]\n"
+          "  [let data [parse-json text]?]\n"
+          "  [Ok data]]"]]
+      [doc-text
+        "If "
+        [doc-code "IO.read-file"]
+        " returns an "
+        [doc-code "Err"]
+        ", the function returns that error at once and the rest of the body never runs. "
+        "If it returns "
+        [doc-code "Ok"]
+        ", the inner value binds to "
+        [doc-code "text"]
+        " and execution flows on. You get the brevity of exceptions "
+        "with the candor of Result types."]
+      [doc-note
+        "info"
+        "The ? operator works on both Result and Option. On None it returns None early."]]
+    
+    [doc-section
+      "Try Blocks"
+      [doc-text
+        "Sometimes you want "
+        [doc-code "?"]
+        " inside a block, "
+        "but you want to catch the error here rather than send it upward. "
+        "That is the job of "
+        [doc-code "try"]
+        ". It wraps a block of code "
+        "and returns a Result."]
+      [code-block
+        {:label "LOON"}
+        [str
+          "[let result [try\n"
+          "  [let a [parse-int \"10\"]?]\n"
+          "  [let b [parse-int \"bad\"]?]\n"
+          "  [+ a b]]]\n"
+          "; result is [Err \"not a number\"]"]]
+      [doc-text
+        "Inside a "
+        [doc-code "try"]
+        " block you may use "
+        [doc-code "?"]
+        " without restraint. Let any operation fail and the whole block evaluates to that error; "
+        "let them all succeed and you get "
+        [doc-code "Ok"]
+        " carrying the block's final value."]]
+    
+    [doc-section
+      "Handle for Effects"
+      [doc-text
+        "For errors that must travel across handler boundaries, "
+        "Loon offers the "
+        [doc-code "Fail"]
+        " effect, the bridge "
+        "between effect-based code and error handling."]
+      [code-block
+        {:label "LOON"}
+        [str
+          "[handle [divide 10 0]\n"
+          "  [Fail.raise msg] [println [str \"caught: \" msg]]]"]]
+      [doc-text
+        "The handler catches the failure and chooses its fate: "
+        "log it, return a default, retry, or pass it further along."]
+      [doc-note
+        "tip"
+        "Prefer Result and ? for local error handling. Use Fail for errors that need to cross handler boundaries."]]
+    
+    [doc-section
+      "Error Codes"
+      [doc-text
+        "Every compiler error arrives with an alphanumeric code. "
+        "When the message alone leaves you guessing, run "
+        [doc-code "loon explain"]
+        " with the code for the full account."]
+      [code-block
+        {:label "SHELL"}
+        [str
+          "$ loon explain E0042\n"
+          "E0042: Use after move\n"
+          "\n"
+          "A value was used after its ownership\n"
+          "was transferred to another binding.\n"
+          "..."]]
+      [doc-text
+        "Each explanation gives the rule at work, a minimal example "
+        "that trips it, and a fix to try. They reward reading, "
+        "above all while the ownership system is still new to you."]]
+    
     [doc-prev-next "Testing" "/guide/testing" "Syntax" "/ref/syntax"]]]

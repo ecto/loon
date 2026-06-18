@@ -1,13 +1,15 @@
 ; from-clojure.loon — Concepts: Coming from Clojure
-
 [fn concepts-from-clojure-page []
-  [doc-page "Coming from Clojure" "What's familiar, what's different, and where Loon diverges."
-
-    [doc-section "What's Familiar"
-      [doc-text "Loon draws heavily from the Lisp family, and if you write Clojure, the "
-        "surface will feel close to home. The brackets are square instead of round, but the "
-        "underlying philosophy of \"small functions transforming immutable data through "
-        "pipelines\" is essentially the same."]
+  [doc-page
+    "Coming from Clojure"
+    "What's familiar, what's different, and where Loon diverges."
+    
+    [doc-section
+      "What's Familiar"
+      [doc-text
+        "Loon is a Lisp, and if you write Clojure, its surface will read like a "
+        "dialect you already speak. The brackets turned square, but the conviction underneath "
+        "is yours: small functions transforming immutable data through pipelines."]
       [doc-list
         "S-expression structure: calls are [operator operands], just with square brackets instead of parentheses."
         "Immutable data: values do not change. New values are derived from old ones."
@@ -15,186 +17,223 @@
         "Data literals: maps, vectors, and sets have dedicated syntax, not constructor calls."
         "REPL-driven development: Loon has a REPL for interactive exploration."
         "Code is data: Loon's macro system operates on the same data structures the language uses."]
-      [doc-text "If your typical Clojure session is threading data through "
-        [doc-code "->>"] " pipelines and writing small pure functions, you will "
-        "feel at home almost immediately. The core experience is the same."]]
-
-    [doc-section "What's Different"
-      [doc-subsection "Square brackets, not parentheses"
-        [doc-text "The most visible change, and honestly the one that will annoy your "
-          "muscle memory the most. Loon uses " [doc-code "[f x y]"]
-          " where Clojure uses " [doc-code "(f x y)"]
+      [doc-text
+        "If a typical Clojure session means threading data through "
+        [doc-code "->>"]
+        " pipelines and writing small pure functions, the core experience "
+        "carries over intact. The shape of the work is the same."]]
+    
+    [doc-section
+      "What's Different"
+      [doc-subsection
+        "Square brackets, not parentheses"
+        [doc-text
+          "The most visible change, and the one your muscle memory will resist longest. "
+          "Loon writes "
+          [doc-code "[f x y]"]
+          " where Clojure writes "
+          [doc-code "(f x y)"]
           ". Parentheses are reserved for grouping in multi-arity functions. "
-          "Your fingers will need to retrain, but the mental model is identical."]
-        [code-block {} [str
-          "; Clojure: (map inc (filter even? xs))\n"
-          "; Loon:\n"
-          "[map inc [filter even? xs]]"]]]
-
-      [doc-subsection "Static types (fully inferred)"
-        [doc-text "This is the biggest philosophical difference. Clojure embraces dynamic "
-          "typing, where values carry their types at runtime and spec/schema are optional "
-          "validation layers. Loon has a full static type system, but it is entirely inferred. "
-          "You never write type annotations."]
-        [doc-text "In practice, this means many errors that Clojure catches at runtime "
-          "(wrong argument count, type mismatches, missing map keys with typed maps) "
-          "are caught at compile time in Loon. The tradeoff is that some dynamic patterns "
-          "you might be used to (heterogeneous collections, runtime type dispatch) require "
-          "ADTs instead of just throwing different shapes into the same collection."]]
-
-      [doc-subsection "Ownership instead of persistent data structures"
-        [doc-text "Clojure uses persistent data structures: structurally shared, immutable "
-          "collections backed by garbage collection. They are brilliant, but they come with "
-          "GC overhead. Loon uses ownership and move semantics instead. Values are still "
-          "immutable by default, but memory is managed through compile-time ownership "
-          "tracking, not a garbage collector."]
-        [doc-text "The result is more predictable performance (no GC pauses, deterministic "
-          "cleanup) at the cost of occasionally thinking about when values are consumed. "
-          "The compiler handles most of this automatically, so it is less painful than it sounds."]]
-
-      [doc-subsection "ADTs instead of maps-as-types"
-        [doc-text "Clojure idiomatically uses maps for domain modeling. A user is "
-          [doc-code "\{:name \"Ada\" :age 30\}"] " and that is that. Loon supports maps "
-          "too, but it encourages algebraic data types for domain models:"]
-        [code-block {} [str
-          "[type User [User Str Int]]\n"
-          "[let u [User \"Ada\" 30]]"]]
-        [doc-text "ADTs are checked at compile time. You cannot misspell a field, "
-          "forget a field, or add an unexpected one. If you have ever tracked down a bug "
-          "caused by a typo in a keyword, you will appreciate the tradeoff."]]
-
-      [doc-subsection "Effects instead of side effects"
-        [doc-text "Clojure is pragmatic about side effects. Functions can do IO freely, "
-          "and the convention is to keep most functions pure but not enforce it. Loon "
-          "tracks effects in the type system using algebraic effects. You can still do IO, "
-          "but the compiler knows about it, and handlers can intercept it. This makes "
-          "testing much easier: swap the handler, not the code."]]
-
-      [doc-subsection "No runtime metaprogramming"
-        [doc-text "Clojure's dynamism allows runtime eval, runtime protocol extension, "
-          "and runtime metadata. Loon's metaprogramming is compile-time only, through "
-          "macros. This is a real limitation if you rely heavily on Clojure's dynamic "
-          "capabilities. But it enables the compiler to reason about your entire program "
-          "statically, which is how you get type safety without annotations."]]]
-
-    [doc-section "Syntax Mapping"
+          "Your fingers retrain in a few days; the mental model never moves."]
+        [code-block
+          {}
+          [str
+            "; Clojure: (map inc (filter even? xs))\n"
+            "; Loon:\n"
+            "[map inc [filter even? xs]]"]]]
+      
+      [doc-subsection
+        "Static types (fully inferred)"
+        [doc-text
+          "This is the deepest philosophical divide. Clojure embraces dynamic "
+          "typing: values carry their types at runtime, and spec or schema add validation "
+          "where you choose. Loon has a full static type system, yet it is entirely inferred. "
+          "You never write a single annotation."]
+        [doc-text
+          "The payoff is that errors Clojure discovers at runtime "
+          "(wrong argument count, type mismatches, missing keys in a typed map) "
+          "surface at compile time instead. The cost is that some dynamic patterns "
+          "you lean on (heterogeneous collections, runtime type dispatch) ask for "
+          "ADTs rather than mixed shapes sharing one collection."]]
+      
+      [doc-subsection
+        "Ownership instead of persistent data structures"
+        [doc-text
+          "Clojure's persistent data structures are one of its quiet triumphs: "
+          "structurally shared, immutable collections, reclaimed by a garbage collector. "
+          "Their elegance comes with GC overhead. Loon reaches for ownership and move "
+          "semantics instead. Values stay immutable by default, but memory is tracked at "
+          "compile time rather than swept at runtime."]
+        [doc-text
+          "You trade an occasional thought about when a value is consumed for "
+          "performance you can predict: no pauses, deterministic cleanup. The compiler "
+          "shoulders most of the bookkeeping, so the trade is gentler than it sounds."]]
+      
+      [doc-subsection
+        "ADTs instead of maps-as-types"
+        [doc-text
+          "Clojure models domains with maps. A user is "
+          [doc-code "{:name \"Ada\" :age 30}"]
+          " and the map is the contract. Loon keeps maps, "
+          "but for domain models it leans on algebraic data types:"]
+        [code-block
+          {}
+          [str "[type User [User Str Int]]\n" "[let u [User \"Ada\" 30]]"]]
+        [doc-text
+          "The compiler checks ADTs. You cannot misspell a field, drop one, "
+          "or add a stray one. Anyone who has spent an afternoon hunting a bug born of a "
+          "mistyped keyword knows exactly what this buys."]]
+      
+      [doc-subsection
+        "Effects instead of side effects"
+        [doc-text
+          "Clojure is pragmatic about side effects. Any function can perform IO, "
+          "and purity is a convention you keep rather than a rule the language enforces. Loon "
+          "tracks effects in the type system through algebraic effects. You still perform IO, "
+          "but the compiler sees it, and handlers can intercept it. Testing turns simple: "
+          "swap the handler, leave the code alone."]]
+      
+      [doc-subsection
+        "No runtime metaprogramming"
+        [doc-text
+          "Clojure's dynamism opens the door to runtime eval, protocol extension, "
+          "and metadata. Loon's metaprogramming happens at compile time, through macros, "
+          "and stops there. If you lean hard on Clojure's runtime reach, that is a real "
+          "constraint. It is also the price of admission: a program the compiler can read "
+          "whole and statically is what gives you type safety with no annotations to write."]]]
+    
+    [doc-section
+      "Syntax Mapping"
       [doc-table-header "Clojure" "Loon"]
-      [doc-row
-        "(def x 42)"
-        "[let x 42]"]
-      [doc-row
-        "(defn add [a b] (+ a b))"
-        "[fn add [a b] [+ a b]]"]
-      [doc-row
-        "(fn [x] (* x 2))"
-        "[fn [x] [* x 2]]"]
-      [doc-row
-        "[1 2 3]"
-        "#[1 2 3]"]
-      [doc-row
-        "\{:name \"Ada\" :age 30\}"
-        "\{:name \"Ada\" :age 30\}"]
-      [doc-row
-        "#\{1 2 3\}"
-        "#\{1 2 3\}"]
-      [doc-row
-        "(if test then else)"
-        "[if test then else]"]
-      [doc-row
-        "(cond p1 e1 p2 e2 :else e3)"
-        "[match val p1 e1 p2 e2 _ e3]"]
-      [doc-row
-        "(let [x 1 y 2] (+ x y))"
-        "[do [let x 1] [let y 2] [+ x y]]"]
+      [doc-row "(def x 42)" "[let x 42]"]
+      [doc-row "(defn add [a b] (+ a b))" "[fn add [a b] [+ a b]]"]
+      [doc-row "(fn [x] (* x 2))" "[fn [x] [* x 2]]"]
+      [doc-row "[1 2 3]" "#[1 2 3]"]
+      [doc-row "{:name \"Ada\" :age 30}" "{:name \"Ada\" :age 30}"]
+      [doc-row "#{1 2 3}" "#{1 2 3}"]
+      [doc-row "(if test then else)" "[if test then else]"]
+      [doc-row "(cond p1 e1 p2 e2 :else e3)" "[match val p1 e1 p2 e2 _ e3]"]
+      [doc-row "(let [x 1 y 2] (+ x y))" "[do [let x 1] [let y 2] [+ x y]]"]
       [doc-row
         "(->> xs (filter odd?) (map inc))"
         "[pipe xs [filter odd?] [map inc]]"]
-      [doc-row
-        "(println \"hello\")"
-        "[println \"hello\"]"]
-      [doc-row
-        "(:name user)"
-        "[get user :name]"]]
-
-    [doc-section "What You Can Stop Worrying About"
-      [doc-text "If you have spent time debugging Clojure in production, several familiar "
-        "pain points simply disappear in Loon."]
-
-      [doc-subsection "Runtime type errors"
-        [doc-text "No " [doc-code "ClassCastException"]
-          " or " [doc-code "ArityException"]
-          " in production. No wrong number of arguments slipping through, no type "
-          "mismatches discovered at 2am, no nil-related surprises cascading through "
-          "your call stack. The compiler catches them all before your code ever runs."]]
-
-      [doc-subsection "Nil punning"
-        [doc-text "Clojure's nil is everywhere. " [doc-code "(first nil)"]
-          " returns nil, " [doc-code "(get nil :foo)"]
-          " returns nil, and nil propagates silently through your program until "
-          "something finally breaks, often far from the source. "
-          "Loon has no nil at all. Optional values use " [doc-code "Option"]
-          " and the compiler forces you to handle the absent case explicitly."]]
-
-      [doc-subsection "Spec and schema"
-        [doc-text "If you use spec or malli to validate data shapes at runtime, "
-          "Loon's type system replaces that need at compile time. ADTs and typed maps "
-          "are checked by the compiler, not by runtime validation. You get the same "
-          "safety guarantees without the runtime overhead or the extra library."]]
-
-      [doc-subsection "GC tuning"
-        [doc-text "No GC pauses, no heap size tuning, no memory pressure surprises "
-          "under load. Ownership gives you deterministic, predictable memory behavior. "
-          "When a value goes out of scope, it is freed. That is the whole story."]]]
-
-    [doc-section "New Things to Learn"
-      [doc-text "Most of Loon will feel natural to a Clojure programmer. But there are "
-        "a few concepts that are genuinely new and worth spending time with."]
-
-      [doc-subsection "Ownership"
-        [doc-text "This is the most unfamiliar concept coming from Clojure. Values have "
-          "one owner and are consumed when passed to functions (unless the compiler "
-          "auto-borrows, which it does whenever it can). This is fundamentally different "
-          "from Clojure's persistent data structures, where sharing is free because "
-          "everything is structurally shared and garbage collected."]
-        [code-block {} [str
-          "[let items #[1 2 3]]\n"
-          "[println [len items]]   ; auto-borrowed\n"
-          "[println [len items]]   ; still valid\n"
-          "\n"
-          "[let other items]       ; moved\n"
-          "; items no longer valid"]]
-        [doc-note "tip" "Think of ownership as \"exactly one reference to each value.\" Clojure lets many references share a value via structural sharing. Loon lets the compiler decide when sharing is safe, and asks you to clone explicitly when you need two independent copies."]]
-
-      [doc-subsection "Static types"
-        [doc-text "You never write them, but they are there. Every expression has a "
-          "type the compiler knows at compile time. The main practical impact is that "
-          "heterogeneous collections are not idiomatic. Instead of a vector containing "
-          "strings and numbers, you define an ADT:"]
-        [code-block {} [str
-          "[type Value\n"
-          "  [VStr Str]\n"
-          "  [VNum Int]]"]]
-        [doc-text "This feels more verbose than just throwing things into a vector, "
-          "but it pays off when the compiler catches a case you forgot to handle."]]
-
-      [doc-subsection "Effects"
-        [doc-text "Where Clojure lets you call " [doc-code "(slurp \"file.txt\")"]
-          " anywhere without ceremony, Loon tracks IO through the effect system. "
-          "The code looks similar, but a handler must be installed to provide the IO "
-          "implementation. This makes testing trivial: swap the handler and your IO-heavy "
-          "code runs against in-memory fakes, no mocking library needed."]]
-
-      [doc-subsection "Pattern matching"
-        [doc-text "Clojure has " [doc-code "case"] " and "
-          [doc-code "cond"] " but no exhaustive pattern matching on data shapes. "
-          "Loon's " [doc-code "match"] " destructures ADTs and the compiler "
-          "ensures every variant is handled. If you add a new variant to a type, the "
-          "compiler tells you everywhere you need to update. This is one of those features "
-          "that is hard to go back from once you have used it."]
-        [code-block {} [str
-          "[match shape\n"
-          "  [Circle r]   [* 3.14159 [* r r]]\n"
-          "  [Rect w h]   [* w h]\n"
-          "  [Point]      0.0]"]]]]
-
+      [doc-row "(println \"hello\")" "[println \"hello\"]"]
+      [doc-row "(:name user)" "[get user :name]"]]
+    
+    [doc-section
+      "What You Can Stop Worrying About"
+      [doc-text
+        "If you have debugged Clojure in production, a few familiar aches "
+        "are gone in Loon."]
+      
+      [doc-subsection
+        "Runtime type errors"
+        [doc-text
+          "No "
+          [doc-code "ClassCastException"]
+          " or "
+          [doc-code "ArityException"]
+          " in production. No wrong argument count slipping through, no type "
+          "mismatch found at 2am, no nil surprise cascading down the call stack. "
+          "The compiler catches them all before the code runs."]]
+      
+      [doc-subsection
+        "Nil punning"
+        [doc-text
+          "Clojure's nil is everywhere, and it travels well. "
+          [doc-code "(first nil)"]
+          " returns nil, "
+          [doc-code "(get nil :foo)"]
+          " returns nil, and the absence drifts quietly through the program until "
+          "something breaks, usually far from where it began. "
+          "Loon has no nil. Absence is named: optional values use "
+          [doc-code "Option"]
+          ", and the compiler insists you handle the empty case."]]
+      
+      [doc-subsection
+        "Spec and schema"
+        [doc-text
+          "If you reach for spec or malli to validate data shapes at runtime, "
+          "Loon's type system does that work at compile time instead. The compiler checks "
+          "ADTs and typed maps directly. You keep the safety guarantees and shed both the "
+          "runtime cost and the dependency."]]
+      
+      [doc-subsection
+        "GC tuning"
+        [doc-text
+          "No GC pauses, no heap sizing, no memory pressure ambushing you "
+          "under load. Ownership makes memory behavior deterministic. "
+          "A value goes out of scope; it is freed. The whole story fits in one sentence."]]]
+    
+    [doc-section
+      "New Things to Learn"
+      [doc-text
+        "Most of Loon will feel natural to a Clojure programmer. A few ideas, "
+        "though, are genuinely new, and they reward the time you give them."]
+      
+      [doc-subsection
+        "Ownership"
+        [doc-text
+          "Coming from Clojure, this is the genuinely strange one. A value has "
+          "one owner, and passing it to a function consumes it, unless the compiler "
+          "auto-borrows, which it does whenever it safely can. That is a different world "
+          "from persistent data structures, where sharing costs nothing because everything "
+          "is structurally shared and collected by the runtime."]
+        [code-block
+          {}
+          [str
+            "[let items #[1 2 3]]\n"
+            "[println [len items]]   ; auto-borrowed\n"
+            "[println [len items]]   ; still valid\n"
+            "\n"
+            "[let other items]       ; moved\n"
+            "; items no longer valid"]]
+        [doc-note
+          "tip"
+          "Think of ownership as one reference per value. Clojure lets many references share a value through structural sharing. Loon lets the compiler decide when sharing is safe, and asks you to clone when you genuinely want two independent copies."]]
+      
+      [doc-subsection
+        "Static types"
+        [doc-text
+          "You never write them, yet they are always present. Every expression "
+          "has a type the compiler knows. The one habit this changes: heterogeneous "
+          "collections fall out of fashion. Rather than a vector holding both strings and "
+          "numbers, you name the union with an ADT:"]
+        [code-block {} [str "[type Value\n" "  [VStr Str]\n" "  [VNum Int]]"]]
+        [doc-text
+          "It reads as more ceremony than dropping things into a vector, "
+          "until the day the compiler names the case you forgot to handle."]]
+      
+      [doc-subsection
+        "Effects"
+        [doc-text
+          "Where Clojure lets you call "
+          [doc-code "(slurp \"file.txt\")"]
+          " anywhere, no questions asked, Loon routes IO through the effect system. "
+          "The call looks much the same, but a handler must be installed to supply the "
+          "implementation. Testing becomes effortless: install a handler and your IO-heavy "
+          "code runs against in-memory fakes, no mocking library required."]]
+      
+      [doc-subsection
+        "Pattern matching"
+        [doc-text
+          "Clojure offers "
+          [doc-code "case"]
+          " and "
+          [doc-code "cond"]
+          ", but no exhaustive matching on data shapes. "
+          "Loon's "
+          [doc-code "match"]
+          " destructures ADTs, and the compiler "
+          "checks that every variant is handled. Add a new variant to a type and the "
+          "compiler points you to each place that must change. It is one of those features "
+          "you stop being able to live without."]
+        [code-block
+          {}
+          [str
+            "[match shape\n"
+            "  [Circle r]   [* 3.14159 [* r r]]\n"
+            "  [Rect w h]   [* w h]\n"
+            "  [Point]      0.0]"]]]]
+    
     [doc-prev-next "Coming from JS/TS" "/concepts/from-js" "" ""]]]
