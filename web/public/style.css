@@ -707,8 +707,6 @@ html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
   letter-spacing: -0.012em;
   color: var(--fg);
   margin-bottom: 1.1rem;
-  padding-bottom: 0.45rem;
-  border-bottom: 1px solid var(--border);
 }
 .doc-subsection { margin-bottom: 2rem; }
 .doc-h3 {
@@ -841,7 +839,6 @@ html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
   gap: 1rem;
   padding-top: 2rem;
   margin-top: 3.5rem;
-  border-top: 1px solid var(--border);
 }
 .doc-nav-link {
   font: 0.85rem var(--font-mono);
