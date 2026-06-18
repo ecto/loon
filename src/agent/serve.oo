@@ -1,0 +1,57 @@
+; ───────────────────────────────────────────────────────────────────────────
+; An agent served over HTTP — a "channel" (à la eve) that ties the two
+; frameworks together. The HTTP server (real Net socket) is the bottom handler;
+; each request runs the agent control loop under a tower and returns its result.
+; The agent code and the loop are unchanged — only the tower wraps them.
+;
+; Run:    loon run src/agent/serve.oo        (serves on :8080 until killed)
+; Visit:  curl localhost:8080/plan-my-trip
+; ───────────────────────────────────────────────────────────────────────────
+[effect Llm
+  [complete [String] Keyword]]
+
+[effect Tool
+  [call [Keyword] String]]
+
+[effect Log
+  [info [String] Unit]]
+
+; The agent control loop (keyword actions are Copy, so reused freely).
+[fn agent [step history]
+  [let action [Llm.complete [str step]]]
+  [if [= action :done]
+    history
+    [do
+      [let r [Tool.call action]]
+      [agent [+ step 1] [str history " " action ":" r]]]]]
+
+; Run the agent for a goal under a scripted/mocked tower, returning its trace.
+; (A prod tower would call a real model/tools via the HTTP client.)
+[fn run-agent [goal]
+  [handle
+    [agent 0 goal]
+    [Llm.complete p]
+    [resume
+      [match p
+        "0" :search
+        "1" :summarize
+        _ :done]]
+    [Tool.call t]
+    [resume
+      [match t
+        :search "3-hits"
+        :summarize "summary"
+        _ "ok"]]
+    [Log.info m]
+    [resume []]]]
+
+; HTTP channel: accept a request, run the agent on the path as the goal, respond.
+[fn serve-loop []
+  [let req [Net.accept 8080]]
+  [Net.send 200 [run-agent [nth req 1]]]
+  [serve-loop]]
+
+[fn main []
+  [if [Net.listen 8080]
+    [do [println "agent serving on :8080"] [serve-loop]]
+    [println "bind failed"]]]
