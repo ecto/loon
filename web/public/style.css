@@ -7,13 +7,13 @@
   --bg: #faf9f7;
   --fg: #1a1a1a;
   --muted: #666;
-  --accent: #4a5fd7;
+  --accent: #1d5b7c;
   --border: #e0ddd8;
   --black: #1a1a1a;
   --white: #f0efed;
   --code-bg: #f1efe9;
-  --accent-soft: rgba(74, 95, 215, 0.08);
-  --sel: rgba(74, 95, 215, 0.16);
+  --accent-soft: rgba(29, 91, 124, 0.09);
+  --sel: rgba(29, 91, 124, 0.16);
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-display: 'Fraunces', Georgia, 'Times New Roman', serif;
   --font-serif: var(--font-sans);
@@ -25,19 +25,19 @@
     --bg: #141413;
     --fg: #c8c4bc;
     --muted: #7a7770;
-    --accent: #7b8fea;
+    --accent: #6bb0d4;
     --border: #2a2926;
     --white: #1c1b19;
     --code-bg: #211f1d;
-    --accent-soft: rgba(123, 143, 234, 0.10);
-    --sel: rgba(123, 143, 234, 0.22);
+    --accent-soft: rgba(107, 176, 212, 0.12);
+    --sel: rgba(107, 176, 212, 0.22);
   }
   .syntax-keyword  { color: #a48de0; }
   .syntax-string   { color: #6ba7d4; }
   .syntax-comment  { color: #555; }
   .syntax-builtin  { color: #d4896e; }
   .syntax-number   { color: #c4a243; }
-  .syntax-function { color: #7b8fea; }
+  .syntax-function { color: #6bb0d4; }
   .syntax-paren    { color: #444; }
 }
 
@@ -154,7 +154,7 @@ a:hover {
 .syntax-comment  { color: #9a9590; font-style: italic; }
 .syntax-builtin  { color: #a0522d; font-weight: 600; }
 .syntax-number   { color: #8b6914; }
-.syntax-function { color: #4a5fd7; }
+.syntax-function { color: #1d5b7c; }
 .syntax-paren    { color: #b0aaa2; }
 
 /* Section labels — mono uppercase */
