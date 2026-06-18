@@ -1,161 +1,204 @@
 ; doc.loon — Reusable documentation page components
+; --- Slugify: turn a heading title into a URL-safe anchor id ---
+[let slug-ok
+#{"a"
+  "b"
+  "c"
+  "d"
+  "e"
+  "f"
+  "g"
+  "h"
+  "i"
+  "j"
+  "k"
+  "l"
+  "m"
+  "n"
+  "o"
+  "p"
+  "q"
+  "r"
+  "s"
+  "t"
+  "u"
+  "v"
+  "w"
+  "x"
+  "y"
+  "z"
+  "0"
+  "1"
+  "2"
+  "3"
+  "4"
+  "5"
+  "6"
+  "7"
+  "8"
+  "9"}]
 
-; --- Page wrapper with title + subtitle ---
+[fn slugify [title]
+  [let lower [lowercase title]]
+  [fn go [i acc dash]
+    [if [>= i [len lower]]
+      acc
+      [do
+        [let c [char-at lower i]]
+        [if [contains? slug-ok c]
+          [go [+ i 1] [str acc c] false]
+          [if dash [go [+ i 1] acc true] [go [+ i 1] [str acc "-"] true]]]]]]
+  [go 0 "" true]]
+
+; --- Heading introspection: read the title out of a section vnode ---
+[fn heading-text [h]
+  [match h
+    [El tag hprops hkids] [if [> [len hkids] 0]
+      [match [nth hkids 0]
+        [Txt t] t
+        _ ""]
+      ""]
+    _ ""]]
+
+[fn section-title-of [sec]
+  [match sec
+    [El tag props children] [if [and [= tag "section"] [> [len children] 0]]
+      [heading-text [nth children 0]]
+      ""]
+    _ ""]]
+
+; --- Table-of-contents entries: #[slug title] for each real section ---
+[fn toc-entries [sections]
+  [pipe sections
+    [map [fn [s] [let t [section-title-of s]] #[[slugify t] t]]]
+    [filter [fn [e] [not [= [nth e 1] ""]]]]]]
+
+; --- Give each section an id so anchors land on it ---
+[fn with-section-id [sec]
+  [match sec
+    [El tag props children] [if [= tag "section"]
+      [El tag [assoc props :id [slugify [section-title-of sec]]] children]
+      sec]
+    _ sec]]
+
+; --- "On this page" rail ---
+[fn doc-toc [entries]
+  [nav-el
+    {:class "doc-toc"}
+    [p {:class "doc-toc-label"} "On this page"]
+    [Fragment
+      [coerce-children
+        [map
+          [fn [e]
+            [a-el {:href [str "#" [nth e 0]] :class "doc-toc-link"} [nth e 1]]]
+          entries]]]]]
+
+; --- Page wrapper with title + subtitle (+ auto TOC) ---
 [fn doc-page [title subtitle & sections]
-  [div {:class "page"}
-    [main-el {:style {:padding "3rem 0 5rem"}}
-      [h1 {:style {:font-family [font :serif]
-                   :font-weight "400"
-                   :font-size "2rem"
-                   :margin-bottom "0.5rem"}} title]
-      [p {:style {:color [color :muted]
-                  :font-family [font :serif]
-                  :font-size "1rem"
-                  :margin-bottom "3rem"}}
-        subtitle]
-      [Fragment [coerce-children sections]]]]]
+  [let entries [toc-entries sections]]
+  [let has-toc [> [len entries] 1]]
+  [let body
+  [main-el
+    {:class "doc-main"}
+    [h1 {:class "doc-h1"} title]
+    [p {:class "doc-subtitle"} subtitle]
+    [Fragment [coerce-children [map with-section-id sections]]]]]
+  [if has-toc
+    [div {:class "page doc-shell"} body [doc-toc entries]]
+    [div {:class "page"} body]]]
 
 ; --- Section with h2 heading ---
 [fn doc-section [title & content]
-  [section-el {:style {:margin-bottom "3rem"}}
-    [h2 {:style {:font-family [font :serif]
-                 :font-weight "600"
-                 :font-size "1.35rem"
-                 :color [color :text]
-                 :margin-bottom "1rem"}} title]
+  [section-el
+    {:class "doc-section"}
+    [h2 {:class "doc-h2"} title]
     [Fragment [coerce-children content]]]]
 
 ; --- Subsection with h3 heading ---
 [fn doc-subsection [title & content]
-  [div {:style {:margin-bottom "2rem"}}
-    [h3 {:style {:font-family [font :serif]
-                 :font-weight "600"
-                 :font-size "1.1rem"
-                 :color [color :text]
-                 :margin-bottom "0.75rem"}} title]
+  [div
+    {:class "doc-subsection"}
+    [h3 {:class "doc-h3"} title]
     [Fragment [coerce-children content]]]]
 
 ; --- Prose paragraph ---
 [fn doc-text [& content]
-  [p {:style {:font-family [font :serif]
-              :font-size "1rem"
-              :line-height "1.75"
-              :color [color :text]
-              :margin-bottom "1rem"}}
-    [Fragment [coerce-children content]]]]
+  [p {:class "doc-text"} [Fragment [coerce-children content]]]]
 
 ; --- Callout box (info, warning, tip) ---
 [fn doc-note [typ text]
-  [let styles [match typ
-    "tip"     {:border-color "var(--accent)" :bg "rgba(74, 95, 215, 0.05)"}
-    "warning" {:border-color "#c0392b" :bg "rgba(192, 57, 43, 0.05)"}
-    _         {:border-color "var(--border)" :bg "var(--white)"}]]
-  [div {:style {:border-left [str "3px solid " [get styles :border-color]]
-                :background [get styles :bg]
-                :padding "1rem 1.25rem"
-                :margin-bottom "1.5rem"
-                :border-radius "0 4px 4px 0"}}
-    [p {:style {:font-family [font :serif]
-                :font-size "0.9rem"
-                :line-height "1.7"
-                :color [color :text]
-                :margin "0"}}
-      text]]]
+  [let label
+  [match typ
+    "tip" "Tip"
+    "warning" "Warning"
+    _ "Note"]]
+  [div
+    {:class [str "doc-note doc-note-" typ]}
+    [p {:class "doc-note-label"} label]
+    [p {:class "doc-note-text"} text]]]
 
 ; --- Inline code ---
-[fn doc-code [text]
-  [span {:style {:font-family [font :mono]
-                 :font-size "0.88em"
-                 :background "rgba(128, 128, 128, 0.1)"
-                 :padding "0.15em 0.4em"
-                 :border-radius "3px"}}
-    text]]
+[fn doc-code [text] [span {:class "ic"} text]]
 
 ; --- Bottom prev/next navigation ---
 [fn doc-prev-next [prev-title prev-href next-title next-href]
   [let path [dom.location]]
-  [let src-path [if [= path "/"] "pages/home.loon"
-                [if [= path "/tour"] "pages/tour.loon"
-                [if [= path "/play"] "pages/play.loon"
-                [if [= path "/changelog"] "pages/blog.loon"
-                [if [= path "/roadmap"] "pages/roadmap.loon"
-                [if [= path "/install"] "pages/install.loon"
-                [if [= path "/examples"] "pages/examples.loon"
-                  [str "pages" path ".loon"]]]]]]]]]
-  [let edit-url [str "https://github.com/ecto/loon/edit/main/web/src/" src-path]]
-  [div {:style {:display "flex"
-                :justify-content "space-between"
-                :align-items "center"
-                :padding-top "2rem"
-                :margin-top "3rem"
-                :border-top [str "1px solid " [color :border]]}}
+  [let src-path
+  [if [= path "/"]
+    "pages/home.loon"
+    [if [= path "/tour"]
+      "pages/tour.loon"
+      [if [= path "/play"]
+        "pages/play.loon"
+        [if [= path "/changelog"]
+          "pages/blog.loon"
+          [if [= path "/roadmap"]
+            "pages/roadmap.loon"
+            [if [= path "/install"]
+              "pages/install.loon"
+              [if [= path "/examples"]
+                "pages/examples.loon"
+                [str "pages" path ".loon"]]]]]]]]]
+  [let edit-url
+  [str "https://github.com/ecto/loon/edit/main/web/src/" src-path]]
+  [div
+    {:class "doc-nav"}
     [if [not [= prev-title ""]]
-      [a-el {:href prev-href
-             :style {:font-family [font :mono]
-                     :font-size "0.85rem"
-                     :color [color :muted]
-                     :text-decoration "none"}}
+      [a-el
+        {:href prev-href :class "doc-nav-link doc-nav-prev"}
         [str "← " prev-title]]
       [span ""]]
-    [a-el {:href edit-url
-           :target "_blank"
-           :style {:font-family [font :mono]
-                   :font-size "0.75rem"
-                   :color [color :muted]
-                   :text-decoration "none"
-                   :opacity "0.6"}}
-      "Edit"]
+    [a-el {:href edit-url :target "_blank" :class "doc-edit"} "Edit this page"]
     [if [not [= next-title ""]]
-      [a-el {:href next-href
-             :style {:font-family [font :mono]
-                     :font-size "0.85rem"
-                     :color [color :muted]
-                     :text-decoration "none"}}
+      [a-el
+        {:href next-href :class "doc-nav-link doc-nav-next"}
         [str next-title " →"]]
       [span ""]]]]
 
 ; --- Definition list for reference pages ---
 [fn doc-def [term definition]
-  [div {:style {:margin-bottom "1.25rem"
-                :padding-left "1rem"
-                :border-left [str "2px solid " [color :border]]}}
-    [p {:style {:font-family [font :mono]
-                :font-size "0.9rem"
-                :font-weight "600"
-                :color [color :text]
-                :margin-bottom "0.25rem"}} term]
-    [p {:style {:font-family [font :serif]
-                :font-size "0.9rem"
-                :line-height "1.65"
-                :color [color :muted]
-                :margin "0"}} definition]]]
+  [div
+    {:class "doc-def"}
+    [p {:class "doc-def-term"} term]
+    [p {:class "doc-def-desc"} definition]]]
 
 ; --- Simple table for comparison pages ---
 [fn doc-row [left right]
-  [div {:style {:display "grid"
-                :grid-template-columns "1fr 1fr"
-                :gap "1.5rem"
-                :padding "0.75rem 0"
-                :border-bottom [str "1px solid " [color :border]]}}
-    [div {:style {:font-family [font :mono] :font-size "0.85rem"}} left]
-    [div {:style {:font-family [font :mono] :font-size "0.85rem"}} right]]]
+  [div
+    {:class "doc-row"}
+    [div {:class "doc-cell"} left]
+    [div {:class "doc-cell"} right]]]
 
 [fn doc-table-header [left right]
-  [div {:style {:display "grid"
-                :grid-template-columns "1fr 1fr"
-                :gap "1.5rem"
-                :padding "0.75rem 0"
-                :border-bottom [str "2px solid " [color :border]]
-                :font-weight "600"}}
-    [div {:style {:font-family [font :mono] :font-size "0.8rem" :color [color :muted] :text-transform "uppercase" :letter-spacing "0.05em"}} left]
-    [div {:style {:font-family [font :mono] :font-size "0.8rem" :color [color :muted] :text-transform "uppercase" :letter-spacing "0.05em"}} right]]]
+  [div
+    {:class "doc-thead"}
+    [div {:class "doc-th"} left]
+    [div {:class "doc-th"} right]]]
 
 ; --- Unordered list ---
 [fn doc-list [& items]
-  [ul-el {:style {:padding-left "1.5rem"
-                  :margin-bottom "1.5rem"
-                  :line-height "1.8"}}
-    [pipe items [map [fn [item]
-      [li-el {:style {:font-family [font :serif]
-                      :font-size "0.95rem"
-                      :color [color :text]}} item]]]]]]
+  [ul-el
+    {:class "doc-list"}
+    [Fragment
+      [coerce-children
+        [map [fn [item] [li-el {:class "doc-list-item"} item]] items]]]]]
