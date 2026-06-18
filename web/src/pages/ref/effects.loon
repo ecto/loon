@@ -1,65 +1,166 @@
 ; effects.loon — Reference: Standard Effects
-
 [fn ref-effects-page []
-  [doc-page "Standard Effects" "The built-in effect operations that ship with Loon."
-
-    [doc-section "IO"
-      [doc-text "Basic input and output. These are the operations you reach for when you need to print something, read from the console, or work with files. They are all effect operations, which means they can be intercepted and handled if you need to, for example, test code that does IO without actually touching the filesystem."]
-      [doc-def "println : Str -> ()" "Print a string followed by a newline to stdout."]
-      [doc-def "print : Str -> ()" "Print a string to stdout without a trailing newline."]
+  [doc-page
+    "Standard Effects"
+    "The built-in effect operations that ship with Loon."
+    
+    [doc-section
+      "IO"
+      [doc-text
+        "Basic input and output. These are the operations you reach for when you need to print something, read from the console, or work with files. They are all effect operations, which means they can be intercepted and handled if you need to, for example, test code that does IO without actually touching the filesystem."]
+      [doc-def
+        "println : Str -> ()"
+        "Print a string followed by a newline to stdout."]
+      [doc-def
+        "print : Str -> ()"
+        "Print a string to stdout without a trailing newline."]
       [doc-def "read-line : () -> Str" "Read a line of input from stdin."]
-      [doc-def "read-file : Str -> Str" "Read the entire contents of a file as a string."]
-      [doc-def "write-file : Str -> Str -> ()" "Write a string to a file, creating or overwriting it."]]
-
-    [doc-section "Fail"
-      [doc-text "Structured error handling via effects. When you call " [doc-code "fail"] ", execution aborts unless something higher up in the call stack handles it. The " [doc-code "try"] " function is the most common way to catch failures: wrap a computation in " [doc-code "try"] " and you get back a " [doc-code "Result"] " you can pattern match on."]
-      [doc-def "fail : Str -> a" "Raise an error with a message. Aborts unless handled."]
-      [doc-def "try : (() -> a) -> Result a Str" "Run a computation, catching any fail effect as Err."]
-      [code-block {} [str
-        "[let result [try [fn [] [fail \"oops\"]]]]\n"
-        "[match result\n"
-        "  [Ok val]  [println val]\n"
-        "  [Err msg] [println [str \"error: \" msg]]]"]]]
-
-    [doc-section "Async"
-      [doc-text "Lightweight concurrency. " [doc-code "spawn"] " kicks off a background task and gives you a handle to it. When you need the result, call " [doc-code "await"] " on that handle. This is a simple model that avoids callback spaghetti while still letting you do real concurrent work."]
-      [doc-def "spawn : (() -> a) -> Task a" "Spawn a concurrent task that runs in the background."]
-      [doc-def "await : Task a -> a" "Block until a task completes and return its result."]
-      [code-block {} [str
-        "[let t [spawn [fn [] [+ 1 2]]]]\n"
-        "[println [await t]]  ; 3"]]]
-
-    [doc-section "Process"
-      [doc-text "Operations for interacting with the operating system. Run external commands, read environment variables, or grab the command-line arguments your program was invoked with."]
-      [doc-def "exec : Str -> #[Str] -> Result Str Str" "Run an external command with arguments. Returns stdout on success."]
-      [doc-def "env : Str -> Option Str" "Read an environment variable. Returns None if unset."]
-      [doc-def "args : () -> #[Str]" "Return the command-line arguments as a vector of strings."]]
-
-    [doc-section "Net"
-      [doc-text "Networking primitives for HTTP and TCP. " [doc-code "fetch"] " handles outgoing HTTP requests, while " [doc-code "serve"] " lets you spin up an HTTP server with a simple request handler function. If you need lower-level control, " [doc-code "listen"] " gives you raw TCP connections."]
-      [doc-def "fetch : Str -> Map -> Result Str Str" "Make an HTTP request. The map contains method, headers, and body."]
-      [doc-def "listen : Int -> (Conn -> ()) -> ()" "Listen for TCP connections on a port and handle each one."]
-      [doc-def "serve : Int -> (Request -> Response) -> ()" "Start an HTTP server on a port with a request handler."]]
-
-    [doc-section "Physics"
-      [doc-text "Physical constants and material properties as swappable effects. Use " [doc-code "handle"] " to provide values for a specific environment — different materials, planets, or simulation contexts."]
-      [doc-def "gravity : () -> Acceleration" "Return gravitational acceleration for the current environment."]
-      [doc-def "yield-strength : () -> Pressure" "Return the yield strength of the current material."]
-      [doc-def "elastic-modulus : () -> Pressure" "Return the elastic (Young's) modulus of the current material."]
-      [doc-def "density : () -> Density" "Return the density of the current material."]
-      [doc-def "temperature : () -> Temperature" "Return the ambient temperature."]
-      [doc-def "thermal-conductivity : () -> ThermalConductivity" "Return the thermal conductivity of the current material."]
-      [code-block {} [str
-        "[handle [analyze beam 10.0kN]\n"
-        "  [Physics.gravity] [resume [unit 9.81 :m]]\n"
-        "  [Physics.yield-strength] [resume 250.0MPa]\n"
-        "  [Physics.density] [resume [unit 7850.0 :kg]]]"]]]
-
-    [doc-section "Sim"
-      [doc-text "Simulation operations for structural and thermal analysis. Handlers can be analytical formulas, numerical solvers, or surrogate models — the caller does not need to know which."]
-      [doc-def "stress : geometry -> material -> load -> Pressure" "Compute stress for a given geometry, material, and load."]
-      [doc-def "deflection : geometry -> material -> load -> Length" "Compute deflection under load."]
-      [doc-def "natural-freq : geometry -> material -> Frequency" "Compute the natural frequency of a structure."]
-      [doc-def "thermal-field : geometry -> material -> sources -> Temperature" "Compute the temperature field for given heat sources."]]
-
+      [doc-def
+        "read-file : Str -> Str"
+        "Read the entire contents of a file as a string."]
+      [doc-def
+        "write-file : Str -> Str -> ()"
+        "Write a string to a file, creating or overwriting it."]
+      [doc-def
+        "now : () -> Int"
+        "Current wall-clock time in seconds since the Unix epoch."]
+      [doc-def
+        "millis : () -> Int"
+        "Current wall-clock time in milliseconds since the Unix epoch."]
+      [doc-def "uuid : () -> Str" "Generate a fresh random UUID (v4) string."]
+      [doc-text
+        "Because these are effect operations, a test or replay handler can pin the clock and feed deterministic UUIDs, so a program that records timestamps or generates IDs can run fully reproducibly without any code change."]]
+    
+    [doc-section
+      "Fail"
+      [doc-text
+        "Structured error handling via effects. When you call "
+        [doc-code "fail"]
+        ", execution aborts unless something higher up in the call stack handles it. The "
+        [doc-code "try"]
+        " function is the most common way to catch failures: wrap a computation in "
+        [doc-code "try"]
+        " and you get back a "
+        [doc-code "Result"]
+        " you can pattern match on."]
+      [doc-def
+        "fail : Str -> a"
+        "Raise an error with a message. Aborts unless handled."]
+      [doc-def
+        "try : (() -> a) -> Result a Str"
+        "Run a computation, catching any fail effect as Err."]
+      [code-block
+        {}
+        [str
+          "[let result [try [fn [] [fail \"oops\"]]]]\n"
+          "[match result\n"
+          "  [Ok val]  [println val]\n"
+          "  [Err msg] [println [str \"error: \" msg]]]"]]]
+    
+    [doc-section
+      "Async"
+      [doc-text
+        "Lightweight concurrency. "
+        [doc-code "spawn"]
+        " kicks off a background task and gives you a handle to it. When you need the result, call "
+        [doc-code "await"]
+        " on that handle. This is a simple model that avoids callback spaghetti while still letting you do real concurrent work."]
+      [doc-def
+        "spawn : (() -> a) -> Task a"
+        "Spawn a concurrent task that runs in the background."]
+      [doc-def
+        "await : Task a -> a"
+        "Block until a task completes and return its result."]
+      [code-block
+        {}
+        [str "[let t [spawn [fn [] [+ 1 2]]]]\n" "[println [await t]]  ; 3"]]]
+    
+    [doc-section
+      "Process"
+      [doc-text
+        "Operations for interacting with the operating system. Run external commands, read environment variables, or grab the command-line arguments your program was invoked with."]
+      [doc-def
+        "exec : Str -> #[Str] -> Result Str Str"
+        "Run an external command with arguments. Returns stdout on success."]
+      [doc-def
+        "env : Str -> Option Str"
+        "Read an environment variable. Returns None if unset."]
+      [doc-def
+        "args : () -> #[Str]"
+        "Return the command-line arguments as a vector of strings."]]
+    
+    [doc-section
+      "Net"
+      [doc-text
+        "Networking primitives for serving HTTP over a real TCP socket. The model is deliberately small: bind a port, accept one request at a time, and send a response. A server loop is just ordinary effectful code that performs these three operations — which means the same loop runs against a live socket in production or against a scripted request list under a test tower."]
+      [doc-def
+        "listen : Int -> Bool"
+        "Bind and start listening on the given TCP port. Returns true on success."]
+      [doc-def
+        "accept : Int -> [Str]"
+        "Block for the next request on a listening port. Returns [method path body]."]
+      [doc-def
+        "send : Int -> Str -> Bool"
+        "Send a response with the given status code and body to the accepted connection."]
+      [code-block
+        {}
+        [str
+          "[handle\n"
+          "  [do\n"
+          "    [Net.listen 8080]\n"
+          "    [loop []\n"
+          "      [match [Net.accept 8080]\n"
+          "        [method path body]\n"
+          "        [do [Net.send 200 [route method path]] [recur]]]]]\n"
+          "  ; ... swap in a test handler to drive Net.accept from a fixture"]]]
+    
+    [doc-section
+      "Physics"
+      [doc-text
+        "Physical constants and material properties as swappable effects. Use "
+        [doc-code "handle"]
+        " to provide values for a specific environment — different materials, planets, or simulation contexts."]
+      [doc-def
+        "gravity : () -> Acceleration"
+        "Return gravitational acceleration for the current environment."]
+      [doc-def
+        "yield-strength : () -> Pressure"
+        "Return the yield strength of the current material."]
+      [doc-def
+        "elastic-modulus : () -> Pressure"
+        "Return the elastic (Young's) modulus of the current material."]
+      [doc-def
+        "density : () -> Density"
+        "Return the density of the current material."]
+      [doc-def
+        "temperature : () -> Temperature"
+        "Return the ambient temperature."]
+      [doc-def
+        "thermal-conductivity : () -> ThermalConductivity"
+        "Return the thermal conductivity of the current material."]
+      [code-block
+        {}
+        [str
+          "[handle [analyze beam 10.0kN]\n"
+          "  [Physics.gravity] [resume [unit 9.81 :m]]\n"
+          "  [Physics.yield-strength] [resume 250.0MPa]\n"
+          "  [Physics.density] [resume [unit 7850.0 :kg]]]"]]]
+    
+    [doc-section
+      "Sim"
+      [doc-text
+        "Simulation operations for structural and thermal analysis. Handlers can be analytical formulas, numerical solvers, or surrogate models — the caller does not need to know which."]
+      [doc-def
+        "stress : geometry -> material -> load -> Pressure"
+        "Compute stress for a given geometry, material, and load."]
+      [doc-def
+        "deflection : geometry -> material -> load -> Length"
+        "Compute deflection under load."]
+      [doc-def
+        "natural-freq : geometry -> material -> Frequency"
+        "Compute the natural frequency of a structure."]
+      [doc-def
+        "thermal-field : geometry -> material -> sources -> Temperature"
+        "Compute the temperature field for given heat sources."]]
+    
     [doc-prev-next "CLI" "/ref/cli" "LSP" "/ref/lsp"]]]
