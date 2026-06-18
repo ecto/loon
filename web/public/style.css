@@ -541,6 +541,40 @@ a:hover {
   max-width: 480px;
 }
 
+.hero-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1.75rem;
+  padding: 0.28rem 0.85rem 0.28rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--white);
+  font-family: var(--font-sans);
+  font-size: 0.82rem;
+  letter-spacing: -0.006em;
+  color: var(--fg);
+  text-decoration: none;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.hero-pill:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  text-decoration: none;
+  color: var(--fg);
+}
+.hero-pill-tag {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+}
+.hero-pill-text { color: var(--muted); }
+.hero-pill-arrow { color: var(--muted); transition: transform 0.15s, color 0.15s; }
+.hero-pill:hover .hero-pill-arrow { transform: translateX(2px); color: var(--accent); }
+
 .hero-wordmark {
   font-family: var(--font-display);
   font-size: 5.5rem;

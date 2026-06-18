@@ -42,6 +42,10 @@
       [loon-img]
       [div {:class "hero-content"}
         [div {:class "hero-text"}
+          [a-el {:class "hero-pill" :href "/changelog"}
+            [span {:class "hero-pill-tag"} "New"]
+            [span {:class "hero-pill-text"} "Effect handlers, end to end"]
+            [span {:class "hero-pill-arrow"} "→"]]
           [div {:class "hero-wordmark"} "loon"]
           [p {:class "hero-tagline"}
             "A functional language with invisible types, safe ownership, and algebraic effects."]
