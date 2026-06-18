@@ -1,52 +1,39 @@
 ; theme.loon — Design tokens and theme helpers
-
 ; --- Color Tokens ---
-[let colors {
-  :primary   "var(--fg)"
-  :accent    "var(--accent)"
-  :bg        "var(--bg)"
-  :white     "var(--white)"
-  :black     "var(--black)"
-  :text      "var(--fg)"
-  :muted     "var(--muted)"
-  :border    "var(--border)"
-  :green     "#2d5016"
-  :red       "#c0392b"
-}]
+[let colors
+{:primary "var(--fg)"
+  :accent "var(--accent)"
+  :bg "var(--bg)"
+  :white "var(--white)"
+  :black "var(--black)"
+  :text "var(--fg)"
+  :muted "var(--muted)"
+  :border "var(--border)"
+  :green "#2d5016"
+  :red "#c0392b"}]
 
 ; --- Spacing Tokens ---
-[let spacing {
-  :xs "0.5rem"
-  :sm "1rem"
-  :md "2rem"
-  :lg "4rem"
-  :xl "6rem"
-}]
+[let spacing {:xs "0.5rem" :sm "1rem" :md "2rem" :lg "4rem" :xl "6rem"}]
 
 ; --- Font Tokens ---
-[let fonts {
-  :serif "'IBM Plex Serif', Georgia, 'Times New Roman', serif"
-  :sans "'IBM Plex Serif', Georgia, 'Times New Roman', serif"
-  :mono "'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace"
-}]
+[let fonts
+{:serif "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif"
+  :sans "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif"
+  :mono "'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace"}]
 
 ; --- Radius Tokens ---
-[let radii {
-  :sm "3px"
-  :md "4px"
-  :lg "6px"
-}]
+[let radii {:sm "3px" :md "4px" :lg "6px"}]
 
 ; --- Shadow Tokens ---
-[let shadows {
-  :light "none"
-  :medium "none"
-  :heavy "none"
-}]
+[let shadows {:light "none" :medium "none" :heavy "none"}]
 
 ; --- Token Accessors ---
 [fn color [key] [get colors key]]
+
 [fn space [key] [get spacing key]]
+
 [fn font [key] [get fonts key]]
+
 [fn radius [key] [get radii key]]
+
 [fn shadow [key] [get shadows key]]

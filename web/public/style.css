@@ -1,7 +1,7 @@
 /* Loon — Stylesheet */
 
 /* Font */
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Serif:ital,wght@0,400;0,600;0,700;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Inter:ital,opsz,wght@0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&display=swap');
 
 :root {
   --bg: #faf9f7;
@@ -14,8 +14,8 @@
   --code-bg: #f1efe9;
   --accent-soft: rgba(74, 95, 215, 0.08);
   --sel: rgba(74, 95, 215, 0.16);
-  --font-serif: 'IBM Plex Serif', Georgia, 'Times New Roman', serif;
-  --font-sans: 'IBM Plex Serif', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-serif: var(--font-sans);
   --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
 }
 
@@ -46,11 +46,15 @@
 /* Base */
 html { font-size: 16px; }
 body {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   background: var(--bg);
   color: var(--fg);
-  line-height: 1.7;
+  line-height: 1.6;
+  letter-spacing: -0.006em;
+  font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 /* Links */
@@ -285,7 +289,8 @@ a:hover {
 
 .sidebar-link {
   display: block;
-  font: 0.95rem var(--font-serif);
+  font: 0.9rem var(--font-sans);
+  letter-spacing: -0.006em;
   color: var(--fg);
   text-decoration: none;
   padding: 0.3rem 0.65rem;
@@ -547,19 +552,22 @@ a:hover {
 }
 
 .hero-tagline {
-  font-family: var(--font-serif);
-  font-size: 1.35rem;
-  font-weight: 400;
+  font-family: var(--font-sans);
+  font-size: 1.4rem;
+  font-weight: 500;
+  letter-spacing: -0.018em;
   color: var(--fg);
-  line-height: 1.5;
+  line-height: 1.4;
   margin-bottom: 1rem;
 }
 
 .hero-sub {
-  font-family: var(--font-serif);
-  font-size: 0.95rem;
+  font-family: var(--font-sans);
+  font-size: 0.98rem;
+  font-weight: 400;
+  letter-spacing: -0.006em;
   color: var(--muted);
-  line-height: 1.7;
+  line-height: 1.6;
   margin-bottom: 2rem;
 }
 
@@ -622,18 +630,21 @@ a:hover {
 }
 
 .tour-section-title {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 1.2rem;
   font-weight: 600;
+  letter-spacing: -0.016em;
   color: var(--fg);
   margin-bottom: 0.5rem;
 }
 
 .tour-section-desc {
-  font-family: var(--font-serif);
-  font-size: 0.95rem;
+  font-family: var(--font-sans);
+  font-size: 0.96rem;
+  font-weight: 400;
+  letter-spacing: -0.006em;
   color: var(--muted);
-  line-height: 1.7;
+  line-height: 1.6;
   max-width: 540px;
   margin-bottom: 1rem;
 }
@@ -677,18 +688,19 @@ html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
 
 /* Title block */
 .doc-h1 {
-  font-family: var(--font-serif);
-  font-weight: 500;
-  font-size: 2.6rem;
-  line-height: 1.1;
-  letter-spacing: -0.022em;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 2.5rem;
+  line-height: 1.08;
+  letter-spacing: -0.024em;
   color: var(--fg);
-  margin-bottom: 0.6rem;
+  margin-bottom: 0.65rem;
 }
 .doc-subtitle {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 1.2rem;
-  font-style: italic;
+  font-weight: 400;
+  letter-spacing: -0.013em;
   color: var(--muted);
   line-height: 1.5;
   margin-bottom: 3.75rem;
@@ -697,32 +709,34 @@ html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
 /* Sections */
 .doc-section { margin-bottom: 4rem; scroll-margin-top: 1.5rem; }
 .doc-h2 {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-weight: 600;
-  font-size: 1.5rem;
-  letter-spacing: -0.012em;
+  font-size: 1.45rem;
+  letter-spacing: -0.019em;
   color: var(--fg);
-  margin-bottom: 1.25rem;
+  margin-bottom: 1.2rem;
 }
 .doc-subsection { margin-bottom: 2.5rem; }
 .doc-h3 {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-weight: 600;
-  font-size: 1.18rem;
+  font-size: 1.15rem;
+  letter-spacing: -0.013em;
   color: var(--fg);
   margin-bottom: 0.7rem;
 }
 
 /* Prose */
 .doc-text {
-  font-family: var(--font-serif);
-  font-size: 1.05rem;
-  line-height: 1.8;
+  font-family: var(--font-sans);
+  font-size: 1.0625rem;
+  line-height: 1.68;
+  letter-spacing: -0.008em;
   color: var(--fg);
-  margin-bottom: 1.3rem;
-  max-width: 68ch;
+  margin-bottom: 1.25rem;
+  max-width: 70ch;
 }
-.doc-main a { text-underline-offset: 0.2em; }
+.doc-main a { text-underline-offset: 0.18em; }
 
 /* Inline code */
 .ic {
@@ -744,12 +758,13 @@ html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
 }
 .doc-list-item {
   position: relative;
-  font-family: var(--font-serif);
-  font-size: 1.02rem;
-  line-height: 1.7;
+  font-family: var(--font-sans);
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  letter-spacing: -0.008em;
   color: var(--fg);
   padding-left: 1.4rem;
-  margin-bottom: 0.55rem;
+  margin-bottom: 0.5rem;
 }
 .doc-list-item::before {
   content: "";
@@ -778,9 +793,10 @@ html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
   color: var(--muted);
 }
 .doc-note-text {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 0.96rem;
-  line-height: 1.65;
+  line-height: 1.6;
+  letter-spacing: -0.006em;
   color: var(--fg);
   margin: 0;
 }
@@ -803,9 +819,10 @@ html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
   margin-bottom: 0.3rem;
 }
 .doc-def-desc {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 0.95rem;
-  line-height: 1.65;
+  line-height: 1.6;
+  letter-spacing: -0.006em;
   color: var(--muted);
   margin: 0;
 }
@@ -870,7 +887,8 @@ html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
 }
 .doc-toc-link {
   display: block;
-  font: 0.82rem var(--font-serif);
+  font: 0.82rem var(--font-sans);
+  letter-spacing: -0.004em;
   color: var(--muted);
   text-decoration: none;
   line-height: 1.4;
