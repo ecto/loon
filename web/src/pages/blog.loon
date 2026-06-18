@@ -1,13 +1,19 @@
 ; blog.loon — Blog index page
-
 [fn blog-features []
-  [ul-el {:style {:margin-left "1.5rem" :color [color :muted] :line-height "1.8"}}
+  [ul-el
+    {:style {:margin-left "1.5rem" :color [color :muted] :line-height "1.8"}}
     [li-el "Tail call optimization (loop/recur, trampoline)"]
     [li-el "Persistent data structures (imbl)"]
     [li-el "Full interpreter with 50+ builtins"]
     [li-el "Hindley-Milner type inference"]
     [li-el "Ownership checking (inferred)"]
     [li-el "Algebraic effects with handle/resume"]
+    [li-el "Multi-shot delimited continuations"]
+    [li-el "Effect handler towers: one program, prod/test/replay"]
+    [li-el "Async as effects: cooperative scheduler, structured concurrency"]
+    [li-el "Real TCP/HTTP sockets — serve HTTP from Loon"]
+    [li-el "HTTP framework with capability-typed routes"]
+    [li-el "Agent framework: approvals, backtracking, durable resume"]
     [li-el "Pattern matching with guards"]
     [li-el "Pipe operator with thread-last semantics"]
     [li-el "Module system with selective imports"]
@@ -15,435 +21,739 @@
     [li-el "Basic WASM codegen"]]]
 
 [fn blog-article [title date & body]
-  [article-el {:style {:display "grid"
-                       :grid-template-columns "140px 1fr"
-                       :gap "0 3rem"
-                       :padding "3.5rem 0"}}
-    [div {:style {:position "sticky"
-                  :top "2rem"
-                  :align-self "start"
-                  :color [color :muted]
-                  :font-family [font :mono]
-                  :font-size "0.8rem"
-                  :letter-spacing "0.05em"
-                  :padding-top "0.35rem"}}
+  [article-el
+    {:style {:display "grid"
+        :grid-template-columns "140px 1fr"
+        :gap "0 3rem"
+        :padding "3.5rem 0"}}
+    [div
+      {:style {:position "sticky"
+          :top "2rem"
+          :align-self "start"
+          :color [color :muted]
+          :font-family [font :mono]
+          :font-size "0.8rem"
+          :letter-spacing "0.05em"
+          :padding-top "0.35rem"}}
       date]
-    [div {:style {:min-width "0"}}
-      [h2 {:style {:font-family [font :serif]
-                   :color [color :primary]
-                   :font-size "2.2rem"
-                   :font-weight "600"
-                   :line-height "1.2"
-                   :margin-bottom "1.5rem"}}
+    [div
+      {:style {:min-width "0"}}
+      [h2
+        {:style {:font-family [font :serif]
+            :color [color :primary]
+            :font-size "2.2rem"
+            :font-weight "600"
+            :line-height "1.2"
+            :margin-bottom "1.5rem"}}
         title]
-      [div {:style {:font-family [font :serif]
-                    :font-size "1.05rem"
-                    :line-height "1.8"
-                    :color [color :text]}}
+      [div
+        {:style {:font-family [font :serif]
+            :font-size "1.05rem"
+            :line-height "1.8"
+            :color [color :text]}}
         body]]]]
 
 [fn blog-h3 [text]
-  [h3 {:style {:font-family [font :serif]
-               :color [color :primary]
-               :font-size "1.4rem"
-               :font-weight "600"
-               :margin-top "2.5rem"
-               :margin-bottom "0.75rem"}}
+  [h3
+    {:style {:font-family [font :serif]
+        :color [color :primary]
+        :font-size "1.4rem"
+        :font-weight "600"
+        :margin-top "2.5rem"
+        :margin-bottom "0.75rem"}}
     text]]
 
-[fn blog-code [src]
-  [code-block {} src]]
+[fn blog-code [src] [code-block {} src]]
 
 [fn blog-page []
-  [div {:class "page changelog"}
-    [main-el {:style {:padding "3rem 0"}}
-      [h1 {:style {:font-family [font :serif]
-                   :color [color :primary]
-                   :font-size "2.5rem"
-                   :font-weight "400"
-                   :margin-bottom "3.5rem"}}
+  [div
+    {:class "page changelog"}
+    [main-el
+      {:style {:padding "3rem 0"}}
+      [h1
+        {:style {:font-family [font :serif]
+            :color [color :primary]
+            :font-size "2.5rem"
+            :font-weight "400"
+            :margin-bottom "3.5rem"}}
         "Changelog"]
-
+      
+      ; ── v0.7.0 — Effects, towers, and two frameworks ───────────────────
+      [blog-article
+        "Effect Handlers, End to End"
+        "Jun 18, 2026"
+        
+        [p
+          "Loon's algebraic effects grew up. The same program now runs unchanged under different handler towers — production, test, and replay differ only in the handlers wrapped around the code, never in the code itself. On that substrate we built two libraries that share it: an HTTP framework and an agent framework."]
+        
+        [blog-h3 "Multi-shot continuations"]
+        [p
+          "The default VM now supports multi-shot delimited continuations: a handler can resume a captured continuation zero, one, or many times. Resuming the same point more than once explores several futures from a single program — the basis for nondeterministic search, backtracking, and retries."]
+        [blog-code
+          [str
+            "[effect Choice [pick [] Int]]\n"
+            "[fn prog [] [let a [Choice.pick]] [let b [Choice.pick]] [+ [* a 10] b]]\n"
+            "\n"
+            "; resume each pick over {1,2,3} and sum all 9 worlds -> 198\n"
+            "[handle [prog] [return x] x\n"
+            "  [Choice.pick] [+ [resume 1] [+ [resume 2] [resume 3]]]]"]]
+        
+        [blog-h3 "One program, three towers"]
+        [p
+          "A program performs effects and never names a handler, so its inferred effect row advertises exactly what it can do. Swapping the handler tower swaps the implementation — a deterministic offline test, a recording replay, or real production IO — with zero changes to the program. There are no exceptions anywhere; Fail is an effect."]
+        [blog-code
+          [str
+            "[fn make-session-id []        ; row: #{Reader Clock Random Log Fail}\n"
+            "  [let prefix [Reader.ask]]\n"
+            "  [str prefix \"-\" [Clock.now] \"-\" [Random.gen]]]\n"
+            "\n"
+            "[under-test make-session-id]  ; deterministic, offline\n"
+            "[under-prod make-session-id]  ; real clock/uuid/env"]]
+        
+        [blog-h3 "Async is an effect"]
+        [p
+          "Concurrency is ordinary code performing effects, with the scheduler as a handler — no async function coloring, no separate runtime. A cooperative scheduler built on multi-shot continuations provides fork, yield, and cancel, with structured concurrency: the scheduler is the scope, and cancelling it cancels its children."]
+        [blog-code
+          [str
+            "[fn worker [t] [println [str t \" 1\"]] [Co.yield] [println [str t \" 2\"]]]\n"
+            "[scheduler [fn [] [spawn [fn [] [worker \"A\"]]] [spawn [fn [] [worker \"B\"]]]]]\n"
+            "; A 1 / B 1 / A 2 / B 2"]]
+        
+        [blog-h3 "Real HTTP, served from Loon"]
+        [p
+          "TCP sockets are wired into the VM, so a Loon program can serve real HTTP: listen on a port, accept a request, send a response. The server is the bottom handler; request handlers are effectful functions whose rows show their capabilities — a route cannot touch the database without Db appearing in its signature."]
+        [blog-code
+          [str
+            "loon run src/http/serve.oo\n"
+            "curl localhost:8080/dashboard\n"
+            "; -> prod-user sees live-row-1, live-row-2"]]
+        
+        [blog-h3 "An HTTP framework"]
+        [p
+          "Routes are effectful functions; the handler tower is the application. The same app runs under a deterministic test tower (no network, no mocks), a trace tower that records every effect, and a prod tower over a real socket. The response body is moved into the responder and consumed on send, so sending twice is a compile error."]
+        
+        [blog-h3 "An agent framework"]
+        [p
+          "The agent control loop is plain code performing Llm, Tool, Approval, and Memory effects; the tower decides everything else. The same loop runs as a deterministic offline eval, a full trace, a human-in-the-loop approval round-trip, and — via multi-shot — an explorer that resumes each approval both ways to visit every outcome. Durable execution falls out as a handler: replay a journal of effect results, then go live, so a crashed run resumes where it left off. The agent can even be served over HTTP."]
+        [blog-code
+          [str
+            "; same loop, different towers\n"
+            "[under-test goal]    ; scripted model + mocked tools, deterministic\n"
+            "[under-trace goal]   ; records every model/tool/approval call\n"
+            "[explore goal]       ; multi-shot: every approve/deny world\n"
+            "[run-resume journal] ; durable: replay the journal, then continue live"]]
+        
+        [blog-h3 "Foundation work"]
+        [p
+          "Getting here meant hardening the core: multi-shot continuations and correct handler-stack isolation on the register VM, generic ADT construction and escaping-handler typing in the checker, host effects (clock, uuid, env, files) and TCP sockets in the VM, working multi-file imports, and several higher-order builtin fixes. A new backend differential-parity suite runs the same programs across backends and turns any divergence into a failing test."]]
+      
       ; ── v0.6.0 — Evidence IR & Register VM ─────────────────────────────
-
-      [blog-article "The Register VM" "Mar 23, 2026"
-
-        [p "Loon v0.6 replaces the tree-walking interpreter with a register-based virtual machine. Programs compile to Evidence IR — a flat, typed intermediate representation — then execute on a NaN-boxed register VM. The result: 4x faster interpretation, with a Cranelift native backend that hits 370x on compute-heavy code."]
-
+      [blog-article
+        "The Register VM"
+        "Mar 23, 2026"
+        
+        [p
+          "Loon v0.6 replaces the tree-walking interpreter with a register-based virtual machine. Programs compile to Evidence IR — a flat, typed intermediate representation — then execute on a NaN-boxed register VM. The result: 4x faster interpretation, with a Cranelift native backend that hits 370x on compute-heavy code."]
+        
         [blog-h3 "Evidence IR"]
-        [p "EIR is a register-based IR where every value lives in a virtual register. Functions lower to blocks of flat instructions — no recursion, no tree walks. The compiler resolves closures, pattern matching, and effect dispatch at compile time."]
-        [blog-code [str
-          "; source\n"
-          "[fn add [a b] [+ a b]]\n"
-          "\n"
-          "; lowers to\n"
-          ";   r0 = param 0    (a)\n"
-          ";   r1 = param 1    (b)\n"
-          ";   r2 = add r0, r1\n"
-          ";   ret r2"]]
-
+        [p
+          "EIR is a register-based IR where every value lives in a virtual register. Functions lower to blocks of flat instructions — no recursion, no tree walks. The compiler resolves closures, pattern matching, and effect dispatch at compile time."]
+        [blog-code
+          [str
+            "; source\n"
+            "[fn add [a b] [+ a b]]\n"
+            "\n"
+            "; lowers to\n"
+            ";   r0 = param 0    (a)\n"
+            ";   r1 = param 1    (b)\n"
+            ";   r2 = add r0, r1\n"
+            ";   ret r2"]]
+        
         [blog-h3 "NaN-boxing"]
-        [p "Every value fits in 8 bytes. Floats are stored as-is. Integers, booleans, nil, and heap pointers are encoded in the NaN payload bits. No allocation for small values, no type tags to check — the IEEE 754 NaN space gives us 51 bits of payload for free."]
-        [blog-code [str
-          "; all of these are a single u64:\n"
-          "42          ; tagged integer\n"
-          "3.14        ; raw f64\n"
-          "true        ; tagged boolean\n"
-          ":hello      ; interned symbol index"]]
-
+        [p
+          "Every value fits in 8 bytes. Floats are stored as-is. Integers, booleans, nil, and heap pointers are encoded in the NaN payload bits. No allocation for small values, no type tags to check — the IEEE 754 NaN space gives us 51 bits of payload for free."]
+        [blog-code
+          [str
+            "; all of these are a single u64:\n"
+            "42          ; tagged integer\n"
+            "3.14        ; raw f64\n"
+            "true        ; tagged boolean\n"
+            ":hello      ; interned symbol index"]]
+        
         [blog-h3 "Three backends"]
         [p "EIR compiles to three targets from the same IR:"]
-        [ul-el {:style {:margin-left "1.5rem" :line-height "1.8"}}
-          [li-el "Register VM — 4x faster than the tree-walker, portable, debuggable"]
-          [li-el "WASM — runs in browsers and edge workers via wasm32 codegen"]
-          [li-el "Cranelift — native x86-64/aarch64, up to 370x on numeric code"]]
-        [blog-code [str
-          "loon run fib.oo             ; VM (default)\n"
-          "loon run --native fib.oo    ; Cranelift\n"
-          "loon build --wasm fib.oo    ; WASM module"]]
-
+        [ul-el
+          {:style {:margin-left "1.5rem" :line-height "1.8"}}
+          [li-el
+            "Register VM — 4x faster than the tree-walker, portable, debuggable"]
+          [li-el
+            "WASM — runs in browsers and edge workers via wasm32 codegen"]
+          [li-el
+            "Cranelift — native x86-64/aarch64, up to 370x on numeric code"]]
+        [blog-code
+          [str
+            "loon run fib.oo             ; VM (default)\n"
+            "loon run --native fib.oo    ; Cranelift\n"
+            "loon build --wasm fib.oo    ; WASM module"]]
+        
         [blog-h3 "Trace recorder"]
-        [p "The VM includes a trace recorder that captures hot loop iterations — instruction sequences, types, branch decisions. This is the foundation for a future tracing JIT: record a trace, type-specialize it, emit native code via Cranelift, guard on type assumptions."]
-        [blog-code [str
-          "loon run --trace fib.oo\n"
-          "; Trace 0: 12 instructions, 3 guards\n"
-          ";   loop_header -> int_add -> int_sub -> branch ..."]]
-
+        [p
+          "The VM includes a trace recorder that captures hot loop iterations — instruction sequences, types, branch decisions. This is the foundation for a future tracing JIT: record a trace, type-specialize it, emit native code via Cranelift, guard on type assumptions."]
+        [blog-code
+          [str
+            "loon run --trace fib.oo\n"
+            "; Trace 0: 12 instructions, 3 guards\n"
+            ";   loop_header -> int_add -> int_sub -> branch ..."]]
+        
         [blog-h3 "Benchmarks"]
         [p "Release mode, Apple M4 Max. Shorter bars are faster."]
-
+        
         ; ── benchmark chart helper: each bar is 2 divs (row + fill) ──
         ; bar: [label, width%, time, color]
-
         ; ── fib(35) ──
-        [div {:style {:font-family [font :mono] :font-size "0.8rem" :color [color :muted] :margin "1.5rem 0 0.4rem"}} "fib(35) — exponential recursion"]
-        [div {:style {:display "grid" :grid-template-columns "52px 1fr" :gap "0.3rem 0.5rem" :align-items "center"}}
-          [span {:style {:font-size "0.75rem" :text-align "right" :color [color :muted]}} "legacy"]
-          [div {:style {:height "20px" :border-radius "2px" :background [color :muted] :width "100%" :font-size "0.7rem" :line-height "20px" :padding-left "8px" :color [color :bg]}} "22.4s"]
-          [span {:style {:font-size "0.75rem" :text-align "right" :color [color :muted]}} "VM"]
-          [div {:style {:height "20px" :border-radius "2px" :background "var(--accent)" :width "25.7%" :font-size "0.7rem" :line-height "20px" :padding-left "8px" :color [color :bg]}} "5.75s"]
-          [span {:style {:font-size "0.75rem" :text-align "right" :color [color :muted]}} "native"]
-          [div {:style {:height "20px" :border-radius "2px" :background [color :green] :width "1%" :min-width "48px" :font-size "0.7rem" :line-height "20px" :padding-left "8px" :color "#fff"}} "0.06s"]]
-
+        [div
+          {:style {:font-family [font :mono]
+              :font-size "0.8rem"
+              :color [color :muted]
+              :margin "1.5rem 0 0.4rem"}}
+          "fib(35) — exponential recursion"]
+        [div
+          {:style {:display "grid"
+              :grid-template-columns "52px 1fr"
+              :gap "0.3rem 0.5rem"
+              :align-items "center"}}
+          [span
+            {:style {:font-size "0.75rem"
+                :text-align "right"
+                :color [color :muted]}}
+            "legacy"]
+          [div
+            {:style {:height "20px"
+                :border-radius "2px"
+                :background [color :muted]
+                :width "100%"
+                :font-size "0.7rem"
+                :line-height "20px"
+                :padding-left "8px"
+                :color [color :bg]}}
+            "22.4s"]
+          [span
+            {:style {:font-size "0.75rem"
+                :text-align "right"
+                :color [color :muted]}}
+            "VM"]
+          [div
+            {:style {:height "20px"
+                :border-radius "2px"
+                :background "var(--accent)"
+                :width "25.7%"
+                :font-size "0.7rem"
+                :line-height "20px"
+                :padding-left "8px"
+                :color [color :bg]}}
+            "5.75s"]
+          [span
+            {:style {:font-size "0.75rem"
+                :text-align "right"
+                :color [color :muted]}}
+            "native"]
+          [div
+            {:style {:height "20px"
+                :border-radius "2px"
+                :background [color :green]
+                :width "1%"
+                :min-width "48px"
+                :font-size "0.7rem"
+                :line-height "20px"
+                :padding-left "8px"
+                :color "#fff"}}
+            "0.06s"]]
+        
         ; ── loop 1M ──
-        [div {:style {:font-family [font :mono] :font-size "0.8rem" :color [color :muted] :margin "1.5rem 0 0.4rem"}} "loop 1M — tight iteration"]
-        [div {:style {:display "grid" :grid-template-columns "52px 1fr" :gap "0.3rem 0.5rem" :align-items "center"}}
-          [span {:style {:font-size "0.75rem" :text-align "right" :color [color :muted]}} "legacy"]
-          [div {:style {:height "20px" :border-radius "2px" :background [color :muted] :width "100%" :font-size "0.7rem" :line-height "20px" :padding-left "8px" :color [color :bg]}} "0.44s"]
-          [span {:style {:font-size "0.75rem" :text-align "right" :color [color :muted]}} "VM"]
-          [div {:style {:height "20px" :border-radius "2px" :background "var(--accent)" :width "18.2%" :min-width "48px" :font-size "0.7rem" :line-height "20px" :padding-left "8px" :color [color :bg]}} "0.08s"]
-          [span {:style {:font-size "0.75rem" :text-align "right" :color [color :muted]}} "native"]
-          [div {:style {:height "20px" :border-radius "2px" :background [color :green] :width "1%" :min-width "52px" :font-size "0.7rem" :line-height "20px" :padding-left "8px" :color "#fff"}} "0.006s"]]
-
+        [div
+          {:style {:font-family [font :mono]
+              :font-size "0.8rem"
+              :color [color :muted]
+              :margin "1.5rem 0 0.4rem"}}
+          "loop 1M — tight iteration"]
+        [div
+          {:style {:display "grid"
+              :grid-template-columns "52px 1fr"
+              :gap "0.3rem 0.5rem"
+              :align-items "center"}}
+          [span
+            {:style {:font-size "0.75rem"
+                :text-align "right"
+                :color [color :muted]}}
+            "legacy"]
+          [div
+            {:style {:height "20px"
+                :border-radius "2px"
+                :background [color :muted]
+                :width "100%"
+                :font-size "0.7rem"
+                :line-height "20px"
+                :padding-left "8px"
+                :color [color :bg]}}
+            "0.44s"]
+          [span
+            {:style {:font-size "0.75rem"
+                :text-align "right"
+                :color [color :muted]}}
+            "VM"]
+          [div
+            {:style {:height "20px"
+                :border-radius "2px"
+                :background "var(--accent)"
+                :width "18.2%"
+                :min-width "48px"
+                :font-size "0.7rem"
+                :line-height "20px"
+                :padding-left "8px"
+                :color [color :bg]}}
+            "0.08s"]
+          [span
+            {:style {:font-size "0.75rem"
+                :text-align "right"
+                :color [color :muted]}}
+            "native"]
+          [div
+            {:style {:height "20px"
+                :border-radius "2px"
+                :background [color :green]
+                :width "1%"
+                :min-width "52px"
+                :font-size "0.7rem"
+                :line-height "20px"
+                :padding-left "8px"
+                :color "#fff"}}
+            "0.006s"]]
+        
         ; ── vec 100K ──
-        [div {:style {:font-family [font :mono] :font-size "0.8rem" :color [color :muted] :margin "1.5rem 0 0.4rem"}} "vec 100K — persistent vector build"]
-        [div {:style {:display "grid" :grid-template-columns "52px 1fr" :gap "0.3rem 0.5rem" :align-items "center"}}
-          [span {:style {:font-size "0.75rem" :text-align "right" :color [color :muted]}} "legacy"]
-          [div {:style {:height "20px" :border-radius "2px" :background [color :muted] :width "100%" :font-size "0.7rem" :line-height "20px" :padding-left "8px" :color [color :bg]}} "0.14s"]
-          [span {:style {:font-size "0.75rem" :text-align "right" :color [color :muted]}} "VM"]
-          [div {:style {:height "20px" :border-radius "2px" :background "var(--accent)" :width "21.4%" :min-width "48px" :font-size "0.7rem" :line-height "20px" :padding-left "8px" :color [color :bg]}} "0.03s"]]
-
+        [div
+          {:style {:font-family [font :mono]
+              :font-size "0.8rem"
+              :color [color :muted]
+              :margin "1.5rem 0 0.4rem"}}
+          "vec 100K — persistent vector build"]
+        [div
+          {:style {:display "grid"
+              :grid-template-columns "52px 1fr"
+              :gap "0.3rem 0.5rem"
+              :align-items "center"}}
+          [span
+            {:style {:font-size "0.75rem"
+                :text-align "right"
+                :color [color :muted]}}
+            "legacy"]
+          [div
+            {:style {:height "20px"
+                :border-radius "2px"
+                :background [color :muted]
+                :width "100%"
+                :font-size "0.7rem"
+                :line-height "20px"
+                :padding-left "8px"
+                :color [color :bg]}}
+            "0.14s"]
+          [span
+            {:style {:font-size "0.75rem"
+                :text-align "right"
+                :color [color :muted]}}
+            "VM"]
+          [div
+            {:style {:height "20px"
+                :border-radius "2px"
+                :background "var(--accent)"
+                :width "21.4%"
+                :min-width "48px"
+                :font-size "0.7rem"
+                :line-height "20px"
+                :padding-left "8px"
+                :color [color :bg]}}
+            "0.03s"]]
+        
         [blog-h3 "Status"]
-        [p "All 14 sample programs pass. 465 tests. Three backends from one IR. The tree-walking interpreter remains available via --legacy."]]
-
+        [p
+          "All 14 sample programs pass. 465 tests. Three backends from one IR. The tree-walking interpreter remains available via --legacy."]]
+      
       ; ── v0.5.0 — Tail Call Optimization ──────────────────────────────────
-
-      [blog-article "Tail Call Optimization" "Feb 25, 2026"
-
-        [p "Loon v0.5 adds three tiers of tail call optimization. Recursive patterns — the only way to loop in a functional language — now run in constant stack space. The interpreter used to overflow at ~200 recursive calls. Now it handles millions."]
-
+      [blog-article
+        "Tail Call Optimization"
+        "Feb 25, 2026"
+        
+        [p
+          "Loon v0.5 adds three tiers of tail call optimization. Recursive patterns — the only way to loop in a functional language — now run in constant stack space. The interpreter used to overflow at ~200 recursive calls. Now it handles millions."]
+        
         [blog-h3 "loop/recur"]
-        [p "The new loop form binds locals and iterates. recur jumps back to the nearest loop with new values. Zero overhead — no function object, no closure, no stack frame."]
-        [blog-code [str
-          "[loop [i 0 sum 0]\n"
-          "  [if [>= i 1000000] sum\n"
-          "    [recur [+ i 1] [+ sum i]]]]"]]
-
+        [p
+          "The new loop form binds locals and iterates. recur jumps back to the nearest loop with new values. Zero overhead — no function object, no closure, no stack frame."]
+        [blog-code
+          [str
+            "[loop [i 0 sum 0]\n"
+            "  [if [>= i 1000000] sum\n"
+            "    [recur [+ i 1] [+ sum i]]]]"]]
+        
         [blog-h3 "recur in fn"]
-        [p "recur also works inside function bodies, targeting the enclosing fn. This gives you self-recursion without naming the function or growing the stack."]
-        [blog-code [str
-          "[fn factorial [n acc]\n"
-          "  [if [<= n 1] acc\n"
-          "    [recur [- n 1] [* acc n]]]]\n"
-          "\n"
-          "[factorial 1000000 1]  ; constant stack space"]]
-
+        [p
+          "recur also works inside function bodies, targeting the enclosing fn. This gives you self-recursion without naming the function or growing the stack."]
+        [blog-code
+          [str
+            "[fn factorial [n acc]\n"
+            "  [if [<= n 1] acc\n"
+            "    [recur [- n 1] [* acc n]]]]\n"
+            "\n"
+            "[factorial 1000000 1]  ; constant stack space"]]
+        
         [blog-h3 "General tail calls"]
-        [p "Any function call in tail position — the last expression in if, match, do, when, or try — reuses the current stack frame via a trampoline. This means mutual recursion works at scale too."]
-        [blog-code [str
-          "[fn is-even [n]\n"
-          "  [if [= n 0] true [is-odd [- n 1]]]]\n"
-          "\n"
-          "[fn is-odd [n]\n"
-          "  [if [= n 0] false [is-even [- n 1]]]]\n"
-          "\n"
-          "[is-even 100000]  ; true, no stack overflow"]]
-
+        [p
+          "Any function call in tail position — the last expression in if, match, do, when, or try — reuses the current stack frame via a trampoline. This means mutual recursion works at scale too."]
+        [blog-code
+          [str
+            "[fn is-even [n]\n"
+            "  [if [= n 0] true [is-odd [- n 1]]]]\n"
+            "\n"
+            "[fn is-odd [n]\n"
+            "  [if [= n 0] false [is-even [- n 1]]]]\n"
+            "\n"
+            "[is-even 100000]  ; true, no stack overflow"]]
+        
         [blog-h3 "Collections at scale"]
-        [p "With TCO, the persistent data structures from v0.4.23 are finally unlocked. The benchmark suite now runs at 100,000 elements — 500x larger than before. Building a 100K-element vector via loop/recur takes under a second in release mode."]
-        [blog-code [str
-          "[fn build-vec [n]\n"
-          "  [loop [v #[] i 0]\n"
-          "    [if [>= i n] v\n"
-          "      [recur [conj v i] [+ i 1]]]]]\n"
-          "\n"
-          "[build-vec 100000]  ; 0.7s release"]]
-
+        [p
+          "With TCO, the persistent data structures from v0.4.23 are finally unlocked. The benchmark suite now runs at 100,000 elements — 500x larger than before. Building a 100K-element vector via loop/recur takes under a second in release mode."]
+        [blog-code
+          [str
+            "[fn build-vec [n]\n"
+            "  [loop [v #[] i 0]\n"
+            "    [if [>= i n] v\n"
+            "      [recur [conj v i] [+ i 1]]]]]\n"
+            "\n"
+            "[build-vec 100000]  ; 0.7s release"]]
+        
         [blog-h3 "What changed"]
-        [p "One file changed: the interpreter's eval/call path. eval is completely untouched. A new eval_tail function mirrors eval but returns a Trampoline (Done, TailCall, or Recur) instead of a Value. call_fn runs a trampoline loop. loop/recur are new special forms. All 355 existing tests pass unchanged."]]
-
+        [p
+          "One file changed: the interpreter's eval/call path. eval is completely untouched. A new eval_tail function mirrors eval but returns a Trampoline (Done, TailCall, or Recur) instead of a Value. call_fn runs a trampoline loop. loop/recur are new special forms. All 355 existing tests pass unchanged."]]
+      
       ; ── v0.4.23 — Persistent Data Structures ────────────────────────────
-
-      [blog-article "Persistent Data Structures" "Feb 25, 2026"
-
-        [p "Loon's collections are now backed by persistent data structures via the imbl crate. Cloning a 10,000-element vector or map is now O(1) instead of O(n), and map lookup is O(log₃₂ n) instead of O(n). Every conj, assoc, filter, and map operation benefits from structural sharing."]
-
+      [blog-article
+        "Persistent Data Structures"
+        "Feb 25, 2026"
+        
+        [p
+          "Loon's collections are now backed by persistent data structures via the imbl crate. Cloning a 10,000-element vector or map is now O(1) instead of O(n), and map lookup is O(log₃₂ n) instead of O(n). Every conj, assoc, filter, and map operation benefits from structural sharing."]
+        
         [blog-h3 "What changed"]
-        [p "Vec is now an RRB-tree vector (imbl::Vector), Map is a hash array mapped trie (imbl::HashMap), and Set is imbl::HashSet. The API is identical — existing Loon code runs without changes."]
-        [blog-code [str
-          "; These are now O(1) clone + O(log n) insert:\n"
-          "[let v [conj big-vector 42]]\n"
-          "[let m [assoc big-map :key val]]\n"
-          "\n"
-          "; Map lookup is now O(1) instead of O(n):\n"
-          "[get big-map :key]"]]
-
+        [p
+          "Vec is now an RRB-tree vector (imbl::Vector), Map is a hash array mapped trie (imbl::HashMap), and Set is imbl::HashSet. The API is identical — existing Loon code runs without changes."]
+        [blog-code
+          [str
+            "; These are now O(1) clone + O(log n) insert:\n"
+            "[let v [conj big-vector 42]]\n"
+            "[let m [assoc big-map :key val]]\n"
+            "\n"
+            "; Map lookup is now O(1) instead of O(n):\n"
+            "[get big-map :key]"]]
+        
         [blog-h3 "Performance improvements"]
         [p "The asymptotic wins are dramatic:"]
-        [ul-el {:style {:margin-left "1.5rem" :line-height "1.8"}}
+        [ul-el
+          {:style {:margin-left "1.5rem" :line-height "1.8"}}
           [li-el "Clone: O(n) — O(1) (structural sharing)"]
           [li-el "Vec append/prepend: O(n) — O(log n)"]
           [li-el "Map lookup: O(n) — O(log₃₂ n) ≈ O(1)"]
           [li-el "Map insert/remove: O(n) — O(log₃₂ n)"]
           [li-el "Set membership: O(n) — O(log₃₂ n) ≈ O(1)"]]
-
+        
         [blog-h3 "Hash and Eq for Value"]
-        [p "Value now implements Hash and Eq, required for HashMap/HashSet keys. Floats hash via to_bits(), collections use commutative XOR for order-independent hashing, and non-hashable types (Fn, Builtin) use a sentinel. This also means sets and maps can contain any value type as keys."]
-
+        [p
+          "Value now implements Hash and Eq, required for HashMap/HashSet keys. Floats hash via to_bits(), collections use commutative XOR for order-independent hashing, and non-hashable types (Fn, Builtin) use a sentinel. This also means sets and maps can contain any value type as keys."]
+        
         [blog-h3 "Other fixes"]
-        [p "sort now works correctly on keywords (previously keywords compared as equal). Tuple stays as a plain Vec since it's fixed-size and doesn't benefit from persistence."]]
-
+        [p
+          "sort now works correctly on keywords (previously keywords compared as equal). Tuple stays as a plain Vec since it's fixed-size and doesn't benefit from persistence."]]
+      
       ; ── v0.4.22 — Physics Type System ─────────────────────────────────
-
-      [blog-article "Physics Type System" "Feb 25, 2026"
-
-        [p "Loon now has compile-time dimensional analysis. The type checker rejects code that violates physical law, with zero runtime overhead. Just as Loon has no null, Loon now has no silent escape from the physics type world."]
-
+      [blog-article
+        "Physics Type System"
+        "Feb 25, 2026"
+        
+        [p
+          "Loon now has compile-time dimensional analysis. The type checker rejects code that violates physical law, with zero runtime overhead. Just as Loon has no null, Loon now has no silent escape from the physics type world."]
+        
         [blog-h3 "Literal unit suffixes"]
-        [p "Write numbers with unit suffixes. They desugar to calls to the " [doc-code "unit"] " builtin at parse time."]
-        [blog-code [str
-          "[let d 100.0m]              ; Length\n"
-          "[let t 9.58s]               ; Time\n"
-          "[let v [/ d t]]             ; Velocity\n"
-          "[let f [* 80.0kg [/ d [* t t]]]]  ; Force"]]
-
+        [p
+          "Write numbers with unit suffixes. They desugar to calls to the "
+          [doc-code "unit"]
+          " builtin at parse time."]
+        [blog-code
+          [str
+            "[let d 100.0m]              ; Length\n"
+            "[let t 9.58s]               ; Time\n"
+            "[let v [/ d t]]             ; Velocity\n"
+            "[let f [* 80.0kg [/ d [* t t]]]]  ; Force"]]
+        
         [blog-h3 "No dimensionless"]
-        [p "When you divide meters by meters, you get Scalar — not Float. To get a raw Float, you must explicitly call magnitude. This is the same philosophy as no-null: once in the physics world, you stay until you explicitly leave."]
-        [blog-code [str
-          "[/ 10.0m 5.0m]        ; Scalar (NOT Float)\n"
-          "[magnitude 10.0m]     ; 10.0 : Float (explicit exit)\n"
-          "[scalar 2.0]          ; Scalar (explicit entry)"]]
-
+        [p
+          "When you divide meters by meters, you get Scalar — not Float. To get a raw Float, you must explicitly call magnitude. This is the same philosophy as no-null: once in the physics world, you stay until you explicitly leave."]
+        [blog-code
+          [str
+            "[/ 10.0m 5.0m]        ; Scalar (NOT Float)\n"
+            "[magnitude 10.0m]     ; 10.0 : Float (explicit exit)\n"
+            "[scalar 2.0]          ; Scalar (explicit entry)"]]
+        
         [blog-h3 "Physics-aware errors"]
-        [p "Dimension mismatches produce E0208 errors with named quantities and operation hints."]
-        [blog-code [str
-          "error[E0208]: cannot add Length and Time\n"
-          "  1 | [+ distance duration]\n"
-          "    = hint: did you mean Velocity? try [/ a b]"]]
-
+        [p
+          "Dimension mismatches produce E0208 errors with named quantities and operation hints."]
+        [blog-code
+          [str
+            "error[E0208]: cannot add Length and Time\n"
+            "  1 | [+ distance duration]\n"
+            "    = hint: did you mean Velocity? try [/ a b]"]]
+        
         [blog-h3 "Physics as an algebraic effect"]
-        [p "Physical constants and material properties are effects — swap them by changing handlers. The new Physics effect provides gravity, yield-strength, elastic-modulus, density, temperature, and thermal-conductivity. The Sim effect provides stress, deflection, natural-freq, and thermal-field."]
-        [blog-code [str
-          "[handle [design-beam 10.0kN 5.0m]\n"
-          "  [Physics.yield-strength] [resume 250.0MPa]\n"
-          "  [Physics.gravity] [resume [unit 9.81 :m]]]"]]
-
+        [p
+          "Physical constants and material properties are effects — swap them by changing handlers. The new Physics effect provides gravity, yield-strength, elastic-modulus, density, temperature, and thermal-conductivity. The Sim effect provides stress, deflection, natural-freq, and thermal-field."]
+        [blog-code
+          [str
+            "[handle [design-beam 10.0kN 5.0m]\n"
+            "  [Physics.yield-strength] [resume 250.0MPa]\n"
+            "  [Physics.gravity] [resume [unit 9.81 :m]]]"]]
+        
         [blog-h3 "Dimensional polymorphism"]
-        [p "Functions that multiply by a scalar are automatically polymorphic over dimensions."]
-        [blog-code [str
-          "[fn double [x] [* 2.0 x]]\n"
-          "[double 5.0m]   ; 10.0m  (Length)\n"
-          "[double 3.0N]   ; 6.0N   (Force)"]]
-
-        [p "21 named quantities recognized (Velocity, Force, Energy, Power, Pressure, etc.), 30+ units with SI prefixes, and 5 physics constants (Const.c, Const.G, Const.h, Const.k-B, Const.e-charge)."]]
-
+        [p
+          "Functions that multiply by a scalar are automatically polymorphic over dimensions."]
+        [blog-code
+          [str
+            "[fn double [x] [* 2.0 x]]\n"
+            "[double 5.0m]   ; 10.0m  (Length)\n"
+            "[double 3.0N]   ; 6.0N   (Force)"]]
+        
+        [p
+          "21 named quantities recognized (Velocity, Force, Energy, Power, Pressure, etc.), 30+ units with SI prefixes, and 5 physics constants (Const.c, Const.G, Const.h, Const.k-B, Const.e-charge)."]]
+      
       ; ── v0.4.21 — Interpolation fix, dot access, builtins ───────────
-
-      [blog-article "JSON & Interpolation" "Feb 24, 2026"
-
-        [p "Four fixes that make Loon usable for real applications touching JSON data."]
-
+      [blog-article
+        "JSON & Interpolation"
+        "Feb 24, 2026"
+        
+        [p
+          "Four fixes that make Loon usable for real applications touching JSON data."]
+        
         [blog-h3 "Dot access on string-keyed maps"]
-        [p "map.field now tries string keys after keyword keys. Combined with IO.parse-json returning keyword keys by default, dot access works on parsed JSON without workarounds."]
-        [blog-code [str
-          "[let m [IO.parse-json \"\\\{\\\"name\\\":\\\"cam\\\"\\\}\"]]\n"
-          "m.name  ; — \"cam\""]]
-
+        [p
+          "map.field now tries string keys after keyword keys. Combined with IO.parse-json returning keyword keys by default, dot access works on parsed JSON without workarounds."]
+        [blog-code
+          [str
+            "[let m [IO.parse-json \"\\{\\\"name\\\":\\\"cam\\\"\\}\"]]\n"
+            "m.name  ; — \"cam\""]]
+        
         [blog-h3 "Fix \\n inside string interpolation"]
-        [p "Escape sequences like \\n inside \{..\} interpolation blocks were being converted too early, corrupting inner strings during re-parse. The unescape pass is now interpolation-aware: it converts \\\" to \" for inner string delimiters but preserves \\n, \\t, and \\\\ verbatim for the inner parse."]
-        [blog-code [str
-          "[let items #[\"a\" \"b\"]]\n"
-          "[str \"list:\\n\{[join \\\"\\n\\\" items]\}\"]  ; — \"list:\\na\\nb\""]]
-
+        [p
+          "Escape sequences like \\n inside {..} interpolation blocks were being converted too early, corrupting inner strings during re-parse. The unescape pass is now interpolation-aware: it converts \\\" to \" for inner string delimiters but preserves \\n, \\t, and \\\\ verbatim for the inner parse."]
+        [blog-code
+          [str
+            "[let items #[\"a\" \"b\"]]\n"
+            "[str \"list:\\n{[join \\\"\\n\\\" items]}\"]  ; — \"list:\\na\\nb\""]]
+        
         [blog-h3 "keyword and keywordize-keys builtins"]
-        [p "keyword converts a string to a keyword (the inverse of name). keywordize-keys converts all string keys in a map to keywords."]
-        [blog-code [str
-          "[keyword \"hello\"]       ; — :hello\n"
-          "[keywordize-keys m]     ; string keys — keyword keys"]]
-
+        [p
+          "keyword converts a string to a keyword (the inverse of name). keywordize-keys converts all string keys in a map to keywords."]
+        [blog-code
+          [str
+            "[keyword \"hello\"]       ; — :hello\n"
+            "[keywordize-keys m]     ; string keys — keyword keys"]]
+        
         [blog-h3 "IO.parse-json returns keyword keys"]
-        [p "JSON object keys are now keywords instead of strings, matching Loon's map literal convention \{:key val\}. The get builtin's fuzzy matching means [get m \"key\"] still works."]]
-
+        [p
+          "JSON object keys are now keywords instead of strings, matching Loon's map literal convention {:key val}. The get builtin's fuzzy matching means [get m \"key\"] still works."]]
+      
       ; ── v0.4.20 — .oo file extension ─────────────────────────────────
-
-      [blog-article ".oo" "Feb 21, 2026"
-
-        [p "Loon source files now use the .oo extension. Shorter, distinctive, from the middle of l-oo-n. All tooling, samples, and new project scaffolding default to .oo. Existing .loon files continue to work everywhere as a fallback."]
-
-        [blog-code [str
-          "; create a new project\n"
-          "loon new my-app\n"
-          "\n"
-          "; creates:\n"
-          ";   my-app/pkg.oo\n"
-          ";   my-app/src/main.oo"]]
-
-        [p "Module resolution, manifest loading (pkg.oo), and lockfiles (lock.oo) all try .oo first, then fall back to .loon. The tree-sitter grammar recognizes both extensions. No migration required — rename your files when you feel like it."]]
-
+      [blog-article
+        ".oo"
+        "Feb 21, 2026"
+        
+        [p
+          "Loon source files now use the .oo extension. Shorter, distinctive, from the middle of l-oo-n. All tooling, samples, and new project scaffolding default to .oo. Existing .loon files continue to work everywhere as a fallback."]
+        
+        [blog-code
+          [str
+            "; create a new project\n"
+            "loon new my-app\n"
+            "\n"
+            "; creates:\n"
+            ";   my-app/pkg.oo\n"
+            ";   my-app/src/main.oo"]]
+        
+        [p
+          "Module resolution, manifest loading (pkg.oo), and lockfiles (lock.oo) all try .oo first, then fall back to .loon. The tree-sitter grammar recognizes both extensions. No migration required — rename your files when you feel like it."]]
+      
       ; ── Transparent Wildcards ────────────────────────────────────────
-
-      [blog-article "Transparent Wildcards" "Feb 21, 2026"
-
-        [p "Match expressions with a wildcard arm now emit a compiler warning listing exactly which constructors the wildcard catches. This is W0100, the first warning code in Loon."]
-
-        [blog-code [str
-          "[type Shape [Circle f64] [Rect f64 f64] Point]\n"
-          "\n"
-          "[match s\n"
-          "  [Circle r] \"circle\"\n"
-          "  _ \"other\"]"]]
-
+      [blog-article
+        "Transparent Wildcards"
+        "Feb 21, 2026"
+        
+        [p
+          "Match expressions with a wildcard arm now emit a compiler warning listing exactly which constructors the wildcard catches. This is W0100, the first warning code in Loon."]
+        
+        [blog-code
+          [str
+            "[type Shape [Circle f64] [Rect f64 f64] Point]\n"
+            "\n"
+            "[match s\n"
+            "  [Circle r] \"circle\"\n"
+            "  _ \"other\"]"]]
+        
         [p "The compiler tells you:"]
-        [blog-code [str
-          "W0100: _ catches 2 constructors of Shape: Rect, Point\n"
-          "  why: adding a variant to `Shape` will silently fall into this arm\n"
-          "  fix: add explicit arms for each constructor, or keep _ if intentional"]]
-
-        [p "The motivation: in most languages, a wildcard suppresses exhaustiveness checking entirely. If you add a new variant to an ADT, the compiler stays silent and your wildcard quietly swallows the new case. This has caused real bugs in production systems."]
-        [p "Loon's approach: the wildcard still works, but the compiler makes it transparent. You see exactly what it catches. When a new variant appears, the warning updates to include it, so you can decide whether the fallback is still correct."]
-        [p "The warning fires only on known ADTs. Matching on strings, ints, or polymorphic types produces no warning. Variable bindings (not just _) trigger the same check."]
-        [p "The LSP surfaces W0100 as a proper warning severity, so your editor shows it in yellow rather than red."]]
-
+        [blog-code
+          [str
+            "W0100: _ catches 2 constructors of Shape: Rect, Point\n"
+            "  why: adding a variant to `Shape` will silently fall into this arm\n"
+            "  fix: add explicit arms for each constructor, or keep _ if intentional"]]
+        
+        [p
+          "The motivation: in most languages, a wildcard suppresses exhaustiveness checking entirely. If you add a new variant to an ADT, the compiler stays silent and your wildcard quietly swallows the new case. This has caused real bugs in production systems."]
+        [p
+          "Loon's approach: the wildcard still works, but the compiler makes it transparent. You see exactly what it catches. When a new variant appears, the warning updates to include it, so you can decide whether the fallback is still correct."]
+        [p
+          "The warning fires only on known ADTs. Matching on strings, ints, or polymorphic types produces no warning. Variable bindings (not just _) trigger the same check."]
+        [p
+          "The LSP surfaces W0100 as a proper warning severity, so your editor shows it in yellow rather than red."]]
+      
       ; ── v0.4.1 — Syntax Refresh ────────────────────────────────────
-
-      [blog-article "The Syntax Refresh" "Feb 20, 2026"
-
-        [p "Loon v0.4.1 ships nine changes that make the language smaller and more expressive. Three remove syntax, six add features. Every change was motivated by real patterns in the Loon web app and sample programs."]
-
+      [blog-article
+        "The Syntax Refresh"
+        "Feb 20, 2026"
+        
+        [p
+          "Loon v0.4.1 ships nine changes that make the language smaller and more expressive. Three remove syntax, six add features. Every change was motivated by real patterns in the Loon web app and sample programs."]
+        
         [blog-h3 "Killing =>"]
-        [p "The fat arrow was the only infix operator in a prefix language. Match arms are now positional pairs — pattern, then body. No separator."]
-        [blog-code [str
-          "; before\n"
-          "[match shape\n"
-          "  [Circle r] => [* 3.14 r r]\n"
-          "  [Rect w h] => [* w h]]\n"
-          "\n"
-          "; after\n"
-          "[match shape\n"
-          "  [Circle r] [* 3.14 r r]\n"
-          "  [Rect w h] [* w h]]"]]
-        [p "Same for handle blocks. Every source file in the codebase got cleaner."]
-
+        [p
+          "The fat arrow was the only infix operator in a prefix language. Match arms are now positional pairs — pattern, then body. No separator."]
+        [blog-code
+          [str
+            "; before\n"
+            "[match shape\n"
+            "  [Circle r] => [* 3.14 r r]\n"
+            "  [Rect w h] => [* w h]]\n"
+            "\n"
+            "; after\n"
+            "[match shape\n"
+            "  [Circle r] [* 3.14 r r]\n"
+            "  [Rect w h] [* w h]]"]]
+        [p
+          "Same for handle blocks. Every source file in the codebase got cleaner."]
+        
         [blog-h3 "Killing /"]
-        [p "Effect annotations used a / separator between params and effect set. Now the set literal sits directly after the params — no separator needed."]
-        [blog-code [str
-          "; before\n"
-          "[fn load [path] / #\{IO Fail\}\n"
-          "  [IO.read-file path]]\n"
-          "\n"
-          "; after\n"
-          "[fn load [path] #\{IO Fail\}\n"
-          "  [IO.read-file path]]"]]
-
+        [p
+          "Effect annotations used a / separator between params and effect set. Now the set literal sits directly after the params — no separator needed."]
+        [blog-code
+          [str
+            "; before\n"
+            "[fn load [path] / #{IO Fail}\n"
+            "  [IO.read-file path]]\n"
+            "\n"
+            "; after\n"
+            "[fn load [path] #{IO Fail}\n"
+            "  [IO.read-file path]]"]]
+        
         [blog-h3 "Universal string interpolation"]
-        [p "Every string now supports \{expr\} interpolation. No wrapper function needed. Use backslash-brace to write a literal brace."]
-        [blog-code [str
-          "; before\n"
-          "[str \"Hello, \" name \"!\"]\n"
-          "\n"
-          "; after\n"
-          "\"Hello, \{name\}!\""]]
+        [p
+          "Every string now supports {expr} interpolation. No wrapper function needed. Use backslash-brace to write a literal brace."]
+        [blog-code
+          [str
+            "; before\n"
+            "[str \"Hello, \" name \"!\"]\n"
+            "\n"
+            "; after\n"
+            "\"Hello, {name}!\""]]
         [p "This eliminated roughly 40% of str calls across the codebase."]
-
+        
         [blog-h3 "Type methods"]
-        [p "The centerpiece feature. Define methods directly inside type variants. Loon generates dispatch functions automatically."]
-        [blog-code [str
-          "[type Shape\n"
-          "  [Circle f64\n"
-          "    [fn area [r] [* 3.14159 r r]]\n"
-          "    [fn describe [r] \"circle r=\{r\}\"]]\n"
-          "  [Rect f64 f64\n"
-          "    [fn area [w h] [* w h]]\n"
-          "    [fn describe [w h] \"\{w\}x\{h\}\"]]\n"
-          "  Point\n"
-          "    [fn area [] 0.0]\n"
-          "    [fn describe [] \"point\"]]\n"
-          "\n"
-          "[area [Circle 5.0]]        ; 78.539...\n"
-          "[describe [Rect 3.0 4.0]]  ; \"3x4\""]]
-        [p "Types are open by default — a second [type Shape ...] adds new variants and extends the dispatch functions. This solves the expression problem with zero new keywords."]
-
+        [p
+          "The centerpiece feature. Define methods directly inside type variants. Loon generates dispatch functions automatically."]
+        [blog-code
+          [str
+            "[type Shape\n"
+            "  [Circle f64\n"
+            "    [fn area [r] [* 3.14159 r r]]\n"
+            "    [fn describe [r] \"circle r={r}\"]]\n"
+            "  [Rect f64 f64\n"
+            "    [fn area [w h] [* w h]]\n"
+            "    [fn describe [w h] \"{w}x{h}\"]]\n"
+            "  Point\n"
+            "    [fn area [] 0.0]\n"
+            "    [fn describe [] \"point\"]]\n"
+            "\n"
+            "[area [Circle 5.0]]        ; 78.539...\n"
+            "[describe [Rect 3.0 4.0]]  ; \"3x4\""]]
+        [p
+          "Types are open by default — a second [type Shape ...] adds new variants and extends the dispatch functions. This solves the expression problem with zero new keywords."]
+        
         [blog-h3 "Record types and dot access"]
         [p "ADT variants can have named fields. Dot syntax reads them."]
-        [blog-code [str
-          "[type Route\n"
-          "  [Route :path String :handler Fn]]\n"
-          "\n"
-          "[let r [Route \{path: \"/tour\", handler: tour-page\}]]\n"
-          "[r.path]     ; \"/tour\"\n"
-          "[r.handler]  ; tour-page"]]
-
+        [blog-code
+          [str
+            "[type Route\n"
+            "  [Route :path String :handler Fn]]\n"
+            "\n"
+            "[let r [Route {path: \"/tour\", handler: tour-page}]]\n"
+            "[r.path]     ; \"/tour\"\n"
+            "[r.handler]  ; tour-page"]]
+        
         [blog-h3 "Match guards"]
-        [p "A lowercase function call in pattern position evaluates as a boolean guard. This turns nested if-chains into flat match tables."]
-        [blog-code [str
-          "[match true\n"
-          "  [= w \"\"]                   \"\"\n"
-          "  [contains? special w]       \"keyword\"\n"
-          "  [contains? builtins w]      \"builtin\"\n"
-          "  _                           \"\"]"]]
-
+        [p
+          "A lowercase function call in pattern position evaluates as a boolean guard. This turns nested if-chains into flat match tables."]
+        [blog-code
+          [str
+            "[match true\n"
+            "  [= w \"\"]                   \"\"\n"
+            "  [contains? special w]       \"keyword\"\n"
+            "  [contains? builtins w]      \"builtin\"\n"
+            "  _                           \"\"]"]]
+        
         [blog-h3 "Map destructuring with defaults"]
-        [p "Function params can destructure maps with default values. This eliminates five lines of boilerplate per component."]
-        [blog-code [str
-          "; before\n"
-          "[fn card [first & rest]\n"
-          "  [let props [if [map? first] first \{\}]]\n"
-          "  [let children [if [map? first] rest [cons first rest]]]\n"
-          "  [let accent [get props :accent false]]\n"
-          "  ...]\n"
-          "\n"
-          "; after\n"
-          "[fn card [\{accent false, class \"\"\} & children]\n"
-          "  [div \{:class [cx \"card\" class]\} children]]"]]
-
+        [p
+          "Function params can destructure maps with default values. This eliminates five lines of boilerplate per component."]
+        [blog-code
+          [str
+            "; before\n"
+            "[fn card [first & rest]\n"
+            "  [let props [if [map? first] first {}]]\n"
+            "  [let children [if [map? first] rest [cons first rest]]]\n"
+            "  [let accent [get props :accent false]]\n"
+            "  ...]\n"
+            "\n"
+            "; after\n"
+            "[fn card [{accent false, class \"\"} & children]\n"
+            "  [div {:class [cx \"card\" class]} children]]"]]
+        
         [blog-h3 "And the rest"]
-        [p "The dom/ namespace is now dom. for consistency. Implicit do was already working — we just verified it. Every sample program, the entire web app, and all 306 tests pass with the new syntax."]
-
-        [row {:gap :sm :style {:margin-top "1.5rem"}}
+        [p
+          "The dom/ namespace is now dom. for consistency. Implicit do was already working — we just verified it. Every sample program, the entire web app, and all 306 tests pass with the new syntax."]
+        
+        [row
+          {:gap :sm :style {:margin-top "1.5rem"}}
           [btn {:href "/tour"} "Take the tour"]
           [btn-secondary {:href "/play"} "Try the playground"]]]
-
+      
       ; ── Hello World ─────────────────────────────────────────────────
-
-      [blog-article "Hello, World — Introducing Loon" "Feb 1, 2026"
-        [p "Today we're sharing Loon with the world. It started as a question: what if a LISP had invisible types, Rust-style ownership without annotations, and algebraic effects instead of exceptions?"]
-        [p "Loon is the answer. It's a v0.1 — the interpreter works, type inference works, the effect system works. There's a long road to v1.0, but the foundations are solid."]
-        [p "And this website? It's written entirely in Loon. The Rust interpreter compiles to WebAssembly, evaluates Loon source code in your browser, and manipulates the DOM through a thin bridge. It's Loon all the way down."]
+      [blog-article
+        "Hello, World — Introducing Loon"
+        "Feb 1, 2026"
+        [p
+          "Today we're sharing Loon with the world. It started as a question: what if a LISP had invisible types, Rust-style ownership without annotations, and algebraic effects instead of exceptions?"]
+        [p
+          "Loon is the answer. It's a v0.1 — the interpreter works, type inference works, the effect system works. There's a long road to v1.0, but the foundations are solid."]
+        [p
+          "And this website? It's written entirely in Loon. The Rust interpreter compiles to WebAssembly, evaluates Loon source code in your browser, and manipulates the DOM through a thin bridge. It's Loon all the way down."]
         [blog-h3 "What works today"]
         [blog-features]
         [blog-h3 "What's next"]
-        [p {:style {:color [color :muted] :line-height "1.7"}}
+        [p
+          {:style {:color [color :muted] :line-height "1.7"}}
           "Traits, a more complete effect system, and better error messages are the immediate priorities."]
-        [row {:gap :sm :style {:margin-top "1.5rem"}}
+        [row
+          {:gap :sm :style {:margin-top "1.5rem"}}
           [btn {:href "/tour"} "Take the tour"]
           [btn-secondary {:href "/play"} "Try the playground"]]]]]]
