@@ -610,16 +610,12 @@ a:hover {
 
 /* Landing page — Tour sections */
 .tour {
-  padding: 3rem 0 2rem;
-  border-top: 1px solid var(--border);
+  padding: 4rem 0 2rem;
 }
 
 .tour-section {
-  padding: 2.5rem 0;
-  border-bottom: 1px solid var(--border);
+  padding: 3.25rem 0;
 }
-
-.tour-section:last-child { border-bottom: none; }
 
 .tour-section-head {
   margin-bottom: 1rem;
@@ -676,7 +672,7 @@ html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
 }
 .doc-main {
   min-width: 0;
-  padding: 1.5rem 0 4rem;
+  padding: 3.75rem 0 5rem;
 }
 
 /* Title block */
@@ -695,20 +691,20 @@ html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
   font-style: italic;
   color: var(--muted);
   line-height: 1.5;
-  margin-bottom: 3.25rem;
+  margin-bottom: 3.75rem;
 }
 
 /* Sections */
-.doc-section { margin-bottom: 3.25rem; scroll-margin-top: 1.5rem; }
+.doc-section { margin-bottom: 4rem; scroll-margin-top: 1.5rem; }
 .doc-h2 {
   font-family: var(--font-serif);
   font-weight: 600;
   font-size: 1.5rem;
   letter-spacing: -0.012em;
   color: var(--fg);
-  margin-bottom: 1.1rem;
+  margin-bottom: 1.25rem;
 }
-.doc-subsection { margin-bottom: 2rem; }
+.doc-subsection { margin-bottom: 2.5rem; }
 .doc-h3 {
   font-family: var(--font-serif);
   font-weight: 600;
@@ -723,7 +719,7 @@ html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
   font-size: 1.05rem;
   line-height: 1.8;
   color: var(--fg);
-  margin-bottom: 1.15rem;
+  margin-bottom: 1.3rem;
   max-width: 68ch;
 }
 .doc-main a { text-underline-offset: 0.2em; }
@@ -742,7 +738,7 @@ html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
 /* Lists */
 .doc-list {
   list-style: none;
-  margin: 0 0 1.5rem;
+  margin: 0 0 1.75rem;
   padding: 0;
   max-width: 68ch;
 }
@@ -768,8 +764,8 @@ html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
 
 /* Callouts */
 .doc-note {
-  margin: 1.75rem 0;
-  padding: 1rem 1.25rem;
+  margin: 2.25rem 0;
+  padding: 1.1rem 1.35rem;
   border-left: 3px solid var(--border);
   border-radius: 0 6px 6px 0;
   background: var(--white);
