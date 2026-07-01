@@ -1,0 +1,41 @@
+; Loon OS — deterministic simulation.
+;
+; A sealed world: virtual clock, seeded PRNG (minstd), and an in-memory
+; filesystem, all in one handler. No kernel below it — a simulated program
+; touches nothing real, runs at infinite speed (sleep just advances the
+; virtual clock), and is bit-for-bit reproducible from its seed. This is
+; the substrate for FoundationDB-style deterministic testing of whole
+; process worlds (compose with sched.oo).
+;
+; State: {:time ms  :seed s  :fs {path contents}}
+[use sys]
+
+; Run thunk in a sealed simulated world. Returns
+; {:result r :time end-ms :fs final-fs}.
+[pub
+  fn
+  simulate
+  [thunk seed opts]
+  [[handle
+    [thunk]
+    [return x]
+    [fn [st] {:result x :time [get st :time] :fs [get st :fs]}]
+    [Clock.now]
+    [fn [st] [[resume [int [/ [get st :time] 1000]]] st]]
+    [Clock.millis]
+    [fn [st] [[resume [get st :time]] st]]
+    [Clock.sleep ms]
+    [fn [st] [[resume []] [update st :time [fn [t] [+ t ms]]]]]
+    [Rand.int n]
+    [fn [st]
+      [let s2 [imod [* [get st :seed] 48271] 2147483647]]
+      [[resume [imod s2 n]] [assoc st :seed s2]]]
+    [Fs.read-file p]
+    [fn [st] [[resume [get [get st :fs] p ""]] st]]
+    [Fs.write-file p c]
+    [fn [st] [[resume []] [update st :fs [fn [fs] [assoc fs p c]]]]]
+    [Env.get k]
+    [fn [st] [[resume [get [get opts :env {}] k ""]] st]]]
+    {:time [get opts :start 0]
+      :seed [if [> seed 0] seed 1]
+      :fs [get opts :fs {}]}]]

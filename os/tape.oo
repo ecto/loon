@@ -1,0 +1,62 @@
+; Loon OS — record / replay.
+;
+; Every source of nondeterminism is a Sys effect, so recording a run means
+; interposing a handler that forwards each operation outward (to whatever
+; kernel is below) and logs the result. Replaying means handling the same
+; operations from the log instead — no real IO, bit-identical execution.
+; A production crash ships home as a tape.
+;
+; State (the tape) is threaded functionally with the escaping-continuation
+; pattern from samples/state.oo: every handler clause evaluates to a function
+; of the tape, and `[return x]` closes the loop.
+[use sys]
+
+; Run thunk, forwarding Sys effects to the surrounding kernel and logging
+; every result. Returns {:result r :tape #[...]}.
+[pub
+  fn
+  record
+  [thunk]
+  [[handle
+    [thunk]
+    [return x]
+    [fn [tape] {:result x :tape tape}]
+    [Fs.read-file p]
+    [fn [tape] [let v [Fs.read-file p]] [[resume v] [conj tape v]]]
+    [Fs.write-file p c]
+    ; writes return Unit — forward for the side effect, nothing to tape
+    [fn [tape] [Fs.write-file p c] [[resume []] tape]]
+    [Clock.now]
+    [fn [tape] [let v [Clock.now]] [[resume v] [conj tape v]]]
+    [Clock.millis]
+    [fn [tape] [let v [Clock.millis]] [[resume v] [conj tape v]]]
+    [Rand.int n]
+    [fn [tape] [let v [Rand.int n]] [[resume v] [conj tape v]]]
+    [Env.get k]
+    [fn [tape] [let v [Env.get k]] [[resume v] [conj tape v]]]]
+    #[]]]
+
+; Re-run thunk against a recorded tape: every nondeterministic result comes
+; from the tape (in order), writes are suppressed. No kernel needed at all —
+; a replayed program touches nothing real.
+[pub
+  fn
+  replay
+  [thunk tape]
+  [[handle
+    [thunk]
+    [return x]
+    [fn [t] x]
+    [Fs.read-file p]
+    [fn [t] [[resume [first t]] [drop 1 t]]]
+    [Fs.write-file p c]
+    [fn [t] [[resume []] t]]
+    [Clock.now]
+    [fn [t] [[resume [first t]] [drop 1 t]]]
+    [Clock.millis]
+    [fn [t] [[resume [first t]] [drop 1 t]]]
+    [Rand.int n]
+    [fn [t] [[resume [first t]] [drop 1 t]]]
+    [Env.get k]
+    [fn [t] [[resume [first t]] [drop 1 t]]]]
+    tape]]

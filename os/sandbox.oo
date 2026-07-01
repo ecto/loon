@@ -1,0 +1,35 @@
+; Loon OS — containment as a library.
+;
+; chroot, read-only mounts, and env isolation are all the same move: a
+; handler that rewrites or denies operations before forwarding them.
+; Nesting sandboxes is just handler composition.
+[use sys]
+
+; chroot: every path is re-rooted under `root` before forwarding
+[pub
+  fn
+  sandboxed
+  [thunk root]
+  [handle
+    [thunk]
+    [Fs.read-file p]
+    [resume [Fs.read-file [str root p]]]
+    [Fs.write-file p c]
+    [resume [Fs.write-file [str root p] c]]]]
+
+; read-only: writes abort with Fail (catch with `try`); reads pass through
+[pub
+  fn
+  read-only
+  [thunk]
+  [handle
+    [thunk]
+    [Fs.write-file p c]
+    [Fail.fail [str "read-only: denied write to " p]]]]
+
+; env isolation: lookups resolve from a fixed map, never the real environment
+[pub
+  fn
+  with-env
+  [thunk env]
+  [handle [thunk] [Env.get k] [resume [get env k ""]]]]
