@@ -167,4 +167,30 @@ fn known_divergences_are_pinned() {
                   [fn main [] [println [handle [handle [body] [A.a] [resume 10]] [B.b] [resume 20]]]]";
     assert_eq!(eir_output(nested).as_deref(), Ok("30"), "EIR nested handlers (correct)");
     assert!(interp_output(nested).is_err(), "interp nested handlers (broken)");
+
+    // forward-to-outer: a handler clause re-performing the handled effect runs
+    // OUTSIDE its own handle (deep-handler semantics), so the perform reaches
+    // the next handler out — the interposition substrate tracing/sandboxing
+    // wrappers are built on. The EIR VM used to re-enter its own handler here
+    // and loop forever; it now forwards ("w:k:x"). The legacy interp forwards
+    // but then LOSES the wrapper clause's continuation, returning the outer
+    // handler's value alone ("k:x"). EIR correct.
+    let forward = r#"[effect F [read [String] String]]
+        [fn body [] [F.read "x"]]
+        [fn wrapped [] [handle [body] [F.read p] [resume [str "w:" [F.read p]]]]]
+        [fn main [] [println [handle [wrapped] [F.read p] [resume [str "k:" p]]]]]"#;
+    assert_eq!(eir_output(forward).as_deref(), Ok("w:k:x"), "EIR forward-to-outer (correct)");
+    assert_eq!(interp_output(forward).as_deref(), Ok("k:x"), "interp forward-to-outer (wrong)");
+
+    // inner-handle-survives-resume: an inner handle suspended inside a captured
+    // continuation must still handle its effect after the outer handler
+    // resumes — its handlers travel with the segment (the EIR VM snapshots and
+    // re-establishes them). The legacy interp hits its sequential-effects guard
+    // and errors. EIR correct.
+    let suspended = "[effect A [geta [] Int]] [effect B [getb [] Int]] \
+         [fn inner [] [+ [A.geta] [B.getb]]] \
+         [fn body [] [handle [inner] [B.getb] [resume 10]]] \
+         [fn main [] [println [handle [body] [A.geta] [resume 1]]]]";
+    assert_eq!(eir_output(suspended).as_deref(), Ok("11"), "EIR suspended inner handle (correct)");
+    assert!(interp_output(suspended).is_err(), "interp suspended inner handle (broken)");
 }
