@@ -180,6 +180,22 @@ impl MacroExpander {
                         self.expansion_traces.insert(result.id.0, trace);
                         return Ok(result);
                     }
+
+                    // Core desugar: `[and ...]`/`[or ...]` in call position become
+                    // nested `[if ...]`, so they SHORT-CIRCUIT on every backend
+                    // (interp, EIR VM, wasm codegen all consume expanded programs).
+                    // Value semantics match the eager builtins exactly: return the
+                    // first falsy (and) / truthy (or) operand, else the last one;
+                    // `[and]` is true, `[or]` is false. Each operand is evaluated
+                    // at most once (bound to a gensym temp). A bare `and`/`or` in
+                    // value position is untouched and still resolves to the eager
+                    // variadic builtin function.
+                    if name == "and" || name == "or" {
+                        let is_and = name == "and";
+                        let operands: Result<Vec<_>, _> =
+                            items[1..].iter().map(|e| self.expand_expr(e)).collect();
+                        return Ok(self.desugar_and_or(is_and, &operands?, expr.span));
+                    }
                 }
                 // Not a macro call — recursively expand children
                 let expanded_items: Result<Vec<_>, _> =
@@ -210,6 +226,37 @@ impl MacroExpander {
             }
             // Atoms and other nodes pass through
             _ => Ok(expr.clone()),
+        }
+    }
+
+    /// Desugar `[and a b ...]` / `[or a b ...]` (operands already expanded)
+    /// into nested `[do [let g a] [if g ... ...]]` so evaluation stops at the
+    /// deciding operand. The temp binding guarantees single evaluation while
+    /// still returning the operand's VALUE (not a coerced bool).
+    fn desugar_and_or(&mut self, is_and: bool, operands: &[Expr], span: Span) -> Expr {
+        match operands {
+            // [and] → true, [or] → false (identity elements, as the builtins).
+            [] => Expr::new(ExprKind::Bool(is_and), span),
+            [only] => only.clone(),
+            [first, rest @ ..] => {
+                let tmp = self.gensym(if is_and { "and" } else { "or" });
+                let sym = |s: &str| Expr::new(ExprKind::Symbol(s.to_string()), span);
+                let rest_expr = self.desugar_and_or(is_and, rest, span);
+                let let_form = Expr::new(
+                    ExprKind::List(vec![sym("let"), sym(&tmp), first.clone()]),
+                    span,
+                );
+                let (then_e, else_e) = if is_and {
+                    (rest_expr, sym(&tmp))
+                } else {
+                    (sym(&tmp), rest_expr)
+                };
+                let if_form = Expr::new(
+                    ExprKind::List(vec![sym("if"), sym(&tmp), then_e, else_e]),
+                    span,
+                );
+                Expr::new(ExprKind::List(vec![sym("do"), let_form, if_form]), span)
+            }
         }
     }
 

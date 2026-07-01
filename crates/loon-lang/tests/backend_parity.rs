@@ -79,6 +79,25 @@ const CORPUS: &[(&str, &str)] = &[
          [fn body [] [* [C.pick] 2]] \
          [fn main [] [println [handle [body] [C.pick] [+ [resume 3] [resume 5]]]]]",
     ),
+    // and/or: short-circuiting (desugared to nested `if` at macro-expansion
+    // time, so both backends inherit it). `[or true X]` must never evaluate X;
+    // `[assert-eq 1 2]` would abort the program if it ran.
+    (
+        "and-or-short-circuit",
+        r#"[fn main []
+             [println [or true [assert-eq 1 2]]]
+             [println [and false [assert-eq 1 2]]]]"#,
+    ),
+    // and/or: value semantics (first falsy / first truthy, else last) and
+    // variadic/nullary forms.
+    (
+        "and-or-values",
+        r#"[fn main []
+             [println [and 1 2]] [println [and false 2]]
+             [println [or false 5]] [println [or 3 5]]
+             [println [and]] [println [or]]
+             [println [and true true 9]] [println [or false false 7]]]"#,
+    ),
     // strings
     ("str-split-join", r#"[fn main [] [println [join [split "a,b,c" ","] "-"]]]"#),
     ("str-case", r#"[fn main [] [println [str [uppercase "hi"] [lowercase "YO"]]]]"#),
