@@ -34,6 +34,18 @@ enum Command {
         /// Compile to native code via Cranelift and run
         #[arg(long)]
         native: bool,
+        /// Record every nondeterministic effect result to a trace file
+        /// (Loon data format), for `loon replay`
+        #[arg(long, value_name = "TRACE")]
+        record: Option<PathBuf>,
+    },
+    /// Re-run a program feeding recorded effect results back from a trace
+    /// (see `loon run --record`) — same trace, same execution, same crash
+    Replay {
+        /// Trace file written by `loon run --record`
+        trace: PathBuf,
+        /// The program to replay
+        file: PathBuf,
     },
     /// Start the REPL
     Repl,
@@ -126,7 +138,16 @@ fn main() {
             wasm,
             legacy,
             native,
+            ref record,
         } => {
+            if record.is_some() && (wasm || legacy || native) {
+                eprintln!(
+                    "{}: --record requires the default EIR VM backend \
+                     (drop --wasm/--legacy/--native)",
+                    "error".red().bold()
+                );
+                std::process::exit(1);
+            }
             if native {
                 run_file_native(file);
             } else if wasm {
@@ -134,9 +155,13 @@ fn main() {
             } else if legacy {
                 run_file_legacy(file);
             } else {
-                run_file(file);
+                run_file(file, record.as_deref());
             }
         }
+        Command::Replay {
+            ref trace,
+            ref file,
+        } => replay_file(trace, file),
         Command::Check { ref file } => check_file(file),
         Command::Build { ref file, release } => build_file(file, release),
         Command::Repl => repl::run_repl(),
@@ -176,7 +201,7 @@ fn start_lsp() {
     rt.block_on(loon_lsp::run_stdio());
 }
 
-fn run_file(path: &PathBuf) {
+fn run_file(path: &PathBuf, record: Option<&std::path::Path>) {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -186,7 +211,35 @@ fn run_file(path: &PathBuf) {
     };
 
     let base_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    match loon_lang::eir::vm::eval_eir_with_base_dir(&source, base_dir) {
+    let result = match record {
+        Some(trace_path) => {
+            let recorder = match loon_lang::eir::replay::TraceRecorder::create(trace_path) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!(
+                        "{} creating trace {}: {e}",
+                        "error".red().bold(),
+                        trace_path.display()
+                    );
+                    std::process::exit(1);
+                }
+            };
+            let r = loon_lang::eir::vm::eval_eir_recorded(&source, base_dir, recorder);
+            // Entries were flushed line-by-line during the run (so a crash
+            // still leaves a loadable trace); fold them into a single Loon
+            // vector now that the run is over — whether it succeeded or not.
+            if let Err(e) = loon_lang::eir::replay::finalize_trace_file(trace_path) {
+                eprintln!(
+                    "{} finalizing trace {}: {e}",
+                    "warning".yellow().bold(),
+                    trace_path.display()
+                );
+            }
+            r
+        }
+        None => loon_lang::eir::vm::eval_eir_with_base_dir(&source, base_dir),
+    };
+    match result {
         Ok(_result) => {}
         Err(e) => {
             let filename = path.display().to_string();
@@ -194,6 +247,87 @@ fn run_file(path: &PathBuf) {
                 loon_lang::errors::report_error(&filename, &source, &e.to_string(), span);
             } else {
                 eprintln!("{}: {e}", "error".red().bold());
+            }
+            if let Some(trace_path) = record {
+                eprintln!(
+                    "{} crash trace saved to {} — reproduce it with: loon replay {} {}",
+                    "note:".bold(),
+                    trace_path.display(),
+                    trace_path.display(),
+                    path.display()
+                );
+            }
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `loon replay <trace> <program>`: re-run a program feeding recorded effect
+/// results back in order. Deterministic by construction — including
+/// reproducing the crash the trace was recorded from.
+fn replay_file(trace_path: &PathBuf, path: &PathBuf) {
+    let trace_src = match std::fs::read_to_string(trace_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "{} reading trace {}: {e}",
+                "error".red().bold(),
+                trace_path.display()
+            );
+            std::process::exit(1);
+        }
+    };
+    let entries = match loon_lang::eir::replay::parse_trace(&trace_src) {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!(
+                "{} in trace {}: {e}",
+                "error".red().bold(),
+                trace_path.display()
+            );
+            std::process::exit(1);
+        }
+    };
+
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{} reading {}: {e}", "error".red().bold(), path.display());
+            std::process::exit(1);
+        }
+    };
+
+    let base_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    match loon_lang::eir::vm::eval_eir_replayed(&source, base_dir, entries) {
+        Ok((_result, remaining)) => {
+            if remaining > 0 {
+                eprintln!(
+                    "{} program finished with {remaining} unused trace entr{} — \
+                     the program (or its inputs) likely changed since the trace was recorded",
+                    "warning".yellow().bold(),
+                    if remaining == 1 { "y" } else { "ies" }
+                );
+            }
+        }
+        Err(e) => {
+            let filename = path.display().to_string();
+            let diverged = matches!(
+                e.kind,
+                loon_lang::eir::vm::VmErrorKind::ReplayDivergence(_)
+            );
+            if let Some(span) = e.span {
+                loon_lang::errors::report_error(&filename, &source, &e.to_string(), span);
+            } else {
+                eprintln!("{}: {e}", "error".red().bold());
+            }
+            if diverged {
+                eprintln!(
+                    "{} the program and the trace no longer agree; re-record with: \
+                     loon run --record {} {}",
+                    "fix:".bold(),
+                    trace_path.display(),
+                    path.display()
+                );
             }
             std::process::exit(1);
         }

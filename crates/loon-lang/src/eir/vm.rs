@@ -248,6 +248,10 @@ pub struct Vm {
     current_span: Span,
     /// Heap statistics tracked during execution.
     heap_stats: HeapStats,
+    /// Incremental effect-trace recorder (`loon run --record`).
+    recorder: Option<crate::eir::replay::TraceRecorder>,
+    /// Loaded trace being replayed (`loon replay`).
+    replay: Option<crate::eir::replay::ReplayCursor>,
 }
 
 /// Heap allocation statistics collected during VM execution.
@@ -288,7 +292,24 @@ impl Vm {
             resume_closure: Val::UNIT, // set in run()
             current_span: Span::ZERO,
             heap_stats: HeapStats::default(),
+            recorder: None,
+            replay: None,
         }
+    }
+
+    /// Record every builtin (unhandled) nondeterministic effect result.
+    pub fn set_recorder(&mut self, recorder: crate::eir::replay::TraceRecorder) {
+        self.recorder = Some(recorder);
+    }
+
+    /// Feed recorded results back instead of executing builtin effects.
+    pub fn set_replay(&mut self, entries: Vec<crate::eir::replay::TraceEntry>) {
+        self.replay = Some(crate::eir::replay::ReplayCursor::new(entries));
+    }
+
+    /// Trace entries not yet consumed by the replay (0 when not replaying).
+    pub fn replay_remaining(&self) -> usize {
+        self.replay.as_ref().map(|r| r.remaining()).unwrap_or(0)
     }
 
     /// Run the module's entry function.
@@ -1011,7 +1032,7 @@ impl Vm {
                     // Unhandled: a builtin effect (real IO, etc.).
                     let effect = self.module.strings[_eff_sid.0 as usize].clone();
                     let op_name = self.module.strings[op_sid.0 as usize].clone();
-                    let result = self.builtin_effect(&effect, &op_name, &vals);
+                    let result = self.perform_builtin_effect(&effect, &op_name, &vals)?;
                     self.w(*dst, result);
                 }
             }
@@ -1240,6 +1261,12 @@ impl Vm {
     fn exec_builtin(&mut self, built: Built, args: &[Val]) -> Result<Val, VmError> {
         match built {
             Built::Println => {
+                // Under record/replay, bare `println` is treated as the
+                // `IO.println` effect so log writes land in the trace (for
+                // observability) and are order-checked on replay.
+                if self.recorder.is_some() || self.replay.is_some() {
+                    return self.perform_builtin_effect("IO", "println", args);
+                }
                 let s: Vec<String> = args.iter().map(|v| self.val_to_string(*v)).collect();
                 let line = s.join(" ");
                 println!("{line}");
@@ -2147,6 +2174,112 @@ impl Vm {
 
     // ── Effect builtins ────────────────────────────────────────────────
 
+    /// Execute a builtin (unhandled) effect, threading record/replay through.
+    ///
+    /// - Recording: run the real effect, then append `{effect op args result}`
+    ///   to the trace (flushed immediately, so it survives a crash).
+    /// - Replaying: consume the next trace entry and return its recorded
+    ///   result instead of touching the outside world. `IO.println` is the
+    ///   exception: it re-executes so replay output matches the recorded run.
+    ///   A mismatched or exhausted trace is a `ReplayDivergence` error.
+    fn perform_builtin_effect(
+        &mut self,
+        effect: &str,
+        op: &str,
+        args: &[Val],
+    ) -> Result<Val, VmError> {
+        let recorded = crate::eir::replay::is_recorded_op(effect, op);
+        if recorded && self.replay.is_some() {
+            return self.replay_effect(effect, op, args);
+        }
+        let result = self.builtin_effect(effect, op, args);
+        if recorded && self.recorder.is_some() {
+            let entry = crate::eir::replay::TraceEntry {
+                effect: effect.to_string(),
+                op: op.to_string(),
+                args: args.iter().map(|a| self.val_to_trace(*a)).collect(),
+                result: self.val_to_trace(result),
+            };
+            if let Some(rec) = self.recorder.as_mut() {
+                if let Err(e) = rec.record(&entry) {
+                    eprintln!("warning: failed to write trace entry: {e}");
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// Replay path: feed the next recorded result back for this operation.
+    fn replay_effect(&mut self, effect: &str, op: &str, args: &[Val]) -> Result<Val, VmError> {
+        let cursor = self.replay.as_mut().expect("replay cursor");
+        let idx = cursor.idx;
+        if idx >= cursor.entries.len() {
+            return Err(VmError::new(VmErrorKind::ReplayDivergence(format!(
+                "trace exhausted at step {idx}: the program performed {effect}.{op} \
+                 but the trace has only {idx} recorded operation(s)"
+            )))
+            .with_span(self.current_span));
+        }
+        let entry = cursor.entries[idx].clone();
+        cursor.idx += 1;
+        if entry.effect != effect || entry.op != op {
+            return Err(VmError::new(VmErrorKind::ReplayDivergence(format!(
+                "at step {idx}: trace recorded {}.{} but the program performed {effect}.{op}",
+                entry.effect, entry.op
+            )))
+            .with_span(self.current_span));
+        }
+        // Log writes re-execute so the replayed run prints what the recorded
+        // run printed; everything else returns the recorded result without
+        // touching the outside world.
+        if effect == "IO" && op == "println" {
+            return Ok(self.builtin_effect(effect, op, args));
+        }
+        Ok(self.trace_to_val(&entry.result))
+    }
+
+    /// Convert a runtime value to a trace value for serialization. Values a
+    /// builtin effect never produces (closures, ADTs, maps) fall back to
+    /// their display string — good enough for `:args` observability.
+    fn val_to_trace(&self, val: Val) -> crate::eir::replay::TraceVal {
+        use crate::eir::replay::TraceVal;
+        if val.is_unit() {
+            TraceVal::Unit
+        } else if val.is_int() {
+            TraceVal::Int(val.as_int())
+        } else if val.is_float() {
+            TraceVal::Float(val.as_float())
+        } else if val.is_bool() {
+            TraceVal::Bool(val.as_bool())
+        } else if val.is_ptr() {
+            match self.get_obj(val) {
+                Some(Obj::Str(s)) => TraceVal::Str(s.clone()),
+                Some(Obj::Vec(items)) => {
+                    TraceVal::Vec(items.iter().map(|v| self.val_to_trace(*v)).collect())
+                }
+                _ => TraceVal::Str(self.val_to_string(val)),
+            }
+        } else {
+            TraceVal::Str(self.val_to_string(val))
+        }
+    }
+
+    /// Materialize a recorded trace value back into a runtime value.
+    fn trace_to_val(&mut self, t: &crate::eir::replay::TraceVal) -> Val {
+        use crate::eir::replay::TraceVal;
+        match t {
+            TraceVal::Unit => Val::UNIT,
+            TraceVal::Int(n) => self.safe_int(*n),
+            TraceVal::Float(f) => Val::float(*f),
+            TraceVal::Bool(b) => Val::bool(*b),
+            TraceVal::Str(s) => self.alloc_str(s.clone()),
+            TraceVal::Vec(items) => {
+                let vals: ImVec = items.iter().map(|i| self.trace_to_val(i)).collect();
+                self.alloc(Obj::Vec(vals))
+            }
+        }
+    }
+
     fn builtin_effect(&mut self, effect: &str, op: &str, args: &[Val]) -> Val {
         match (effect, op) {
             ("IO", "println") => {
@@ -2337,6 +2470,9 @@ pub enum VmErrorKind {
     StackOverflow,
     /// `assert-eq` failed with mismatched values.
     AssertFailed(String, String),
+    /// A replayed program requested a different effect op than the trace
+    /// recorded (or ran past the end of the trace).
+    ReplayDivergence(String),
 }
 
 impl VmError {
@@ -2364,6 +2500,9 @@ impl std::fmt::Display for VmError {
             VmErrorKind::StackOverflow => write!(f, "stack overflow"),
             VmErrorKind::AssertFailed(actual, expected) => {
                 write!(f, "assertion failed: {actual} != {expected}")
+            }
+            VmErrorKind::ReplayDivergence(msg) => {
+                write!(f, "replay diverged {msg}")
             }
         }
     }
@@ -2394,6 +2533,49 @@ fn eval_eir_impl(src: &str, mut checker: crate::check::Checker) -> Result<VmResu
     let module = crate::eir::lower::lower(&checker);
     let mut vm = Vm::new(module);
     vm.run()
+}
+
+/// Like `eval_eir_with_base_dir`, but records every builtin nondeterministic
+/// effect result through `recorder` (see `crate::eir::replay`).
+pub fn eval_eir_recorded(
+    src: &str,
+    base_dir: &std::path::Path,
+    recorder: crate::eir::replay::TraceRecorder,
+) -> Result<VmResult, VmError> {
+    let mut checker = crate::check::Checker::with_base_dir(base_dir);
+    let exprs = crate::parser::parse(src).map_err(|e| VmError {
+        kind: VmErrorKind::Trap,
+        span: Some(e.span),
+        context: Some(format!("parse error: {}", e.message)),
+    })?;
+    let _errors = checker.check_program(&exprs);
+    let module = crate::eir::lower::lower(&checker);
+    let mut vm = Vm::new(module);
+    vm.set_recorder(recorder);
+    vm.run()
+}
+
+/// Like `eval_eir_with_base_dir`, but feeds recorded effect results back from
+/// `entries` instead of executing builtin effects. On success also returns
+/// the number of unconsumed trace entries (nonzero means the program ended
+/// before using the whole trace — usually a sign the program changed).
+pub fn eval_eir_replayed(
+    src: &str,
+    base_dir: &std::path::Path,
+    entries: Vec<crate::eir::replay::TraceEntry>,
+) -> Result<(VmResult, usize), VmError> {
+    let mut checker = crate::check::Checker::with_base_dir(base_dir);
+    let exprs = crate::parser::parse(src).map_err(|e| VmError {
+        kind: VmErrorKind::Trap,
+        span: Some(e.span),
+        context: Some(format!("parse error: {}", e.message)),
+    })?;
+    let _errors = checker.check_program(&exprs);
+    let module = crate::eir::lower::lower(&checker);
+    let mut vm = Vm::new(module);
+    vm.set_replay(entries);
+    let result = vm.run()?;
+    Ok((result, vm.replay_remaining()))
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
