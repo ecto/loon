@@ -151,12 +151,28 @@ fn backends_agree() {
 fn known_divergences_are_pinned() {
     let abort = "[effect F [fail [] Int]] [fn body [] [+ 1 [F.fail]]] \
                  [fn main [] [println [handle [body] [F.fail] 999]]]";
-    assert_eq!(eir_output(abort).as_deref(), Ok("999"), "EIR abort (correct)");
-    assert_eq!(interp_output(abort).as_deref(), Ok("1000"), "interp abort (wrong)");
+    assert_eq!(
+        eir_output(abort).as_deref(),
+        Ok("999"),
+        "EIR abort (correct)"
+    );
+    assert_eq!(
+        interp_output(abort).as_deref(),
+        Ok("1000"),
+        "interp abort (wrong)"
+    );
 
     let fold_builtin = "[fn main [] [println [fold #[1 2 3 4] 0 +]]]";
-    assert_eq!(eir_output(fold_builtin).as_deref(), Ok("0"), "EIR builtin-as-fold-fn (gap)");
-    assert_eq!(interp_output(fold_builtin).as_deref(), Ok("10"), "interp builtin-as-fold-fn");
+    assert_eq!(
+        eir_output(fold_builtin).as_deref(),
+        Ok("0"),
+        "EIR builtin-as-fold-fn (gap)"
+    );
+    assert_eq!(
+        interp_output(fold_builtin).as_deref(),
+        Ok("10"),
+        "interp builtin-as-fold-fn"
+    );
 
     // nested-handlers: two effects handled by two stacked handlers. The EIR VM
     // composes them correctly (30); the legacy interp's replay strategy hits its
@@ -165,6 +181,13 @@ fn known_divergences_are_pinned() {
     let nested = "[effect A [a [] Int]] [effect B [b [] Int]] \
                   [fn body [] [+ [A.a] [B.b]]] \
                   [fn main [] [println [handle [handle [body] [A.a] [resume 10]] [B.b] [resume 20]]]]";
-    assert_eq!(eir_output(nested).as_deref(), Ok("30"), "EIR nested handlers (correct)");
-    assert!(interp_output(nested).is_err(), "interp nested handlers (broken)");
+    assert_eq!(
+        eir_output(nested).as_deref(),
+        Ok("30"),
+        "EIR nested handlers (correct)"
+    );
+    assert!(
+        interp_output(nested).is_err(),
+        "interp nested handlers (broken)"
+    );
 }

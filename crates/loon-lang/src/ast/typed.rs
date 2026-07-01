@@ -141,7 +141,7 @@ mod tests {
         // from let-polymorphism, so resolve through subst).
         let resolved = checker.subst.resolve(&typed[1].ty);
         match &resolved {
-            Type::Fn(params, _ret) => {
+            Type::Fn(params, _ret, _) => {
                 assert_eq!(params.len(), 2);
             }
             other => panic!("expected Fn type, got {other:?}"),

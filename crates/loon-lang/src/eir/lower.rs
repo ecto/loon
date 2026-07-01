@@ -173,7 +173,13 @@ impl<'a> Lower<'a> {
         if let Some(base) = self.checker.base_dir() {
             let base = base.to_path_buf();
             let mut visited: HashSet<PathBuf> = HashSet::new();
-            self.collect_imports(&main_forms, &base, &mut visited, &mut imported, &mut qualified);
+            self.collect_imports(
+                &main_forms,
+                &base,
+                &mut visited,
+                &mut imported,
+                &mut qualified,
+            );
         }
         let mut all_forms = imported;
         all_forms.extend(main_forms);
@@ -303,7 +309,10 @@ impl<'a> Lower<'a> {
             let Ok(exprs) = crate::parser::parse(&src) else {
                 continue;
             };
-            let dir = file.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| base.to_path_buf());
+            let dir = file
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| base.to_path_buf());
             // Run a sub-checker to macro-expand (and type) the module.
             let mut sub = Checker::with_base_dir(&dir);
             let _ = sub.check_program(&exprs);
@@ -320,9 +329,10 @@ impl<'a> Lower<'a> {
                     // Record qualified names for `pub fn` exports.
                     if let Some(ExprKind::Symbol(s)) = mitems.first().map(|e| &e.kind) {
                         if s == "pub" && mitems.len() >= 3 {
-                            if let (Some(ExprKind::Symbol(inner)), Some(ExprKind::Symbol(name))) =
-                                (mitems.get(1).map(|e| &e.kind), mitems.get(2).map(|e| &e.kind))
-                            {
+                            if let (Some(ExprKind::Symbol(inner)), Some(ExprKind::Symbol(name))) = (
+                                mitems.get(1).map(|e| &e.kind),
+                                mitems.get(2).map(|e| &e.kind),
+                            ) {
                                 if inner == "fn" {
                                     qualified.push((alias.clone(), name.clone()));
                                 }

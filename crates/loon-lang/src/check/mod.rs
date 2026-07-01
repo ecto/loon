@@ -183,7 +183,11 @@ impl Checker {
                     }],
                 )],
                 vars: vec![tv],
-                ty: Type::Fn(vec![Type::Var(tv), Type::Var(tv)], Box::new(Type::Var(tv))),
+                ty: Type::Fn(
+                    vec![Type::Var(tv), Type::Var(tv)],
+                    Box::new(Type::Var(tv)),
+                    EffectRow::pure(),
+                ),
             };
             for op in ["+", "-", "*"] {
                 self.env.set_global(op.to_string(), add_scheme.clone());
@@ -212,7 +216,11 @@ impl Checker {
                     }],
                 )],
                 vars: vec![tv],
-                ty: Type::Fn(vec![Type::Var(tv), Type::Var(tv)], Box::new(Type::Bool)),
+                ty: Type::Fn(
+                    vec![Type::Var(tv), Type::Var(tv)],
+                    Box::new(Type::Bool),
+                    EffectRow::pure(),
+                ),
             };
             for op in [">", "<", ">=", "<="] {
                 self.env.set_global(op.to_string(), ord_scheme.clone());
@@ -243,7 +251,11 @@ impl Checker {
                         }],
                     )],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![Type::Var(tv), Type::Var(tv)], Box::new(Type::Bool)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tv), Type::Var(tv)],
+                        Box::new(Type::Bool),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -251,7 +263,11 @@ impl Checker {
         // not: Bool → Bool
         self.env.set_global(
             "not".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Bool], Box::new(Type::Bool))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Bool],
+                Box::new(Type::Bool),
+                EffectRow::pure(),
+            )),
         );
 
         // str: ∀a b. a → b → Str (variadic, approximate as polymorphic)
@@ -273,7 +289,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva, tvb],
-                    ty: Type::Fn(vec![Type::Var(tva), Type::Var(tvb)], Box::new(Type::Str)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tva), Type::Var(tvb)],
+                        Box::new(Type::Str),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -291,7 +311,7 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Unit)),
+                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Unit), EffectRow::pure()),
                 },
             );
         }
@@ -312,6 +332,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Con("Vec".to_string(), vec![Type::Var(tv)])],
                         Box::new(Type::Int),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -333,6 +354,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Con("Vec".to_string(), vec![Type::Var(tv)]), Type::Int],
                         Box::new(Type::Var(tv)),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -344,6 +366,7 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Int, Type::Int],
                 Box::new(Type::Con("Vec".to_string(), vec![Type::Int])),
+                EffectRow::pure(),
             )),
         );
 
@@ -360,7 +383,7 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Bool)),
+                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Bool), EffectRow::pure()),
                 },
             );
         }
@@ -384,6 +407,7 @@ impl Checker {
                             Type::Var(tv),
                         ],
                         Box::new(Type::Bool),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -408,6 +432,7 @@ impl Checker {
                             Type::Var(tv),
                         ],
                         Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tv)])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -432,6 +457,7 @@ impl Checker {
                             Type::Keyword,
                         ],
                         Box::new(Type::Var(tv)),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -454,6 +480,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![map_t.clone(), Type::Keyword, Type::Var(tv)],
                         Box::new(map_t),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -480,10 +507,15 @@ impl Checker {
                     vars: vec![tva, tvb],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Var(tvb))),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Var(tvb)),
+                                EffectRow::pure(),
+                            ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvb)])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -504,10 +536,15 @@ impl Checker {
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Bool),
+                                EffectRow::pure(),
+                            ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tva)])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -538,10 +575,12 @@ impl Checker {
                             Type::Fn(
                                 vec![Type::Var(tvb), Type::Var(tva)],
                                 Box::new(Type::Var(tvb)),
+                                EffectRow::pure(),
                             ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Var(tvb)),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -562,10 +601,15 @@ impl Checker {
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Unit)),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Unit),
+                                EffectRow::pure(),
+                            ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Unit),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -585,7 +629,7 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![vec_a.clone()], Box::new(vec_a)),
+                    ty: Type::Fn(vec![vec_a.clone()], Box::new(vec_a), EffectRow::pure()),
                 },
             );
         }
@@ -603,19 +647,31 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![Type::Var(tv), Type::Var(tv)], Box::new(Type::Unit)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tv), Type::Var(tv)],
+                        Box::new(Type::Unit),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
 
         // / and %: Int → Int → Int
-        let int_bin = Scheme::mono(Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)));
+        let int_bin = Scheme::mono(Type::Fn(
+            vec![Type::Int, Type::Int],
+            Box::new(Type::Int),
+            EffectRow::pure(),
+        ));
         for op in ["/", "%"] {
             self.env.set_global(op.to_string(), int_bin.clone());
         }
 
         // or, and: Bool → Bool → Bool
-        let bool_bin = Scheme::mono(Type::Fn(vec![Type::Bool, Type::Bool], Box::new(Type::Bool)));
+        let bool_bin = Scheme::mono(Type::Fn(
+            vec![Type::Bool, Type::Bool],
+            Box::new(Type::Bool),
+            EffectRow::pure(),
+        ));
         for op in ["or", "and"] {
             self.env.set_global(op.to_string(), bool_bin.clone());
         }
@@ -633,7 +689,7 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Unit)),
+                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Unit), EffectRow::pure()),
                 },
             );
         }
@@ -644,6 +700,7 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Str, Type::Str],
                 Box::new(Type::Con("Vec".to_string(), vec![Type::Str])),
+                EffectRow::pure(),
             )),
         );
 
@@ -653,17 +710,26 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Str, Type::Con("Vec".to_string(), vec![Type::Str])],
                 Box::new(Type::Str),
+                EffectRow::pure(),
             )),
         );
 
         // trim: Str → Str
         self.env.set_global(
             "trim".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Str))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Str),
+                EffectRow::pure(),
+            )),
         );
 
         // starts-with?, ends-with?: Str → Str → Bool
-        let str_str_bool = Scheme::mono(Type::Fn(vec![Type::Str, Type::Str], Box::new(Type::Bool)));
+        let str_str_bool = Scheme::mono(Type::Fn(
+            vec![Type::Str, Type::Str],
+            Box::new(Type::Bool),
+            EffectRow::pure(),
+        ));
         for op in ["starts-with?", "ends-with?"] {
             self.env.set_global(op.to_string(), str_str_bool.clone());
         }
@@ -674,11 +740,16 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Str, Type::Str, Type::Str],
                 Box::new(Type::Str),
+                EffectRow::pure(),
             )),
         );
 
         // uppercase, lowercase: Str → Str
-        let str_to_str = Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Str)));
+        let str_to_str = Scheme::mono(Type::Fn(
+            vec![Type::Str],
+            Box::new(Type::Str),
+            EffectRow::pure(),
+        ));
         for op in ["uppercase", "lowercase"] {
             self.env.set_global(op.to_string(), str_to_str.clone());
         }
@@ -705,11 +776,16 @@ impl Checker {
                     vars: vec![tva, tvb],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Var(tvb))),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Var(tvb)),
+                                EffectRow::pure(),
+                            ),
                             Type::Keyword,
                             vec_a.clone(),
                         ],
                         Box::new(vec_a),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -729,7 +805,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Int, vec_a.clone()], Box::new(vec_a)),
+                    ty: Type::Fn(
+                        vec![Type::Int, vec_a.clone()],
+                        Box::new(vec_a),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -748,7 +828,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Int, vec_a.clone()], Box::new(vec_a)),
+                    ty: Type::Fn(
+                        vec![Type::Int, vec_a.clone()],
+                        Box::new(vec_a),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -767,7 +851,7 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![vec_a.clone()], Box::new(vec_a)),
+                    ty: Type::Fn(vec![vec_a.clone()], Box::new(vec_a), EffectRow::pure()),
                 },
             );
         }
@@ -789,6 +873,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Con("Vec".to_string(), vec![vec_a.clone()])],
                         Box::new(vec_a),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -811,6 +896,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Int, vec_a.clone()],
                         Box::new(Type::Con("Vec".to_string(), vec![vec_a])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -844,6 +930,7 @@ impl Checker {
                             "Vec".to_string(),
                             vec![Type::Tuple(vec![Type::Var(tva), Type::Var(tvb)])],
                         )),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -864,10 +951,15 @@ impl Checker {
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Bool),
+                                EffectRow::pure(),
+                            ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Con("Option".to_string(), vec![Type::Var(tva)])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -888,10 +980,15 @@ impl Checker {
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Bool),
+                                EffectRow::pure(),
+                            ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Bool),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -912,10 +1009,15 @@ impl Checker {
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Bool),
+                                EffectRow::pure(),
+                            ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Bool),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -939,9 +1041,14 @@ impl Checker {
                         vec![
                             map_t.clone(),
                             Type::Keyword,
-                            Type::Fn(vec![Type::Var(tv)], Box::new(Type::Var(tv))),
+                            Type::Fn(
+                                vec![Type::Var(tv)],
+                                Box::new(Type::Var(tv)),
+                                EffectRow::pure(),
+                            ),
                         ],
                         Box::new(map_t),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -975,6 +1082,7 @@ impl Checker {
                             "Vec".to_string(),
                             vec![Type::Tuple(vec![Type::Var(tvk), Type::Var(tvv)])],
                         )),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1005,6 +1113,7 @@ impl Checker {
                             vec![Type::Var(tvk), Type::Var(tvv)],
                         )],
                         Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvk)])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1035,6 +1144,7 @@ impl Checker {
                             vec![Type::Var(tvk), Type::Var(tvv)],
                         )],
                         Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvv)])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1054,7 +1164,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![map_t.clone(), map_t.clone()], Box::new(map_t)),
+                    ty: Type::Fn(
+                        vec![map_t.clone(), map_t.clone()],
+                        Box::new(map_t),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1073,7 +1187,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![map_t.clone(), Type::Keyword], Box::new(map_t)),
+                    ty: Type::Fn(
+                        vec![map_t.clone(), Type::Keyword],
+                        Box::new(map_t),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1092,7 +1210,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![vec_a.clone(), Type::Var(tv)], Box::new(vec_a)),
+                    ty: Type::Fn(
+                        vec![vec_a.clone(), Type::Var(tv)],
+                        Box::new(vec_a),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1100,19 +1222,31 @@ impl Checker {
         // int: Str → Int
         self.env.set_global(
             "int".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Int))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Int),
+                EffectRow::pure(),
+            )),
         );
 
         // float: Str → Float
         self.env.set_global(
             "float".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Float))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Float),
+                EffectRow::pure(),
+            )),
         );
 
         // char-at: Str → Int → Str
         self.env.set_global(
             "char-at".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str, Type::Int], Box::new(Type::Str))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str, Type::Int],
+                Box::new(Type::Str),
+                EffectRow::pure(),
+            )),
         );
 
         // substring: Str → Int → Int → Str
@@ -1121,19 +1255,28 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Str, Type::Int, Type::Int],
                 Box::new(Type::Str),
+                EffectRow::pure(),
             )),
         );
 
         // contains?: Str → Str → Bool
         self.env.set_global(
             "contains?".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str, Type::Str], Box::new(Type::Bool))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str, Type::Str],
+                Box::new(Type::Bool),
+                EffectRow::pure(),
+            )),
         );
 
         // index-of: Str → Str → Int
         self.env.set_global(
             "index-of".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str, Type::Str], Box::new(Type::Int))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str, Type::Str],
+                Box::new(Type::Int),
+                EffectRow::pure(),
+            )),
         );
 
         // group-by: ∀a k. (a → k) → Vec a → Map k (Vec a)
@@ -1157,7 +1300,11 @@ impl Checker {
                     vars: vec![tva, tvk],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Var(tvk))),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Var(tvk)),
+                                EffectRow::pure(),
+                            ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Con(
@@ -1167,6 +1314,7 @@ impl Checker {
                                 Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                             ],
                         )),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1196,10 +1344,12 @@ impl Checker {
                             Type::Fn(
                                 vec![Type::Var(tva)],
                                 Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvb)])),
+                                EffectRow::pure(),
                             ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvb)])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1219,7 +1369,7 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![vec_a.clone()], Box::new(vec_a)),
+                    ty: Type::Fn(vec![vec_a.clone()], Box::new(vec_a), EffectRow::pure()),
                 },
             );
         }
@@ -1239,7 +1389,11 @@ impl Checker {
                     Scheme {
                         bounds: vec![],
                         vars: vec![tva],
-                        ty: Type::Fn(vec![vec_a.clone()], Box::new(Type::Var(tva))),
+                        ty: Type::Fn(
+                            vec![vec_a.clone()],
+                            Box::new(Type::Var(tva)),
+                            EffectRow::pure(),
+                        ),
                     },
                 );
             }
@@ -1251,6 +1405,7 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Con("Vec".to_string(), vec![Type::Int])],
                 Box::new(Type::Int),
+                EffectRow::pure(),
             )),
         );
 
@@ -1267,7 +1422,7 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Str)),
+                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Str), EffectRow::pure()),
                 },
             );
         }
@@ -1300,6 +1455,7 @@ impl Checker {
                             "Map".to_string(),
                             vec![Type::Var(tvk), Type::Var(tvv)],
                         )),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1324,6 +1480,7 @@ impl Checker {
                             Type::Con("Tx".to_string(), vec![Type::Var(tva)]),
                             Type::Con("Rx".to_string(), vec![Type::Var(tva)]),
                         ])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1348,6 +1505,7 @@ impl Checker {
                             Type::Var(tva),
                         ],
                         Box::new(Type::Unit),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1369,6 +1527,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Con("Rx".to_string(), vec![Type::Var(tva)])],
                         Box::new(Type::Var(tva)),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1377,13 +1536,21 @@ impl Checker {
         // name: Keyword → Str
         self.env.set_global(
             "name".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Keyword], Box::new(Type::Str))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Keyword],
+                Box::new(Type::Str),
+                EffectRow::pure(),
+            )),
         );
 
         // keyword: Str → Keyword
         self.env.set_global(
             "keyword".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Keyword))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Keyword),
+                EffectRow::pure(),
+            )),
         );
 
         // keywordize-keys: ∀a. Map<Str,a> → Map<Keyword,a>
@@ -1400,7 +1567,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Var(tva))),
+                    ty: Type::Fn(
+                        vec![Type::Var(tva)],
+                        Box::new(Type::Var(tva)),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1418,7 +1589,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tva)],
+                        Box::new(Type::Bool),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1436,7 +1611,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tva)],
+                        Box::new(Type::Bool),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1455,7 +1634,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Var(tva), vec_a.clone()], Box::new(vec_a)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tva), vec_a.clone()],
+                        Box::new(vec_a),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1485,6 +1668,7 @@ impl Checker {
                             "Map".to_string(),
                             vec![Type::Var(tvk), Type::Var(tvv)],
                         )),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1506,6 +1690,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Con("Rx".to_string(), vec![Type::Var(tva)])],
                         Box::new(Type::Con("Option".to_string(), vec![Type::Var(tva)])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1514,7 +1699,11 @@ impl Checker {
         // sqrt: Float → Float
         self.env.set_global(
             "sqrt".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Float], Box::new(Type::Float))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Float],
+                Box::new(Type::Float),
+                EffectRow::pure(),
+            )),
         );
 
         // pow: Float → Float → Float
@@ -1523,13 +1712,18 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Float, Type::Float],
                 Box::new(Type::Float),
+                EffectRow::pure(),
             )),
         );
 
         // abs: Float → Float
         self.env.set_global(
             "abs".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Float], Box::new(Type::Float))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Float],
+                Box::new(Type::Float),
+                EffectRow::pure(),
+            )),
         );
 
         // first: ∀a. Vec a → a
@@ -1548,6 +1742,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Con("Vec".to_string(), vec![Type::Var(tva)])],
                         Box::new(Type::Var(tva)),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1569,6 +1764,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Con("Vec".to_string(), vec![Type::Var(tva)])],
                         Box::new(Type::Var(tva)),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1587,7 +1783,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tva)],
+                        Box::new(Type::Bool),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1605,7 +1805,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tva)],
+                        Box::new(Type::Bool),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1623,7 +1827,7 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Str)),
+                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Str), EffectRow::pure()),
                 },
             );
         }
@@ -1634,13 +1838,21 @@ impl Checker {
         // dom/create-element: Str → Int
         self.env.set_global(
             "dom.create-element".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Int))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Int),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/create-text: Str → Int
         self.env.set_global(
             "dom.create-text".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Int))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Int),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/set-attribute: Int → Str → Str → ()
@@ -1649,6 +1861,7 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Int, Type::Str, Type::Str],
                 Box::new(Type::Unit),
+                EffectRow::pure(),
             )),
         );
 
@@ -1658,19 +1871,28 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Int, Type::Str, Type::Str],
                 Box::new(Type::Unit),
+                EffectRow::pure(),
             )),
         );
 
         // dom/append-child: Int → Int → ()
         self.env.set_global(
             "dom.append-child".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Int, Type::Int],
+                Box::new(Type::Unit),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/remove-child: Int → Int → ()
         self.env.set_global(
             "dom.remove-child".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Int, Type::Int],
+                Box::new(Type::Unit),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/replace-child: Int → Int → Int → ()
@@ -1679,25 +1901,38 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Int, Type::Int, Type::Int],
                 Box::new(Type::Unit),
+                EffectRow::pure(),
             )),
         );
 
         // dom/set-text: Int → Str → ()
         self.env.set_global(
             "dom.set-text".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Int, Type::Str], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Int, Type::Str],
+                Box::new(Type::Unit),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/query-selector: Str → Int
         self.env.set_global(
             "dom.query-selector".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Int))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Int),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/set-inner-html: Int → Str → ()
         self.env.set_global(
             "dom.set-inner-html".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Int, Type::Str], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Int, Type::Str],
+                Box::new(Type::Unit),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/add-listener: ∀a. Int → Str → (a → ()) → Int
@@ -1717,9 +1952,14 @@ impl Checker {
                         vec![
                             Type::Int,
                             Type::Str,
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Unit)),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Unit),
+                                EffectRow::pure(),
+                            ),
                         ],
                         Box::new(Type::Int),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1728,43 +1968,67 @@ impl Checker {
         // dom/remove-listener: Int → ()
         self.env.set_global(
             "dom.remove-listener".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Int], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Int],
+                Box::new(Type::Unit),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/get-value: Int → Str
         self.env.set_global(
             "dom.get-value".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Int], Box::new(Type::Str))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Int],
+                Box::new(Type::Str),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/set-value: Int → Str → ()
         self.env.set_global(
             "dom.set-value".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Int, Type::Str], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Int, Type::Str],
+                Box::new(Type::Unit),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/eval-loon: Str → Str
         self.env.set_global(
             "dom.eval-loon".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Str))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Str),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/set-title: Str → ()
         self.env.set_global(
             "dom.set-title".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Unit),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/push-state: Str → ()
         self.env.set_global(
             "dom.push-state".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Unit),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/location: () → Str
         self.env.set_global(
             "dom.location".to_string(),
-            Scheme::mono(Type::Fn(vec![], Box::new(Type::Str))),
+            Scheme::mono(Type::Fn(vec![], Box::new(Type::Str), EffectRow::pure())),
         );
 
         // dom/request-animation-frame: ∀a. (a → ()) → ()
@@ -1781,8 +2045,13 @@ impl Checker {
                     bounds: vec![],
                     vars: vec![tva],
                     ty: Type::Fn(
-                        vec![Type::Fn(vec![Type::Var(tva)], Box::new(Type::Unit))],
+                        vec![Type::Fn(
+                            vec![Type::Var(tva)],
+                            Box::new(Type::Unit),
+                            EffectRow::pure(),
+                        )],
                         Box::new(Type::Unit),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1803,10 +2072,15 @@ impl Checker {
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Unit)),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Unit),
+                                EffectRow::pure(),
+                            ),
                             Type::Int,
                         ],
                         Box::new(Type::Unit),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1918,6 +2192,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Var(tva), Type::Keyword],
                         Box::new(Type::Var(tva)),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1936,7 +2211,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Float)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tva)],
+                        Box::new(Type::Float),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1947,6 +2226,7 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Float],
                 Box::new(Type::Dim(Dimension::SCALAR)),
+                EffectRow::pure(),
             )),
         );
 
@@ -2712,7 +2992,7 @@ impl Checker {
         let arg_types: Vec<Type> = items[1..].iter().map(|a| self.infer(a)).collect();
         let ret = self.subst.fresh();
 
-        let expected_fn = Type::Fn(arg_types, Box::new(ret.clone()));
+        let expected_fn = Type::Fn(arg_types, Box::new(ret.clone()), EffectRow::pure());
         if let Err(e) = unify(&mut self.subst, &func_ty, &expected_fn) {
             self.push_unify_error(e, span);
         }
@@ -2748,7 +3028,7 @@ impl Checker {
             }
             self.pop_scope();
 
-            return Type::Fn(param_types, Box::new(body_ty));
+            return Type::Fn(param_types, Box::new(body_ty), EffectRow::pure());
         }
 
         self.subst.fresh()
@@ -2802,7 +3082,11 @@ impl Checker {
             let param_types = self.infer_params(params);
 
             let temp_ret = self.subst.fresh();
-            let temp_fn_ty = Type::Fn(param_types.clone(), Box::new(temp_ret.clone()));
+            let temp_fn_ty = Type::Fn(
+                param_types.clone(),
+                Box::new(temp_ret.clone()),
+                EffectRow::pure(),
+            );
             self.env.set(name.clone(), Scheme::mono(temp_fn_ty));
 
             let mut body_ty = Type::Unit;
@@ -2816,7 +3100,7 @@ impl Checker {
 
             self.pop_scope();
 
-            let fn_ty = Type::Fn(param_types, Box::new(body_ty));
+            let fn_ty = Type::Fn(param_types, Box::new(body_ty), EffectRow::pure());
 
             // Check against pending sig if present
             if let Some((sig_ty, sig_span)) = self.pending_sigs.remove(&name) {
@@ -3004,7 +3288,11 @@ impl Checker {
                     let resume_arg = self.subst.fresh();
                     self.env.set(
                         "resume".to_string(),
-                        Scheme::mono(Type::Fn(vec![resume_arg], Box::new(answer.clone()))),
+                        Scheme::mono(Type::Fn(
+                            vec![resume_arg],
+                            Box::new(answer.clone()),
+                            EffectRow::pure(),
+                        )),
                     );
                     let cty = self.infer(clause_body);
                     if let Err(e) = unify(&mut self.subst, &answer, &cty) {
@@ -3387,7 +3675,7 @@ impl Checker {
                     };
 
                     let ret = self.subst.fresh();
-                    let expected = Type::Fn(arg_tys, Box::new(ret.clone()));
+                    let expected = Type::Fn(arg_tys, Box::new(ret.clone()), EffectRow::pure());
                     if let Err(e) = unify(&mut self.subst, &func_ty, &expected) {
                         self.push_unify_error(e, step.span);
                     }
@@ -3396,7 +3684,8 @@ impl Checker {
                 ExprKind::Symbol(_) => {
                     let func_ty = self.infer(step);
                     let ret = self.subst.fresh();
-                    let expected = Type::Fn(vec![current], Box::new(ret.clone()));
+                    let expected =
+                        Type::Fn(vec![current], Box::new(ret.clone()), EffectRow::pure());
                     if let Err(e) = unify(&mut self.subst, &func_ty, &expected) {
                         self.push_unify_error(e, step.span);
                     }
@@ -3498,7 +3787,8 @@ impl Checker {
                             })
                             .collect();
 
-                        let ctor_ty = Type::Fn(field_types, Box::new(result_ty.clone()));
+                        let ctor_ty =
+                            Type::Fn(field_types, Box::new(result_ty.clone()), EffectRow::pure());
                         let vars: Vec<TypeVar> = type_params.iter().map(|(_, v)| *v).collect();
                         let scheme = Scheme {
                             bounds: vec![],
@@ -3696,7 +3986,8 @@ impl Checker {
 
                                     self.pop_scope();
 
-                                    let fn_ty = Type::Fn(param_types, Box::new(body_ty));
+                                    let fn_ty =
+                                        Type::Fn(param_types, Box::new(body_ty), EffectRow::pure());
                                     let scheme = generalize(&self.env, &self.subst, &fn_ty);
                                     method_schemes.insert(method_name.clone(), scheme.clone());
 
@@ -3759,7 +4050,7 @@ impl Checker {
         }
 
         let ret = types.pop().unwrap();
-        Type::Fn(types, Box::new(ret))
+        Type::Fn(types, Box::new(ret), EffectRow::pure())
     }
 
     /// Convert an AST expression into a Type
@@ -4366,7 +4657,7 @@ mod tests {
         assert!(errors.is_empty());
         let resolved = ty;
         assert!(
-            matches!(resolved, Type::Fn(params, ret) if params.len() == 1 && *ret == Type::Int)
+            matches!(resolved, Type::Fn(params, ret, _) if params.len() == 1 && *ret == Type::Int)
         );
     }
 

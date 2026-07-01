@@ -741,7 +741,7 @@ impl StringRuntime {
         // outer scan
         i.push(Block(BlockType::Empty)); // A
         i.push(Loop(BlockType::Empty)); // B
-        // if i + len_sep > len_s: break A
+                                        // if i + len_sep > len_s: break A
         i.push(LocalGet(8));
         i.push(LocalGet(5));
         i.push(I64Add);
@@ -755,7 +755,7 @@ impl StringRuntime {
         i.push(LocalSet(9));
         i.push(Block(BlockType::Empty)); // C
         i.push(Loop(BlockType::Empty)); // D
-        // if j >= len_sep: break C
+                                        // if j >= len_sep: break C
         i.push(LocalGet(9));
         i.push(LocalGet(5));
         i.push(I64LtS);
@@ -783,7 +783,7 @@ impl StringRuntime {
         i.push(LocalSet(10));
         i.push(Br(2)); // break C (0=If E, 1=Loop D, 2=Block C)
         i.push(End); // E
-        // j++
+                     // j++
         i.push(LocalGet(9));
         i.push(I64Const(1));
         i.push(I64Add);
@@ -791,7 +791,7 @@ impl StringRuntime {
         i.push(Br(0)); // continue D
         i.push(End); // D
         i.push(End); // C
-        // if matched: push substring(s, start, i); i += len_sep; start = i
+                     // if matched: push substring(s, start, i); i += len_sep; start = i
         i.push(LocalGet(10));
         i.push(I64Eqz);
         i.push(I32Eqz);
@@ -819,7 +819,7 @@ impl StringRuntime {
         i.push(Br(0)); // continue B
         i.push(End); // B
         i.push(End); // A
-        // push final segment substring(s, start, len_s)
+                     // push final segment substring(s, start, len_s)
         i.push(LocalGet(6));
         i.push(LocalGet(0));
         i.push(LocalGet(7));

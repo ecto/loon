@@ -198,14 +198,17 @@ pub enum Type {
     Unit,
     /// Unification variable
     Var(TypeVar),
-    /// Function type: params -> return
-    Fn(Vec<Type>, Box<Type>),
+    /// Function type: params -> return, with an effect row describing the
+    /// effects performed when the function is called.
+    Fn(Vec<Type>, Box<Type>, EffectRow),
     /// Type constructor: name + type args (e.g., Vec<Int>, Option<T>)
     Con(String, Vec<Type>),
     /// Tuple
     Tuple(Vec<Type>),
-    /// Effect set on a function type
-    Effect(Box<Type>, EffectSet),
+    /// A bare effect row. Only used as a substitution binding target for
+    /// effect-row tail variables (mirroring how record row `rest` variables
+    /// are bound to `Type::Row`). Never appears as the type of an expression.
+    Effects(EffectRow),
     /// Row type for structural records: maps field names to types with an optional extension variable
     /// Row(fields, rest) where rest is None (closed) or Some(TypeVar) (open/extensible)
     Row(Vec<(String, Type)>, Option<TypeVar>),
@@ -213,6 +216,78 @@ pub enum Type {
     Record(Box<Type>),
     /// Dimensional type for physics (e.g., Length, Velocity, Force)
     Dim(Dimension),
+}
+
+/// A row of effects: a set of concrete effect labels plus an optional
+/// polymorphic tail variable.
+///
+/// This mirrors record row polymorphism (`Type::Row(fields, rest)`): the
+/// `tail` is a unification variable that can absorb further labels, which is
+/// what lets higher-order functions generalize over the effects of their
+/// arguments. `{IO | e}` means "performs IO, plus whatever `e` turns out to
+/// be"; `{IO}` (closed) means "performs exactly IO".
+///
+/// Effect rows are inference-only — there is no user-facing syntax for tail
+/// variables. Tail variables share the `TypeVar` namespace with ordinary
+/// type variables and are bound in the same `Subst` (to `Type::Effects`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectRow {
+    pub labels: BTreeSet<String>,
+    pub tail: Option<TypeVar>,
+}
+
+impl EffectRow {
+    /// The closed empty row: performs no effects.
+    pub fn pure() -> Self {
+        Self {
+            labels: BTreeSet::new(),
+            tail: None,
+        }
+    }
+
+    /// An open row with no concrete labels: `{ | e}`.
+    pub fn open(tail: TypeVar) -> Self {
+        Self {
+            labels: BTreeSet::new(),
+            tail: Some(tail),
+        }
+    }
+
+    /// A closed row with the given labels.
+    pub fn closed(labels: BTreeSet<String>) -> Self {
+        Self { labels, tail: None }
+    }
+
+    pub fn is_pure(&self) -> bool {
+        self.labels.is_empty() && self.tail.is_none()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.labels.is_empty()
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.labels.contains(name)
+    }
+
+    pub fn insert(&mut self, name: String) {
+        self.labels.insert(name);
+    }
+
+    /// Render the row for diagnostics: "IO", "IO + Fail", "IO + e", "pure".
+    /// The tail is rendered as a plain `e` — internal variable ids are never
+    /// shown to users.
+    pub fn render(&self) -> String {
+        let mut parts: Vec<String> = self.labels.iter().cloned().collect();
+        if self.tail.is_some() {
+            parts.push("e".to_string());
+        }
+        if parts.is_empty() {
+            "pure".to_string()
+        } else {
+            parts.join(" + ")
+        }
+    }
 }
 
 /// Set of effect names.
@@ -265,7 +340,7 @@ impl fmt::Display for Type {
             Type::Keyword => write!(f, "Keyword"),
             Type::Unit => write!(f, "()"),
             Type::Var(v) => write!(f, "t{}", v.0),
-            Type::Fn(params, ret) => {
+            Type::Fn(params, ret, effects) => {
                 for (i, p) in params.iter().enumerate() {
                     if i > 0 {
                         write!(f, " \u{2192} ")?;
@@ -275,7 +350,14 @@ impl fmt::Display for Type {
                 if !params.is_empty() {
                     write!(f, " \u{2192} ")?;
                 }
-                write!(f, "{ret}")
+                write!(f, "{ret}")?;
+                // Only render the effect row when it has concrete labels; a
+                // pure or merely-open row is the common case and rendering it
+                // (or its internal tail variable) would be noise.
+                if !effects.labels.is_empty() {
+                    write!(f, " / {}", effects.render())?;
+                }
+                Ok(())
             }
             Type::Con(name, args) if args.is_empty() => write!(f, "{name}"),
             Type::Con(name, args) => {
@@ -295,15 +377,8 @@ impl fmt::Display for Type {
                 }
                 write!(f, ")")
             }
-            Type::Effect(inner, effects) => {
-                write!(f, "{inner} / {{")?;
-                for (i, e) in effects.0.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{e}")?;
-                }
-                write!(f, "}}")
+            Type::Effects(row) => {
+                write!(f, "{{{}}}", row.render())
             }
             Type::Row(fields, rest) => {
                 write!(f, "{{")?;
@@ -383,17 +458,16 @@ impl Subst {
                 }
                 ty.clone()
             }
-            Type::Fn(params, ret) => Type::Fn(
+            Type::Fn(params, ret, effects) => Type::Fn(
                 params.iter().map(|p| self.resolve(p)).collect(),
                 Box::new(self.resolve(ret)),
+                self.resolve_effect_row(effects),
             ),
             Type::Con(name, args) => {
                 Type::Con(name.clone(), args.iter().map(|a| self.resolve(a)).collect())
             }
             Type::Tuple(items) => Type::Tuple(items.iter().map(|t| self.resolve(t)).collect()),
-            Type::Effect(inner, effects) => {
-                Type::Effect(Box::new(self.resolve(inner)), effects.clone())
-            }
+            Type::Effects(row) => Type::Effects(self.resolve_effect_row(row)),
             Type::Row(fields, rest) => {
                 let resolved_fields: Vec<(String, Type)> = fields
                     .iter()
@@ -423,16 +497,46 @@ impl Subst {
         }
     }
 
+    /// Walk an effect row, resolving its tail through the substitution and
+    /// flattening any label sets found along the way. Mirrors how record row
+    /// `rest` variables are resolved through `Type::Row` bindings.
+    pub fn resolve_effect_row(&self, row: &EffectRow) -> EffectRow {
+        let mut labels = row.labels.clone();
+        let mut tail = row.tail;
+        while let Some(v) = tail {
+            let idx = v.0 as usize;
+            let bound = if idx < self.bindings.len() {
+                self.bindings[idx].as_ref()
+            } else {
+                None
+            };
+            match bound {
+                Some(Type::Effects(inner)) => {
+                    labels.extend(inner.labels.iter().cloned());
+                    tail = inner.tail;
+                }
+                Some(Type::Var(u)) => {
+                    tail = Some(*u);
+                }
+                // Any other binding is a namespace mix-up; treat as open.
+                Some(_) | None => break,
+            }
+        }
+        EffectRow { labels, tail }
+    }
+
     /// Occurs check: does TypeVar v occur in type ty?
     fn occurs_in(&self, v: TypeVar, ty: &Type) -> bool {
         match self.resolve(ty) {
             Type::Var(u) => u == v,
-            Type::Fn(params, ret) => {
-                params.iter().any(|p| self.occurs_in(v, p)) || self.occurs_in(v, &ret)
+            Type::Fn(params, ret, effects) => {
+                params.iter().any(|p| self.occurs_in(v, p))
+                    || self.occurs_in(v, &ret)
+                    || self.resolve_effect_row(&effects).tail == Some(v)
             }
             Type::Con(_, args) => args.iter().any(|a| self.occurs_in(v, a)),
             Type::Tuple(items) => items.iter().any(|t| self.occurs_in(v, t)),
-            Type::Effect(inner, _) => self.occurs_in(v, &inner),
+            Type::Effects(row) => self.resolve_effect_row(&row).tail == Some(v),
             Type::Row(fields, rest) => {
                 fields.iter().any(|(_, t)| self.occurs_in(v, t)) || rest.is_some_and(|r| r == v)
             }
@@ -545,7 +649,7 @@ pub fn unify(subst: &mut Subst, a: &Type, b: &Type) -> Result<(), TypeError> {
             subst.bind(*v, a);
             Ok(())
         }
-        (Type::Fn(ap, ar), Type::Fn(bp, br)) => {
+        (Type::Fn(ap, ar, ae), Type::Fn(bp, br, be)) => {
             if ap.len() != bp.len() {
                 return Err(TypeError::bare(format!(
                     "function arity mismatch: expected {}, got {}",
@@ -556,8 +660,10 @@ pub fn unify(subst: &mut Subst, a: &Type, b: &Type) -> Result<(), TypeError> {
             for (p1, p2) in ap.iter().zip(bp.iter()) {
                 unify(subst, p1, p2)?;
             }
-            unify(subst, ar, br)
+            unify(subst, ar, br)?;
+            unify_effect_rows(subst, ae, be)
         }
+        (Type::Effects(r1), Type::Effects(r2)) => unify_effect_rows(subst, r1, r2),
         (Type::Con(n1, a1), Type::Con(n2, a2)) if n1 == n2 && a1.len() == a2.len() => {
             for (t1, t2) in a1.iter().zip(a2.iter()) {
                 unify(subst, t1, t2)?;
@@ -585,6 +691,87 @@ pub fn unify(subst: &mut Subst, a: &Type, b: &Type) -> Result<(), TypeError> {
             }
         }
         _ => Err(TypeError::bare(format!("cannot unify {a} with {b}"))),
+    }
+}
+
+/// Effect-row unification: label-set merge + tail unification + occurs check.
+///
+/// Structured exactly like `unify_rows` below, with labels playing the role
+/// of fields. Labels missing on one side are absorbed by the other side's
+/// tail variable; two open rows are linked through a shared fresh tail.
+/// Unifying two rows with the SAME tail but different labels would require
+/// the tail to contain itself (`e ~ {IO | e}`), so it fails the occurs check.
+pub fn unify_effect_rows(subst: &mut Subst, a: &EffectRow, b: &EffectRow) -> Result<(), TypeError> {
+    let a = subst.resolve_effect_row(a);
+    let b = subst.resolve_effect_row(b);
+
+    let only_a: BTreeSet<String> = a.labels.difference(&b.labels).cloned().collect();
+    let only_b: BTreeSet<String> = b.labels.difference(&a.labels).cloned().collect();
+
+    match (a.tail, b.tail) {
+        (None, None) => {
+            if !only_a.is_empty() || !only_b.is_empty() {
+                return Err(TypeError::bare(format!(
+                    "effect mismatch: `{}` vs `{}`",
+                    a.render(),
+                    b.render()
+                )));
+            }
+            Ok(())
+        }
+        (Some(ra), None) => {
+            if !only_a.is_empty() {
+                return Err(TypeError::bare(format!(
+                    "effect mismatch: `{}` is not allowed to perform `{}`",
+                    b.render(),
+                    only_a.into_iter().collect::<Vec<_>>().join(" + ")
+                )));
+            }
+            subst.bind(ra, Type::Effects(EffectRow::closed(only_b)));
+            Ok(())
+        }
+        (None, Some(rb)) => {
+            if !only_b.is_empty() {
+                return Err(TypeError::bare(format!(
+                    "effect mismatch: `{}` is not allowed to perform `{}`",
+                    a.render(),
+                    only_b.into_iter().collect::<Vec<_>>().join(" + ")
+                )));
+            }
+            subst.bind(rb, Type::Effects(EffectRow::closed(only_a)));
+            Ok(())
+        }
+        (Some(ra), Some(rb)) => {
+            if ra == rb {
+                // Same tail on both sides: the label parts must already
+                // agree, otherwise the tail would have to absorb a label
+                // into itself (infinite effect row).
+                if !only_a.is_empty() || !only_b.is_empty() {
+                    return Err(TypeError::bare(format!(
+                        "infinite effect row: `{}` ~ `{}`",
+                        a.render(),
+                        b.render()
+                    )));
+                }
+                return Ok(());
+            }
+            let fresh_tail = subst.fresh_var();
+            subst.bind(
+                ra,
+                Type::Effects(EffectRow {
+                    labels: only_b,
+                    tail: Some(fresh_tail),
+                }),
+            );
+            subst.bind(
+                rb,
+                Type::Effects(EffectRow {
+                    labels: only_a,
+                    tail: Some(fresh_tail),
+                }),
+            );
+            Ok(())
+        }
     }
 }
 
@@ -791,11 +978,14 @@ fn free_vars_ty(ty: &Type, out: &mut BTreeSet<TypeVar>) {
         Type::Var(v) => {
             out.insert(*v);
         }
-        Type::Fn(params, ret) => {
+        Type::Fn(params, ret, effects) => {
             for p in params {
                 free_vars_ty(p, out);
             }
             free_vars_ty(ret, out);
+            if let Some(t) = effects.tail {
+                out.insert(t);
+            }
         }
         Type::Con(_, args) => {
             for a in args {
@@ -807,7 +997,11 @@ fn free_vars_ty(ty: &Type, out: &mut BTreeSet<TypeVar>) {
                 free_vars_ty(t, out);
             }
         }
-        Type::Effect(inner, _) => free_vars_ty(inner, out),
+        Type::Effects(row) => {
+            if let Some(t) = row.tail {
+                out.insert(t);
+            }
+        }
         Type::Row(fields, rest) => {
             for (_, t) in fields {
                 free_vars_ty(t, out);
@@ -830,7 +1024,11 @@ fn free_vars_ordered(ty: &Type, out: &mut Vec<TypeVar>) {
                 out.push(*v);
             }
         }
-        Type::Fn(params, ret) => {
+        // NOTE: effect-row tail variables are deliberately NOT collected
+        // here. This function feeds pretty-printing (∀ prefixes and letter
+        // names); effect tails are an inference-internal detail and would
+        // only add noise ("invisible types" applies to effects too).
+        Type::Fn(params, ret, _effects) => {
             for p in params {
                 free_vars_ordered(p, out);
             }
@@ -846,7 +1044,7 @@ fn free_vars_ordered(ty: &Type, out: &mut Vec<TypeVar>) {
                 free_vars_ordered(t, out);
             }
         }
-        Type::Effect(inner, _) => free_vars_ordered(inner, out),
+        Type::Effects(_) => {}
         Type::Row(fields, rest) => {
             for (_, t) in fields {
                 free_vars_ordered(t, out);
@@ -876,14 +1074,19 @@ fn pretty_type(ty: &Type, var_names: &HashMap<TypeVar, String>, nested: bool) ->
             .get(v)
             .cloned()
             .unwrap_or_else(|| format!("t{}", v.0)),
-        Type::Fn(params, ret) => {
+        Type::Fn(params, ret, effects) => {
             let mut parts = Vec::new();
             for p in params {
                 // Parenthesize fn-typed params
                 parts.push(pretty_type(p, var_names, true));
             }
             parts.push(pretty_type(ret, var_names, false));
-            let s = parts.join(" \u{2192} ");
+            let mut s = parts.join(" \u{2192} ");
+            // Render the effect row only when it has concrete labels — a
+            // pure or merely-open tail is the common case and stays quiet.
+            if !effects.labels.is_empty() {
+                s = format!("{s} / {}", effects.render());
+            }
             if nested {
                 format!("({s})")
             } else {
@@ -921,13 +1124,7 @@ fn pretty_type(ty: &Type, var_names: &HashMap<TypeVar, String>, nested: bool) ->
             }
             format!("{{{}}}", parts.join(", "))
         }
-        Type::Effect(inner, effects) => {
-            format!(
-                "{} / {{{}}}",
-                pretty_type(inner, var_names, false),
-                effects.0.iter().cloned().collect::<Vec<_>>().join(" ")
-            )
-        }
+        Type::Effects(row) => format!("{{{}}}", row.render()),
         Type::Dim(d) => d.to_string(),
     }
 }
@@ -1051,21 +1248,36 @@ pub fn instantiate(subst: &mut Subst, scheme: &Scheme) -> Type {
     substitute(&scheme.ty, &mapping)
 }
 
+/// Substitute an effect row's tail variable through the mapping (used by
+/// scheme instantiation so generalized tails are freshened per use).
+fn substitute_effect_row(row: &EffectRow, mapping: &HashMap<TypeVar, Type>) -> EffectRow {
+    let tail = row.tail.map(|t| {
+        if let Some(Type::Var(v)) = mapping.get(&t) {
+            *v
+        } else {
+            t
+        }
+    });
+    EffectRow {
+        labels: row.labels.clone(),
+        tail,
+    }
+}
+
 fn substitute(ty: &Type, mapping: &HashMap<TypeVar, Type>) -> Type {
     match ty {
         Type::Var(v) => mapping.get(v).cloned().unwrap_or(ty.clone()),
-        Type::Fn(params, ret) => Type::Fn(
+        Type::Fn(params, ret, effects) => Type::Fn(
             params.iter().map(|p| substitute(p, mapping)).collect(),
             Box::new(substitute(ret, mapping)),
+            substitute_effect_row(effects, mapping),
         ),
         Type::Con(name, args) => Type::Con(
             name.clone(),
             args.iter().map(|a| substitute(a, mapping)).collect(),
         ),
         Type::Tuple(items) => Type::Tuple(items.iter().map(|t| substitute(t, mapping)).collect()),
-        Type::Effect(inner, effects) => {
-            Type::Effect(Box::new(substitute(inner, mapping)), effects.clone())
-        }
+        Type::Effects(row) => Type::Effects(substitute_effect_row(row, mapping)),
         Type::Row(fields, rest) => {
             let new_fields = fields
                 .iter()

@@ -58,7 +58,9 @@ impl OrdMap {
         self.order.iter().map(move |k| self.map.get(k).unwrap())
     }
     fn iter(&self) -> impl Iterator<Item = (&Val, &Val)> + '_ {
-        self.order.iter().map(move |k| (k, self.map.get(k).unwrap()))
+        self.order
+            .iter()
+            .map(move |k| (k, self.map.get(k).unwrap()))
     }
     /// Left-biased union (values already in `self` win), preserving `self`'s
     /// order and appending `other`'s new keys in their order.
@@ -140,9 +142,12 @@ impl Obj {
             Obj::Map(m) => (24 + m.len() * 16) as u64,
             Obj::Adt(_, fields) => (24 + 2 + fields.len() * 8) as u64,
             Obj::Closure(_, caps) => (24 + 4 + caps.len() * 8) as u64,
-            Obj::Continuation { saved, regs, captures, .. } => {
-                (48 + saved.len() * 64 + regs.len() * 8 + captures.len() * 8) as u64
-            }
+            Obj::Continuation {
+                saved,
+                regs,
+                captures,
+                ..
+            } => (48 + saved.len() * 64 + regs.len() * 8 + captures.len() * 8) as u64,
         }
     }
 }
@@ -551,9 +556,7 @@ impl Vm {
                     prompt_handlers.clone(),
                 ),
                 _ => {
-                    return Err(
-                        VmError::new(VmErrorKind::NotCallable).with_span(self.current_span)
-                    );
+                    return Err(VmError::new(VmErrorKind::NotCallable).with_span(self.current_span));
                 }
             };
         if let Some(dst) = base {
@@ -1304,7 +1307,7 @@ impl Vm {
                 let val = args.get(1).copied().unwrap_or(Val::UNIT);
                 match self.get_obj(coll).cloned() {
                     Some(Obj::Vec(mut items)) => {
-                        items.push_back(val);  // O(log n) with structural sharing
+                        items.push_back(val); // O(log n) with structural sharing
                         Ok(self.alloc(Obj::Vec(items)))
                     }
                     Some(Obj::Set(mut items)) => {
@@ -1320,7 +1323,7 @@ impl Vm {
                 let val = args.get(2).copied().unwrap_or(Val::UNIT);
                 match self.get_obj(coll).cloned() {
                     Some(Obj::Map(mut map)) => {
-                        map.insert(key, val);  // O(log₃₂ n) with structural sharing
+                        map.insert(key, val); // O(log₃₂ n) with structural sharing
                         Ok(self.alloc(Obj::Map(map)))
                     }
                     _ => Ok(Val::UNIT),
@@ -1393,11 +1396,12 @@ impl Vm {
                     Some(Obj::Map(map)) => Ok(Val::bool(
                         map.contains_key(&val) || {
                             let ks = self.get_str(val).map(|s| s.to_string());
-                            ks.is_some() && map.iter().any(|(k, _)| {
-                                let kk = self.get_str(*k).map(|s| s.to_string());
-                                kk.is_some() && kk == ks
-                            })
-                        }
+                            ks.is_some()
+                                && map.iter().any(|(k, _)| {
+                                    let kk = self.get_str(*k).map(|s| s.to_string());
+                                    kk.is_some() && kk == ks
+                                })
+                        },
                     )),
                     Some(Obj::Str(s)) => {
                         // String contains substring
@@ -1484,7 +1488,7 @@ impl Vm {
                 let coll = args.get(1).copied().unwrap_or(Val::UNIT);
                 match self.get_obj(coll).cloned() {
                     Some(Obj::Vec(mut items)) => {
-                        items.push_front(val);  // O(log n) with imbl
+                        items.push_front(val); // O(log n) with imbl
                         Ok(self.alloc(Obj::Vec(items)))
                     }
                     _ => Ok(Val::UNIT),
@@ -1495,7 +1499,7 @@ impl Vm {
                 let b = args.get(1).copied().unwrap_or(Val::UNIT);
                 match (self.get_obj(a).cloned(), self.get_obj(b).cloned()) {
                     (Some(Obj::Map(ma)), Some(Obj::Map(mb))) => {
-                        let merged = ma.union(mb);  // O(n log n) with structural sharing
+                        let merged = ma.union(mb); // O(n log n) with structural sharing
                         Ok(self.alloc(Obj::Map(merged)))
                     }
                     _ => Ok(Val::UNIT),
@@ -1622,11 +1626,17 @@ impl Vm {
             Built::Join => {
                 // Loon order is collection-first: [join coll sep]. Detect the
                 // vector by type so the pipe/thread-last form also works.
-                let a0_is_vec = matches!(self.get_obj(args.first().copied().unwrap_or(Val::UNIT)), Some(Obj::Vec(_)));
+                let a0_is_vec = matches!(
+                    self.get_obj(args.first().copied().unwrap_or(Val::UNIT)),
+                    Some(Obj::Vec(_))
+                );
                 let (coll, sep) = if a0_is_vec {
                     (args[0], args.get(1).copied().unwrap_or(Val::UNIT))
                 } else {
-                    (args.get(1).copied().unwrap_or(Val::UNIT), args.first().copied().unwrap_or(Val::UNIT))
+                    (
+                        args.get(1).copied().unwrap_or(Val::UNIT),
+                        args.first().copied().unwrap_or(Val::UNIT),
+                    )
                 };
                 let sep_str = self.val_to_string(sep);
                 match self.get_obj(coll).cloned() {
@@ -2095,13 +2105,12 @@ impl Vm {
                         let mut new_map = ImMap::new();
                         for (k, v) in map {
                             if let Some(s) = self.get_str(k).map(|s| s.to_string()) {
-                                let sym_id = self
-                                    .module
-                                    .strings
-                                    .iter()
-                                    .position(|x| *x == s)
-                                    .unwrap_or(0)
-                                    as u32;
+                                let sym_id =
+                                    self.module
+                                        .strings
+                                        .iter()
+                                        .position(|x| *x == s)
+                                        .unwrap_or(0) as u32;
                                 new_map.insert(Val::sym(sym_id), v);
                             } else {
                                 new_map.insert(k, v);
@@ -2223,7 +2232,10 @@ impl Vm {
             }
             ("Net", "send") => {
                 let status = args.first().map(|v| v.as_int()).unwrap_or(200);
-                let body = args.get(1).map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let body = args
+                    .get(1)
+                    .map(|v| self.val_to_string(*v))
+                    .unwrap_or_default();
                 Val::bool(crate::eir::net::send(status, &body))
             }
             ("Const", "c") => Val::float(299_792_458.0),
@@ -2377,10 +2389,7 @@ pub fn eval_eir(src: &str) -> Result<VmResult, VmError> {
 }
 
 /// Like `eval_eir`, but resolves `[use ...]` modules relative to `base_dir`.
-pub fn eval_eir_with_base_dir(
-    src: &str,
-    base_dir: &std::path::Path,
-) -> Result<VmResult, VmError> {
+pub fn eval_eir_with_base_dir(src: &str, base_dir: &std::path::Path) -> Result<VmResult, VmError> {
     eval_eir_impl(src, crate::check::Checker::with_base_dir(base_dir))
 }
 
@@ -2433,8 +2442,14 @@ mod tests {
         let crashed = format!("{base} [fn main [] [println [replay #[\"search\" \"hit\"]]]]");
         // Both reach the same final state; the crashed journal replays its prefix
         // then continues live.
-        assert_eq!(run_output(&full), vec!["s search:hit summarize:sum".to_string()]);
-        assert_eq!(run_output(&crashed), vec!["s search:hit summarize:sum".to_string()]);
+        assert_eq!(
+            run_output(&full),
+            vec!["s search:hit summarize:sum".to_string()]
+        );
+        assert_eq!(
+            run_output(&crashed),
+            vec!["s search:hit summarize:sum".to_string()]
+        );
     }
 
     #[test]
@@ -2467,7 +2482,10 @@ mod tests {
                [Llm.complete p] [resume [act p]] [Tool.call t] [resume [tool t]] \
                [Approval.request a] [str [resume true] \" | \" [resume false]]]]]"
         );
-        assert_eq!(run_output(&explore), vec!["r :search:hit | r :search:no".to_string()]);
+        assert_eq!(
+            run_output(&explore),
+            vec!["r :search:hit | r :search:no".to_string()]
+        );
     }
 
     #[test]
@@ -2495,7 +2513,11 @@ mod tests {
         );
         assert_eq!(
             run_output(&prog),
-            vec!["[200] home".to_string(), "[200] alice:rows".to_string(), "[404] /nope".to_string()]
+            vec![
+                "[200] home".to_string(),
+                "[200] alice:rows".to_string(),
+                "[404] /nope".to_string()
+            ]
         );
     }
 
@@ -2517,7 +2539,12 @@ mod tests {
                    [fn main [] [sched [fn [] [if [Co.fork] [w \"A\"] [w \"B\"]]]]]";
         assert_eq!(
             run_output(src),
-            vec!["A1".to_string(), "B1".to_string(), "A2".to_string(), "B2".to_string()]
+            vec![
+                "A1".to_string(),
+                "B1".to_string(),
+                "A2".to_string(),
+                "B2".to_string()
+            ]
         );
     }
 
@@ -2578,7 +2605,9 @@ mod tests {
     #[test]
     fn vm_effect_abort_and_resume() {
         let prog = |h: &str| {
-            format!("[effect E [op [Int] Int]] [fn d [x] #{{E}} [+ 100 [E.op x]]] [handle [d 5] {h}]")
+            format!(
+                "[effect E [op [Int] Int]] [fn d [x] #{{E}} [+ 100 [E.op x]]] [handle [d 5] {h}]"
+            )
         };
         // Abort: a non-resuming handler discards the body's continuation
         // (the `+ 100` after the perform never runs). This is what makes `try`
@@ -2599,15 +2628,19 @@ mod tests {
         // segment ([+ 100 _]) is cloned per resume, so each `[resume 5]` yields
         // 105 independently: [+ 105 105] = 210.
         assert_eq!(
-            run("[effect E [op [Int] Int]] [fn d [x] #{E} [+ 100 [E.op x]]] \
-                 [handle [d 5] [E.op v] [+ [resume v] [resume v]]]")
+            run(
+                "[effect E [op [Int] Int]] [fn d [x] #{E} [+ 100 [E.op x]]] \
+                 [handle [d 5] [E.op v] [+ [resume v] [resume v]]]"
+            )
             .as_int(),
             210
         );
         // Three resumes compose the same way: [+ 105 [+ 105 105]] = 315.
         assert_eq!(
-            run("[effect E [op [Int] Int]] [fn d [x] #{E} [+ 100 [E.op x]]] \
-                 [handle [d 5] [E.op v] [+ [resume v] [+ [resume v] [resume v]]]]")
+            run(
+                "[effect E [op [Int] Int]] [fn d [x] #{E} [+ 100 [E.op x]]] \
+                 [handle [d 5] [E.op v] [+ [resume v] [+ [resume v] [resume v]]]]"
+            )
             .as_int(),
             315
         );
@@ -2627,11 +2660,9 @@ mod tests {
         )
         .expect("vm error");
         assert_eq!(r.output, vec!["42".to_string()]);
-        let r2 = eval_eir_with_base_dir(
-            "[use mymath [add]] [fn main [] [println [add 1 2]]]",
-            &dir,
-        )
-        .expect("vm error");
+        let r2 =
+            eval_eir_with_base_dir("[use mymath [add]] [fn main [] [println [add 1 2]]]", &dir)
+                .expect("vm error");
         assert_eq!(r2.output, vec!["3".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2718,8 +2749,14 @@ mod tests {
         );
         assert_eq!(run_output(r#"[println "2+2=\([+ 2 2])"]"#), vec!["2+2=4"]);
         // ...and bare braces are ordinary literal characters (no escaping).
-        assert_eq!(run_output(r#"[println "{:a 1 :b 2}"]"#), vec!["{:a 1 :b 2}"]);
-        assert_eq!(run_output(r##"[println "#{IO Fail}"]"##), vec!["#{IO Fail}"]);
+        assert_eq!(
+            run_output(r#"[println "{:a 1 :b 2}"]"#),
+            vec!["{:a 1 :b 2}"]
+        );
+        assert_eq!(
+            run_output(r##"[println "#{IO Fail}"]"##),
+            vec!["#{IO Fail}"]
+        );
     }
 
     #[test]
