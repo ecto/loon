@@ -1008,10 +1008,12 @@ impl Vm {
                         self.w(*dst, Val::UNIT);
                     }
                 } else {
-                    // Unhandled: a builtin effect (real IO, etc.).
+                    // Unhandled: a builtin effect (real IO, etc.). An op with
+                    // no builtin implementation is a hard error, not a silent
+                    // `()` (see builtin_effect).
                     let effect = self.module.strings[_eff_sid.0 as usize].clone();
                     let op_name = self.module.strings[op_sid.0 as usize].clone();
-                    let result = self.builtin_effect(&effect, &op_name, &vals);
+                    let result = self.builtin_effect(&effect, &op_name, &vals)?;
                     self.w(*dst, result);
                 }
             }
@@ -2147,8 +2149,21 @@ impl Vm {
 
     // ── Effect builtins ────────────────────────────────────────────────
 
-    fn builtin_effect(&mut self, effect: &str, op: &str, args: &[Val]) -> Val {
-        match (effect, op) {
+    /// Look up an ADT constructor tag by name (latest definition wins, the
+    /// same override rule the lowerer applies to `ctor_map`). The prelude's
+    /// Option/Result are always registered, so `Some`/`None` resolve here.
+    fn ctor_tag(&self, name: &str) -> Option<u16> {
+        self.module.ctors.iter().rev().find(|c| c.name == name).map(|c| c.tag)
+    }
+
+    /// Handle an effect operation that reached the top of the handler stack
+    /// unhandled: the built-in "prod" implementations (real IO, clock, env,
+    /// sockets). An operation with NO built-in implementation is a hard
+    /// error — the same error class the interpreter raises — never a silent
+    /// `()`: a silent no-op here means a program believes it wrote a file
+    /// (or slept, or exited) when nothing happened.
+    fn builtin_effect(&mut self, effect: &str, op: &str, args: &[Val]) -> Result<Val, VmError> {
+        Ok(match (effect, op) {
             ("IO", "println") => {
                 let s: Vec<String> = args.iter().map(|v| self.val_to_string(*v)).collect();
                 let line = s.join(" ");
@@ -2175,6 +2190,76 @@ impl Vm {
                 }
                 Val::UNIT
             }
+            ("IO", "file-exists?") => {
+                let p = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                Val::bool(std::path::Path::new(&p).exists())
+            }
+            ("IO", "delete-file") => {
+                if let Some(path) = args.first() {
+                    let p = self.val_to_string(*path);
+                    let _ = std::fs::remove_file(&p);
+                }
+                Val::UNIT
+            }
+            ("IO", "mkdir") => {
+                if let Some(path) = args.first() {
+                    let p = self.val_to_string(*path);
+                    let _ = std::fs::create_dir_all(&p);
+                }
+                Val::UNIT
+            }
+            ("IO", "copy-file") => {
+                if let (Some(src), Some(dst)) = (args.first(), args.get(1)) {
+                    let s = self.val_to_string(*src);
+                    let d = self.val_to_string(*dst);
+                    let _ = std::fs::copy(&s, &d);
+                }
+                Val::UNIT
+            }
+            ("IO", "list-dir") => {
+                let p = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let names: Vec<String> = match std::fs::read_dir(&p) {
+                    Ok(entries) => entries
+                        .filter_map(|e| e.ok())
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect(),
+                    // Not a directory (or doesn't exist) → empty vec, as interp.
+                    Err(_) => Vec::new(),
+                };
+                let vals: ImVec = names.into_iter().map(|n| self.alloc_str(n)).collect();
+                self.alloc(Obj::Vec(vals))
+            }
+            ("IO", "mtime") => {
+                let p = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let millis = std::fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                self.safe_int(millis)
+            }
+            ("IO", "sleep") => {
+                if let Some(ms) = args.first() {
+                    if ms.is_int() {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            ms.as_int().max(0) as u64,
+                        ));
+                    }
+                }
+                Val::UNIT
+            }
+            ("IO", "read-line") => {
+                let mut line = String::new();
+                let _ = std::io::stdin().read_line(&mut line);
+                if line.ends_with('\n') {
+                    line.pop();
+                    if line.ends_with('\r') {
+                        line.pop();
+                    }
+                }
+                self.alloc_str(line)
+            }
             // Clock: real wall-clock time. `now` in whole seconds, `millis` in
             // milliseconds since the Unix epoch (both fit in a 48-bit int).
             ("IO", "now") => {
@@ -2192,10 +2277,34 @@ impl Vm {
                 self.safe_int(ms)
             }
             ("IO", "uuid") => self.alloc_str(gen_uuid_v4()),
-            // Env / Process: read an environment variable. Returns the value, or
-            // "" when unset (the EIR VM cannot construct an Option here — the
-            // tag is program-defined — so callers branch on the empty string).
-            ("Env", "lookup") | ("Env", "get") | ("Process", "env") => {
+            // Process.env matches the interpreter: [Some value] when set,
+            // None when unset (the prelude Option ctors are always
+            // registered by the lowerer).
+            ("Process", "env") => {
+                let k = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                match (std::env::var(&k), self.ctor_tag("Some"), self.ctor_tag("None")) {
+                    (Ok(v), Some(some_tag), _) => {
+                        let s = self.alloc_str(v);
+                        self.alloc(Obj::Adt(some_tag, vec![s]))
+                    }
+                    (Err(_), _, Some(none_tag)) => self.alloc(Obj::Adt(none_tag, Vec::new())),
+                    // No Option ctors registered (shouldn't happen): raw string.
+                    (Ok(v), None, _) => self.alloc_str(v),
+                    (Err(_), _, None) => self.alloc_str(String::new()),
+                }
+            }
+            ("Process", "args") => {
+                let vals: ImVec = std::env::args().map(|a| self.alloc_str(a)).collect();
+                self.alloc(Obj::Vec(vals))
+            }
+            ("Process", "exit") => {
+                let code = args.first().filter(|v| v.is_int()).map(|v| v.as_int()).unwrap_or(0);
+                std::process::exit(code as i32);
+            }
+            // Env.lookup/Env.get: VM-only convenience returning the value or ""
+            // when unset (kept for existing programs; Process.env is the
+            // interp-compatible Option-returning form).
+            ("Env", "lookup") | ("Env", "get") => {
                 if let Some(key) = args.first() {
                     let k = self.val_to_string(*key);
                     self.alloc_str(std::env::var(&k).unwrap_or_default())
@@ -2229,8 +2338,13 @@ impl Vm {
             ("Const", "c") => Val::float(299_792_458.0),
             ("Physics", "yield-strength") => Val::float(250.0),
             ("Physics", "gravity") => Val::float(9.80665),
-            _ => Val::UNIT,
-        }
+            _ => {
+                return Err(VmError::new(VmErrorKind::UnhandledEffect(format!(
+                    "{effect}.{op}"
+                )))
+                .with_span(self.current_span));
+            }
+        })
     }
 
     // ── Value display ──────────────────────────────────────────────────
@@ -2357,6 +2471,10 @@ pub enum VmErrorKind {
     StackOverflow,
     /// `assert-eq` failed with mismatched values.
     AssertFailed(String, String),
+    /// An effect operation reached the top of the handler stack with no
+    /// handler and no builtin implementation. Silently returning `()` here
+    /// would let programs believe the effect happened.
+    UnhandledEffect(String),
 }
 
 impl VmError {
@@ -2384,6 +2502,14 @@ impl std::fmt::Display for VmError {
             VmErrorKind::StackOverflow => write!(f, "stack overflow"),
             VmErrorKind::AssertFailed(actual, expected) => {
                 write!(f, "assertion failed: {actual} != {expected}")
+            }
+            VmErrorKind::UnhandledEffect(name) => {
+                // Same wording as the interpreter's unhandled-effect error, so
+                // the two backends fail the same way.
+                write!(
+                    f,
+                    "unhandled effect: {name} — add a [handle ...] block to handle this effect"
+                )
             }
         }
     }
@@ -2666,11 +2792,56 @@ mod tests {
         let uuid = &run_output("[println [IO.uuid]]")[0];
         assert_eq!(uuid.len(), 36, "uuid: {uuid}");
         assert_eq!(uuid.matches('-').count(), 4);
+        // Process.env matches the interpreter: [Some value] / None.
         std::env::set_var("LOON_TEST_VAR", "hello-env");
         assert_eq!(
             run_output(r#"[println [Process.env "LOON_TEST_VAR"]]"#),
+            vec!["[Some \"hello-env\"]".to_string()]
+        );
+        assert_eq!(
+            run_output(r#"[println [Process.env "LOON_DEFINITELY_UNSET_VAR"]]"#),
+            vec!["None".to_string()]
+        );
+        // Env.lookup stays the raw-string VM convenience form.
+        assert_eq!(
+            run_output(r#"[println [Env.lookup "LOON_TEST_VAR"]]"#),
             vec!["hello-env".to_string()]
         );
+    }
+
+    #[test]
+    fn vm_unknown_effect_op_is_a_hard_error() {
+        // An effect op with neither a handler nor a builtin implementation
+        // must ERROR, not silently evaluate to () — the silent path is how
+        // "IO.write-file did nothing" class bugs hide.
+        let err = eval_eir("[effect Zap [zap [] Int]] [fn main [] [println [Zap.zap]]]")
+            .expect_err("unhandled effect should be an error");
+        assert!(
+            matches!(err.kind, VmErrorKind::UnhandledEffect(ref n) if n == "Zap.zap"),
+            "got: {err}"
+        );
+        // ...but a handled one is fine.
+        let out = run_output(
+            "[effect Zap [zap [] Int]] \
+             [fn main [] [println [handle [Zap.zap] [Zap.zap] [resume 7]]]]",
+        );
+        assert_eq!(out, vec!["7".to_string()]);
+    }
+
+    #[test]
+    fn vm_io_write_file_round_trips() {
+        // IO.write-file must actually write (it silently no-oped on early VM
+        // builds); read it back through IO.read-file on the same backend.
+        let dir = std::env::temp_dir().join(format!("loon_vm_wf_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.txt");
+        let p = path.to_string_lossy().replace('\\', "/");
+        let out = run_output(&format!(
+            r#"[fn main [] [IO.write-file "{p}" "written-by-vm"] [println [IO.read-file "{p}"]]]"#
+        ));
+        assert_eq!(out, vec!["written-by-vm".to_string()]);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "written-by-vm");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
