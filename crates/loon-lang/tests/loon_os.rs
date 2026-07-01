@@ -98,6 +98,17 @@ fn read_only_sandbox_denies_writes() {
 }
 
 #[test]
+fn chaos_demo_reproduces_faults_and_supervisor_recovers() {
+    let out = run_demo("demo-chaos.oo").join("\n");
+    // seed 3 injects faults; the supervisor absorbs them within its budget
+    assert!(out.contains("[supervisor] child failed: chaos:"), "{out}");
+    assert!(out.contains("outcome: ok (v1)"), "{out}");
+    assert!(out.contains("result file: 'processed:v1'"), "{out}");
+    // the whole storm — faults, restarts, final world — is seed-deterministic
+    assert!(out.contains("CHAOS REPRODUCED EXACTLY"), "{out}");
+}
+
+#[test]
 fn replay_needs_no_kernel_and_no_real_world() {
     // Record against a sealed simulation, then replay the tape with NOTHING
     // underneath: proof that a tape fully captures a program's world.

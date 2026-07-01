@@ -1,0 +1,36 @@
+; Demo: deterministic chaos engineering.
+;
+; A worker reads its config and writes a result, under a fault-injecting
+; chaos handler (30% IO failure), supervised with restarts, inside a sealed
+; simulation. The chaos draws its randomness from the sim's seeded PRNG, so
+; the same seed produces the exact same faults — a failing chaos run is
+; perfectly reproducible.
+;
+;   loon run os/demo-chaos.oo
+[use sys]
+[use sim]
+[use chaos]
+
+[fn worker []
+  [let cfg [Fs.read-file "/config"]]
+  [Fs.write-file "/result" [str "processed:" cfg]]
+  [str "ok (" cfg ")"]]
+
+[fn run-world [seed]
+  [simulate
+    [fn [] [supervise [fn [] [chaotic worker 30]] 5]]
+    seed
+    {:fs {"/config" "v1"}}]]
+
+[fn main []
+  [IO.println "chaos run, seed 3 (a stormy one):"]
+  [let w1 [run-world 3]]
+  [IO.println [str "  outcome: " [get w1 :result]]]
+  [IO.println [str "  result file: '" [get [get w1 :fs] "/result" ""] "'"]]
+  [IO.println "same seed again (same storm, same restarts):"]
+  [let w2 [run-world 3]]
+  [IO.println
+    [if [= w1 w2] "  CHAOS REPRODUCED EXACTLY" "  chaos diverged (bug!)"]]
+  [IO.println "seed 1 (calm weather):"]
+  [let w3 [run-world 1]]
+  [IO.println [str "  outcome: " [get w3 :result]]]]

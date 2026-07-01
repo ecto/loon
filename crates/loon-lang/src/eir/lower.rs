@@ -1765,64 +1765,36 @@ impl<'a> Lower<'a> {
         };
 
         if let Some(on_fail) = handler_expr {
-            // Create handler closure for Fail.fail
-            let saved_func = self.cur_func;
-            let saved_block = self.cur_block;
-            let saved_next_reg = self.next_reg;
-            let saved_scopes = std::mem::take(&mut self.scopes);
-
-            let handler_fn_id = self.begin_func(None, span);
-            self.scopes = vec![HashMap::new()];
-            // Params: (resume, msg)
-            let _resume_reg = Reg(0);
-            let msg_reg = Reg(1);
-            self.next_reg = 2;
-            self.bind("resume", _resume_reg);
-            self.bind("__fail_msg", msg_reg);
-            self.module.funcs[handler_fn_id.0 as usize].params = vec![Ty::Any; 2];
-
-            // Handler body: call on-fail with msg
-            let on_fail_fn = self.lower_expr(on_fail);
-            let result = self.reg();
-            self.emit(Op::Invoke(result, on_fail_fn, vec![msg_reg], span));
-            self.seal(End::Ret(result));
-
-            self.cur_func = saved_func;
-            self.cur_block = saved_block;
-            self.next_reg = saved_next_reg;
-            self.scopes = saved_scopes;
-
-            // Create handler closure for Fail.fail.
-            let handler_reg = self.reg();
-            self.emit(Op::Close(handler_reg, handler_fn_id, Vec::new(), span));
-
-            // Install it on the *dynamic* handler stack — which is what
-            // `Op::Perform` consults (it ignores `evidence_scope`). The previous
-            // code only set evidence, so a `Fail.fail` performed inside the body
-            // (especially across a function call / under recursion) never found
-            // the handler and fell through to unit. Mirror `handle`: PushHandler,
-            // run the body as a zero-arg thunk so it has a clean prompt boundary,
-            // then PopHandler.
-            let eff_id = self.intern("Fail");
-            let op_id = self.intern("fail");
-            self.emit(Op::PushHandler(handler_reg, eff_id, op_id, span));
-
-            let saved_evidence = std::mem::take(&mut self.evidence_scope);
-            let thunk_expr = Expr::new(
+            // Desugar through lower_handle so the Fail clause gets the same
+            // machinery as any handler clause — in particular free-variable
+            // capture. The previous hand-rolled lowering compiled the on-fail
+            // expression in a fresh function with NO captures, so an on-fail
+            // closure referencing enclosing locals ([try [child] [fn [m]
+            // [retry child]]]) silently mis-resolved them.
+            //
+            //   [try BODY ON-FAIL] → [handle BODY [Fail.fail __fail_msg]
+            //                                     [ON-FAIL __fail_msg]]
+            let pattern = Expr::new(
                 ExprKind::List(vec![
-                    Expr::new(ExprKind::Symbol("fn".to_string()), span),
-                    Expr::new(ExprKind::List(Vec::new()), span),
-                    body.clone(),
+                    Expr::new(
+                        ExprKind::DotAccess(
+                            Box::new(Expr::new(ExprKind::Symbol("Fail".to_string()), span)),
+                            "fail".to_string(),
+                        ),
+                        span,
+                    ),
+                    Expr::new(ExprKind::Symbol("__fail_msg".to_string()), span),
                 ]),
                 span,
             );
-            let thunk_reg = self.lower_expr(&thunk_expr);
-            let result = self.reg();
-            self.emit(Op::Invoke(result, thunk_reg, Vec::new(), span));
-            self.evidence_scope = saved_evidence;
-
-            self.emit(Op::PopHandler(span));
-            result
+            let clause_body = Expr::new(
+                ExprKind::List(vec![
+                    on_fail.clone(),
+                    Expr::new(ExprKind::Symbol("__fail_msg".to_string()), span),
+                ]),
+                span,
+            );
+            self.lower_handle(&[body.clone(), pattern, clause_body], span)
         } else {
             self.lower_expr(body)
         }
