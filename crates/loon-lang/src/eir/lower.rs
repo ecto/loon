@@ -178,6 +178,23 @@ impl<'a> Lower<'a> {
         let mut all_forms = imported;
         all_forms.extend(main_forms);
 
+        // Register the prelude's Option/Result constructors first, so
+        // Some/None/Ok/Err work on the EIR VM exactly as they do on the
+        // interpreter (which evals the prelude at startup). A program that
+        // (re)defines these types simply overwrites the ctor_map entries
+        // below with its own tags.
+        if let Ok(prelude_forms) = crate::parser::parse(crate::prelude::PRELUDE) {
+            for expr in &prelude_forms {
+                if let ExprKind::List(items) = &expr.kind {
+                    if let Some(ExprKind::Symbol(s)) = items.first().map(|e| &e.kind) {
+                        if s == "type" {
+                            self.collect_ctors(&items[1..]);
+                        }
+                    }
+                }
+            }
+        }
+
         // First pass: collect all ADT constructors
         for expr in &all_forms {
             if let ExprKind::List(items) = &expr.kind {

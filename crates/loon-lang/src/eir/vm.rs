@@ -2236,6 +2236,13 @@ impl Vm {
     // ── Value display ──────────────────────────────────────────────────
 
     fn val_to_string(&self, val: Val) -> String {
+        self.val_to_string_inner(val, false)
+    }
+
+    /// Render a value. `nested` mirrors the interpreter's display rules: a
+    /// string at the top level (println/str) prints raw, but a string INSIDE
+    /// a container (vec/map/ADT/...) prints quoted, e.g. `#["a" "b"]`.
+    fn val_to_string_inner(&self, val: Val, nested: bool) -> String {
         if val.is_float() {
             let f = val.as_float();
             if f == (f as i64) as f64 && f.abs() < 1e15 {
@@ -2262,16 +2269,27 @@ impl Vm {
             }
         } else if val.is_ptr() {
             match self.get_obj(val) {
-                Some(Obj::Str(s)) => s.clone(),
+                Some(Obj::Str(s)) => {
+                    if nested {
+                        format!("\"{s}\"")
+                    } else {
+                        s.clone()
+                    }
+                }
                 Some(Obj::Vec(items)) => {
-                    let inner: Vec<String> = items.iter().map(|v| self.val_to_string(*v)).collect();
+                    let inner: Vec<String> =
+                        items.iter().map(|v| self.val_to_string_inner(*v, true)).collect();
                     format!("#[{}]", inner.join(" "))
                 }
                 Some(Obj::Map(map)) => {
                     let inner: Vec<String> = map
                         .iter()
                         .map(|(k, v)| {
-                            format!("{} {}", self.val_to_string(*k), self.val_to_string(*v))
+                            format!(
+                                "{} {}",
+                                self.val_to_string_inner(*k, true),
+                                self.val_to_string_inner(*v, true)
+                            )
                         })
                         .collect();
                     format!("{{{}}}", inner.join(" "))
@@ -2287,8 +2305,10 @@ impl Vm {
                     if fields.is_empty() {
                         name.to_string()
                     } else {
-                        let inner: Vec<String> =
-                            fields.iter().map(|v| self.val_to_string(*v)).collect();
+                        let inner: Vec<String> = fields
+                            .iter()
+                            .map(|v| self.val_to_string_inner(*v, true))
+                            .collect();
                         format!("[{name} {}]", inner.join(" "))
                     }
                 }
