@@ -448,7 +448,25 @@ impl MacroExpander {
         call_span: Span,
     ) -> Result<Expr, String> {
         match &body.kind {
-            ExprKind::Quote(inner) => self.substitute(inner, bindings, call_span),
+            ExprKind::Quote(inner) => {
+                // Hygiene: binders the TEMPLATE ITSELF introduces (`let` names,
+                // `fn`/`loop` parameters) are renamed to fresh gensyms, one per
+                // expansion, so they can neither capture a user binding passed
+                // in as an argument nor clobber a caller binding of the same
+                // name. Names bound to macro parameters are skipped (they are
+                // caller code), as are named-fn definition names (a macro that
+                // expands to [fn helper ...] INTENDS to introduce `helper`).
+                let mut binders = Vec::new();
+                collect_template_binders(inner, bindings, &mut binders);
+                let renames: HashMap<String, String> = binders
+                    .into_iter()
+                    .map(|b| {
+                        let g = self.gensym(&b);
+                        (b, g)
+                    })
+                    .collect();
+                self.substitute(inner, bindings, &renames, call_span)
+            }
             _ => Err("template macro body must be a quasiquoted expression".to_string()),
         }
     }
@@ -457,6 +475,7 @@ impl MacroExpander {
         &mut self,
         expr: &Expr,
         bindings: &HashMap<String, Vec<Expr>>,
+        renames: &HashMap<String, String>,
         span: Span,
     ) -> Result<Expr, String> {
         match &expr.kind {
@@ -490,7 +509,7 @@ impl MacroExpander {
                         }
                         return Err("~@ requires a bound rest parameter".to_string());
                     }
-                    result.push(self.substitute(item, bindings, span)?);
+                    result.push(self.substitute(item, bindings, renames, span)?);
                 }
                 Ok(Expr::new(ExprKind::List(result), span))
             }
@@ -506,7 +525,7 @@ impl MacroExpander {
                         }
                         return Err("~@ requires a bound rest parameter".to_string());
                     }
-                    result.push(self.substitute(item, bindings, span)?);
+                    result.push(self.substitute(item, bindings, renames, span)?);
                 }
                 Ok(Expr::new(ExprKind::Vec(result), span))
             }
@@ -517,6 +536,11 @@ impl MacroExpander {
                         return Ok(vals[0].clone());
                     }
                 }
+                // Hygiene: a template-introduced binder is renamed to its
+                // gensym everywhere in the template (binder and references).
+                if let Some(renamed) = renames.get(name) {
+                    return Ok(Expr::new(ExprKind::Symbol(renamed.clone()), span));
+                }
                 Ok(expr.clone())
             }
             ExprKind::Map(pairs) => {
@@ -524,8 +548,8 @@ impl MacroExpander {
                     .iter()
                     .map(|(k, v)| {
                         Ok((
-                            self.substitute(k, bindings, span)?,
-                            self.substitute(v, bindings, span)?,
+                            self.substitute(k, bindings, renames, span)?,
+                            self.substitute(v, bindings, renames, span)?,
                         ))
                     })
                     .collect();
@@ -534,14 +558,14 @@ impl MacroExpander {
             ExprKind::Tuple(items) => {
                 let expanded: Result<Vec<_>, _> = items
                     .iter()
-                    .map(|e| self.substitute(e, bindings, span))
+                    .map(|e| self.substitute(e, bindings, renames, span))
                     .collect();
                 Ok(Expr::new(ExprKind::Tuple(expanded?), span))
             }
             ExprKind::Set(items) => {
                 let expanded: Result<Vec<_>, _> = items
                     .iter()
-                    .map(|e| self.substitute(e, bindings, span))
+                    .map(|e| self.substitute(e, bindings, renames, span))
                     .collect();
                 Ok(Expr::new(ExprKind::Set(expanded?), span))
             }
@@ -553,6 +577,7 @@ impl MacroExpander {
     }
 
     // ── Procedural Expansion ─────────────────────────────────────────
+
 
     fn expand_procedural(
         &mut self,
@@ -654,6 +679,91 @@ impl MacroExpander {
 // - {:kind :int :value 42}
 // - {:kind :list :items #[...]}
 // - etc.
+
+/// Collect names a quasiquoted TEMPLATE binds itself: `[let name ...]`
+/// binding names, `fn` parameter names (anonymous and named), and `loop`
+/// binding names. These are the hygiene-sensitive binders that get gensym'd
+/// per expansion. Skipped on purpose:
+/// - names bound to macro PARAMETERS (they substitute to caller code),
+/// - unquoted binders like `[let ~name ...]` (caller-chosen names),
+/// - named-fn definition names (`[fn helper ...]` deliberately introduces
+///   `helper` at the expansion site),
+/// - `match` pattern variables (arm-scoped; left alone for now).
+fn collect_template_binders(
+    expr: &Expr,
+    params: &HashMap<String, Vec<Expr>>,
+    out: &mut Vec<String>,
+) {
+    let mut push = |name: &str, params: &HashMap<String, Vec<Expr>>, out: &mut Vec<String>| {
+        if !params.contains_key(name) && !out.iter().any(|n| n == name) {
+            out.push(name.to_string());
+        }
+    };
+    match &expr.kind {
+        ExprKind::List(items) if !items.is_empty() => {
+            if let ExprKind::Symbol(head) = &items[0].kind {
+                match head.as_str() {
+                    "let" => {
+                        // [let name value] / [let mut name value]
+                        let ni = if matches!(&items[1].kind, ExprKind::Symbol(s) if s == "mut") {
+                            2
+                        } else {
+                            1
+                        };
+                        if let Some(ExprKind::Symbol(name)) = items.get(ni).map(|e| &e.kind) {
+                            push(name, params, out);
+                        }
+                    }
+                    "fn" => {
+                        // [fn [params] body...] or [fn name [params] body...]
+                        let pi = if matches!(&items.get(1).map(|e| &e.kind), Some(ExprKind::Symbol(_)))
+                        {
+                            2
+                        } else {
+                            1
+                        };
+                        if let Some(ExprKind::List(ps)) = items.get(pi).map(|e| &e.kind) {
+                            for p in ps {
+                                if let ExprKind::Symbol(pn) = &p.kind {
+                                    if pn != "&" {
+                                        push(pn, params, out);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "loop" => {
+                        // [loop [n1 v1 n2 v2 ...] body...]
+                        if let Some(ExprKind::List(bs)) = items.get(1).map(|e| &e.kind) {
+                            for pair in bs.chunks(2) {
+                                if let Some(ExprKind::Symbol(bn)) = pair.first().map(|e| &e.kind) {
+                                    push(bn, params, out);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for item in items {
+                collect_template_binders(item, params, out);
+            }
+        }
+        ExprKind::Vec(items) | ExprKind::Set(items) | ExprKind::Tuple(items) => {
+            for item in items {
+                collect_template_binders(item, params, out);
+            }
+        }
+        ExprKind::Map(pairs) => {
+            for (k, v) in pairs {
+                collect_template_binders(k, params, out);
+                collect_template_binders(v, params, out);
+            }
+        }
+        // Nested quotes are not substituted, so don't rename inside them.
+        _ => {}
+    }
+}
 
 fn expr_to_ast_value(expr: &Expr, span: Span) -> Expr {
     match &expr.kind {
