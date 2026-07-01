@@ -78,6 +78,47 @@
             :margin-bottom "3.5rem"}}
         "Changelog"]
       
+      ; ── Record/replay + capability security ────────────────────────────
+      [blog-article
+        "Record the Bug, Replay It Forever"
+        "Jul 1, 2026"
+        
+        [p
+          "Some bugs only happen on some runs: a clock lands on an unlucky value, a file changes between reads, a request races a timeout. In Loon all of that nondeterminism flows through effects — so it can be put on tape. This release makes determinism the debugging superpower and spells out the security story that comes from the same design."]
+        
+        [blog-h3 "loon run --record / loon replay"]
+        [p
+          "Pass --record to any run and every nondeterministic effect result — clock reads, uuids, file reads, env lookups, network calls, plus log writes for observability — is appended to a trace file in Loon data format. Entries are flushed as they happen, so the trace survives the crash it was recording. Then loon replay feeds the results back in order: same program, same trace, identical execution — including reproducing the crash at the same step with the same error report. Re-run it under scrutiny as many times as you like; the bug holds still."]
+        [blog-code
+          [str
+            "$ loon run samples/replay-demo.oo --record crash.oo\n"
+            "processing batch (roll 0)\n"
+            "corrupt record encountered!\n"
+            "error: assertion failed: 0 != -1\n"
+            "note: crash trace saved to crash.oo\n"
+            "\n"
+            "$ loon replay crash.oo samples/replay-demo.oo\n"
+            "processing batch (roll 0)   ; same roll\n"
+            "corrupt record encountered! ; same crash, every time"]]
+        [p
+          "The trace is just Loon data — a vector of maps you can read, diff, and check in. If the program changes and performs a different operation than the trace recorded, replay stops with a divergence diagnostic naming the expected vs requested op and the step index, instead of feeding it a wrong value."]
+        [blog-code
+          [str
+            "#[{:effect \"IO\" :op \"millis\" :args #[] :result 1751338712345}\n"
+            "  {:effect \"IO\" :op \"println\" :args #[\"processing batch (roll 0)\"] :result :unit}]"]]
+        
+        [blog-h3 "The capability story, written down"]
+        [p
+          "docs/capabilities.md documents Loon's security model as it actually exists: effects make all ambient authority explicit, dependencies are pure by default, and pkg.oo grants effects per dependency. loon audit --capabilities prints the grant surface; the full audit walks the lockfile and flags transitive deps whose effect needs were never granted — an exit code you can gate CI on. A function that performs an undeclared effect is a compile error (E0401). The walkthrough shows a malicious transitive dependency being caught at three checkpoints before it can phone home."]
+        
+        [blog-h3 "Landing alongside"]
+        [ul-el
+          {:style {:margin-left "1.5rem" :line-height "1.8"}}
+          [li-el
+            "Cross-backend conformance suite: one corpus of programs, every backend must agree — divergence is a failing test."]
+          [li-el
+            "Effect-row polish in the checker: more precise inferred rows across handlers and higher-order code."]]]
+      
       ; ── v0.7.0 — Effects, towers, and two frameworks ───────────────────
       [blog-article
         "Effect Handlers, End to End"
