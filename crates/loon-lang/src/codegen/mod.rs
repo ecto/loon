@@ -2294,6 +2294,17 @@ impl<'a> FnCtx<'a> {
             return Ok(());
         }
         if let ExprKind::Symbol(s) = &items[0].kind {
+            // A LOCAL binding (let / fn param / match binding) shadows builtins
+            // and operators at call sites, matching the interpreter and the
+            // EIR VM. Without this, `[let sum f] [sum xs]` silently compiled
+            // the builtin arm below against the closure value — a miscompile.
+            // Special forms (if/let/do/...) can never be shadowed.
+            if self.locals.contains_key(s.as_str())
+                && !crate::eir::lower::is_special_form(s)
+                && !self.compiler.fn_map.contains_key(s.as_str())
+            {
+                return self.compile_closure_call_local(s, &items[1..]);
+            }
             match s.as_str() {
                 "+" => {
                     use WasmInstruction::*;

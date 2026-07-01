@@ -786,8 +786,14 @@ impl<'a> Lower<'a> {
             }
             let ctor_map_ref = &self.ctor_map;
             let func_map_ref = &self.func_map;
-            let resolve =
-                |name: &str| -> bool { self.resolve_builtin(name).is_some() || is_operator(name) };
+            // A name counts as a builtin/operator only when it is NOT shadowed
+            // by a lexical binding in scope: a shadowed name must be collected
+            // as a free variable so the closure captures the local, not the
+            // builtin.
+            let resolve = |name: &str| -> bool {
+                self.lookup(name).is_none()
+                    && (self.resolve_builtin(name).is_some() || is_operator(name))
+            };
             let mut free_vars = Vec::new();
             let mut seen = std::collections::HashSet::new();
             for expr in body {
@@ -1405,6 +1411,15 @@ impl<'a> Lower<'a> {
 
                     // Try builtin recognition (thread-last: append current as last arg)
                     if let ExprKind::Symbol(name) = &head.kind {
+                        // Local bindings shadow builtins here too.
+                        if let Some(local) = self.lookup(name) {
+                            let mut all_args = explicit_args;
+                            all_args.push(current);
+                            let r = self.reg();
+                            self.emit(Op::Invoke(r, local, all_args, step.span));
+                            current = r;
+                            continue;
+                        }
                         if let Some(built) = self.resolve_builtin(name) {
                             let mut all_args = explicit_args;
                             all_args.push(current);
@@ -1425,7 +1440,11 @@ impl<'a> Lower<'a> {
                 }
                 ExprKind::Symbol(name) => {
                     // Single symbol step: [pipe x f] → [f x]
-                    if let Some(built) = self.resolve_builtin(name) {
+                    if let Some(local) = self.lookup(name) {
+                        let r = self.reg();
+                        self.emit(Op::Invoke(r, local, vec![current], step.span));
+                        current = r;
+                    } else if let Some(built) = self.resolve_builtin(name) {
                         let r = self.reg();
                         self.emit(Op::Builtin(r, built, vec![current], step.span));
                         current = r;
@@ -1618,8 +1637,12 @@ impl<'a> Lower<'a> {
                             {
                                 let ctor_map_ref = &self.ctor_map;
                                 let func_map_ref = &self.func_map;
+                                // As in lower_fn: a lexically shadowed name is
+                                // a free var to capture, not a builtin.
                                 let resolve = |name: &str| -> bool {
-                                    self.resolve_builtin(name).is_some() || is_operator(name)
+                                    self.lookup(name).is_none()
+                                        && (self.resolve_builtin(name).is_some()
+                                            || is_operator(name))
                                 };
                                 let mut free_vars = Vec::new();
                                 let mut seen = std::collections::HashSet::new();
@@ -1839,6 +1862,18 @@ impl<'a> Lower<'a> {
                 let fields: Vec<Reg> = arg_exprs.iter().map(|e| self.lower_expr(e)).collect();
                 let r = self.reg();
                 self.emit(Op::Adt(r, tag, fields, span));
+                return r;
+            }
+
+            // A LOCAL binding (let / fn param / pattern binding) shadows
+            // operators, builtins, and top-level functions at call sites, just
+            // like the interpreter (where builtins live in the same env as
+            // locals and inner scopes win). Without this check `[let + my-fn]
+            // [+ 3 4]` silently called the builtin `+`.
+            if let Some(local) = self.lookup(name) {
+                let args: Vec<Reg> = arg_exprs.iter().map(|e| self.lower_expr(e)).collect();
+                let r = self.reg();
+                self.emit(Op::Invoke(r, local, args, span));
                 return r;
             }
 
@@ -2243,7 +2278,7 @@ fn collect_free_vars(
     }
 }
 
-fn is_special_form(name: &str) -> bool {
+pub(crate) fn is_special_form(name: &str) -> bool {
     matches!(
         name,
         "fn" | "let"
@@ -2275,7 +2310,7 @@ fn is_special_form(name: &str) -> bool {
     )
 }
 
-fn is_operator(name: &str) -> bool {
+pub(crate) fn is_operator(name: &str) -> bool {
     matches!(
         name,
         "+" | "-" | "*" | "/" | "%" | "=" | "!=" | "<" | ">" | "<=" | ">=" | "and" | "or" | "not"
