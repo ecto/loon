@@ -66,6 +66,8 @@ struct Lower<'a> {
     func_map: HashMap<String, FuncId>,
     /// Current loop header block (for recur → Jmp back to loop).
     recur_target: Option<BlockId>,
+    /// Monotonic counter for compiler-synthesized (gensym) binding names.
+    gensym_counter: u32,
 }
 
 impl<'a> Lower<'a> {
@@ -88,7 +90,17 @@ impl<'a> Lower<'a> {
             evidence_scope: HashMap::new(),
             func_map: HashMap::new(),
             recur_target: None,
+            gensym_counter: 0,
         }
+    }
+
+    /// A binding name that cannot collide with any user symbol. The tokenizer
+    /// splits on whitespace, so no user identifier can contain a space; a name
+    /// with one is safe to use as a synthesized (gensym) binding key.
+    fn fresh_name(&mut self, prefix: &str) -> String {
+        let n = self.gensym_counter;
+        self.gensym_counter += 1;
+        format!("{prefix} {n}")
     }
 
     fn finish(self) -> Module {
@@ -1892,71 +1904,59 @@ impl<'a> Lower<'a> {
         }
 
         let body = &args[0];
-        let handler_expr = if args.len() > 1 {
-            Some(&args[args.len() - 1])
-        } else {
-            None
-        };
+        // The on-fail handler is the SECOND arg, matching the tree-walking
+        // interpreter (which reads args[1]). For the canonical two-arg form
+        // this is also the last arg; taking args[1] specifically keeps the two
+        // backends in agreement even when extra args are present.
+        let handler_expr = args.get(1);
 
         if let Some(on_fail) = handler_expr {
-            // Create handler closure for Fail.fail
-            let saved_func = self.cur_func;
-            let saved_block = self.cur_block;
-            let saved_next_reg = self.next_reg;
-            let saved_scopes = std::mem::take(&mut self.scopes);
-
-            let handler_fn_id = self.begin_func(None, span);
-            self.scopes = vec![HashMap::new()];
-            // Params: (resume, msg)
-            let _resume_reg = Reg(0);
-            let msg_reg = Reg(1);
-            self.next_reg = 2;
-            self.bind("resume", _resume_reg);
-            self.bind("__fail_msg", msg_reg);
-            self.module.funcs[handler_fn_id.0 as usize].params = vec![Ty::Any; 2];
-
-            // Handler body: call on-fail with msg
-            let on_fail_fn = self.lower_expr(on_fail);
-            let result = self.reg();
-            self.emit(Op::Invoke(result, on_fail_fn, vec![msg_reg], span));
-            self.seal(End::Ret(result));
-
-            self.cur_func = saved_func;
-            self.cur_block = saved_block;
-            self.next_reg = saved_next_reg;
-            self.scopes = saved_scopes;
-
-            // Create handler closure for Fail.fail.
-            let handler_reg = self.reg();
-            self.emit(Op::Close(handler_reg, handler_fn_id, Vec::new(), span));
-
-            // Install it on the *dynamic* handler stack — which is what
-            // `Op::Perform` consults (it ignores `evidence_scope`). The previous
-            // code only set evidence, so a `Fail.fail` performed inside the body
-            // (especially across a function call / under recursion) never found
-            // the handler and fell through to unit. Mirror `handle`: PushHandler,
-            // run the body as a zero-arg thunk so it has a clean prompt boundary,
-            // then PopHandler.
-            let eff_id = self.intern("Fail");
-            let op_id = self.intern("fail");
-            self.emit(Op::PushHandler(handler_reg, eff_id, op_id, span));
-
-            let saved_evidence = std::mem::take(&mut self.evidence_scope);
-            let thunk_expr = Expr::new(
+            // Desugar through lower_handle so the Fail clause gets the same
+            // machinery as any handler clause — in particular free-variable
+            // capture (a hand-rolled lowering forgot captures, so on-fail
+            // closures over enclosing locals — the supervision retry pattern —
+            // mis-resolved them).
+            //
+            //   [try BODY ON-FAIL] → [handle BODY [Fail.fail <msg>] [<fn> <msg>]]
+            //
+            // ON-FAIL is lowered EAGERLY here in the enclosing scope and bound
+            // to a gensym, then applied inside the clause. This matters for
+            // hygiene and evaluation order:
+            //   - lowering it out here (not inside the clause) means the
+            //     handler's implicit `resume` and the message binding are NOT
+            //     in scope while the user's ON-FAIL is compiled, so an ON-FAIL
+            //     that references an enclosing `resume` (or the gensym) resolves
+            //     to the user's binding, not the injected one;
+            //   - it evaluates once, before the body, like the interpreter —
+            //     so a side-effecting handler-producing expression runs on the
+            //     success path too;
+            //   - putting a gensym VALUE (not ON-FAIL itself) in head position
+            //     means a bare-symbol or computed handler is applied correctly.
+            let on_fail_reg = self.lower_expr(on_fail);
+            let fn_name = self.fresh_name("try-onfail");
+            let msg_name = self.fresh_name("try-msg");
+            self.bind(&fn_name, on_fail_reg);
+            let pattern = Expr::new(
                 ExprKind::List(vec![
-                    Expr::new(ExprKind::Symbol("fn".to_string()), span),
-                    Expr::new(ExprKind::List(Vec::new()), span),
-                    body.clone(),
+                    Expr::new(
+                        ExprKind::DotAccess(
+                            Box::new(Expr::new(ExprKind::Symbol("Fail".to_string()), span)),
+                            "fail".to_string(),
+                        ),
+                        span,
+                    ),
+                    Expr::new(ExprKind::Symbol(msg_name.clone()), span),
                 ]),
                 span,
             );
-            let thunk_reg = self.lower_expr(&thunk_expr);
-            let result = self.reg();
-            self.emit(Op::Invoke(result, thunk_reg, Vec::new(), span));
-            self.evidence_scope = saved_evidence;
-
-            self.emit(Op::PopHandler(span));
-            result
+            let clause_body = Expr::new(
+                ExprKind::List(vec![
+                    Expr::new(ExprKind::Symbol(fn_name), span),
+                    Expr::new(ExprKind::Symbol(msg_name), span),
+                ]),
+                span,
+            );
+            self.lower_handle(&[body.clone(), pattern, clause_body], span)
         } else {
             self.lower_expr(body)
         }

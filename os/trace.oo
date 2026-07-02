@@ -1,0 +1,27 @@
+; Loon OS — strace as a library.
+;
+; A wrapping handler: log every Sys operation, then forward it to the next
+; handler out (the sandbox, the kernel, a recorder — whoever is below).
+; Zero mechanism: observability is just interposition.
+[use sys]
+
+[pub
+  fn
+  traced
+  [thunk]
+  [handle
+    [thunk]
+    [Fs.read-file p]
+    [do [IO.println [str "[trace] Fs.read-file " p]] [resume [Fs.read-file p]]]
+    [Fs.write-file p c]
+    [do
+      [IO.println [str "[trace] Fs.write-file " p " (" [len c] " bytes)"]]
+      [resume [Fs.write-file p c]]]
+    [Clock.now]
+    [do [IO.println "[trace] Clock.now"] [resume [Clock.now]]]
+    [Clock.millis]
+    [do [IO.println "[trace] Clock.millis"] [resume [Clock.millis]]]
+    [Rand.int n]
+    [do [IO.println [str "[trace] Rand.int " n]] [resume [Rand.int n]]]
+    [Env.get k]
+    [do [IO.println [str "[trace] Env.get " k]] [resume [Env.get k]]]]]
