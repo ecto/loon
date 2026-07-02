@@ -1,6 +1,8 @@
-; expect-fail: legacy — division by zero errors on the interpreter but
-; evaluates to () on the EIR VM; the backends disagree on the error class.
-; expect-fail: wasm — i64.div_s traps on zero, which surfaces as a wasmtime
-; trap, not the VM's silent () nor the interpreter's runtime error.
+; Integer division by zero must NOT return a value on any backend. All three
+; abort with empty stdout and a nonzero exit: the EIR VM raises a
+; "division by zero" runtime error (the oracle), the interpreter raises the
+; same, and wasm's i64.div_s traps. The diagnostic strings differ (a trap is
+; not the VM's message), but the conformance contract only compares stdout +
+; success/failure class, and on that all three agree — so no expect-fail.
 [fn main []
   [println [/ 1 0]]]
