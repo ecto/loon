@@ -272,6 +272,10 @@ pub struct HeapStats {
     pub total_bytes: u64,
     /// Peak number of live objects (snapshot of heap length high-water mark).
     pub peak_objects: usize,
+    /// High-water mark of the frame stack (sampled at each Perform).
+    pub max_frames: usize,
+    /// High-water mark of the dynamic handler stack (sampled at each Perform).
+    pub max_handlers: usize,
 }
 
 /// Result of running the VM.
@@ -860,7 +864,7 @@ impl Vm {
             Op::Bin(dst, binop, a, b, _) => {
                 let av = self.r(*a);
                 let bv = self.r(*b);
-                let result = self.exec_binop(*binop, av, bv);
+                let result = self.exec_binop(*binop, av, bv)?;
                 self.w(*dst, result);
             }
 
@@ -983,6 +987,33 @@ impl Vm {
 
             Op::Perform(dst, _eff_sid, op_sid, args, _evidence, _span) => {
                 let vals = self.read_regs(args);
+                // Perf telemetry: unbounded growth here is the O(N^2) signature
+                // (each perform re-scans/copies the stacks), so track highs.
+                self.heap_stats.max_frames = self.heap_stats.max_frames.max(self.frames.len());
+                self.heap_stats.max_handlers =
+                    self.heap_stats.max_handlers.max(self.handlers.len());
+                if std::env::var_os("LOON_TRACE_PERFORM").is_some() {
+                    let names: Vec<&str> = self
+                        .frames
+                        .iter()
+                        .map(|fr| {
+                            self.module.funcs[fr.func.0 as usize]
+                                .name
+                                .as_deref()
+                                .unwrap_or("anon")
+                        })
+                        .collect();
+                    eprintln!(
+                        "perform: frames={} handlers={} stack={:?} cur={}",
+                        self.frames.len(),
+                        self.handlers.len(),
+                        names,
+                        self.module.funcs[self.func.0 as usize]
+                            .name
+                            .as_deref()
+                            .unwrap_or("anon"),
+                    );
+                }
                 // Find the innermost handler for this operation on the dynamic
                 // stack, with its prompt depth. (Evidence is ignored: capturing
                 // a continuation needs the prompt boundary, which only the
@@ -1056,9 +1087,13 @@ impl Vm {
                         self.w(*dst, Val::UNIT);
                     }
                 } else {
-                    // Unhandled: a builtin effect (real IO, etc.). An op with
-                    // no builtin implementation is a hard error, not a silent
-                    // `()` (see builtin_effect).
+                    // No dynamic handler: fall through to a builtin effect
+                    // (real IO, clock, net, …), threading record/replay. An op
+                    // with no builtin implementation is a hard error, not a
+                    // silent `()` (see builtin_effect) — this notably makes an
+                    // uncaught `Fail.fail` abort with a message, including one
+                    // raised inside a handler clause whose enclosing `try` was
+                    // frozen into the continuation.
                     let effect = self.module.strings[_eff_sid.0 as usize].clone();
                     let op_name = self.module.strings[op_sid.0 as usize].clone();
                     let result = self.perform_builtin_effect(&effect, &op_name, &vals)?;
@@ -1095,11 +1130,7 @@ impl Vm {
                 // handler instead. Matching PushHandler's prompt_depth
                 // (frames.len() at the handle) makes the pop a no-op then.
                 let depth = self.frames.len();
-                if let Some(idx) = self
-                    .handlers
-                    .iter()
-                    .rposition(|h| h.prompt_depth == depth)
-                {
+                if let Some(idx) = self.handlers.iter().rposition(|h| h.prompt_depth == depth) {
                     self.handlers.remove(idx);
                 }
             }
@@ -1118,8 +1149,8 @@ impl Vm {
         }
     }
 
-    fn exec_binop(&mut self, op: BinOp, a: Val, b: Val) -> Val {
-        match op {
+    fn exec_binop(&mut self, op: BinOp, a: Val, b: Val) -> Result<Val, VmError> {
+        Ok(match op {
             BinOp::Add => {
                 if a.is_int() && b.is_int() {
                     self.safe_int(a.as_int().wrapping_add(b.as_int()))
@@ -1177,10 +1208,10 @@ impl Vm {
                 if a.is_int() && b.is_int() {
                     let bv = b.as_int();
                     if bv == 0 {
-                        Val::UNIT
-                    } else {
-                        Val::int(a.as_int() / bv)
+                        return Err(VmError::new(VmErrorKind::DivideByZero("division"))
+                            .with_span(self.current_span));
                     }
+                    Val::int(a.as_int() / bv)
                 } else {
                     let af = if a.is_float() {
                         a.as_float()
@@ -1199,10 +1230,10 @@ impl Vm {
                 if a.is_int() && b.is_int() {
                     let bv = b.as_int();
                     if bv == 0 {
-                        Val::UNIT
-                    } else {
-                        Val::int(a.as_int() % bv)
+                        return Err(VmError::new(VmErrorKind::DivideByZero("modulo"))
+                            .with_span(self.current_span));
                     }
+                    Val::int(a.as_int() % bv)
                 } else {
                     Val::UNIT
                 }
@@ -1296,7 +1327,7 @@ impl Vm {
                 let sb = self.val_to_string(b);
                 self.alloc_str_owned(format!("{sa}{sb}"))
             }
-        }
+        })
     }
 
     // ── Builtins ───────────────────────────────────────────────────────
@@ -2887,10 +2918,17 @@ pub enum VmErrorKind {
     /// A replayed program requested a different effect op than the trace
     /// recorded (or ran past the end of the trace).
     ReplayDivergence(String),
-    /// An effect operation reached the top of the handler stack with no
-    /// handler and no builtin implementation. Silently returning `()` here
-    /// would let programs believe the effect happened.
+    /// An effect reached the top of the handler stack with no handler and no
+    /// builtin implementation. Silently returning `()` here would let programs
+    /// believe the effect happened. Notably covers an uncaught `Fail.fail` —
+    /// an abort with no surrounding `try`/`Fail` handler, including one raised
+    /// inside a handler clause (whose body runs at its `handle`'s prompt,
+    /// outside the dynamic extent of any `try` in the handled body).
     UnhandledEffect(String),
+    /// Integer division or modulo by a zero divisor. Silently returning `()`
+    /// here would let programs believe they got a valid quotient. The `&str`
+    /// names the operation ("division" or "modulo") for the diagnostic.
+    DivideByZero(&'static str),
 }
 
 impl VmError {
@@ -2929,6 +2967,11 @@ impl std::fmt::Display for VmError {
                     f,
                     "unhandled effect: {name} — add a [handle ...] block to handle this effect"
                 )
+            }
+            VmErrorKind::DivideByZero(kind) => {
+                // Wording matches the interpreter's "division by zero" /
+                // "modulo by zero" so both backends fail the same way.
+                write!(f, "{kind} by zero")
             }
         }
     }
@@ -3349,6 +3392,35 @@ mod tests {
     }
 
     #[test]
+    fn vm_int_divide_by_zero_raises() {
+        // Integer / and % by zero must ERROR, not silently return () — the
+        // same silent-failure class as unhandled effects. Matches the
+        // interpreter's "division by zero" / "modulo by zero" wording.
+        let derr = eval_eir("[fn main [] [println [/ 5 0]]]")
+            .expect_err("[/ 5 0] should error, not return ()");
+        assert!(
+            matches!(derr.kind, VmErrorKind::DivideByZero("division")),
+            "got: {derr}"
+        );
+        assert!(derr.to_string().contains("division by zero"), "got: {derr}");
+
+        let merr = eval_eir("[fn main [] [println [% 5 0]]]")
+            .expect_err("[% 5 0] should error, not return ()");
+        assert!(
+            matches!(merr.kind, VmErrorKind::DivideByZero("modulo")),
+            "got: {merr}"
+        );
+        assert!(merr.to_string().contains("modulo by zero"), "got: {merr}");
+
+        // Non-zero divisors still work.
+        assert_eq!(run("[/ 17 5]").as_int(), 3);
+        assert_eq!(run("[% 17 5]").as_int(), 2);
+
+        // Float division by zero is IEEE infinity, NOT an error.
+        assert!(run("[/ 1.0 0.0]").as_float().is_infinite());
+    }
+
+    #[test]
     fn vm_io_write_file_round_trips() {
         // IO.write-file must actually write (it silently no-oped on early VM
         // builds); read it back through IO.read-file on the same backend.
@@ -3362,6 +3434,66 @@ mod tests {
         assert_eq!(out, vec!["written-by-vm".to_string()]);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "written-by-vm");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vm_tail_resume_runs_in_constant_stack() {
+        // The syscall fast path: a handler clause ending in [resume ...] seals
+        // as a tail resume (End::TailInvoke), so a perform/resume loop must not
+        // grow the frame stack with iteration count. Before this, each cycle
+        // leaked the handler frame as a fresh prompt, the captured segment grew
+        // per iteration, and effect loops were O(N^2) time / O(N) memory.
+        let run_n = |n: i64| {
+            let src = format!(
+                "[effect Tick [next [Int] Int]] \
+                 [fn work [acc n] [if [<= n 0] acc [recur [Tick.next acc] [- n 1]]]] \
+                 [fn main [] [println [handle [work 0 {n}] [Tick.next a] [resume [+ a 1]]]]]"
+            );
+            let r = eval_eir(&src).expect("vm error");
+            assert_eq!(r.output, vec![n.to_string()]);
+            r.heap_stats.max_frames
+        };
+        let small = run_n(100);
+        let large = run_n(4000);
+        assert_eq!(small, large, "frame high-water mark must not scale with N");
+        assert!(large < 10, "expected O(1) frames, got {large}");
+    }
+
+    #[test]
+    fn vm_unhandled_fail_is_loud() {
+        // An uncaught Fail must raise a loud error, not silently collapse to
+        // unit. This covers the deep-handler case: a `try` installed INSIDE a
+        // handled body is frozen into the continuation when a clause runs, so a
+        // Fail raised by that clause finds no live handler — it must error, not
+        // vanish. (Matches the tree-walking interpreter.)
+        let src = "[effect E [op [Int] Int]] \
+                   [fn body [] [try [E.op 1] [fn [m] [str \"caught \" m]]]] \
+                   [fn main [] [handle [body] [E.op x] [Fail.fail \"denied\"]]]";
+        let err = eval_eir(src).expect_err("uncaught Fail should error");
+        assert!(
+            matches!(err.kind, VmErrorKind::UnhandledEffect(ref n) if n == "Fail.fail"),
+            "expected UnhandledEffect(Fail.fail), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn vm_unhandled_user_effect_is_loud() {
+        // A user-defined effect with no handler and no builtin meaning is an
+        // error too, not silent unit.
+        let src = "[effect Foo [bar [] Int]] [fn main [] [Foo.bar]]";
+        let err = eval_eir(src).expect_err("unhandled user effect should error");
+        assert!(matches!(err.kind, VmErrorKind::UnhandledEffect(ref n) if n == "Foo.bar"));
+    }
+
+    #[test]
+    fn vm_outer_try_still_catches_clause_fail() {
+        // A `try` ENCLOSING the whole handle stays live while the clause runs,
+        // so it still catches a Fail the clause raises — only the frozen
+        // inner-try case is uncatchable.
+        let src = "[effect E [op [Int] Int]] \
+                   [fn guarded [] [handle [E.op 1] [E.op x] [Fail.fail \"boom\"]]] \
+                   [fn main [] [println [try [guarded] [fn [m] [str \"caught: \" m]]]]]";
+        assert_eq!(run_output(src), vec!["caught: boom".to_string()]);
     }
 
     #[test]

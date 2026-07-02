@@ -159,7 +159,10 @@ impl Hash for Value {
 
 impl Value {
     pub fn is_truthy(&self) -> bool {
-        !matches!(self, Value::Bool(false) | Value::Unit | Value::Int(0))
+        // Canonical truthiness (matches the EIR VM, the semantic reference):
+        // ONLY `false` and unit are falsy. Everything else is truthy —
+        // including integer 0, 0.0, "" (empty string), and empty collections.
+        !matches!(self, Value::Bool(false) | Value::Unit)
     }
 
     pub fn is_callable(&self) -> bool {

@@ -1830,7 +1830,35 @@ impl<'a> Lower<'a> {
 
                             let handler_body = &handler_args[i + 1];
                             let val = self.lower_expr(handler_body);
-                            self.seal(End::Ret(val));
+                            // Tail-resume peephole (the one-shot fast path): a
+                            // clause that ends by returning `[resume ...]`'s
+                            // result is a tail resume. Sealing it as TailInvoke
+                            // lets the VM splice the continuation WITHOUT
+                            // pushing the handler frame as a fresh prompt, so a
+                            // perform/resume loop runs in O(1) stack instead of
+                            // leaking a frame per iteration (O(N^2) time — the
+                            // 10GB blowups the first os/ demos hit). Scoped to
+                            // `resume` only: End::TailInvoke is correct on the
+                            // VM but not on the native backend, and
+                            // handler-using programs never compile natively.
+                            let resume_binding = self.lookup("resume");
+                            let mut sealed_tail = false;
+                            if let (Some(resume_reg), Some(cf), Some(cb)) =
+                                (resume_binding, self.cur_func, self.cur_block)
+                            {
+                                let block = &mut self.module.funcs[cf].blocks[cb.0 as usize];
+                                if let Some(Op::Invoke(dst, callee, args, _)) = block.ops.last() {
+                                    if *dst == val && *callee == resume_reg {
+                                        let (callee, args) = (*callee, args.clone());
+                                        block.ops.pop();
+                                        block.end = End::TailInvoke(callee, args);
+                                        sealed_tail = true;
+                                    }
+                                }
+                            }
+                            if !sealed_tail {
+                                self.seal(End::Ret(val));
+                            }
 
                             self.cur_func = saved_func;
                             self.cur_block = saved_block;

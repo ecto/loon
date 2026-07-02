@@ -29,13 +29,22 @@
 [effect Env
   [get [String] String]]
 
-; cooperative processes — handled by the scheduler (sched.oo)
+; cooperative processes — handled by the scheduler (sched.oo).
+; try-recv is the non-blocking probe: {:msg m} or :none, never parks —
+; the primitive that retry loops over a lossy network are built on.
 [effect Proc
   [spawn [Any] Int]
   [yield [] Unit]
   [send [Int Any] Unit]
   [recv [] Any]
+  [try-recv [] Any]
   [self [] Int]]
+
+; unreliable inter-node packets — given meaning by a network handler
+; (net.oo): seeded drops/duplication, delivery into the target's Proc
+; mailbox when a packet survives
+[effect Net
+  [send [Int Any] Unit]]
 
 ; integer modulo (no builtin `mod`) — non-negative operands only
 [pub fn imod [a b] [- a [* b [int [/ a b]]]]]

@@ -154,6 +154,12 @@ Implementations don't need type annotations — the trait provides them:
 
 There is no null, nil, or undefined. Use `Option` for values that might not exist. Use `Result` for operations that might fail. The type system enforces exhaustive handling.
 
+### Truthiness
+
+In boolean position — `if`, `and`, `or`, `when`, `not`, and any predicate that tests a value for truth — **only `false` and unit `()` are falsy**. Everything else is truthy, including integer `0`, float `0.0`, the empty string `""`, and empty collections (`#[]`, `{}`). There is no "empty is false" coercion: `[if 0 :a :b]` takes the `:a` branch. `None` is a heap-allocated `Option` constructor (not unit), so it too is truthy; match on it with `[match o None … [Some x] …]` rather than testing it for truth.
+
+The EIR VM defines this behavior; the tree-walking interpreter matches it. The wasm backend uses an untagged `i64` value model in which `0`, `false`, and unit share a bit pattern, so integer/float zero is currently falsy there — a known divergence pending a tagged representation.
+
 ### No Dimensionless — Physics Type System
 
 Just as Loon has no `null`, Loon has no silent escape from the physics type world. SI dimensions are compile-time types with zero runtime overhead.

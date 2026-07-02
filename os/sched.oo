@@ -53,6 +53,16 @@
         ; nothing waiting — park until someone sends to us
         [update st :waiting [fn [w] [assoc w pid [fn [msg] [resume msg]]]]]]]
     
+    [Proc.try-recv]
+    ; non-blocking probe: {:msg m} if something is waiting, :none otherwise
+    [fn [st]
+      [let inbox [get [get st :mail] pid #[]]]
+      [if [> [len inbox] 0]
+        [do
+          [let st2 [update st :mail [fn [m] [assoc m pid [drop 1 inbox]]]]]
+          [[resume {:msg [first inbox]}] st2]]
+        [[resume :none] st]]]
+    
     [Proc.send target msg]
     [fn [st]
       [let k [get [get st :waiting] target :none]]
