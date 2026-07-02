@@ -24,11 +24,17 @@ row is part of its signature:
 ```
 
 The checker verifies the row. A function that claims to be pure (`#{}`) and
-performs `IO` anyway is a **compile-time error**, not a runtime surprise:
+performs `IO` anyway fails `loon check` (the LSP surfaces the same
+diagnostic as you type):
 
 ```
 error: [E0401] function `quiet` performs undeclared effect `IO`
 ```
+
+One caveat to state plainly: `loon run` does not currently gate execution
+on these type errors — an unchecked program runs even if `loon check`
+rejects it, so the check belongs in CI. Wiring the checker into `run` is
+on the roadmap below.
 
 This is the foundation the package-level story builds on: because effects
 are typed, "what can this code do to the outside world?" is a static
@@ -122,7 +128,8 @@ In Loon the attack surfaces at three separate checkpoints:
    a report.
 
 3. **The runtime refuses.** If the code is executed anyway, performing an
-   ungranted effect from dependency code is rejected at the perform site:
+   ungranted effect from dependency code is rejected at the perform site
+   (today on the legacy interpreter — see the roadmap section):
 
    ```
    effect `Net` not granted to module `github.com/evil/telemetry` —
@@ -136,8 +143,11 @@ and the audit checks the whole tree against it.
 
 Honesty section. The current implementation:
 
-- **Enforced at compile time:** effect rows on functions. Undeclared
-  effects (`E0401`) and unhandled effects (`E0400`) are type errors.
+- **Enforced by `loon check` (and the LSP):** effect rows on functions.
+  Undeclared effects (`E0401`) and unhandled effects (`E0400`) are type
+  errors with CI-gateable exit codes. `loon run` does not yet refuse to
+  execute a program that fails these checks — running and checking are
+  separate steps today.
 - **Enforced by `loon audit`:** the transitive grant walk, content-hash
   verification of the package cache against the lockfile, and lockfile
   staleness — all CI-gateable exit codes.
@@ -155,6 +165,9 @@ Roadmap (in the spirit of "violations are type errors, not sandbox kills"):
   failure, uniformly across all backends.
 - **Grant enforcement on the EIR VM**, closing the gap between the default
   backend and the legacy interpreter until the static check lands.
+- **Gating `loon run` on the effect checker**, so an effect-row violation
+  cannot execute at all — today that stop only happens when `loon check`
+  is actually run.
 
 The direction is fixed by the design: capability violations should be
 caught by reading types, not by watching a sandbox die.

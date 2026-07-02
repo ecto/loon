@@ -109,7 +109,7 @@
         
         [blog-h3 "The capability story, written down"]
         [p
-          "docs/capabilities.md documents Loon's security model as it actually exists: effects make all ambient authority explicit, dependencies are pure by default, and pkg.oo grants effects per dependency. loon audit --capabilities prints the grant surface; the full audit walks the lockfile and flags transitive deps whose effect needs were never granted — an exit code you can gate CI on. A function that performs an undeclared effect is a compile error (E0401). The walkthrough shows a malicious transitive dependency being caught at three checkpoints before it can phone home."]
+          "docs/capabilities.md documents Loon's security model as it actually exists: effects make all ambient authority explicit, dependencies are pure by default, and pkg.oo grants effects per dependency. loon audit --capabilities prints the grant surface; the full audit walks the lockfile and flags transitive deps whose effect needs were never granted — an exit code you can gate CI on. A function that performs an undeclared effect fails loon check with E0401. The walkthrough shows a malicious transitive dependency being caught at three checkpoints before it can phone home."]
         
         [blog-h3 "Landing alongside"]
         [ul-el

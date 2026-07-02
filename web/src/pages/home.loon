@@ -133,7 +133,7 @@
 
       [tour-section
         "Capabilities, not trust"
-        "Dependencies are pure by default. A package touches the network only if your manifest grants it Net — grants are per-dependency, audited transitively, and effect rows make undeclared authority a compile error, not a sandbox kill."
+        "Dependencies are pure by default. A package touches the network only if your manifest grants it Net — grants are per-dependency, audited transitively, and effect rows make undeclared authority a loon check failure, not a sandbox kill."
         "Concepts: Effects"
         "/concepts/effects"
         [str
