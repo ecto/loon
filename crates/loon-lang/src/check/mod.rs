@@ -5113,6 +5113,242 @@ mod tests {
         assert!(errors.is_empty(), "errors: {:?}", errors);
     }
 
+    // --- Effect row polymorphism tests ---
+
+    #[test]
+    fn effect_row_twice_generalizes_per_use() {
+        // ONE definition of `twice` serves a pure and an effectful use in the
+        // SAME program: the pure use stays pure, the IO use gets IO. This is
+        // the core of effect row polymorphism — the row tail generalizes with
+        // let-polymorphism and instantiates fresh per use.
+        let (effects, errors) = infer_effects(
+            r#"
+            [fn twice [f x] [f [f x]]]
+            [fn pure-use [] [twice [fn [x] [+ x 1]] 0]]
+            [fn io-use [] [twice [fn [p] [IO.read-file p]] "f"]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let twice = effects.get("twice").unwrap();
+        assert!(
+            twice.labels.is_empty(),
+            "twice has no concrete effects of its own, got: {}",
+            twice.render()
+        );
+        let pure_use = effects.get("pure-use").unwrap();
+        assert!(
+            !pure_use.contains("IO"),
+            "pure use of twice must stay pure, got: {}",
+            pure_use.render()
+        );
+        let io_use = effects.get("io-use").unwrap();
+        assert!(
+            io_use.contains("IO"),
+            "IO use of twice must carry IO, got: {}",
+            io_use.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_map_propagates_lambda_effects() {
+        let (effects, errors) = infer_effects(
+            r#"
+            [fn load-all [v] [map [fn [p] [IO.read-file p]] v]]
+            [fn squares [v] [map [fn [x] [* x x]] v]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let load_all = effects.get("load-all").unwrap();
+        assert!(
+            load_all.contains("IO"),
+            "map with an IO lambda must carry IO, got: {}",
+            load_all.render()
+        );
+        let squares = effects.get("squares").unwrap();
+        assert!(
+            !squares.contains("IO"),
+            "map with a pure lambda must stay pure, got: {}",
+            squares.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_filter_and_fold_propagate() {
+        let (effects, errors) = infer_effects(
+            r#"
+            [fn keep [v]
+              [filter [fn [x] [IO.read-file "f"] [> x 0]] v]]
+            [fn total [v]
+              [fold 0 [fn [a b] [IO.read-file "f"] [+ a b]] v]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let keep = effects.get("keep").unwrap();
+        assert!(
+            keep.contains("IO"),
+            "filter with an IO predicate must carry IO, got: {}",
+            keep.render()
+        );
+        let total = effects.get("total").unwrap();
+        assert!(
+            total.contains("IO"),
+            "fold with an IO reducer must carry IO, got: {}",
+            total.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_handle_with_open_tail_does_not_leak() {
+        // `run-io` handles IO around a call to its function ARGUMENT — the
+        // body row is open (the argument's effects flow through the tail).
+        // Handling must constrain that tail so IO cannot leak through it:
+        // callers passing an IO function must NOT get IO.
+        let (effects, errors) = infer_effects(
+            r#"
+            [fn run-io [f]
+              [handle [f "p"]
+                [IO.read-file p] [resume "data"]]]
+            [fn main [] [run-io [fn [p] [IO.read-file p]]]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let run_io = effects.get("run-io").unwrap();
+        assert!(
+            !run_io.contains("IO"),
+            "run-io handles IO, got: {}",
+            run_io.render()
+        );
+        let main = effects.get("main").unwrap();
+        assert!(
+            !main.contains("IO"),
+            "IO must not leak through the handled body's tail, got: {}",
+            main.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_handle_leaves_unhandled_effects() {
+        // Handling one effect leaves the other flowing out through the row.
+        let (effects, errors) = infer_effects(
+            r#"
+            [effect A [a [] Int]]
+            [effect B [b [] Int]]
+            [fn partial []
+              [handle [+ [A.a] [B.b]]
+                [A.a] [resume 1]]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let partial = effects.get("partial").unwrap();
+        assert!(
+            !partial.contains("A"),
+            "A is handled, got: {}",
+            partial.render()
+        );
+        assert!(
+            partial.contains("B"),
+            "B is unhandled and must remain, got: {}",
+            partial.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_occurs_check() {
+        // Unifying two rows that share a tail but disagree on labels would
+        // need the tail to absorb a label into itself (`e ~ {IO | e}`) — an
+        // infinite row. The occurs check must reject it.
+        let mut subst = Subst::new();
+        let tail = subst.fresh_var();
+        let a = EffectRow {
+            labels: std::iter::once("IO".to_string()).collect(),
+            tail: Some(tail),
+        };
+        let b = EffectRow {
+            labels: std::collections::BTreeSet::new(),
+            tail: Some(tail),
+        };
+        assert!(
+            unify_effect_rows(&mut subst, &a, &b).is_err(),
+            "occurs check must reject e ~ {{IO | e}}"
+        );
+        // Sanity: the same rows with distinct tails unify fine.
+        let mut subst = Subst::new();
+        let t1 = subst.fresh_var();
+        let t2 = subst.fresh_var();
+        let a = EffectRow {
+            labels: std::iter::once("IO".to_string()).collect(),
+            tail: Some(t1),
+        };
+        let b = EffectRow {
+            labels: std::collections::BTreeSet::new(),
+            tail: Some(t2),
+        };
+        assert!(unify_effect_rows(&mut subst, &a, &b).is_ok());
+        assert!(
+            subst.resolve_effect_row(&b).contains("IO"),
+            "the open tail must absorb the missing label"
+        );
+    }
+
+    #[test]
+    fn effect_row_closed_rows_mismatch_errors() {
+        let mut subst = Subst::new();
+        let a = EffectRow::closed(std::iter::once("IO".to_string()).collect());
+        let b = EffectRow::pure();
+        let err = unify_effect_rows(&mut subst, &a, &b).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("IO"), "error should name the effect: {msg}");
+    }
+
+    #[test]
+    fn effect_row_render_readable() {
+        let pure = EffectRow::pure();
+        assert_eq!(pure.render(), "pure");
+        let io = EffectRow::closed(std::iter::once("IO".to_string()).collect());
+        assert_eq!(io.render(), "IO");
+        let mut subst = Subst::new();
+        let open = EffectRow {
+            labels: ["Fail".to_string(), "IO".to_string()].into_iter().collect(),
+            tail: Some(subst.fresh_var()),
+        };
+        // Rows render without internal variable ids.
+        assert_eq!(open.render(), "Fail + IO + e");
+    }
+
+    #[test]
+    fn effect_row_sig_on_effectful_fn_passes() {
+        // A [sig] constrains value types only; it must not conflict with the
+        // function's inferred effect row.
+        let errors = check_errors(
+            r#"
+            [sig load : String -> String]
+            [fn load [path] #{IO} [IO.read-file path]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    #[test]
+    fn effect_row_annotation_still_asserts_with_hof() {
+        // Assertion mode survives rows: an effect annotation on a function
+        // that gets its effect FROM a higher-order call still asserts.
+        let errors = check_errors(
+            r#"
+            [fn twice [f x] [f [f x]]]
+            [fn io-use [] #{} [twice [fn [p] [IO.read-file p]] "f"]]
+        "#,
+        );
+        assert!(
+            !errors.is_empty(),
+            "declared pure but performs IO through twice — must error"
+        );
+        assert!(
+            errors[0].message().contains("undeclared effect"),
+            "error: {}",
+            errors[0].message()
+        );
+    }
+
     // --- Row polymorphism / Record tests ---
 
     #[test]

@@ -469,6 +469,46 @@ Callers handle effects at the call site:
   [Fail.fail msg]     => [Config.default]]
 ```
 
+### Effect Rows — Inference-Only Polymorphism
+
+Effects are inferred as **rows**: a set of concrete effect labels plus an
+optional polymorphic *tail* variable, mirroring the record row polymorphism
+used for structural records. There is **no new syntax** — rows exist only
+inside the checker, and diagnostics render them readably (`IO`, `IO + Fail`,
+or `IO + e` when the tail matters).
+
+The tail is what lets higher-order functions generalize over the effects of
+their arguments. `twice` below has type `∀a e. ((a → a | e), a) → a | e` —
+its effects *are* its argument's effects:
+
+```loon
+[fn twice [f x] [f [f x]]]
+
+[twice [fn [x] [* x 2]] 3]                ; pure — no effects
+[twice [fn [p] [IO.read-file p]] "cfg"]   ; performs IO
+```
+
+Both uses come from ONE definition: the row tail generalizes with
+let-polymorphism and instantiates fresh at every use, so a pure use stays
+pure while an effectful use carries its lambda's effects. Builtins like
+`map`, `filter`, and `fold` are effect-polymorphic the same way — mapping an
+IO lambda makes the call site perform IO; mapping a pure one doesn't.
+
+`[handle ...]` subtracts the handled labels from the body's row. When the
+body's row has an open tail (e.g. the body calls a function argument), the
+handle boundary **constrains the tail** by unifying the body row with
+`{handled… | fresh}`: every handled label is forced into the concrete part
+of the row — and of every row linked to it — so a handled effect can never
+leak back out through the tail at some later call site. Unhandled effects
+still flow out through the (fresh) residual tail. This keeps rows compatible
+with evidence-passing compilation: at any concrete call site the
+instantiated row resolves to concrete labels, which is exactly what the EIR
+backend threads evidence by.
+
+Effect annotations (`#{IO Fail}`) and `[sig]` keep their assertion
+semantics: annotations check that every inferred concrete label is declared;
+sigs constrain value types and never fight the inferred row.
+
 ### Error Handling — `Result` and `?` as Sugar
 
 `Result` is Loon's conventional error type. The `?` operator is sugar for performing and handling the `Fail` effect:
