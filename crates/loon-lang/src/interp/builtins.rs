@@ -1,4 +1,4 @@
-use super::value::{ChannelId, Value};
+use super::value::{ChannelId, OrdMap, Value};
 use super::{call_fn, err, get_global_env, Env, InterpError};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -876,7 +876,7 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     builtin!(env, "HashMap.new", |_, _args: &[Value]| {
-        Ok(Value::Map(imbl::HashMap::new()))
+        Ok(Value::Map(OrdMap::new()))
     });
 
     // --- New v0.2 builtins ---
@@ -1067,13 +1067,11 @@ pub fn register_builtins(env: &mut Env) {
 
     builtin!(env, "merge", |_, args: &[Value]| {
         match (&args[0], &args[1]) {
-            (Value::Map(a), Value::Map(b)) => {
-                let mut merged = a.clone();
-                for (k, v) in b {
-                    merged = merged.update(k.clone(), v.clone());
-                }
-                Ok(Value::Map(merged))
-            }
+            // Left-biased union, matching the EIR VM (the semantic reference):
+            // keys already in `a` keep their position AND value; keys only in
+            // `b` append in `b`'s insertion order. So `[merge {:a 1 :b 2}
+            // {:b 9 :c 3}]` is `{:a 1 :b 2 :c 3}` — `:b` stays 2, `:c` appends.
+            (Value::Map(a), Value::Map(b)) => Ok(Value::Map(a.union(b.clone()))),
             _ => Err(err("merge requires two maps")),
         }
     });
@@ -1205,7 +1203,7 @@ pub fn register_builtins(env: &mut Env) {
                     groups.push((key, imbl::vector![item.clone()]));
                 }
             }
-            let map: imbl::HashMap<Value, Value> = groups
+            let map: OrdMap = groups
                 .into_iter()
                 .map(|(k, v)| (k, Value::Vec(v)))
                 .collect();
@@ -1414,7 +1412,7 @@ pub fn register_builtins(env: &mut Env) {
     builtin!(env, "into-map", |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) => {
-                let mut m = imbl::HashMap::new();
+                let mut m = OrdMap::new();
                 for item in v {
                     match item {
                         Value::Tuple(kv) if kv.len() == 2 => {

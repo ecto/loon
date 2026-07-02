@@ -296,6 +296,26 @@ The ownership model governs the *handles* to persistent data (who can read, who 
 [let m2 [assoc m :version "0.2"]]
 ```
 
+**Insertion order is guaranteed.** Maps preserve the order in which keys were
+first inserted, and that order is observable everywhere: `keys`, `vals`,
+`entries`, iteration, and printing/display all follow insertion order — never
+sorted-by-key or hash order. Every backend agrees (the EIR VM, the legacy
+interpreter, and the WASM codegen all back maps with an insertion-ordered
+structure), so a program prints its maps identically regardless of how it runs.
+
+The update rules keep positions stable:
+
+- `assoc` of an **existing** key updates its value *in place* — the key keeps
+  its position.
+- `assoc` of a **new** key appends it at the end.
+- `merge` is **left-biased**: keys already in the left map keep their position
+  *and* value; keys only in the right map append in the right map's order. So
+  `[merge {:a 1 :b 2} {:b 9 :c 3}]` is `{:a 1 :b 2 :c 3}`.
+
+Order does **not** leak into equality. Two maps with the same keys and values
+are equal (and hash equal) regardless of insertion order, so
+`[= {:a 1 :b 2} {:b 2 :a 1}]` is `true`.
+
 ### Sets
 
 ```loon

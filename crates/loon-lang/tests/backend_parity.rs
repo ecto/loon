@@ -120,6 +120,55 @@ const CORPUS: &[(&str, &str)] = &[
     ("map-get", "[fn main [] [println [get {:a 1 :b 2} :b]]]"),
     ("map-assoc", "[fn main [] [println [get [assoc {:a 1} :c 9] :c]]]"),
     ("map-keys", "[fn main [] [println [len [keys {:a 1 :b 2 :c 3}]]]]"),
+    // ── map insertion order (guaranteed identical across backends) ─────────
+    // A literal iterates/prints in the order keys were written, NOT sorted or
+    // hashed. `:c :a :b` would print sorted as `:a :b :c` on a key-ordered map
+    // and in hash order on a hash map; insertion order is the only ruling.
+    (
+        "map-order-keys",
+        "[fn main [] [println [keys {:c 3 :a 1 :b 2}]]]",
+    ),
+    (
+        "map-order-display",
+        "[fn main [] [println {:c 3 :a 1 :b 2}]]",
+    ),
+    (
+        // values follow key order — read them back via [get] per key so this
+        // stays independent of the vals/values builtin-naming split.
+        "map-order-values",
+        "[fn main [] [let m {:c 3 :a 1 :b 2}] \
+         [println [map [keys m] [fn [k] [get m k]]]]]",
+    ),
+    (
+        // assoc of an EXISTING key updates in place: order is unchanged, only
+        // the value moves. `:a` stays in slot 2, now 99.
+        "map-order-assoc-update",
+        "[fn main [] [let m {:c 3 :a 1 :b 2}] \
+         [let m2 [assoc m :a 99]] \
+         [println [keys m2]] \
+         [println [map [keys m2] [fn [k] [get m2 k]]]]]",
+    ),
+    (
+        // assoc of a NEW key appends it to the end.
+        "map-order-assoc-append",
+        "[fn main [] [println [keys [assoc {:c 3 :a 1 :b 2} :d 4]]]]",
+    ),
+    (
+        // merge is left-biased: existing keys keep their position AND value,
+        // new keys from the right append in their order. `:b` keeps slot 2 and
+        // value 2 (not 9); `:c` appends.
+        "map-order-merge",
+        "[fn main [] [let mm [merge {:a 1 :b 2} {:b 9 :c 3}]] \
+         [println [keys mm]] \
+         [println [map [keys mm] [fn [k] [get mm k]]]]]",
+    ),
+    (
+        // Value equality is ORDER-INDEPENDENT: two maps with the same k/v pairs
+        // are equal regardless of insertion order. Ordering must not leak into
+        // equality.
+        "map-eq-order-independent",
+        "[fn main [] [println [= {:a 1 :b 2} {:b 2 :a 1}]]]",
+    ),
     // control / pattern
     ("when", "[fn main [] [when [> 3 2] [println \"yes\"]]]"),
     ("nested-let", "[fn main [] [let a 2] [let b [* a 3]] [let c [+ a b]] [println c]]"),
