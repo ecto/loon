@@ -79,6 +79,17 @@ const CORPUS: &[(&str, &str)] = &[
          [fn body [] [* [C.pick] 2]] \
          [fn main [] [println [handle [body] [C.pick] [+ [resume 3] [resume 5]]]]]",
     ),
+    // A handler clause that does NOT call `resume` ABORTS: the captured
+    // continuation is discarded and the enclosing `handle` yields the clause
+    // value directly. Here the body would compute [+ 1 [F.fail]], but the
+    // non-resuming clause 999 wins — the `[+ 1 ...]` is never resumed. Both
+    // backends now agree on 999.
+    (
+        "effect-abort-discards-continuation",
+        "[effect F [fail [] Int]] \
+         [fn body [] [+ 1 [F.fail]]] \
+         [fn main [] [println [handle [body] [F.fail] 999]]]",
+    ),
     // and/or: short-circuiting (desugared to nested `if` at macro-expansion
     // time, so both backends inherit it). `[or true X]` must never evaluate X;
     // `[assert-eq 1 2]` would abort the program if it ran.
@@ -223,27 +234,15 @@ fn backends_agree() {
 /// Each records the program and the (eir, interp) outputs observed today, with
 /// a note on which backend is correct — a worklist for unification.
 ///
-/// - effect-abort: a handler clause that does NOT resume must DISCARD the
-///   continuation (algebraic-effects abort). The EIR VM does (999); the legacy
-///   interp wrongly resumes with the clause value (1 + 999 = 1000). EIR correct.
+/// (The non-resuming-abort divergence has been RETIRED: the legacy interp now
+/// discards the continuation like the EIR VM, so it lives in CORPUS as
+/// `effect-abort-discards-continuation` and is enforced for agreement.)
+///
 /// - fold-builtin-arg: a binary builtin (`+`) passed as a HOF function. The EIR
 ///   VM wraps a builtin used as a value in an arity-1 closure, so binary use via
 ///   fold misfires (0); the interp dispatches variadically (10). interp correct.
 #[test]
 fn known_divergences_are_pinned() {
-    let abort = "[effect F [fail [] Int]] [fn body [] [+ 1 [F.fail]]] \
-                 [fn main [] [println [handle [body] [F.fail] 999]]]";
-    assert_eq!(
-        eir_output(abort).as_deref(),
-        Ok("999"),
-        "EIR abort (correct)"
-    );
-    assert_eq!(
-        interp_output(abort).as_deref(),
-        Ok("1000"),
-        "interp abort (wrong)"
-    );
-
     let fold_builtin = "[fn main [] [println [fold #[1 2 3 4] 0 +]]]";
     assert_eq!(
         eir_output(fold_builtin).as_deref(),
