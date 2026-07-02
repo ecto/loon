@@ -1,0 +1,16 @@
+; Match-arm pattern binders are ARM-SCOPED on every backend: a binder named
+; after a builtin must not hijack calls to that builtin after the match.
+; (Regression test: wasm codegen kept arm binders in its flat locals map,
+; which routed the later [len "hello"] through a stale closure call and
+; produced an untranslatable module.)
+[type B [Full i64]]
+[fn main []
+  [match [Full 7]
+    [Full len] [println len]
+    _ [println 0]]
+  [println [len "hello"]]
+  [match 1
+    0 [println 100]
+    1 [println 200]
+    other [println other]]
+  [println [len "!"]]]

@@ -1,0 +1,13 @@
+; Integer and float arithmetic, comparison, remainder.
+; expect-fail: wasm — booleans print as 1/0 (untagged i64 value model).
+[fn main []
+  [println [+ [* 6 7] [- 10 8]]]
+  [println [% 17 5]]
+  [println [/ 84 2]]
+  [println [* 2.5 4.0]]
+  [println [+ 0.5 0.25]]
+  [println [< 3 4]]
+  [println [>= 4 4]]
+  [println [= 3 3]]
+  [println [!= 3 4]]
+  [println [- 3 10]]]

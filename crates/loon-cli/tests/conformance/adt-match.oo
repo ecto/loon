@@ -1,0 +1,23 @@
+; ADTs and pattern matching: generic and non-generic types, nullary ctors,
+; field binding, wildcard arms.
+; expect-fail: wasm — string payloads inside ADTs print as raw heap words
+; (untagged i64 value model).
+[type Shape [Circle f64] [Rect f64 f64] Point]
+[type Box T [Full T] Empty]
+[fn area [s]
+  [match s
+    [Circle r] [* 3.0 [* r r]]
+    [Rect w h] [* w h]
+    Point 0.0]]
+[fn peek [b d]
+  [match b
+    [Full x] x
+    Empty d]]
+[fn main []
+  [println [area [Rect 3.0 4.0]]]
+  [println [area [Circle 2.0]]]
+  [println [area Point]]
+  [println [peek [Full 7] 0]]
+  [println [peek Empty 0]]
+  [println [match 42 1 "one" 42 "the answer" _ "other"]]
+  [println [Full "payload"]]]

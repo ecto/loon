@@ -1,0 +1,23 @@
+; Vectors and maps: map/filter/fold/sum/sort/reverse/take/drop/conj/nth,
+; get/assoc/keys count, nested containers display.
+; expect-fail: wasm — anonymous-lambda HOF arguments rejected at codegen
+; ("HOF requires a function argument"); clean compile-time rejection.
+[fn main []
+  [println [map #[1 2 3 4] [fn [x] [* x x]]]]
+  [println [filter #[1 2 3 4 5] [fn [x] [> x 2]]]]
+  [println [fold #[1 2 3 4] 0 [fn [a b] [+ a b]]]]
+  [println [sum #[1 2 3 4]]]
+  [println [sort #[3 1 2]]]
+  [println [reverse #[1 2 3]]]
+  [println [take 2 #[1 2 3 4 5]]]
+  [println [drop 2 #[1 2 3 4 5]]]
+  [println [conj #[1 2] 3]]
+  [println [nth #[7 8 9] 1]]
+  [println [range 0 5]]
+  [println [len #[10 20 30]]]
+  [println [contains? #[1 2 3] 2]]
+  [println [get {:a 1 :b 2} :b]]
+  [println [get [assoc {:a 1} :c 9] :c]]
+  [println [len [keys {:a 1 :b 2 :c 3}]]]
+  [println #["a" "b"]]
+  [println {:k "v"}]]

@@ -1,0 +1,11 @@
+; Macro hygiene: a template-introduced binder must not clobber a caller
+; binding (tmp stays 100) nor capture a caller binding passed as an
+; argument (my-or sees the caller's r = 42).
+[macro swap-add [a b] `[do [let tmp ~a] [+ tmp ~b]]]
+[macro my-or [a b] `[do [let r ~a] [if r r ~b]]]
+[fn main []
+  [let tmp 100]
+  [println [swap-add 1 2]]
+  [println tmp]
+  [let r 42]
+  [println [my-or false r]]]

@@ -1,0 +1,9 @@
+; Call-position [and ...]/[or ...] are desugared before scope information
+; exists, so they are effectively SPECIAL FORMS: a local binding named
+; `and`/`or` cannot shadow them at call sites (every backend agrees). This
+; is a deliberate language decision that came with making them short-circuit.
+[fn main []
+  [let and [fn [a b] 42]]
+  [println [and 1 2]]
+  [let or [fn [a b] 43]]
+  [println [or false 9]]]

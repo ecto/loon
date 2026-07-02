@@ -219,8 +219,8 @@ impl Checker {
             }
         }
 
-        // Equality: ∀a. Eq a => a → a → Bool
-        {
+        // Equality / inequality: ∀a. Eq a => a → a → Bool
+        for op in ["=", "!="] {
             let a = self.subst.fresh();
             let tv = if let Type::Var(v) = a {
                 v
@@ -234,7 +234,7 @@ impl Checker {
                 },
             );
             self.env.set_global(
-                "=".to_string(),
+                op.to_string(),
                 Scheme {
                     bounds: vec![(
                         tv,
