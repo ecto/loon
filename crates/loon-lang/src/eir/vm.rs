@@ -2200,9 +2200,18 @@ impl Vm {
                 args: args.iter().map(|a| self.val_to_trace(*a)).collect(),
                 result: self.val_to_trace(result),
             };
-            if let Some(rec) = self.recorder.as_mut() {
-                if let Err(e) = rec.record(&entry) {
-                    eprintln!("warning: failed to write trace entry: {e}");
+            // A failed write must stop recording entirely: continuing after a
+            // dropped entry would finalize a gapped trace that looks valid but
+            // replays wrong values (ops shifted one step earlier).
+            if let Some(mut rec) = self.recorder.take() {
+                match rec.record(&entry) {
+                    Ok(()) => self.recorder = Some(rec),
+                    Err(e) => eprintln!(
+                        "warning: failed to write trace entry: {e}; recording stopped — \
+                         the trace is truncated at {} entr{}",
+                        rec.count(),
+                        if rec.count() == 1 { "y" } else { "ies" }
+                    ),
                 }
             }
         }
@@ -3033,5 +3042,47 @@ mod tests {
         // For now, verify that non-handled effects use builtin handlers.
         let out = run_output(r#"[IO.println "hello from eir"]"#);
         assert_eq!(out, vec!["hello from eir"]);
+    }
+
+    /// A failed trace write must stop recording entirely. Continuing would
+    /// finalize a trace with a silent gap: replay would feed later recorded
+    /// values one step early with no divergence diagnostic.
+    #[test]
+    fn recorder_disables_after_write_failure() {
+        use std::io::Write as _;
+        use std::sync::{Arc, Mutex};
+
+        /// Shared buffer that rejects any write mentioning "uuid".
+        struct FailOnUuid(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for FailOnUuid {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                if data.windows(4).any(|w| w == b"uuid") {
+                    return Err(std::io::Error::other("disk full"));
+                }
+                self.0.lock().unwrap().write(data)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let recorder =
+            crate::eir::replay::TraceRecorder::from_writer(Box::new(FailOnUuid(buf.clone())));
+        // Three recordable ops: millis succeeds, uuid's write fails, and the
+        // final millis must NOT be appended after the gap.
+        let result = eval_eir_recorded(
+            "[fn main [] [IO.millis] [IO.uuid] [IO.millis]]",
+            std::path::Path::new("."),
+            recorder,
+        );
+        assert!(result.is_ok(), "run should survive a trace write failure");
+        let written = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            written.matches(":op \"millis\"").count(),
+            1,
+            "recording must stop at the failed entry, not resume with a gap:\n{written}"
+        );
+        assert!(!written.contains("uuid"), "trace:\n{written}");
     }
 }

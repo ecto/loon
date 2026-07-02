@@ -60,16 +60,73 @@ impl TraceVal {
 
 /// Escape a string for a Loon string literal. Braces are literal characters in
 /// Loon strings (interpolation is `\(expr)`), so only backslash, quote, and
-/// control whitespace need escaping.
+/// control characters need escaping.
+///
+/// Control characters get a trace-level second escape layer: Loon has no
+/// `\uXXXX` string escape, and the lexer reserves U+0001/U+0002 as
+/// interpolation sentinels — a raw sentinel byte in a literal would make the
+/// parser desugar the trace entry into a `[str …]` call, so the trace the
+/// recorder just wrote would be rejected by its own loader. Instead every
+/// control char (other than `\n`/`\t`, which have Loon escapes) is written as
+/// `\\u{X}` — which Loon-unescapes to the five characters `\u{X}` — and
+/// [`decode_str`] turns it back into the original char after parsing. A
+/// literal backslash is written `\\\\` (Loon-unescapes to `\\`, decodes to
+/// `\`) so the layers stay unambiguous.
 fn escape_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
-            '\\' => out.push_str("\\\\"),
+            '\\' => out.push_str("\\\\\\\\"),
             '"' => out.push_str("\\\""),
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\\\u{{{:x}}}", c as u32)),
             _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Inverse of [`escape_str`]'s trace-level layer, applied to string values
+/// after Loon parsing: `\u{X}` → the char, `\\` → `\`. Anything else passes
+/// through untouched.
+fn decode_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek() {
+            Some('\\') => {
+                chars.next();
+                out.push('\\');
+            }
+            Some('u') => {
+                chars.next();
+                let mut hex = String::new();
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                    while let Some(&h) = chars.peek() {
+                        chars.next();
+                        if h == '}' {
+                            break;
+                        }
+                        hex.push(h);
+                    }
+                }
+                match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                    Some(decoded) => out.push(decoded),
+                    None => {
+                        // Not something we wrote; keep it verbatim.
+                        out.push_str("\\u{");
+                        out.push_str(&hex);
+                        out.push('}');
+                    }
+                }
+            }
+            _ => out.push('\\'),
         }
     }
     out
@@ -131,7 +188,7 @@ pub fn is_recorded_op(effect: &str, op: &str) -> bool {
 /// Incremental trace writer: appends one entry per line and flushes after
 /// every write, so the trace persists even if the program crashes mid-run.
 pub struct TraceRecorder {
-    file: std::fs::File,
+    file: Box<dyn Write>,
     count: usize,
 }
 
@@ -139,7 +196,19 @@ impl TraceRecorder {
     /// Create (truncate) the trace file at `path`.
     pub fn create(path: &Path) -> std::io::Result<Self> {
         let file = std::fs::File::create(path)?;
-        Ok(Self { file, count: 0 })
+        Ok(Self {
+            file: Box::new(file),
+            count: 0,
+        })
+    }
+
+    /// Record into an arbitrary writer (used by tests to simulate write
+    /// failures without a filesystem).
+    pub fn from_writer(writer: Box<dyn Write>) -> Self {
+        Self {
+            file: writer,
+            count: 0,
+        }
     }
 
     /// Append one entry and flush it to disk.
@@ -183,12 +252,10 @@ pub fn finalize_trace_file(path: &Path) -> std::io::Result<()> {
 pub fn parse_trace(src: &str) -> Result<Vec<TraceEntry>, String> {
     let exprs = crate::parser::parse(src).map_err(|e| format!("parse error: {}", e.message))?;
     let entry_exprs: Vec<&crate::ast::Expr> = match exprs.as_slice() {
-        [single] if matches!(single.kind, crate::ast::ExprKind::Vec(_)) => {
-            match &single.kind {
-                crate::ast::ExprKind::Vec(items) => items.iter().collect(),
-                _ => unreachable!(),
-            }
-        }
+        [single] if matches!(single.kind, crate::ast::ExprKind::Vec(_)) => match &single.kind {
+            crate::ast::ExprKind::Vec(items) => items.iter().collect(),
+            _ => unreachable!(),
+        },
         many => many.iter().collect(),
     };
 
@@ -214,11 +281,11 @@ fn parse_entry(expr: &crate::ast::Expr) -> Result<TraceEntry, String> {
         };
         match key.as_str() {
             "effect" => match &v.kind {
-                ExprKind::Str(s) => effect = Some(s.clone()),
+                ExprKind::Str(s) => effect = Some(decode_str(s)),
                 _ => return Err(":effect must be a string".to_string()),
             },
             "op" => match &v.kind {
-                ExprKind::Str(s) => op = Some(s.clone()),
+                ExprKind::Str(s) => op = Some(decode_str(s)),
                 _ => return Err(":op must be a string".to_string()),
             },
             "args" => match &v.kind {
@@ -248,7 +315,7 @@ fn expr_to_trace_val(expr: &crate::ast::Expr) -> Result<TraceVal, String> {
         ExprKind::Int(n) => Ok(TraceVal::Int(*n)),
         ExprKind::Float(f) => Ok(TraceVal::Float(*f)),
         ExprKind::Bool(b) => Ok(TraceVal::Bool(*b)),
-        ExprKind::Str(s) => Ok(TraceVal::Str(s.clone())),
+        ExprKind::Str(s) => Ok(TraceVal::Str(decode_str(s))),
         ExprKind::Keyword(k) if k == "unit" => Ok(TraceVal::Unit),
         ExprKind::Vec(items) => Ok(TraceVal::Vec(
             items
@@ -300,6 +367,57 @@ mod tests {
     }
 
     #[test]
+    fn control_chars_roundtrip_through_loon_source() {
+        // \u{1}/\u{2} are the lexer's interpolation sentinels: written raw they
+        // would make the parser desugar the trace entry into [str …] and the
+        // loader would reject the trace the recorder just wrote. \r written raw
+        // would be stripped by lines() during finalize. All must roundtrip —
+        // as must literal text that *looks* like the trace-level escape.
+        for s in [
+            "a\u{1}b\u{2}c",
+            "cr\rlf\n end",
+            "bell\u{7}null\u{0}",
+            "literal \\u{1} text",
+            "backslash \\ and \\\\ pairs",
+        ] {
+            let entry = TraceEntry {
+                effect: "IO".to_string(),
+                op: "read-file".to_string(),
+                args: vec![TraceVal::Str(s.to_string())],
+                result: TraceVal::Str(s.to_string()),
+            };
+            let src = entry.to_loon();
+            let parsed = parse_trace(&src).unwrap_or_else(|e| {
+                panic!("trace for {s:?} failed to reparse: {e}\nsource: {src}")
+            });
+            assert_eq!(parsed[0].result, TraceVal::Str(s.to_string()), "src: {src}");
+            assert_eq!(parsed[0].args, entry.args, "src: {src}");
+        }
+    }
+
+    #[test]
+    fn control_char_entries_survive_finalize() {
+        // A recorded \r must not be split/stripped by the line-based finalize.
+        let dir = std::env::temp_dir().join(format!(
+            "loon-replay-ctrl-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.oo");
+        let entry = TraceEntry {
+            effect: "IO".to_string(),
+            op: "read-file".to_string(),
+            args: vec![],
+            result: TraceVal::Str("a\u{1}b\rc".to_string()),
+        };
+        std::fs::write(&path, format!("{}\n", entry.to_loon())).unwrap();
+        finalize_trace_file(&path).unwrap();
+        let entries = parse_trace(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(entries[0].result, TraceVal::Str("a\u{1}b\rc".to_string()));
+    }
+
+    #[test]
     fn parse_accepts_vector_and_line_delimited_forms() {
         let lines = "{:effect \"IO\" :op \"millis\" :args #[] :result 42}\n\
                      {:effect \"IO\" :op \"println\" :args #[\"hi\"] :result :unit}\n";
@@ -308,11 +426,7 @@ mod tests {
         assert_eq!(from_lines[0].result, TraceVal::Int(42));
         assert_eq!(from_lines[1].result, TraceVal::Unit);
 
-        let vector = format!(
-            "#[{} {}]",
-            from_lines[0].to_loon(),
-            from_lines[1].to_loon()
-        );
+        let vector = format!("#[{} {}]", from_lines[0].to_loon(), from_lines[1].to_loon());
         let from_vec = parse_trace(&vector).expect("vector form");
         assert_eq!(from_vec.len(), 2);
         assert_eq!(from_vec[1].effect, "IO");
