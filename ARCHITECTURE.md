@@ -110,15 +110,22 @@ homepage `compose` story is aspirational relative to the checker.
 
 ---
 
-## 3. Hygiene approach  ⚠️ docs and code disagree
+## 3. Hygiene approach  ⚠️ gensym-renaming, not scope sets
 
 - **The docs claim hygiene:** `guide/macros.loon` — *"Loon macros are
   hygienic by default (like Scheme's `syntax-rules`)."*
-- **The implementation has none.** `macros/mod.rs` is purely textual
-  substitution. Bindings are `HashMap<String, Vec<Expr>>` keyed by raw symbol
-  name (`macros/mod.rs:357`). There are no scopes, marks, or syntax objects.
-  A `gensym` helper exists but is `#[allow(dead_code)]` and never called
-  (`macros/mod.rs:95`). Variable capture is unprevented.
+- **The implementation is gensym-based binder renaming** (not scope sets).
+  `macros/mod.rs` substitutes over `HashMap<String, Vec<Expr>>` bindings
+  keyed by raw symbol name, but `expand_template` first collects the binders
+  the template itself introduces (`let` names, `fn`/`loop` params — see
+  `collect_template_binders`) and renames each to a per-expansion `gensym`
+  throughout the template. This prevents both capture directions for
+  template-introduced temporaries (covered by `macro_tests.rs` hygiene tests
+  and the `hygiene.oo` conformance program). It is NOT full scope-set
+  hygiene: macro parameters, unquoted binders (`[let ~name ...]`), named-fn
+  definition names, and match-pattern variables are left un-renamed, and a
+  template's reference to a global function is not referentially
+  transparent (a caller-scope local of the same name still shadows it).
 
 Expansion is top-down recursive (`expand_expr`, `macros/mod.rs:156`), re-
 expanding macro output so macros-producing-macros work. Two macro flavors:
@@ -228,8 +235,9 @@ given up here.)
 Flatt/Racket-style scope-set hygiene, honoring the docs. `Form` symbols carry
 a scope-set slot from Stage 0 onward (the `Vec` field on `FSym`) so later
 stages extend `Form` rather than redefining it. Differential testing against
-the (unhygienic) Rust expander will be limited to capture-neutral cases;
-capture/​shadowing torture cases become Loon-only conformance tests.
+the (gensym-renaming, see §3) Rust expander will be limited to cases where
+the two models agree; scope-set-only torture cases become Loon-only
+conformance tests.
 
 **D3 — Continuations: multi-shot.** The compiler will target reified,
 multi-shot resumable continuations. The current EIR VM is one-shot
