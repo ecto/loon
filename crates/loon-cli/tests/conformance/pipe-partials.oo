@@ -1,0 +1,12 @@
+; Operator partials in pipe steps mirror the interpreter: + and * are
+; variadic left folds ([pipe 5 [+ 1 2]] ≡ [+ 1 2 5] = 8); the other
+; operators are strictly binary and IGNORE extra args, including the piped
+; value ([pipe 5 [- 10 3]] ≡ [- 10 3 5] = 7).
+; expect-fail: wasm — codegen compiles arithmetic operators as fixed binary
+; ops, so the variadic [+ 1 2 5] fold yields 3 instead of 8 (pre-existing
+; value-model limit, tracked here).
+[fn main []
+  [println [pipe 5 [+ 1 2]]]
+  [println [pipe 2 [* 3 4]]]
+  [println [pipe 5 [- 10 3]]]
+  [println [pipe 5 [+ 1]]]]

@@ -1,0 +1,7 @@
+; Process.exec parity: returns {:exit-code Int :stdout Str :stderr Str}.
+; expect-fail: wasm — Process.exec is not ported to codegen; clean runtime
+; rejection.
+[fn main []
+  [let r [Process.exec "echo hi"]]
+  [println [get r :exit-code]]
+  [println [contains? [get r :stdout] "hi"]]]

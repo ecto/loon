@@ -253,6 +253,14 @@ pub struct Vm {
     current_span: Span,
     /// Heap statistics tracked during execution.
     heap_stats: HeapStats,
+    /// Incremental effect-trace recorder (`loon run --record`).
+    recorder: Option<crate::eir::replay::TraceRecorder>,
+    /// Loaded trace being replayed (`loon replay`).
+    replay: Option<crate::eir::replay::ReplayCursor>,
+    /// Symbol/keyword names created at RUNTIME (e.g. `IO.parse-json` object
+    /// keys, `[keyword s]`) that are not in the module's compile-time string
+    /// table. A runtime symbol's id is `module.strings.len() + index`.
+    runtime_syms: Vec<String>,
 }
 
 /// Heap allocation statistics collected during VM execution.
@@ -297,7 +305,25 @@ impl Vm {
             resume_closure: Val::UNIT, // set in run()
             current_span: Span::ZERO,
             heap_stats: HeapStats::default(),
+            recorder: None,
+            replay: None,
+            runtime_syms: Vec::new(),
         }
+    }
+
+    /// Record every builtin (unhandled) nondeterministic effect result.
+    pub fn set_recorder(&mut self, recorder: crate::eir::replay::TraceRecorder) {
+        self.recorder = Some(recorder);
+    }
+
+    /// Feed recorded results back instead of executing builtin effects.
+    pub fn set_replay(&mut self, entries: Vec<crate::eir::replay::TraceEntry>) {
+        self.replay = Some(crate::eir::replay::ReplayCursor::new(entries));
+    }
+
+    /// Trace entries not yet consumed by the replay (0 when not replaying).
+    pub fn replay_remaining(&self) -> usize {
+        self.replay.as_ref().map(|r| r.remaining()).unwrap_or(0)
     }
 
     /// Run the module's entry function.
@@ -1062,23 +1088,16 @@ impl Vm {
                     }
                 } else {
                     // No dynamic handler: fall through to a builtin effect
-                    // (real IO, clock, net, …). If it isn't a builtin either,
-                    // the effect is genuinely unhandled — raise a loud error
-                    // rather than silently yielding unit. This notably makes an
+                    // (real IO, clock, net, …), threading record/replay. An op
+                    // with no builtin implementation is a hard error, not a
+                    // silent `()` (see builtin_effect) — this notably makes an
                     // uncaught `Fail.fail` abort with a message, including one
                     // raised inside a handler clause whose enclosing `try` was
-                    // frozen into the continuation (see UnhandledEffect docs).
+                    // frozen into the continuation.
                     let effect = self.module.strings[_eff_sid.0 as usize].clone();
                     let op_name = self.module.strings[op_sid.0 as usize].clone();
-                    match self.builtin_effect(&effect, &op_name, &vals) {
-                        Some(result) => self.w(*dst, result),
-                        None => {
-                            return Err(VmError::new(VmErrorKind::UnhandledEffect(format!(
-                                "{effect}.{op_name}"
-                            )))
-                            .with_span(self.current_span));
-                        }
-                    }
+                    let result = self.perform_builtin_effect(&effect, &op_name, &vals)?;
+                    self.w(*dst, result);
                 }
             }
 
@@ -1316,6 +1335,13 @@ impl Vm {
     fn exec_builtin(&mut self, built: Built, args: &[Val]) -> Result<Val, VmError> {
         match built {
             Built::Println => {
+                // Under record/replay, bare `println` is treated as the
+                // `IO.println` effect so log writes land in the trace for
+                // observability. On replay it re-executes live and is not
+                // order-checked, so added/removed prints don't diverge.
+                if self.recorder.is_some() || self.replay.is_some() {
+                    return self.perform_builtin_effect("IO", "println", args);
+                }
                 let s: Vec<String> = args.iter().map(|v| self.val_to_string(*v)).collect();
                 let line = s.join(" ");
                 println!("{line}");
@@ -2157,16 +2183,12 @@ impl Vm {
                 }
             }
             Built::Keyword => {
-                // [keyword str] → keyword from string
+                // [keyword str] → keyword from string (interned at runtime if
+                // the name is not in the compile-time string table — it used
+                // to silently collapse unknown names to symbol 0)
                 let v = args.first().copied().unwrap_or(Val::UNIT);
                 match self.get_str(v).map(|s| s.to_string()) {
-                    Some(s) => Ok(Val::sym(
-                        self.module
-                            .strings
-                            .iter()
-                            .position(|x| *x == s)
-                            .unwrap_or(0) as u32,
-                    )),
+                    Some(s) => Ok(self.intern_sym(&s)),
                     _ => Ok(Val::UNIT),
                 }
             }
@@ -2178,13 +2200,8 @@ impl Vm {
                         let mut new_map = ImMap::new();
                         for (k, v) in map {
                             if let Some(s) = self.get_str(k).map(|s| s.to_string()) {
-                                let sym_id =
-                                    self.module
-                                        .strings
-                                        .iter()
-                                        .position(|x| *x == s)
-                                        .unwrap_or(0) as u32;
-                                new_map.insert(Val::sym(sym_id), v);
+                                let key = self.intern_sym(&s);
+                                new_map.insert(key, v);
                             } else {
                                 new_map.insert(k, v);
                             }
@@ -2229,13 +2246,282 @@ impl Vm {
 
     // ── Effect builtins ────────────────────────────────────────────────
 
-    /// Handle an effect that reached the bottom of the dynamic handler stack.
-    /// Returns `Some(v)` for a real builtin effect (IO, Net, Clock, …), and
-    /// `None` when the (effect, op) pair has no builtin meaning — a genuinely
-    /// unhandled effect, which `Perform` turns into a loud error rather than
-    /// silently collapsing to unit (matching the tree-walking interpreter).
-    fn builtin_effect(&mut self, effect: &str, op: &str, args: &[Val]) -> Option<Val> {
-        Some(match (effect, op) {
+    /// Execute a builtin (unhandled) effect, threading record/replay through.
+    ///
+    /// - Recording: run the real effect, then append `{effect op args result}`
+    ///   to the trace (flushed immediately, so it survives a crash).
+    /// - Replaying: consume the next trace entry and return its recorded
+    ///   result instead of touching the outside world. Log writes
+    ///   (`IO.println`) are the exception: they re-execute live and never
+    ///   consume a trace entry, so adding or removing prints while debugging
+    ///   does not invalidate the trace. A mismatched or exhausted trace is a
+    ///   `ReplayDivergence` error.
+    fn perform_builtin_effect(
+        &mut self,
+        effect: &str,
+        op: &str,
+        args: &[Val],
+    ) -> Result<Val, VmError> {
+        let recorded = crate::eir::replay::is_recorded_op(effect, op);
+        if recorded && self.replay.is_some() {
+            if crate::eir::replay::is_log_op(effect, op) {
+                return self.builtin_effect(effect, op, args);
+            }
+            return self.replay_effect(effect, op, args);
+        }
+        let result = self.builtin_effect(effect, op, args)?;
+        if recorded && self.recorder.is_some() {
+            let entry = crate::eir::replay::TraceEntry {
+                effect: effect.to_string(),
+                op: op.to_string(),
+                args: args.iter().map(|a| self.val_to_trace(*a)).collect(),
+                result: self.val_to_trace(result),
+            };
+            // A failed write must stop recording entirely: continuing after a
+            // dropped entry would finalize a gapped trace that looks valid but
+            // replays wrong values (ops shifted one step earlier).
+            if let Some(mut rec) = self.recorder.take() {
+                match rec.record(&entry) {
+                    Ok(()) => self.recorder = Some(rec),
+                    Err(e) => eprintln!(
+                        "warning: failed to write trace entry: {e}; recording stopped — \
+                         the trace is truncated at {} entr{}",
+                        rec.count(),
+                        if rec.count() == 1 { "y" } else { "ies" }
+                    ),
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// Replay path: feed the next recorded result back for this operation.
+    /// Log entries in the trace are skipped, never matched — log writes
+    /// re-execute live in `perform_builtin_effect` and do not reach here.
+    fn replay_effect(&mut self, effect: &str, op: &str, args: &[Val]) -> Result<Val, VmError> {
+        let cursor = self.replay.as_mut().expect("replay cursor");
+        while cursor
+            .entries
+            .get(cursor.idx)
+            .is_some_and(|e| crate::eir::replay::is_log_op(&e.effect, &e.op))
+        {
+            cursor.idx += 1;
+        }
+        let idx = cursor.idx;
+        if idx >= cursor.entries.len() {
+            return Err(VmError::new(VmErrorKind::ReplayDivergence(format!(
+                "trace exhausted at step {idx}: the program performed {effect}.{op} \
+                 but the trace has no more recorded operations"
+            )))
+            .with_span(self.current_span));
+        }
+        let entry = cursor.entries[idx].clone();
+        cursor.idx += 1;
+        if entry.effect != effect || entry.op != op {
+            return Err(VmError::new(VmErrorKind::ReplayDivergence(format!(
+                "at step {idx}: trace recorded {}.{} but the program performed {effect}.{op}",
+                entry.effect, entry.op
+            )))
+            .with_span(self.current_span));
+        }
+        // Same op but different arguments (say, a changed file path) means
+        // the program no longer matches the trace: feeding the stale result
+        // back would silently replay the wrong world.
+        let live_args: Vec<crate::eir::replay::TraceVal> =
+            args.iter().map(|a| self.val_to_trace(*a)).collect();
+        if entry.args != live_args {
+            let recorded = crate::eir::replay::TraceVal::Vec(entry.args.clone()).to_loon();
+            let live = crate::eir::replay::TraceVal::Vec(live_args).to_loon();
+            return Err(VmError::new(VmErrorKind::ReplayDivergence(format!(
+                "at step {idx}: {effect}.{op} was recorded with args {recorded} \
+                 but the program passed {live}"
+            )))
+            .with_span(self.current_span));
+        }
+        // Return the recorded result without touching the outside world.
+        Ok(self.trace_to_val(&entry.result))
+    }
+
+    /// Convert a runtime value to a trace value for serialization. Values a
+    /// builtin effect never produces (closures, ADTs, maps) fall back to
+    /// their display string — good enough for `:args` observability.
+    fn val_to_trace(&self, val: Val) -> crate::eir::replay::TraceVal {
+        use crate::eir::replay::TraceVal;
+        if val.is_unit() {
+            TraceVal::Unit
+        } else if val.is_int() {
+            TraceVal::Int(val.as_int())
+        } else if val.is_float() {
+            TraceVal::Float(val.as_float())
+        } else if val.is_bool() {
+            TraceVal::Bool(val.as_bool())
+        } else if val.is_ptr() {
+            match self.get_obj(val) {
+                Some(Obj::Str(s)) => TraceVal::Str(s.clone()),
+                Some(Obj::Vec(items)) => {
+                    TraceVal::Vec(items.iter().map(|v| self.val_to_trace(*v)).collect())
+                }
+                _ => TraceVal::Str(self.val_to_string(val)),
+            }
+        } else {
+            TraceVal::Str(self.val_to_string(val))
+        }
+    }
+
+    /// Materialize a recorded trace value back into a runtime value.
+    fn trace_to_val(&mut self, t: &crate::eir::replay::TraceVal) -> Val {
+        use crate::eir::replay::TraceVal;
+        match t {
+            TraceVal::Unit => Val::UNIT,
+            TraceVal::Int(n) => self.safe_int(*n),
+            TraceVal::Float(f) => Val::float(*f),
+            TraceVal::Bool(b) => Val::bool(*b),
+            TraceVal::Str(s) => self.alloc_str(s.clone()),
+            TraceVal::Vec(items) => {
+                let vals: ImVec = items.iter().map(|i| self.trace_to_val(i)).collect();
+                self.alloc(Obj::Vec(vals))
+            }
+        }
+    }
+
+    /// Look up an ADT constructor tag by name (latest definition wins, the
+    /// same override rule the lowerer applies to `ctor_map`). The prelude's
+    /// Option/Result are always registered, so `Some`/`None` resolve here.
+    fn ctor_tag(&self, name: &str) -> Option<u16> {
+        self.module.ctors.iter().rev().find(|c| c.name == name).map(|c| c.tag)
+    }
+
+    /// The textual name of a symbol/keyword id: compile-time ids index the
+    /// module string table, runtime ids the `runtime_syms` overflow.
+    fn sym_name(&self, idx: usize) -> Option<&str> {
+        let n = self.module.strings.len();
+        if idx < n {
+            self.module.strings.get(idx).map(|s| s.as_str())
+        } else {
+            self.runtime_syms.get(idx - n).map(|s| s.as_str())
+        }
+    }
+
+    /// Intern a symbol/keyword NAME to a `Val::sym`, creating a runtime id if
+    /// the module string table doesn't already contain it. Deduplicating by
+    /// content keeps symbol equality equal to name equality, so a runtime
+    /// keyword (an `IO.parse-json` object key) matches a same-named source
+    /// keyword.
+    fn intern_sym(&mut self, name: &str) -> Val {
+        if let Some(i) = self.module.strings.iter().position(|s| s == name) {
+            return Val::sym(i as u32);
+        }
+        let base = self.module.strings.len();
+        if let Some(i) = self.runtime_syms.iter().position(|s| s == name) {
+            return Val::sym((base + i) as u32);
+        }
+        self.runtime_syms.push(name.to_string());
+        Val::sym((base + self.runtime_syms.len() - 1) as u32)
+    }
+
+    /// Convert a parsed JSON document to VM values, matching the legacy
+    /// interpreter's mapping: object keys become keywords, null becomes Unit.
+    fn json_to_val(&mut self, j: serde_json::Value) -> Val {
+        match j {
+            serde_json::Value::Null => Val::UNIT,
+            serde_json::Value::Bool(b) => Val::bool(b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    self.safe_int(i)
+                } else {
+                    Val::float(n.as_f64().unwrap_or(0.0))
+                }
+            }
+            serde_json::Value::String(s) => self.alloc_str(s),
+            serde_json::Value::Array(items) => {
+                let vals: ImVec = items.into_iter().map(|x| self.json_to_val(x)).collect();
+                self.alloc(Obj::Vec(vals))
+            }
+            serde_json::Value::Object(obj) => {
+                let mut map = ImMap::new();
+                for (k, v) in obj {
+                    let key = self.intern_sym(&k);
+                    let val = self.json_to_val(v);
+                    map.insert(key, val);
+                }
+                self.alloc(Obj::Map(map))
+            }
+        }
+    }
+
+    /// Convert a VM value to JSON, matching the interpreter's `value_to_json`:
+    /// keywords/strings become strings, unit becomes null, nullary ADTs their
+    /// ctor name, ADTs with fields a `{_tag, _fields}` object.
+    fn val_to_json(&self, v: Val) -> serde_json::Value {
+        use serde_json::Value as J;
+        if v.is_int() {
+            return J::Number(v.as_int().into());
+        }
+        if v.is_float() {
+            return serde_json::Number::from_f64(v.as_float())
+                .map(J::Number)
+                .unwrap_or(J::Null);
+        }
+        if v.is_bool() {
+            return J::Bool(v.as_bool());
+        }
+        if v.is_unit() {
+            return J::Null;
+        }
+        if v.is_sym() {
+            return J::String(self.sym_name(v.as_sym() as usize).unwrap_or("").to_string());
+        }
+        match self.get_obj(v) {
+            Some(Obj::Str(s)) => J::String(s.clone()),
+            Some(Obj::Vec(items)) => J::Array(items.iter().map(|x| self.val_to_json(*x)).collect()),
+            Some(Obj::Set(items)) => J::Array(items.iter().map(|x| self.val_to_json(*x)).collect()),
+            Some(Obj::Map(map)) => {
+                let mut obj = serde_json::Map::new();
+                for (k, val) in map.iter() {
+                    let key = if k.is_sym() {
+                        self.sym_name(k.as_sym() as usize).unwrap_or("").to_string()
+                    } else if let Some(Obj::Str(s)) = self.get_obj(*k) {
+                        s.clone()
+                    } else {
+                        self.val_to_string(*k)
+                    };
+                    obj.insert(key, self.val_to_json(*val));
+                }
+                J::Object(obj)
+            }
+            Some(Obj::Adt(tag, fields)) => {
+                let name = self
+                    .module
+                    .ctors
+                    .iter()
+                    .rev()
+                    .find(|c| c.tag == *tag)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
+                if fields.is_empty() {
+                    J::String(name)
+                } else {
+                    let mut obj = serde_json::Map::new();
+                    obj.insert("_tag".to_string(), J::String(name));
+                    obj.insert(
+                        "_fields".to_string(),
+                        J::Array(fields.iter().map(|f| self.val_to_json(*f)).collect()),
+                    );
+                    J::Object(obj)
+                }
+            }
+            _ => J::Null,
+        }
+    }
+
+    /// Handle an effect operation that reached the top of the handler stack
+    /// unhandled: the built-in "prod" implementations (real IO, clock, env,
+    /// sockets). An operation with NO built-in implementation is a hard
+    /// error — the same error class the interpreter raises — never a silent
+    /// `()`: a silent no-op here means a program believes it wrote a file
+    /// (or slept, or exited) when nothing happened.
+    fn builtin_effect(&mut self, effect: &str, op: &str, args: &[Val]) -> Result<Val, VmError> {
+        Ok(match (effect, op) {
             ("IO", "println") => {
                 let s: Vec<String> = args.iter().map(|v| self.val_to_string(*v)).collect();
                 let line = s.join(" ");
@@ -2262,6 +2548,76 @@ impl Vm {
                 }
                 Val::UNIT
             }
+            ("IO", "file-exists?") => {
+                let p = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                Val::bool(std::path::Path::new(&p).exists())
+            }
+            ("IO", "delete-file") => {
+                if let Some(path) = args.first() {
+                    let p = self.val_to_string(*path);
+                    let _ = std::fs::remove_file(&p);
+                }
+                Val::UNIT
+            }
+            ("IO", "mkdir") => {
+                if let Some(path) = args.first() {
+                    let p = self.val_to_string(*path);
+                    let _ = std::fs::create_dir_all(&p);
+                }
+                Val::UNIT
+            }
+            ("IO", "copy-file") => {
+                if let (Some(src), Some(dst)) = (args.first(), args.get(1)) {
+                    let s = self.val_to_string(*src);
+                    let d = self.val_to_string(*dst);
+                    let _ = std::fs::copy(&s, &d);
+                }
+                Val::UNIT
+            }
+            ("IO", "list-dir") => {
+                let p = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let names: Vec<String> = match std::fs::read_dir(&p) {
+                    Ok(entries) => entries
+                        .filter_map(|e| e.ok())
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect(),
+                    // Not a directory (or doesn't exist) → empty vec, as interp.
+                    Err(_) => Vec::new(),
+                };
+                let vals: ImVec = names.into_iter().map(|n| self.alloc_str(n)).collect();
+                self.alloc(Obj::Vec(vals))
+            }
+            ("IO", "mtime") => {
+                let p = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let millis = std::fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                self.safe_int(millis)
+            }
+            ("IO", "sleep") => {
+                if let Some(ms) = args.first() {
+                    if ms.is_int() {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            ms.as_int().max(0) as u64,
+                        ));
+                    }
+                }
+                Val::UNIT
+            }
+            ("IO", "read-line") => {
+                let mut line = String::new();
+                let _ = std::io::stdin().read_line(&mut line);
+                if line.ends_with('\n') {
+                    line.pop();
+                    if line.ends_with('\r') {
+                        line.pop();
+                    }
+                }
+                self.alloc_str(line)
+            }
             // Clock: real wall-clock time. `now` in whole seconds, `millis` in
             // milliseconds since the Unix epoch (both fit in a 48-bit int).
             ("IO", "now") => {
@@ -2279,17 +2635,125 @@ impl Vm {
                 self.safe_int(ms)
             }
             ("IO", "uuid") => self.alloc_str(gen_uuid_v4()),
-            // Env / Process: read an environment variable. Returns the value, or
-            // "" when unset (the EIR VM cannot construct an Option here — the
-            // tag is program-defined — so callers branch on the empty string).
-            ("Env", "lookup") | ("Env", "get") | ("Process", "env") => {
-                if let Some(key) = args.first() {
-                    let k = self.val_to_string(*key);
-                    self.alloc_str(std::env::var(&k).unwrap_or_default())
-                } else {
-                    self.alloc_str(String::new())
+            ("IO", "parse-json") => {
+                let text = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(json) => self.json_to_val(json),
+                    // The interpreter performs Fail.fail here; unhandled, that
+                    // surfaces as this same error class. (A user Fail handler
+                    // catching IO parse errors on the VM is not supported —
+                    // see known VM/interp IO error-path differences.)
+                    Err(e) => {
+                        return Err(VmError::new(VmErrorKind::UnhandledEffect(format!(
+                            "Fail.fail ({e})"
+                        )))
+                        .with_span(self.current_span));
+                    }
                 }
             }
+            ("IO", "to-json") => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                let json = self.val_to_json(v);
+                match serde_json::to_string(&json) {
+                    Ok(s) => self.alloc_str(s),
+                    Err(_) => Val::UNIT,
+                }
+            }
+            #[cfg(feature = "pkg-fetch")]
+            ("IO", "blake3") => {
+                let text = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                self.alloc_str(blake3::hash(text.as_bytes()).to_hex().to_string())
+            }
+            ("Process", "exec") => {
+                let cmd_str = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let input = args.get(1).map(|v| self.val_to_string(*v));
+                let parts: Vec<&str> = cmd_str.split_whitespace().collect();
+                if parts.is_empty() {
+                    return Err(VmError::new(VmErrorKind::UnhandledEffect(
+                        "Process.exec (empty command)".to_string(),
+                    ))
+                    .with_span(self.current_span));
+                }
+                let mut cmd = std::process::Command::new(parts[0]);
+                cmd.args(&parts[1..]);
+                if input.is_some() {
+                    cmd.stdin(std::process::Stdio::piped());
+                }
+                cmd.stdout(std::process::Stdio::piped());
+                cmd.stderr(std::process::Stdio::piped());
+                let output = cmd.spawn().and_then(|mut child| {
+                    if let Some(stdin_data) = input {
+                        if let Some(mut stdin) = child.stdin.take() {
+                            use std::io::Write;
+                            let _ = stdin.write_all(stdin_data.as_bytes());
+                        }
+                    }
+                    child.wait_with_output()
+                });
+                match output {
+                    Ok(out) => {
+                        // {:exit-code Int :stdout Str :stderr Str}, as interp.
+                        let code =
+                            self.safe_int(out.status.code().unwrap_or(-1) as i64);
+                        let stdout =
+                            self.alloc_str(String::from_utf8_lossy(&out.stdout).into_owned());
+                        let stderr =
+                            self.alloc_str(String::from_utf8_lossy(&out.stderr).into_owned());
+                        let mut map = ImMap::new();
+                        let k_code = self.intern_sym("exit-code");
+                        let k_out = self.intern_sym("stdout");
+                        let k_err = self.intern_sym("stderr");
+                        map.insert(k_code, code);
+                        map.insert(k_out, stdout);
+                        map.insert(k_err, stderr);
+                        self.alloc(Obj::Map(map))
+                    }
+                    Err(e) => {
+                        return Err(VmError::new(VmErrorKind::UnhandledEffect(format!(
+                            "Process.exec ({e})"
+                        )))
+                        .with_span(self.current_span));
+                    }
+                }
+            }
+            ("Async", "sleep") => {
+                if let Some(ms) = args.first() {
+                    if ms.is_int() {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            ms.as_int().max(0) as u64,
+                        ));
+                    }
+                }
+                Val::UNIT
+            }
+            // Process.env matches the interpreter: [Some value] when set,
+            // None when unset (the prelude Option ctors are always
+            // registered by the lowerer).
+            ("Process", "env") => {
+                let k = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                match (std::env::var(&k), self.ctor_tag("Some"), self.ctor_tag("None")) {
+                    (Ok(v), Some(some_tag), _) => {
+                        let s = self.alloc_str(v);
+                        self.alloc(Obj::Adt(some_tag, vec![s]))
+                    }
+                    (Err(_), _, Some(none_tag)) => self.alloc(Obj::Adt(none_tag, Vec::new())),
+                    // No Option ctors registered (shouldn't happen): raw string.
+                    (Ok(v), None, _) => self.alloc_str(v),
+                    (Err(_), _, None) => self.alloc_str(String::new()),
+                }
+            }
+            ("Process", "args") => {
+                let vals: ImVec = std::env::args().map(|a| self.alloc_str(a)).collect();
+                self.alloc(Obj::Vec(vals))
+            }
+            ("Process", "exit") => {
+                let code = args.first().filter(|v| v.is_int()).map(|v| v.as_int()).unwrap_or(0);
+                std::process::exit(code as i32);
+            }
+            // NOTE: `Env.lookup`/`Env.get` used to be a VM-only convenience
+            // (value-or-"" lookup). The interpreter has no such ops — it hard
+            // errors — so they were dropped for cross-backend conformance;
+            // `Process.env` is the Option-returning form both backends share.
             // Real TCP/HTTP sockets (see eir/net.rs). A blocking one-at-a-time
             // server: listen a port, accept a request, send the response.
             ("Net", "listen") => {
@@ -2319,13 +2783,25 @@ impl Vm {
             ("Const", "c") => Val::float(299_792_458.0),
             ("Physics", "yield-strength") => Val::float(250.0),
             ("Physics", "gravity") => Val::float(9.80665),
-            _ => return None,
+            _ => {
+                return Err(VmError::new(VmErrorKind::UnhandledEffect(format!(
+                    "{effect}.{op}"
+                )))
+                .with_span(self.current_span));
+            }
         })
     }
 
     // ── Value display ──────────────────────────────────────────────────
 
     fn val_to_string(&self, val: Val) -> String {
+        self.val_to_string_inner(val, false)
+    }
+
+    /// Render a value. `nested` mirrors the interpreter's display rules: a
+    /// string at the top level (println/str) prints raw, but a string INSIDE
+    /// a container (vec/map/ADT/...) prints quoted, e.g. `#["a" "b"]`.
+    fn val_to_string_inner(&self, val: Val, nested: bool) -> String {
         if val.is_float() {
             let f = val.as_float();
             if f == (f as i64) as f64 && f.abs() < 1e15 {
@@ -2345,23 +2821,33 @@ impl Vm {
             "()".to_string()
         } else if val.is_sym() {
             let idx = val.as_sym() as usize;
-            if idx < self.module.strings.len() {
-                format!(":{}", self.module.strings[idx])
-            } else {
-                format!(":<sym:{idx}>")
+            match self.sym_name(idx) {
+                Some(name) => format!(":{name}"),
+                None => format!(":<sym:{idx}>"),
             }
         } else if val.is_ptr() {
             match self.get_obj(val) {
-                Some(Obj::Str(s)) => s.clone(),
+                Some(Obj::Str(s)) => {
+                    if nested {
+                        format!("\"{s}\"")
+                    } else {
+                        s.clone()
+                    }
+                }
                 Some(Obj::Vec(items)) => {
-                    let inner: Vec<String> = items.iter().map(|v| self.val_to_string(*v)).collect();
+                    let inner: Vec<String> =
+                        items.iter().map(|v| self.val_to_string_inner(*v, true)).collect();
                     format!("#[{}]", inner.join(" "))
                 }
                 Some(Obj::Map(map)) => {
                     let inner: Vec<String> = map
                         .iter()
                         .map(|(k, v)| {
-                            format!("{} {}", self.val_to_string(*k), self.val_to_string(*v))
+                            format!(
+                                "{} {}",
+                                self.val_to_string_inner(*k, true),
+                                self.val_to_string_inner(*v, true)
+                            )
                         })
                         .collect();
                     format!("{{{}}}", inner.join(" "))
@@ -2377,8 +2863,10 @@ impl Vm {
                     if fields.is_empty() {
                         name.to_string()
                     } else {
-                        let inner: Vec<String> =
-                            fields.iter().map(|v| self.val_to_string(*v)).collect();
+                        let inner: Vec<String> = fields
+                            .iter()
+                            .map(|v| self.val_to_string_inner(*v, true))
+                            .collect();
                         format!("[{name} {}]", inner.join(" "))
                     }
                 }
@@ -2427,12 +2915,15 @@ pub enum VmErrorKind {
     StackOverflow,
     /// `assert-eq` failed with mismatched values.
     AssertFailed(String, String),
-    /// An effect reached the bottom of the handler stack with no handler and
-    /// no builtin meaning. Carries the "Effect.op" name. Notably covers an
-    /// uncaught `Fail.fail` — an abort with no surrounding `try`/`Fail` handler,
-    /// including one raised inside a handler clause (whose body runs at its
-    /// `handle`'s prompt, outside the dynamic extent of any `try` in the
-    /// handled body). Loud beats silently collapsing the result to unit.
+    /// A replayed program requested a different effect op than the trace
+    /// recorded (or ran past the end of the trace).
+    ReplayDivergence(String),
+    /// An effect reached the top of the handler stack with no handler and no
+    /// builtin implementation. Silently returning `()` here would let programs
+    /// believe the effect happened. Notably covers an uncaught `Fail.fail` —
+    /// an abort with no surrounding `try`/`Fail` handler, including one raised
+    /// inside a handler clause (whose body runs at its `handle`'s prompt,
+    /// outside the dynamic extent of any `try` in the handled body).
     UnhandledEffect(String),
 }
 
@@ -2462,7 +2953,12 @@ impl std::fmt::Display for VmError {
             VmErrorKind::AssertFailed(actual, expected) => {
                 write!(f, "assertion failed: {actual} != {expected}")
             }
+            VmErrorKind::ReplayDivergence(msg) => {
+                write!(f, "replay diverged {msg}")
+            }
             VmErrorKind::UnhandledEffect(name) => {
+                // Same wording as the interpreter's unhandled-effect error, so
+                // the two backends fail the same way.
                 write!(
                     f,
                     "unhandled effect: {name} — add a [handle ...] block to handle this effect"
@@ -2494,6 +2990,49 @@ fn eval_eir_impl(src: &str, mut checker: crate::check::Checker) -> Result<VmResu
     let module = crate::eir::lower::lower(&checker);
     let mut vm = Vm::new(module);
     vm.run()
+}
+
+/// Like `eval_eir_with_base_dir`, but records every builtin nondeterministic
+/// effect result through `recorder` (see `crate::eir::replay`).
+pub fn eval_eir_recorded(
+    src: &str,
+    base_dir: &std::path::Path,
+    recorder: crate::eir::replay::TraceRecorder,
+) -> Result<VmResult, VmError> {
+    let mut checker = crate::check::Checker::with_base_dir(base_dir);
+    let exprs = crate::parser::parse(src).map_err(|e| VmError {
+        kind: VmErrorKind::Trap,
+        span: Some(e.span),
+        context: Some(format!("parse error: {}", e.message)),
+    })?;
+    let _errors = checker.check_program(&exprs);
+    let module = crate::eir::lower::lower(&checker);
+    let mut vm = Vm::new(module);
+    vm.set_recorder(recorder);
+    vm.run()
+}
+
+/// Like `eval_eir_with_base_dir`, but feeds recorded effect results back from
+/// `entries` instead of executing builtin effects. On success also returns
+/// the number of unconsumed trace entries (nonzero means the program ended
+/// before using the whole trace — usually a sign the program changed).
+pub fn eval_eir_replayed(
+    src: &str,
+    base_dir: &std::path::Path,
+    entries: Vec<crate::eir::replay::TraceEntry>,
+) -> Result<(VmResult, usize), VmError> {
+    let mut checker = crate::check::Checker::with_base_dir(base_dir);
+    let exprs = crate::parser::parse(src).map_err(|e| VmError {
+        kind: VmErrorKind::Trap,
+        span: Some(e.span),
+        context: Some(format!("parse error: {}", e.message)),
+    })?;
+    let _errors = checker.check_program(&exprs);
+    let module = crate::eir::lower::lower(&checker);
+    let mut vm = Vm::new(module);
+    vm.set_replay(entries);
+    let result = vm.run()?;
+    Ok((result, vm.replay_remaining()))
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
@@ -2768,11 +3307,95 @@ mod tests {
         let uuid = &run_output("[println [IO.uuid]]")[0];
         assert_eq!(uuid.len(), 36, "uuid: {uuid}");
         assert_eq!(uuid.matches('-').count(), 4);
+        // Process.env matches the interpreter: [Some value] / None.
         std::env::set_var("LOON_TEST_VAR", "hello-env");
         assert_eq!(
             run_output(r#"[println [Process.env "LOON_TEST_VAR"]]"#),
-            vec!["hello-env".to_string()]
+            vec!["[Some \"hello-env\"]".to_string()]
         );
+        assert_eq!(
+            run_output(r#"[println [Process.env "LOON_DEFINITELY_UNSET_VAR"]]"#),
+            vec!["None".to_string()]
+        );
+        // Env.lookup was a VM-only convenience the interpreter never had; it
+        // is gone for cross-backend conformance (Process.env is the shared
+        // form), so it now hits the unhandled-effect hard error like interp.
+        let err = eval_eir(r#"[fn main [] [println [Env.lookup "LOON_TEST_VAR"]]]"#)
+            .expect_err("Env.lookup should be unhandled");
+        assert!(
+            matches!(err.kind, VmErrorKind::UnhandledEffect(ref n) if n == "Env.lookup"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn vm_json_effects_match_interp() {
+        // IO.to-json serializes maps/vecs like the interpreter…
+        assert_eq!(
+            run_output("[fn main [] [println [IO.to-json {:a 1}]]]"),
+            vec![r#"{"a":1}"#.to_string()]
+        );
+        // …and IO.parse-json produces keyword-keyed maps whose keys are equal
+        // to same-named source keywords (runtime symbol interning), plus
+        // vec/bool/null payloads mapped as the interpreter maps them.
+        assert_eq!(
+            run_output(
+                r#"[fn main []
+                     [let m [IO.parse-json "{\"a\": 42, \"b\": [1, 2, true, null]}"]]
+                     [println [get m :a]]
+                     [println [get m :b]]]"#
+            ),
+            vec!["42".to_string(), "#[1 2 true ()]".to_string()]
+        );
+    }
+
+    #[test]
+    fn vm_process_exec_matches_interp_shape() {
+        // {:exit-code Int :stdout Str :stderr Str}, as the interpreter.
+        assert_eq!(
+            run_output(
+                r#"[fn main []
+                     [let r [Process.exec "echo hi"]]
+                     [println [get r :exit-code]]
+                     [println [contains? [get r :stdout] "hi"]]]"#
+            ),
+            vec!["0".to_string(), "true".to_string()]
+        );
+    }
+
+    #[test]
+    fn vm_unknown_effect_op_is_a_hard_error() {
+        // An effect op with neither a handler nor a builtin implementation
+        // must ERROR, not silently evaluate to () — the silent path is how
+        // "IO.write-file did nothing" class bugs hide.
+        let err = eval_eir("[effect Zap [zap [] Int]] [fn main [] [println [Zap.zap]]]")
+            .expect_err("unhandled effect should be an error");
+        assert!(
+            matches!(err.kind, VmErrorKind::UnhandledEffect(ref n) if n == "Zap.zap"),
+            "got: {err}"
+        );
+        // ...but a handled one is fine.
+        let out = run_output(
+            "[effect Zap [zap [] Int]] \
+             [fn main [] [println [handle [Zap.zap] [Zap.zap] [resume 7]]]]",
+        );
+        assert_eq!(out, vec!["7".to_string()]);
+    }
+
+    #[test]
+    fn vm_io_write_file_round_trips() {
+        // IO.write-file must actually write (it silently no-oped on early VM
+        // builds); read it back through IO.read-file on the same backend.
+        let dir = std::env::temp_dir().join(format!("loon_vm_wf_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.txt");
+        let p = path.to_string_lossy().replace('\\', "/");
+        let out = run_output(&format!(
+            r#"[fn main [] [IO.write-file "{p}" "written-by-vm"] [println [IO.read-file "{p}"]]]"#
+        ));
+        assert_eq!(out, vec!["written-by-vm".to_string()]);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "written-by-vm");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3039,5 +3662,47 @@ mod tests {
         // For now, verify that non-handled effects use builtin handlers.
         let out = run_output(r#"[IO.println "hello from eir"]"#);
         assert_eq!(out, vec!["hello from eir"]);
+    }
+
+    /// A failed trace write must stop recording entirely. Continuing would
+    /// finalize a trace with a silent gap: replay would feed later recorded
+    /// values one step early with no divergence diagnostic.
+    #[test]
+    fn recorder_disables_after_write_failure() {
+        use std::io::Write as _;
+        use std::sync::{Arc, Mutex};
+
+        /// Shared buffer that rejects any write mentioning "uuid".
+        struct FailOnUuid(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for FailOnUuid {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                if data.windows(4).any(|w| w == b"uuid") {
+                    return Err(std::io::Error::other("disk full"));
+                }
+                self.0.lock().unwrap().write(data)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let recorder =
+            crate::eir::replay::TraceRecorder::from_writer(Box::new(FailOnUuid(buf.clone())));
+        // Three recordable ops: millis succeeds, uuid's write fails, and the
+        // final millis must NOT be appended after the gap.
+        let result = eval_eir_recorded(
+            "[fn main [] [IO.millis] [IO.uuid] [IO.millis]]",
+            std::path::Path::new("."),
+            recorder,
+        );
+        assert!(result.is_ok(), "run should survive a trace write failure");
+        let written = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            written.matches(":op \"millis\"").count(),
+            1,
+            "recording must stop at the failed entry, not resume with a gap:\n{written}"
+        );
+        assert!(!written.contains("uuid"), "trace:\n{written}");
     }
 }

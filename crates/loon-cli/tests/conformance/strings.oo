@@ -1,0 +1,15 @@
+; String builtins: split/join/case/trim/replace/substring/predicates.
+; expect-fail: wasm — the join builtin is not ported to codegen
+; ("unknown function 'join'"); clean rejection.
+[fn main []
+  [println [join [split "a,b,c" ","] "-"]]
+  [println [uppercase "loon"]]
+  [println [lowercase "LOON"]]
+  [println [str "[" [trim "  x  "] "]"]]
+  [println [replace "aXbXc" "X" "-"]]
+  [println [substring "hello" 1 4]]
+  [println [contains? "hello" "ell"]]
+  [println [starts-with? "hello" "he"]]
+  [println [ends-with? "hello" "lo"]]
+  [println [len "hello"]]
+  [println [str "a" "-" 42 "-" true]]]

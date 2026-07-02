@@ -45,7 +45,8 @@ pub fn get_tutorial(code: ErrorCode) -> Option<Tutorial> {
         ErrorCode::E0400 => Some(tutorial_unhandled_effect()),
         ErrorCode::E0401 => Some(tutorial_undeclared_effect()),
         ErrorCode::E0402 => None,
-        ErrorCode::E0403 => None,
+        ErrorCode::E0403 => Some(tutorial_effect_mismatch()),
+        ErrorCode::E0404 => None,
         ErrorCode::E0500 => Some(tutorial_unresolved_module()),
         ErrorCode::E0501 => Some(tutorial_private_symbol()),
         ErrorCode::E0502 => Some(tutorial_circular_dependency()),
@@ -641,6 +642,58 @@ fn tutorial_undeclared_effect() -> Tutorial {
                 hint: "Try: [fn square [x] [* x x]] [square 5]".to_string(),
                 expected_output: None,
             },
+        ],
+    }
+}
+
+// Text-only (no live execution): E0403 comes from effect-row UNIFICATION
+// failing inside the checker. Every row the checker builds from source is
+// open (functions, lambdas, sigs, builtins and constructors all get an open
+// tail), and `#{...}` annotations are assertion-mode — they check inferred
+// labels and report E0401, they do not close the row — so there is no small
+// source program that reliably demonstrates E0403 today. Keep this tutorial
+// descriptive; do NOT add Demo/Fix steps that claim to reproduce it.
+fn tutorial_effect_mismatch() -> Tutorial {
+    Tutorial {
+        code: ErrorCode::E0403,
+        title: "Effect mismatch".to_string(),
+        steps: vec![
+            TutorialStep::Text(
+                "Loon infers an effect row for every function: the set of \
+                 effects it may perform, like `IO + e`. The trailing `e` is \
+                 an open tail — extra effects a caller's argument may add. \
+                 E0403 is reported when two effect rows cannot be unified: \
+                 one side is a fixed (closed) set of effects and the other \
+                 side performs an effect that set does not allow, or a row \
+                 would have to contain itself (an infinite effect row)."
+                    .to_string(),
+            ),
+            TutorialStep::Text(
+                "  Example message:\n\
+                 \n\
+                 \x20   error: effect mismatch: `pure` is not allowed to perform `IO`\n\
+                 \n\
+                 Rows the checker infers from source are open, so in \
+                 practice effect problems usually surface as E0400 \
+                 (unhandled effect) or E0401 (undeclared effect) instead. \
+                 Note that the `#{...}` annotation on a function is an \
+                 assertion over the function's INFERRED effects — it reports \
+                 E0401 when the body performs something extra; it does not \
+                 close the row."
+                    .to_string(),
+            ),
+            TutorialStep::Text(
+                "  Fix: widen the fixed effect set to include the missing \
+                 effect, or handle the effect with a `handle` block before \
+                 it reaches the constrained position:\n\
+                 \n\
+                 \x20   [handle [may-do-io]\n\
+                 \x20     [IO.read-file p] [resume \"stub\"]]\n\
+                 \n\
+                 See `loon explain E0400` and `loon explain E0401` for the \
+                 common effect errors."
+                    .to_string(),
+            ),
         ],
     }
 }

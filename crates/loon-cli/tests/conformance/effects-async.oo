@@ -1,0 +1,11 @@
+; Async.spawn/await run real threads on the legacy interpreter only; the EIR
+; VM (the oracle) has no thread-backed closure execution and hard-errors with
+; "unhandled effect: Async.spawn" (a loud, declared gap — Async.sleep alone
+; IS ported and conforms). wasm rejects it too, conforming with the oracle's
+; failure class.
+; expect-fail: legacy — threads work there, so it prints 42 and exits 0
+; while the VM oracle errors.
+[fn main []
+  [Async.sleep 1]
+  [let f [Async.spawn [fn [] 21]]]
+  [println [* 2 [Async.await f]]]]

@@ -1,0 +1,28 @@
+; Record/replay demo — a program that crashes nondeterministically.
+;
+; The crash depends on the wall clock (roll = millis mod 5), so it only
+; happens on roughly one run in five. Catch a crashing run on tape:
+;
+;   loon run samples/replay-demo.oo --record crash.oo
+;
+; (re-run until it crashes — the trace file is rewritten each time), then
+; reproduce that exact run — same roll, same output, same crash — forever:
+;
+;   loon replay crash.oo samples/replay-demo.oo
+;
+; See docs/record-replay.md for the full walkthrough.
+
+; Pretend work: "validates" a batch, blowing up on an unlucky roll.
+[fn validate-batch [roll]
+  [if [= roll 0]
+    [do
+      [println "corrupt record encountered!"]
+      ; assert-eq is the crash: roll is 0 here, so this always fails.
+      [assert-eq roll -1]]
+    [println "batch \(roll) ok"]]]
+
+[fn main []
+  [let roll [% [IO.millis] 5]]
+  [println "processing batch (roll \(roll))"]
+  [validate-batch roll]
+  [println "all batches processed"]]

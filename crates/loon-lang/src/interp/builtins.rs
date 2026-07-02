@@ -204,6 +204,11 @@ pub fn register_builtins(env: &mut Env) {
         Ok(Value::Bool(args[0] == args[1]))
     });
 
+    // != mirrors the EIR VM's BinOp::Ne (the VM had it; the interp didn't).
+    builtin!(env, "!=", |_, args: &[Value]| {
+        Ok(Value::Bool(args[0] != args[1]))
+    });
+
     builtin!(env, ">=", |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a >= b)),

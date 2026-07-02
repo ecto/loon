@@ -1,0 +1,13 @@
+; if/do/when semantics: explicit do in branches, when's implicit body,
+; sequential lets, nested scopes.
+[fn main []
+  [if [> 3 2]
+    [do [println "then-1"] [println "then-2"]]
+    [println "else"]]
+  [when [> 3 2] [println "when-body"]]
+  [when [< 3 2] [println "never"]]
+  [let a 2]
+  [let b [* a 3]]
+  [let c [+ a b]]
+  [println c]
+  [println [if [< 1 2] "lt" "ge"]]]

@@ -1,0 +1,15 @@
+; Local bindings shadow operators and builtins at call sites, including
+; inside closures and pipe steps.
+; expect-fail: wasm — the shadowed calls resolve correctly, but their STRING
+; results print as packed i64s (untagged value model doesn't track strings
+; through closure calls).
+[fn apply-op [op a b] [op a b]]
+[fn main []
+  [let + [fn [a b] [* a b]]]
+  [println [+ 3 4]]
+  [let sum [fn [xs] [str "n=" [len xs]]]]
+  [println [sum #[1 2 3]]]
+  [println [pipe #[1 2 3] sum]]
+  [println [apply-op [fn [a b] [- a b]] 10 4]]
+  [let f [fn [x] [fn [y] [+ x y]]]]
+  [println [[f 3] 4]]]

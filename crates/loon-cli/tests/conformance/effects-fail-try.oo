@@ -1,0 +1,8 @@
+; try + Fail: success path passes through, failure path runs the handler.
+; expect-fail: wasm — the try handler's string result prints as a packed i64
+; (untagged value model does not track strings through try).
+[fn checked-div [a b]
+  [if [= b 0] [Fail.fail "div by zero"] [/ a b]]]
+[fn main []
+  [println [try [checked-div 10 2] [fn [e] [str "caught: " e]]]]
+  [println [try [checked-div 10 0] [fn [e] [str "caught: " e]]]]]

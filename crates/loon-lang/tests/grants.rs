@@ -1,4 +1,4 @@
-//! pkg.oo capability-grant enforcement (E0403): a dependency whose inferred
+//! pkg.oo capability-grant enforcement (E0404): a dependency whose inferred
 //! effect row exceeds its declared `:grant` fails at check time. Static
 //! supply-chain security — the checker proves a dep can't touch the network
 //! or filesystem unless the manifest says so.
@@ -7,7 +7,7 @@ use loon_lang::check::Checker;
 use std::path::PathBuf;
 
 /// Build a temp project dir with a pkg.oo, a dep module, and return the
-/// E0403 diagnostics from checking `main_src` against it.
+/// E0404 diagnostics from checking `main_src` against it.
 fn check_project(manifest: &str, dep_name: &str, dep_src: &str, main_src: &str) -> Vec<String> {
     static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -22,7 +22,7 @@ fn check_project(manifest: &str, dep_name: &str, dep_src: &str, main_src: &str) 
     let errors = checker.check_program(&exprs);
     let out = errors
         .iter()
-        .filter(|e| e.code.as_str() == "E0403")
+        .filter(|e| e.code.as_str() == "E0404")
         .map(|e| e.what.clone())
         .collect();
     let _ = std::fs::remove_dir_all(&dir);
