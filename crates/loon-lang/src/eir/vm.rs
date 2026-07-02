@@ -860,7 +860,7 @@ impl Vm {
             Op::Bin(dst, binop, a, b, _) => {
                 let av = self.r(*a);
                 let bv = self.r(*b);
-                let result = self.exec_binop(*binop, av, bv);
+                let result = self.exec_binop(*binop, av, bv)?;
                 self.w(*dst, result);
             }
 
@@ -1118,8 +1118,8 @@ impl Vm {
         }
     }
 
-    fn exec_binop(&mut self, op: BinOp, a: Val, b: Val) -> Val {
-        match op {
+    fn exec_binop(&mut self, op: BinOp, a: Val, b: Val) -> Result<Val, VmError> {
+        Ok(match op {
             BinOp::Add => {
                 if a.is_int() && b.is_int() {
                     self.safe_int(a.as_int().wrapping_add(b.as_int()))
@@ -1177,10 +1177,10 @@ impl Vm {
                 if a.is_int() && b.is_int() {
                     let bv = b.as_int();
                     if bv == 0 {
-                        Val::UNIT
-                    } else {
-                        Val::int(a.as_int() / bv)
+                        return Err(VmError::new(VmErrorKind::DivideByZero("division"))
+                            .with_span(self.current_span));
                     }
+                    Val::int(a.as_int() / bv)
                 } else {
                     let af = if a.is_float() {
                         a.as_float()
@@ -1199,10 +1199,10 @@ impl Vm {
                 if a.is_int() && b.is_int() {
                     let bv = b.as_int();
                     if bv == 0 {
-                        Val::UNIT
-                    } else {
-                        Val::int(a.as_int() % bv)
+                        return Err(VmError::new(VmErrorKind::DivideByZero("modulo"))
+                            .with_span(self.current_span));
                     }
+                    Val::int(a.as_int() % bv)
                 } else {
                     Val::UNIT
                 }
@@ -1296,7 +1296,7 @@ impl Vm {
                 let sb = self.val_to_string(b);
                 self.alloc_str_owned(format!("{sa}{sb}"))
             }
-        }
+        })
     }
 
     // ── Builtins ───────────────────────────────────────────────────────
@@ -2891,6 +2891,10 @@ pub enum VmErrorKind {
     /// handler and no builtin implementation. Silently returning `()` here
     /// would let programs believe the effect happened.
     UnhandledEffect(String),
+    /// Integer division or modulo by a zero divisor. Silently returning `()`
+    /// here would let programs believe they got a valid quotient. The `&str`
+    /// names the operation ("division" or "modulo") for the diagnostic.
+    DivideByZero(&'static str),
 }
 
 impl VmError {
@@ -2929,6 +2933,11 @@ impl std::fmt::Display for VmError {
                     f,
                     "unhandled effect: {name} — add a [handle ...] block to handle this effect"
                 )
+            }
+            VmErrorKind::DivideByZero(kind) => {
+                // Wording matches the interpreter's "division by zero" /
+                // "modulo by zero" so both backends fail the same way.
+                write!(f, "{kind} by zero")
             }
         }
     }
@@ -3346,6 +3355,35 @@ mod tests {
              [fn main [] [println [handle [Zap.zap] [Zap.zap] [resume 7]]]]",
         );
         assert_eq!(out, vec!["7".to_string()]);
+    }
+
+    #[test]
+    fn vm_int_divide_by_zero_raises() {
+        // Integer / and % by zero must ERROR, not silently return () — the
+        // same silent-failure class as unhandled effects. Matches the
+        // interpreter's "division by zero" / "modulo by zero" wording.
+        let derr = eval_eir("[fn main [] [println [/ 5 0]]]")
+            .expect_err("[/ 5 0] should error, not return ()");
+        assert!(
+            matches!(derr.kind, VmErrorKind::DivideByZero("division")),
+            "got: {derr}"
+        );
+        assert!(derr.to_string().contains("division by zero"), "got: {derr}");
+
+        let merr = eval_eir("[fn main [] [println [% 5 0]]]")
+            .expect_err("[% 5 0] should error, not return ()");
+        assert!(
+            matches!(merr.kind, VmErrorKind::DivideByZero("modulo")),
+            "got: {merr}"
+        );
+        assert!(merr.to_string().contains("modulo by zero"), "got: {merr}");
+
+        // Non-zero divisors still work.
+        assert_eq!(run("[/ 17 5]").as_int(), 3);
+        assert_eq!(run("[% 17 5]").as_int(), 2);
+
+        // Float division by zero is IEEE infinity, NOT an error.
+        assert!(run("[/ 1.0 0.0]").as_float().is_infinite());
     }
 
     #[test]
