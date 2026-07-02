@@ -1,0 +1,15 @@
+; Prelude Option/Result plus the postfix ? operator inside try.
+; expect-fail: wasm — the prelude Option/Result constructors are not
+; registered in codegen ("unknown function 'Err'"); clean rejection.
+[fn half [n] [if [= [% n 2] 0] [Ok [/ n 2]] [Err "odd"]]]
+[fn run [n] [let h [half n]?] [Ok [+ h 1]]]
+[fn unwrap-or [o d] [match o [Some x] x None d]]
+[fn main []
+  [println [Some 5]]
+  [println None]
+  [println [Ok "x"]]
+  [println [Err 9]]
+  [println [unwrap-or [Some 7] 0]]
+  [println [unwrap-or None 0]]
+  [println [try [run 10] [fn [e] [str "failed: " e]]]]
+  [println [try [run 3] [fn [e] [str "failed: " e]]]]]

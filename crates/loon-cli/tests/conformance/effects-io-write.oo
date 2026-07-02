@@ -1,0 +1,11 @@
+; IO.write-file must actually write on every backend (it silently no-oped on
+; the EIR VM once): write, read back, print, clean up. The harness runs each
+; program in its own scratch directory, so the relative path is isolated.
+; expect-fail: wasm — IO.write-file / IO.file-exists? / IO.delete-file host
+; imports are not linked; the run traps (clean failure, not a silent no-op).
+[fn main []
+  [IO.write-file "conformance-out.txt" "written"]
+  [println [IO.read-file "conformance-out.txt"]]
+  [println [IO.file-exists? "conformance-out.txt"]]
+  [IO.delete-file "conformance-out.txt"]
+  [println [IO.file-exists? "conformance-out.txt"]]]

@@ -1,0 +1,7 @@
+; An effect op with no handler and no builtin implementation is a hard
+; runtime error on every backend — never a silent (). Both the EIR VM and
+; the interpreter must fail (nonzero exit) after printing "before".
+[effect Zap [zap [] Int]]
+[fn main []
+  [println "before"]
+  [println [Zap.zap]]]

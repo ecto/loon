@@ -1,0 +1,11 @@
+; expect-fail: legacy — a handler clause that does NOT resume must discard
+; the continuation (abort semantics): the handle's result is 999. The EIR VM
+; does this; the legacy interpreter wrongly resumes with the clause value
+; (1 + 999 = 1000). Pinned in backend_parity.rs::known_divergences_are_pinned
+; too; retire both when the interpreter is fixed or retired.
+; expect-fail: wasm — codegen compiles the handler tail-resumptively, so it
+; has the same resume-with-clause-value bug as the interpreter (1000).
+[effect F [fail [] Int]]
+[fn body [] [+ 1 [F.fail]]]
+[fn main []
+  [println [handle [body] [F.fail] 999]]]

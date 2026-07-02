@@ -354,3 +354,99 @@ fn effects_still_work() {
     );
     assert_eq!(result, interp::Value::Str("caught: oops".into()));
 }
+
+// ── Hygiene ──────────────────────────────────────────────────────────
+//
+// Template-introduced binders (let names, fn/loop params) are gensym'd per
+// expansion, so a macro temp can neither CLOBBER a caller binding of the
+// same name nor CAPTURE a caller binding passed in as an argument. These
+// run on both backends: the interpreter here, the EIR VM in
+// tests/conformance corpus (hygiene-*.oo).
+
+#[test]
+fn hygiene_macro_temp_does_not_clobber_user_binding() {
+    let result = eval(
+        r#"
+        [macro swap-add [a b] `[do [let tmp ~a] [+ tmp ~b]]]
+        [let tmp 100]
+        [let ignored [swap-add 1 2]]
+        tmp
+    "#,
+    );
+    assert_eq!(result, interp::Value::Int(100), "macro temp clobbered user `tmp`");
+}
+
+#[test]
+fn hygiene_macro_temp_does_not_capture_user_argument() {
+    // The caller passes its own `r` as the second operand; the template's
+    // internal `[let r ~a]` must not shadow it.
+    let result = eval(
+        r#"
+        [macro my-or [a b] `[do [let r ~a] [if r r ~b]]]
+        [let r 42]
+        [my-or false r]
+    "#,
+    );
+    assert_eq!(result, interp::Value::Int(42), "template `r` captured the caller's `r`");
+}
+
+#[test]
+fn hygiene_template_binders_are_gensymmed_in_expansion() {
+    let s = expand_first(
+        r#"
+        [macro grab [v] `[do [let tmp ~v] tmp]]
+        [grab 9]
+    "#,
+    );
+    assert!(
+        !s.contains("[let tmp") && s.contains("__gensym_tmp"),
+        "expected gensym'd binder in expansion, got: {s}"
+    );
+}
+
+#[test]
+fn hygiene_unquoted_binder_names_are_left_alone() {
+    // [let ~name ...] deliberately binds a caller-chosen name — no renaming.
+    let result = eval(
+        r#"
+        [macro def-as [name v] `[let ~name ~v]]
+        [def-as answer 42]
+        answer
+    "#,
+    );
+    assert_eq!(result, interp::Value::Int(42));
+}
+
+#[test]
+fn hygiene_named_fn_definitions_still_introduce_their_name() {
+    // A macro expanding to [fn helper ...] INTENDS to define `helper`.
+    let result = eval(
+        r#"
+        [macro def-helper [] `[fn helper [x] [+ x 1]]]
+        [def-helper]
+        [helper 41]
+    "#,
+    );
+    assert_eq!(result, interp::Value::Int(42));
+}
+
+#[test]
+fn malformed_bare_let_in_template_does_not_panic() {
+    // A template containing a bare `[let]` used to index out of bounds inside
+    // collect_template_binders and panic (which also took the LSP down on
+    // in-progress edits). It must expand without panicking.
+    let exprs = parse("[macro m [] `[let]] [m]").unwrap();
+    let mut expander = MacroExpander::new();
+    let _ = expander.expand_program(&exprs); // Ok or Err — just no panic
+}
+
+#[test]
+fn and_or_pipe_steps_desugar_to_lambda_steps() {
+    // [pipe v [or a]] must NOT collapse to a bare-value step (which pipe
+    // rejects); it becomes a unary-lambda step preserving thread-last
+    // semantics: [pipe false [or 7]] ≡ [or 7 false] = 7.
+    let result = eval("[pipe false [or 7]]");
+    assert_eq!(result, interp::Value::Int(7));
+    let result = eval("[pipe 5 [and true true]]");
+    assert_eq!(result, interp::Value::Int(5));
+}

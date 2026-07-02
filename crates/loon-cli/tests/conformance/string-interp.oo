@@ -1,0 +1,5 @@
+; String interpolation via fmt (the interpolating form used by samples).
+[fn main []
+  [let name "loon"]
+  [let n 3]
+  [println [fmt "hi {name} has {n}"]]]

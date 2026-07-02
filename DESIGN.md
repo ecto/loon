@@ -600,7 +600,16 @@ Algebraic effects involve capturing continuations. A handler may call `[resume .
 
 ### Hygienic Macros
 
-Loon macros are hygienic by default (like Scheme's `syntax-rules`). They operate on syntax, not text.
+Loon macros operate on syntax, not text, and are hygienic for the binders a
+template introduces itself: `let` names and `fn`/`loop` parameters written in
+a quasiquoted template are renamed to fresh gensyms on every expansion, so
+they neither capture caller bindings nor get captured by them. This is
+gensym-renaming hygiene, not full Scheme scope-sets — the documented holes:
+match-pattern variables in templates are not renamed, unquoted binders
+(`[let ~name ...]`) and named-fn definitions deliberately introduce
+caller-visible names, and a template's reference to a global function can
+still be shadowed by a same-named local at the expansion site (no referential
+transparency). See ARCHITECTURE.md §3 for the mechanics.
 
 ```loon
 [defmacro when [condition & body]
@@ -640,7 +649,7 @@ Unlike traditional LISPs, Loon macros can optionally run *after* type inference,
               fields]]]]
 ```
 
-This enables zero-cost derive macros (`[#[derive Debug Serialize Eq]]`), compile-time ORMs, and generic serialization — all implemented in Loon itself. Still hygienic.
+This enables zero-cost derive macros (`[#[derive Debug Serialize Eq]]`), compile-time ORMs, and generic serialization — all implemented in Loon itself. The same gensym-renaming hygiene applies.
 
 ---
 
@@ -910,7 +919,7 @@ Loon's `[defmacro+ ...]` macros run *after* type inference, with access to the t
 - **Compile-time ORMs** — generate type-safe queries from struct definitions
 - **Generic serialization** — branch on types, generate optimal code per type
 
-Still hygienic — type-awareness doesn't mean type-unsafety.
+The same gensym-renaming hygiene applies — type-awareness doesn't mean type-unsafety.
 
 ### E. Capability-Based Security
 

@@ -1,0 +1,14 @@
+; Algebraic effects: tail resume, parameterized handler capturing a local,
+; multi-shot resume joining two worlds.
+; expect-fail: wasm — multi-shot resume needs delimited continuations; the
+; module is rejected at wasm translation time (clean failure, not a
+; miscompile).
+[effect E [op [Int] Int]]
+[effect C [pick [] Int]]
+[fn body [] [+ 100 [E.op 5]]]
+[fn choose [] [* [C.pick] 2]]
+[fn run-with [n] [handle [E.op] [E.op] [resume n]]]
+[fn main []
+  [println [handle [body] [E.op v] [resume v]]]
+  [println [run-with 42]]
+  [println [handle [choose] [C.pick] [+ [resume 3] [resume 5]]]]]

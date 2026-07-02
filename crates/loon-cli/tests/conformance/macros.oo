@@ -1,0 +1,9 @@
+; Template macros: simple templates, rest params with splice, nesting.
+[macro unless [cond body] `[if ~cond [] ~body]]
+[macro my-when [cond & body] `[if ~cond [do ~@body] []]]
+[macro double [x] `[+ ~x ~x]]
+[fn main []
+  [unless false [println "unless-ran"]]
+  [my-when true [println "when-1"] [println "when-2"]]
+  [println [double 21]]
+  [my-when [> 2 1] [println [double [double 5]]]]]

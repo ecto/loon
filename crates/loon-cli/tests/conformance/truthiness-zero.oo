@@ -1,0 +1,9 @@
+; expect-fail: legacy — the interpreter treats Int(0) as falsy
+; (`!matches!(Bool(false) | Unit | Int(0))`) while the EIR VM treats only
+; false and () as falsy, so `[if 0 ...]` takes different branches. A language
+; decision is needed before either backend changes; this pin keeps the
+; divergence visible.
+; expect-fail: wasm — codegen's `if` uses i64.eqz, so 0 is falsy there too,
+; agreeing with the interpreter and diverging from the VM.
+[fn main []
+  [println [if 0 "zero-truthy" "zero-falsy"]]]

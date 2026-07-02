@@ -26,6 +26,16 @@ pub fn lower(checker: &Checker) -> Module {
 
 // ─── Lowering context ──────────────────────────────────────────────────────
 
+/// How a name entered scope — decides whether it SHADOWS at call sites.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BindKind {
+    /// let / fn param / pattern / set! — shadows builtins and functions.
+    Local,
+    /// A named fn's self-binding or a nullary-ctor value — value form only;
+    /// calls still resolve through func_map/ctor_map (direct Call).
+    Fn,
+}
+
 struct Lower<'a> {
     checker: &'a Checker,
     module: Module,
@@ -35,8 +45,13 @@ struct Lower<'a> {
     cur_block: Option<BlockId>,
     /// Next register index for the current function.
     next_reg: u32,
-    /// Variable scope: name → Reg.
-    scopes: Vec<HashMap<String, Reg>>,
+    /// Variable scope: name → (Reg, how it was bound). The kind decides
+    /// shadowing at CALL sites: a `Local` binding (let / param / pattern)
+    /// shadows operators, builtins, and top-level functions; a `Fn` binding
+    /// (a named fn's self-binding, a nullary-ctor value) is just the value
+    /// form of something that still resolves through func_map/ctor_map for
+    /// direct calls.
+    scopes: Vec<HashMap<String, (Reg, BindKind)>>,
     /// Interned string dedup: string → StringId.
     string_map: HashMap<String, StringId>,
     /// Known ADT constructors: name → (tag, arity).
@@ -127,14 +142,35 @@ impl<'a> Lower<'a> {
 
     fn bind(&mut self, name: &str, reg: Reg) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), reg);
+            scope.insert(name.to_string(), (reg, BindKind::Local));
+        }
+    }
+
+    /// Bind a named fn's self-binding / nullary ctor value: usable as a
+    /// value, but NOT a shadow at call sites (calls keep resolving through
+    /// func_map/ctor_map to a direct Call).
+    fn bind_fn(&mut self, name: &str, reg: Reg) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_string(), (reg, BindKind::Fn));
         }
     }
 
     fn lookup(&self, name: &str) -> Option<Reg> {
         for scope in self.scopes.iter().rev() {
-            if let Some(&r) = scope.get(name) {
+            if let Some(&(r, _)) = scope.get(name) {
                 return Some(r);
+            }
+        }
+        None
+    }
+
+    /// The innermost binding of `name`, only if it is a genuine LOCAL
+    /// (let / param / pattern) — the kind of binding that shadows
+    /// builtins/operators/functions at call sites.
+    fn lookup_local(&self, name: &str) -> Option<Reg> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(&(r, kind)) = scope.get(name) {
+                return (kind == BindKind::Local).then_some(r);
             }
         }
         None
@@ -195,6 +231,23 @@ impl<'a> Lower<'a> {
         }
         let mut all_forms = imported;
         all_forms.extend(main_forms);
+
+        // Register the prelude's Option/Result constructors first, so
+        // Some/None/Ok/Err work on the EIR VM exactly as they do on the
+        // interpreter (which evals the prelude at startup). A program that
+        // (re)defines these types simply overwrites the ctor_map entries
+        // below with its own tags.
+        if let Ok(prelude_forms) = crate::parser::parse(crate::prelude::PRELUDE) {
+            for expr in &prelude_forms {
+                if let ExprKind::List(items) = &expr.kind {
+                    if let Some(ExprKind::Symbol(s)) = items.first().map(|e| &e.kind) {
+                        if s == "type" {
+                            self.collect_ctors(&items[1..]);
+                        }
+                    }
+                }
+            }
+        }
 
         // First pass: collect all ADT constructors
         for expr in &all_forms {
@@ -784,10 +837,11 @@ impl<'a> Lower<'a> {
             self.next_reg = saved_next_reg;
             self.scopes = saved_scopes;
 
-            // Bind function name in current scope
+            // Bind function name in current scope (value form; calls still
+            // resolve through func_map to a direct Call)
             let r = self.reg();
             self.emit(Op::Close(r, func_id, Vec::new(), span));
-            self.bind(&name, r);
+            self.bind_fn(&name, r);
             r
         } else {
             // Anonymous lambda: [fn [params] body...]
@@ -808,8 +862,14 @@ impl<'a> Lower<'a> {
             }
             let ctor_map_ref = &self.ctor_map;
             let func_map_ref = &self.func_map;
-            let resolve =
-                |name: &str| -> bool { self.resolve_builtin(name).is_some() || is_operator(name) };
+            // A name counts as a builtin/operator only when it is NOT shadowed
+            // by a lexical binding in scope: a shadowed name must be collected
+            // as a free variable so the closure captures the local, not the
+            // builtin.
+            let resolve = |name: &str| -> bool {
+                self.lookup_local(name).is_none()
+                    && (self.resolve_builtin(name).is_some() || is_operator(name))
+            };
             let mut free_vars = Vec::new();
             let mut seen = std::collections::HashSet::new();
             for expr in body {
@@ -1019,7 +1079,7 @@ impl<'a> Lower<'a> {
 
         let r = self.reg();
         self.emit(Op::Close(r, func_id, Vec::new(), span));
-        self.bind(name, r);
+        self.bind_fn(name, r);
         r
     }
 
@@ -1427,6 +1487,15 @@ impl<'a> Lower<'a> {
 
                     // Try builtin recognition (thread-last: append current as last arg)
                     if let ExprKind::Symbol(name) = &head.kind {
+                        // Local bindings shadow builtins here too.
+                        if let Some(local) = self.lookup_local(name) {
+                            let mut all_args = explicit_args;
+                            all_args.push(current);
+                            let r = self.reg();
+                            self.emit(Op::Invoke(r, local, all_args, step.span));
+                            current = r;
+                            continue;
+                        }
                         if let Some(built) = self.resolve_builtin(name) {
                             let mut all_args = explicit_args;
                             all_args.push(current);
@@ -1434,6 +1503,52 @@ impl<'a> Lower<'a> {
                             self.emit(Op::Builtin(r, built, all_args, step.span));
                             current = r;
                             continue;
+                        }
+                        // Operator partial step, e.g. [pipe 5 [+ 1]] → [+ 1 5]
+                        // (thread-last). The interpreter supports this because
+                        // operators are ordinary env functions there, and its
+                        // semantics are what we mirror:
+                        // - `+`/`*` are VARIADIC left folds: [pipe 5 [+ 1 2]]
+                        //   is [+ 1 2 5] = 8.
+                        // - the rest are strictly BINARY and ignore extra
+                        //   arguments: [pipe 5 [- 10 3]] is [- 10 3 5] = 7
+                        //   (the piped value is arg 3 and is dropped).
+                        if !explicit_args.is_empty() {
+                            let variadic = match name.as_str() {
+                                "+" => Some(BinOp::Add),
+                                "*" => Some(BinOp::Mul),
+                                _ => None,
+                            };
+                            if let Some(binop) = variadic {
+                                let mut acc = explicit_args[0];
+                                for &a in explicit_args[1..].iter().chain([&current]) {
+                                    let r = self.reg();
+                                    self.emit(Op::Bin(r, binop, acc, a, step.span));
+                                    acc = r;
+                                }
+                                current = acc;
+                                continue;
+                            }
+                            if let Some(binop) = match name.as_str() {
+                                "-" => Some(BinOp::Sub),
+                                "/" => Some(BinOp::Div),
+                                "%" => Some(BinOp::Rem),
+                                "=" => Some(BinOp::Eq),
+                                "!=" => Some(BinOp::Ne),
+                                "<" => Some(BinOp::Lt),
+                                ">" => Some(BinOp::Gt),
+                                "<=" => Some(BinOp::Le),
+                                ">=" => Some(BinOp::Ge),
+                                _ => None,
+                            } {
+                                // Binary: [op e0 (e1 | current)] — any further
+                                // args were still evaluated above, as interp.
+                                let rhs = explicit_args.get(1).copied().unwrap_or(current);
+                                let r = self.reg();
+                                self.emit(Op::Bin(r, binop, explicit_args[0], rhs, step.span));
+                                current = r;
+                                continue;
+                            }
                         }
                     }
 
@@ -1447,7 +1562,11 @@ impl<'a> Lower<'a> {
                 }
                 ExprKind::Symbol(name) => {
                     // Single symbol step: [pipe x f] → [f x]
-                    if let Some(built) = self.resolve_builtin(name) {
+                    if let Some(local) = self.lookup_local(name) {
+                        let r = self.reg();
+                        self.emit(Op::Invoke(r, local, vec![current], step.span));
+                        current = r;
+                    } else if let Some(built) = self.resolve_builtin(name) {
                         let r = self.reg();
                         self.emit(Op::Builtin(r, built, vec![current], step.span));
                         current = r;
@@ -1462,7 +1581,18 @@ impl<'a> Lower<'a> {
                         current = r;
                     }
                 }
-                _ => {}
+                _ => {
+                    // A step that is neither a list nor a symbol (e.g. a bare
+                    // literal). The interpreter rejects these at runtime
+                    // ("pipe step must be a list or symbol"); lowering it as
+                    // an invocation of a non-callable value gives the same
+                    // error CLASS at the same point instead of silently
+                    // dropping the step (which produced a wrong value).
+                    let func = self.lower_expr(step);
+                    let r = self.reg();
+                    self.emit(Op::Invoke(r, func, vec![current], step.span));
+                    current = r;
+                }
             }
         }
         current
@@ -1640,8 +1770,12 @@ impl<'a> Lower<'a> {
                             {
                                 let ctor_map_ref = &self.ctor_map;
                                 let func_map_ref = &self.func_map;
+                                // As in lower_fn: a lexically shadowed name is
+                                // a free var to capture, not a builtin.
                                 let resolve = |name: &str| -> bool {
-                                    self.resolve_builtin(name).is_some() || is_operator(name)
+                                    self.lookup_local(name).is_none()
+                                        && (self.resolve_builtin(name).is_some()
+                                            || is_operator(name))
                                 };
                                 let mut free_vars = Vec::new();
                                 let mut seen = std::collections::HashSet::new();
@@ -1844,6 +1978,22 @@ impl<'a> Lower<'a> {
 
         // Check if it's a known function
         if let ExprKind::Symbol(name) = &head.kind {
+            // A LOCAL binding (let / fn param / pattern binding) shadows
+            // operators, builtins, constructors, and top-level functions at
+            // call sites, just like the interpreter (where builtins live in
+            // the same env as locals and inner scopes win). Without this
+            // check `[let + my-fn] [+ 3 4]` silently called the builtin `+`,
+            // and `[let Some inc] [Some 5]` constructed the ADT. This must
+            // run BEFORE the ctor check: the prelude Option/Result ctors are
+            // always registered, so ctor-first would make `Some`/`None`/`Ok`/
+            // `Err` unshadowable on this backend only.
+            if let Some(local) = self.lookup_local(name) {
+                let args: Vec<Reg> = arg_exprs.iter().map(|e| self.lower_expr(e)).collect();
+                let r = self.reg();
+                self.emit(Op::Invoke(r, local, args, span));
+                return r;
+            }
+
             // Check for ADT constructor
             if let Some(&(tag, _arity)) = self.ctor_map.get(name.as_str()) {
                 let fields: Vec<Reg> = arg_exprs.iter().map(|e| self.lower_expr(e)).collect();
@@ -1937,7 +2087,7 @@ impl<'a> Lower<'a> {
                                 // Nullary — register as a value
                                 let r = self.reg();
                                 self.emit(Op::Adt(r, tag, Vec::new(), arg.span));
-                                self.bind(name, r);
+                                self.bind_fn(name, r);
                             }
                         }
                     }
@@ -1946,7 +2096,7 @@ impl<'a> Lower<'a> {
                     if let Some(&(tag, _)) = self.ctor_map.get(name.as_str()) {
                         let r = self.reg();
                         self.emit(Op::Adt(r, tag, Vec::new(), arg.span));
-                        self.bind(name, r);
+                        self.bind_fn(name, r);
                     }
                 }
                 _ => {}
@@ -2253,7 +2403,7 @@ fn collect_free_vars(
     }
 }
 
-fn is_special_form(name: &str) -> bool {
+pub(crate) fn is_special_form(name: &str) -> bool {
     matches!(
         name,
         "fn" | "let"
@@ -2285,7 +2435,7 @@ fn is_special_form(name: &str) -> bool {
     )
 }
 
-fn is_operator(name: &str) -> bool {
+pub(crate) fn is_operator(name: &str) -> bool {
     matches!(
         name,
         "+" | "-" | "*" | "/" | "%" | "=" | "!=" | "<" | ">" | "<=" | ">=" | "and" | "or" | "not"

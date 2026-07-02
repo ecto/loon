@@ -1,0 +1,10 @@
+; IO.to-json / IO.parse-json parity: object keys become keywords equal to
+; same-named source keywords; null becomes (); numbers/bools/arrays map 1:1.
+; expect-fail: wasm — the json effect ops are not ported to codegen; clean
+; runtime rejection.
+[fn main []
+  [println [IO.to-json {:a 1}]]
+  [let m [IO.parse-json "{\"a\": 42, \"b\": [1, 2, true, null]}"]]
+  [println [get m :a]]
+  [println [get m :b]]
+  [println [IO.parse-json "[1,2]"]]]

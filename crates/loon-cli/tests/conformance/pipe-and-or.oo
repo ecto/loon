@@ -1,0 +1,8 @@
+; and/or as PIPE STEPS are thread-last partial application, exactly like the
+; old eager builtins' value semantics: [pipe v [or a]] ≡ [or a v]. The
+; expander rewrites them into unary-lambda steps so they also short-circuit.
+[fn main []
+  [println [pipe false [or 7]]]
+  [println [pipe 5 [and true true]]]
+  [println [pipe 0 [or false]]]
+  [println [pipe 3 [and 8]]]]
