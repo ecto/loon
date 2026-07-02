@@ -4204,10 +4204,16 @@ impl Checker {
                         for (name, scheme) in &exports.schemes {
                             self.env
                                 .set_global(format!("{alias}.{name}"), scheme.clone());
+                            // The runtime (lower.rs collect_imports) splices all
+                            // module forms in, so unqualified names resolve too —
+                            // mirror that here or the checker rejects programs
+                            // that run fine.
+                            self.env.set_global(name.clone(), scheme.clone());
                         }
                         for (name, scheme) in &exports.constructors {
                             self.constructors
                                 .insert(format!("{alias}.{name}"), scheme.clone());
+                            self.constructors.insert(name.clone(), scheme.clone());
                         }
                         return;
                     }
@@ -4265,14 +4271,19 @@ impl Checker {
             }
         }
 
-        // Default: qualified import (mod.name)
+        // Default: qualified (mod.name) AND unqualified. The runtime
+        // (lower.rs collect_imports) splices every module form into the
+        // program, so `[use mod]` makes `name` itself resolvable — the checker
+        // must match, or `loon check` rejects programs `loon run` accepts.
         for (name, scheme) in &exports.schemes {
             self.env
                 .set_global(format!("{module_path}.{name}"), scheme.clone());
+            self.env.set_global(name.clone(), scheme.clone());
         }
         for (name, scheme) in &exports.constructors {
             self.constructors
                 .insert(format!("{module_path}.{name}"), scheme.clone());
+            self.constructors.insert(name.clone(), scheme.clone());
         }
     }
 
