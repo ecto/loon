@@ -8,7 +8,7 @@ use crate::syntax::Span;
 use crate::types::*;
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -83,10 +83,18 @@ pub struct Checker {
     pub trait_impls: HashMap<(String, String), HashMap<String, Scheme>>,
     /// Pending [sig] declarations: name → (type, span)
     pub pending_sigs: HashMap<String, (Type, Span)>,
-    /// Inferred effects for each function: name → EffectSet
-    pub fn_effects: HashMap<String, EffectSet>,
-    /// Effect set of the currently-checked function body
-    current_fn_effects: EffectSet,
+    /// Inferred effect row for each function: name → EffectRow
+    /// (resolved at the end of the function's definition)
+    pub fn_effects: HashMap<String, EffectRow>,
+    /// Effect row of the currently-checked function body (the "ambient"
+    /// row). Kept open during inference; effects are added by unifying
+    /// through the tail so every row in a body shares one chain.
+    current_fn_effects: EffectRow,
+    /// Append-only log of every directly performed effect label, in
+    /// inference order. `infer_handle` slices it (by index marks) to tell
+    /// labels genuinely performed by handler clauses apart from labels the
+    /// handle boundary forced into an aliased row (see the scrub step).
+    perform_log: Vec<String>,
     /// Registry of declared effects (built-in + user-defined)
     pub effect_registry: crate::effects::EffectRegistry,
     /// Base directory for module resolution (None = no file-system access)
@@ -118,7 +126,8 @@ impl Checker {
             trait_impls: HashMap::new(),
             pending_sigs: HashMap::new(),
             fn_effects: HashMap::new(),
-            current_fn_effects: EffectSet::empty(),
+            current_fn_effects: EffectRow::pure(),
+            perform_log: Vec::new(),
             effect_registry: crate::effects::EffectRegistry::new(),
             base_dir: None,
             pub_names: HashSet::new(),
@@ -132,7 +141,82 @@ impl Checker {
         checker.register_dom_builtins();
         checker.register_prelude();
         checker.register_physics_builtins();
+        checker.effect_polymorphize_builtins();
+        // The top-level "ambient" effect row: open so any effect can be
+        // performed (and absorbed) at the top level of a program.
+        let top_tail = checker.subst.fresh_var();
+        checker.current_fn_effects = EffectRow::open(top_tail);
         checker
+    }
+
+    /// Make every registered builtin scheme effect-polymorphic: give all
+    /// function types in a scheme ONE shared, quantified effect-row tail.
+    ///
+    /// This is what lets higher-order builtins propagate the effects of
+    /// their function arguments: `map : ∀a b e. ((a → b | e), Vec a) → Vec b | e`
+    /// — using `map` with an IO lambda makes the call site perform IO, while
+    /// using it with a pure lambda leaves the caller pure. First-order
+    /// builtins simply become callable in any effect context.
+    fn effect_polymorphize_builtins(&mut self) {
+        fn open_pure_fn_rows(ty: &Type, tail: TypeVar, changed: &mut bool) -> Type {
+            match ty {
+                Type::Fn(params, ret, row) => {
+                    let new_row = if row.is_pure() {
+                        *changed = true;
+                        EffectRow::open(tail)
+                    } else {
+                        row.clone()
+                    };
+                    Type::Fn(
+                        params
+                            .iter()
+                            .map(|p| open_pure_fn_rows(p, tail, changed))
+                            .collect(),
+                        Box::new(open_pure_fn_rows(ret, tail, changed)),
+                        new_row,
+                    )
+                }
+                Type::Con(name, args) => Type::Con(
+                    name.clone(),
+                    args.iter()
+                        .map(|a| open_pure_fn_rows(a, tail, changed))
+                        .collect(),
+                ),
+                Type::Tuple(items) => Type::Tuple(
+                    items
+                        .iter()
+                        .map(|t| open_pure_fn_rows(t, tail, changed))
+                        .collect(),
+                ),
+                Type::Record(inner) => {
+                    Type::Record(Box::new(open_pure_fn_rows(inner, tail, changed)))
+                }
+                Type::Row(fields, rest) => Type::Row(
+                    fields
+                        .iter()
+                        .map(|(n, t)| (n.clone(), open_pure_fn_rows(t, tail, changed)))
+                        .collect(),
+                    *rest,
+                ),
+                _ => ty.clone(),
+            }
+        }
+
+        let entries: Vec<(String, Scheme)> = self
+            .env
+            .global_scope()
+            .map(|scope| scope.iter().map(|(n, s)| (n.clone(), s.clone())).collect())
+            .unwrap_or_default();
+        for (name, mut scheme) in entries {
+            let tail = self.subst.fresh_var();
+            let mut changed = false;
+            let new_ty = open_pure_fn_rows(&scheme.ty, tail, &mut changed);
+            if changed {
+                scheme.ty = new_ty;
+                scheme.vars.push(tail);
+                self.env.set_global(name, scheme);
+            }
+        }
     }
 
     /// Create a checker that can resolve `[use ...]` against the file system.
@@ -160,6 +244,53 @@ impl Checker {
         self.type_of.get(&id)
     }
 
+    /// Record that the current function body performs `label`.
+    ///
+    /// The label is pushed through the ambient row's tail by unification
+    /// (never inserted into the local concrete part) so that every row that
+    /// has been linked with the ambient row observes it too.
+    fn perform_effect(&mut self, label: &str) {
+        self.perform_log.push(label.to_string());
+        let want = EffectRow {
+            labels: std::iter::once(label.to_string()).collect(),
+            tail: Some(self.subst.fresh_var()),
+        };
+        let ambient = self.current_fn_effects.clone();
+        // Cannot fail: the ambient row is always open and `want`'s tail is
+        // fresh, so there is no closed side and no shared tail.
+        let _ = unify_effect_rows(&mut self.subst, &ambient, &want);
+    }
+
+    /// Absorb a callee's effect row into the ambient row of the current
+    /// function body.
+    ///
+    /// - A CLOSED row's labels are definite: the call is implicitly
+    ///   "opened" (its labels join the ambient effects without further
+    ///   constraining the callee — a pure function may be called anywhere).
+    /// - An OPEN row is unified with the ambient row, linking their tails:
+    ///   this is what makes a higher-order function's effect depend on its
+    ///   argument's effect (`twice` inherits `f`'s row).
+    fn absorb_effect_row(&mut self, row: &EffectRow) {
+        let resolved = self.subst.resolve_effect_row(row);
+        if resolved.tail.is_some() {
+            let ambient = self.current_fn_effects.clone();
+            if unify_effect_rows(&mut self.subst, &ambient, &resolved).is_ok() {
+                return;
+            }
+            // Defensive fallback: if linking failed (shared tail with
+            // differing labels), still record the concrete labels.
+        }
+        if resolved.labels.is_empty() {
+            return;
+        }
+        let want = EffectRow {
+            labels: resolved.labels,
+            tail: Some(self.subst.fresh_var()),
+        };
+        let ambient = self.current_fn_effects.clone();
+        let _ = unify_effect_rows(&mut self.subst, &ambient, &want);
+    }
+
     fn register_builtins(&mut self) {
         // Arithmetic: ∀a. Add a => a → a → a
         {
@@ -183,7 +314,11 @@ impl Checker {
                     }],
                 )],
                 vars: vec![tv],
-                ty: Type::Fn(vec![Type::Var(tv), Type::Var(tv)], Box::new(Type::Var(tv))),
+                ty: Type::Fn(
+                    vec![Type::Var(tv), Type::Var(tv)],
+                    Box::new(Type::Var(tv)),
+                    EffectRow::pure(),
+                ),
             };
             for op in ["+", "-", "*"] {
                 self.env.set_global(op.to_string(), add_scheme.clone());
@@ -212,15 +347,19 @@ impl Checker {
                     }],
                 )],
                 vars: vec![tv],
-                ty: Type::Fn(vec![Type::Var(tv), Type::Var(tv)], Box::new(Type::Bool)),
+                ty: Type::Fn(
+                    vec![Type::Var(tv), Type::Var(tv)],
+                    Box::new(Type::Bool),
+                    EffectRow::pure(),
+                ),
             };
             for op in [">", "<", ">=", "<="] {
                 self.env.set_global(op.to_string(), ord_scheme.clone());
             }
         }
 
-        // Equality: ∀a. Eq a => a → a → Bool
-        {
+        // Equality / inequality: ∀a. Eq a => a → a → Bool
+        for op in ["=", "!="] {
             let a = self.subst.fresh();
             let tv = if let Type::Var(v) = a {
                 v
@@ -234,7 +373,7 @@ impl Checker {
                 },
             );
             self.env.set_global(
-                "=".to_string(),
+                op.to_string(),
                 Scheme {
                     bounds: vec![(
                         tv,
@@ -243,7 +382,11 @@ impl Checker {
                         }],
                     )],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![Type::Var(tv), Type::Var(tv)], Box::new(Type::Bool)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tv), Type::Var(tv)],
+                        Box::new(Type::Bool),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -251,7 +394,11 @@ impl Checker {
         // not: Bool → Bool
         self.env.set_global(
             "not".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Bool], Box::new(Type::Bool))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Bool],
+                Box::new(Type::Bool),
+                EffectRow::pure(),
+            )),
         );
 
         // str: ∀a b. a → b → Str (variadic, approximate as polymorphic)
@@ -273,7 +420,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva, tvb],
-                    ty: Type::Fn(vec![Type::Var(tva), Type::Var(tvb)], Box::new(Type::Str)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tva), Type::Var(tvb)],
+                        Box::new(Type::Str),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -291,7 +442,7 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Unit)),
+                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Unit), EffectRow::pure()),
                 },
             );
         }
@@ -312,6 +463,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Con("Vec".to_string(), vec![Type::Var(tv)])],
                         Box::new(Type::Int),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -333,6 +485,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Con("Vec".to_string(), vec![Type::Var(tv)]), Type::Int],
                         Box::new(Type::Var(tv)),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -344,6 +497,7 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Int, Type::Int],
                 Box::new(Type::Con("Vec".to_string(), vec![Type::Int])),
+                EffectRow::pure(),
             )),
         );
 
@@ -360,7 +514,7 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Bool)),
+                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Bool), EffectRow::pure()),
                 },
             );
         }
@@ -384,6 +538,7 @@ impl Checker {
                             Type::Var(tv),
                         ],
                         Box::new(Type::Bool),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -408,6 +563,7 @@ impl Checker {
                             Type::Var(tv),
                         ],
                         Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tv)])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -432,6 +588,7 @@ impl Checker {
                             Type::Keyword,
                         ],
                         Box::new(Type::Var(tv)),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -454,6 +611,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![map_t.clone(), Type::Keyword, Type::Var(tv)],
                         Box::new(map_t),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -480,10 +638,15 @@ impl Checker {
                     vars: vec![tva, tvb],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Var(tvb))),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Var(tvb)),
+                                EffectRow::pure(),
+                            ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvb)])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -504,10 +667,15 @@ impl Checker {
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Bool),
+                                EffectRow::pure(),
+                            ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tva)])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -538,10 +706,12 @@ impl Checker {
                             Type::Fn(
                                 vec![Type::Var(tvb), Type::Var(tva)],
                                 Box::new(Type::Var(tvb)),
+                                EffectRow::pure(),
                             ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Var(tvb)),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -562,10 +732,15 @@ impl Checker {
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Unit)),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Unit),
+                                EffectRow::pure(),
+                            ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Unit),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -585,7 +760,7 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![vec_a.clone()], Box::new(vec_a)),
+                    ty: Type::Fn(vec![vec_a.clone()], Box::new(vec_a), EffectRow::pure()),
                 },
             );
         }
@@ -603,19 +778,31 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![Type::Var(tv), Type::Var(tv)], Box::new(Type::Unit)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tv), Type::Var(tv)],
+                        Box::new(Type::Unit),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
 
         // / and %: Int → Int → Int
-        let int_bin = Scheme::mono(Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)));
+        let int_bin = Scheme::mono(Type::Fn(
+            vec![Type::Int, Type::Int],
+            Box::new(Type::Int),
+            EffectRow::pure(),
+        ));
         for op in ["/", "%"] {
             self.env.set_global(op.to_string(), int_bin.clone());
         }
 
         // or, and: Bool → Bool → Bool
-        let bool_bin = Scheme::mono(Type::Fn(vec![Type::Bool, Type::Bool], Box::new(Type::Bool)));
+        let bool_bin = Scheme::mono(Type::Fn(
+            vec![Type::Bool, Type::Bool],
+            Box::new(Type::Bool),
+            EffectRow::pure(),
+        ));
         for op in ["or", "and"] {
             self.env.set_global(op.to_string(), bool_bin.clone());
         }
@@ -633,7 +820,7 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Unit)),
+                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Unit), EffectRow::pure()),
                 },
             );
         }
@@ -644,6 +831,7 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Str, Type::Str],
                 Box::new(Type::Con("Vec".to_string(), vec![Type::Str])),
+                EffectRow::pure(),
             )),
         );
 
@@ -653,17 +841,26 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Str, Type::Con("Vec".to_string(), vec![Type::Str])],
                 Box::new(Type::Str),
+                EffectRow::pure(),
             )),
         );
 
         // trim: Str → Str
         self.env.set_global(
             "trim".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Str))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Str),
+                EffectRow::pure(),
+            )),
         );
 
         // starts-with?, ends-with?: Str → Str → Bool
-        let str_str_bool = Scheme::mono(Type::Fn(vec![Type::Str, Type::Str], Box::new(Type::Bool)));
+        let str_str_bool = Scheme::mono(Type::Fn(
+            vec![Type::Str, Type::Str],
+            Box::new(Type::Bool),
+            EffectRow::pure(),
+        ));
         for op in ["starts-with?", "ends-with?"] {
             self.env.set_global(op.to_string(), str_str_bool.clone());
         }
@@ -674,11 +871,16 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Str, Type::Str, Type::Str],
                 Box::new(Type::Str),
+                EffectRow::pure(),
             )),
         );
 
         // uppercase, lowercase: Str → Str
-        let str_to_str = Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Str)));
+        let str_to_str = Scheme::mono(Type::Fn(
+            vec![Type::Str],
+            Box::new(Type::Str),
+            EffectRow::pure(),
+        ));
         for op in ["uppercase", "lowercase"] {
             self.env.set_global(op.to_string(), str_to_str.clone());
         }
@@ -705,11 +907,16 @@ impl Checker {
                     vars: vec![tva, tvb],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Var(tvb))),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Var(tvb)),
+                                EffectRow::pure(),
+                            ),
                             Type::Keyword,
                             vec_a.clone(),
                         ],
                         Box::new(vec_a),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -729,7 +936,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Int, vec_a.clone()], Box::new(vec_a)),
+                    ty: Type::Fn(
+                        vec![Type::Int, vec_a.clone()],
+                        Box::new(vec_a),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -748,7 +959,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Int, vec_a.clone()], Box::new(vec_a)),
+                    ty: Type::Fn(
+                        vec![Type::Int, vec_a.clone()],
+                        Box::new(vec_a),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -767,7 +982,7 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![vec_a.clone()], Box::new(vec_a)),
+                    ty: Type::Fn(vec![vec_a.clone()], Box::new(vec_a), EffectRow::pure()),
                 },
             );
         }
@@ -789,6 +1004,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Con("Vec".to_string(), vec![vec_a.clone()])],
                         Box::new(vec_a),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -811,6 +1027,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Int, vec_a.clone()],
                         Box::new(Type::Con("Vec".to_string(), vec![vec_a])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -844,6 +1061,7 @@ impl Checker {
                             "Vec".to_string(),
                             vec![Type::Tuple(vec![Type::Var(tva), Type::Var(tvb)])],
                         )),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -864,10 +1082,15 @@ impl Checker {
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Bool),
+                                EffectRow::pure(),
+                            ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Con("Option".to_string(), vec![Type::Var(tva)])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -888,10 +1111,15 @@ impl Checker {
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Bool),
+                                EffectRow::pure(),
+                            ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Bool),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -912,10 +1140,15 @@ impl Checker {
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Bool),
+                                EffectRow::pure(),
+                            ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Bool),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -939,9 +1172,14 @@ impl Checker {
                         vec![
                             map_t.clone(),
                             Type::Keyword,
-                            Type::Fn(vec![Type::Var(tv)], Box::new(Type::Var(tv))),
+                            Type::Fn(
+                                vec![Type::Var(tv)],
+                                Box::new(Type::Var(tv)),
+                                EffectRow::pure(),
+                            ),
                         ],
                         Box::new(map_t),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -975,6 +1213,7 @@ impl Checker {
                             "Vec".to_string(),
                             vec![Type::Tuple(vec![Type::Var(tvk), Type::Var(tvv)])],
                         )),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1005,6 +1244,7 @@ impl Checker {
                             vec![Type::Var(tvk), Type::Var(tvv)],
                         )],
                         Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvk)])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1035,6 +1275,7 @@ impl Checker {
                             vec![Type::Var(tvk), Type::Var(tvv)],
                         )],
                         Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvv)])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1054,7 +1295,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![map_t.clone(), map_t.clone()], Box::new(map_t)),
+                    ty: Type::Fn(
+                        vec![map_t.clone(), map_t.clone()],
+                        Box::new(map_t),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1073,7 +1318,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![map_t.clone(), Type::Keyword], Box::new(map_t)),
+                    ty: Type::Fn(
+                        vec![map_t.clone(), Type::Keyword],
+                        Box::new(map_t),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1092,7 +1341,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![vec_a.clone(), Type::Var(tv)], Box::new(vec_a)),
+                    ty: Type::Fn(
+                        vec![vec_a.clone(), Type::Var(tv)],
+                        Box::new(vec_a),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1100,19 +1353,31 @@ impl Checker {
         // int: Str → Int
         self.env.set_global(
             "int".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Int))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Int),
+                EffectRow::pure(),
+            )),
         );
 
         // float: Str → Float
         self.env.set_global(
             "float".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Float))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Float),
+                EffectRow::pure(),
+            )),
         );
 
         // char-at: Str → Int → Str
         self.env.set_global(
             "char-at".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str, Type::Int], Box::new(Type::Str))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str, Type::Int],
+                Box::new(Type::Str),
+                EffectRow::pure(),
+            )),
         );
 
         // substring: Str → Int → Int → Str
@@ -1121,19 +1386,28 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Str, Type::Int, Type::Int],
                 Box::new(Type::Str),
+                EffectRow::pure(),
             )),
         );
 
         // contains?: Str → Str → Bool
         self.env.set_global(
             "contains?".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str, Type::Str], Box::new(Type::Bool))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str, Type::Str],
+                Box::new(Type::Bool),
+                EffectRow::pure(),
+            )),
         );
 
         // index-of: Str → Str → Int
         self.env.set_global(
             "index-of".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str, Type::Str], Box::new(Type::Int))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str, Type::Str],
+                Box::new(Type::Int),
+                EffectRow::pure(),
+            )),
         );
 
         // group-by: ∀a k. (a → k) → Vec a → Map k (Vec a)
@@ -1157,7 +1431,11 @@ impl Checker {
                     vars: vec![tva, tvk],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Var(tvk))),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Var(tvk)),
+                                EffectRow::pure(),
+                            ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Con(
@@ -1167,6 +1445,7 @@ impl Checker {
                                 Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                             ],
                         )),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1196,10 +1475,12 @@ impl Checker {
                             Type::Fn(
                                 vec![Type::Var(tva)],
                                 Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvb)])),
+                                EffectRow::pure(),
                             ),
                             Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
                         ],
                         Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvb)])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1219,7 +1500,7 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![vec_a.clone()], Box::new(vec_a)),
+                    ty: Type::Fn(vec![vec_a.clone()], Box::new(vec_a), EffectRow::pure()),
                 },
             );
         }
@@ -1239,7 +1520,11 @@ impl Checker {
                     Scheme {
                         bounds: vec![],
                         vars: vec![tva],
-                        ty: Type::Fn(vec![vec_a.clone()], Box::new(Type::Var(tva))),
+                        ty: Type::Fn(
+                            vec![vec_a.clone()],
+                            Box::new(Type::Var(tva)),
+                            EffectRow::pure(),
+                        ),
                     },
                 );
             }
@@ -1251,6 +1536,7 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Con("Vec".to_string(), vec![Type::Int])],
                 Box::new(Type::Int),
+                EffectRow::pure(),
             )),
         );
 
@@ -1267,7 +1553,7 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
-                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Str)),
+                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Str), EffectRow::pure()),
                 },
             );
         }
@@ -1300,6 +1586,7 @@ impl Checker {
                             "Map".to_string(),
                             vec![Type::Var(tvk), Type::Var(tvv)],
                         )),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1324,6 +1611,7 @@ impl Checker {
                             Type::Con("Tx".to_string(), vec![Type::Var(tva)]),
                             Type::Con("Rx".to_string(), vec![Type::Var(tva)]),
                         ])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1348,6 +1636,7 @@ impl Checker {
                             Type::Var(tva),
                         ],
                         Box::new(Type::Unit),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1369,6 +1658,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Con("Rx".to_string(), vec![Type::Var(tva)])],
                         Box::new(Type::Var(tva)),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1377,13 +1667,21 @@ impl Checker {
         // name: Keyword → Str
         self.env.set_global(
             "name".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Keyword], Box::new(Type::Str))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Keyword],
+                Box::new(Type::Str),
+                EffectRow::pure(),
+            )),
         );
 
         // keyword: Str → Keyword
         self.env.set_global(
             "keyword".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Keyword))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Keyword),
+                EffectRow::pure(),
+            )),
         );
 
         // keywordize-keys: ∀a. Map<Str,a> → Map<Keyword,a>
@@ -1400,7 +1698,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Var(tva))),
+                    ty: Type::Fn(
+                        vec![Type::Var(tva)],
+                        Box::new(Type::Var(tva)),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1418,7 +1720,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tva)],
+                        Box::new(Type::Bool),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1436,7 +1742,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tva)],
+                        Box::new(Type::Bool),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1455,7 +1765,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Var(tva), vec_a.clone()], Box::new(vec_a)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tva), vec_a.clone()],
+                        Box::new(vec_a),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1485,6 +1799,7 @@ impl Checker {
                             "Map".to_string(),
                             vec![Type::Var(tvk), Type::Var(tvv)],
                         )),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1506,6 +1821,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Con("Rx".to_string(), vec![Type::Var(tva)])],
                         Box::new(Type::Con("Option".to_string(), vec![Type::Var(tva)])),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1514,7 +1830,11 @@ impl Checker {
         // sqrt: Float → Float
         self.env.set_global(
             "sqrt".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Float], Box::new(Type::Float))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Float],
+                Box::new(Type::Float),
+                EffectRow::pure(),
+            )),
         );
 
         // pow: Float → Float → Float
@@ -1523,13 +1843,18 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Float, Type::Float],
                 Box::new(Type::Float),
+                EffectRow::pure(),
             )),
         );
 
         // abs: Float → Float
         self.env.set_global(
             "abs".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Float], Box::new(Type::Float))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Float],
+                Box::new(Type::Float),
+                EffectRow::pure(),
+            )),
         );
 
         // first: ∀a. Vec a → a
@@ -1548,6 +1873,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Con("Vec".to_string(), vec![Type::Var(tva)])],
                         Box::new(Type::Var(tva)),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1569,6 +1895,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Con("Vec".to_string(), vec![Type::Var(tva)])],
                         Box::new(Type::Var(tva)),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1587,7 +1914,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tva)],
+                        Box::new(Type::Bool),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1605,7 +1936,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Bool)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tva)],
+                        Box::new(Type::Bool),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1623,7 +1958,7 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Str)),
+                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Str), EffectRow::pure()),
                 },
             );
         }
@@ -1634,13 +1969,21 @@ impl Checker {
         // dom/create-element: Str → Int
         self.env.set_global(
             "dom.create-element".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Int))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Int),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/create-text: Str → Int
         self.env.set_global(
             "dom.create-text".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Int))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Int),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/set-attribute: Int → Str → Str → ()
@@ -1649,6 +1992,7 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Int, Type::Str, Type::Str],
                 Box::new(Type::Unit),
+                EffectRow::pure(),
             )),
         );
 
@@ -1658,19 +2002,28 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Int, Type::Str, Type::Str],
                 Box::new(Type::Unit),
+                EffectRow::pure(),
             )),
         );
 
         // dom/append-child: Int → Int → ()
         self.env.set_global(
             "dom.append-child".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Int, Type::Int],
+                Box::new(Type::Unit),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/remove-child: Int → Int → ()
         self.env.set_global(
             "dom.remove-child".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Int, Type::Int],
+                Box::new(Type::Unit),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/replace-child: Int → Int → Int → ()
@@ -1679,25 +2032,38 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Int, Type::Int, Type::Int],
                 Box::new(Type::Unit),
+                EffectRow::pure(),
             )),
         );
 
         // dom/set-text: Int → Str → ()
         self.env.set_global(
             "dom.set-text".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Int, Type::Str], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Int, Type::Str],
+                Box::new(Type::Unit),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/query-selector: Str → Int
         self.env.set_global(
             "dom.query-selector".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Int))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Int),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/set-inner-html: Int → Str → ()
         self.env.set_global(
             "dom.set-inner-html".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Int, Type::Str], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Int, Type::Str],
+                Box::new(Type::Unit),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/add-listener: ∀a. Int → Str → (a → ()) → Int
@@ -1717,9 +2083,14 @@ impl Checker {
                         vec![
                             Type::Int,
                             Type::Str,
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Unit)),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Unit),
+                                EffectRow::pure(),
+                            ),
                         ],
                         Box::new(Type::Int),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1728,43 +2099,67 @@ impl Checker {
         // dom/remove-listener: Int → ()
         self.env.set_global(
             "dom.remove-listener".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Int], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Int],
+                Box::new(Type::Unit),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/get-value: Int → Str
         self.env.set_global(
             "dom.get-value".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Int], Box::new(Type::Str))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Int],
+                Box::new(Type::Str),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/set-value: Int → Str → ()
         self.env.set_global(
             "dom.set-value".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Int, Type::Str], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Int, Type::Str],
+                Box::new(Type::Unit),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/eval-loon: Str → Str
         self.env.set_global(
             "dom.eval-loon".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Str))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Str),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/set-title: Str → ()
         self.env.set_global(
             "dom.set-title".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Unit),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/push-state: Str → ()
         self.env.set_global(
             "dom.push-state".to_string(),
-            Scheme::mono(Type::Fn(vec![Type::Str], Box::new(Type::Unit))),
+            Scheme::mono(Type::Fn(
+                vec![Type::Str],
+                Box::new(Type::Unit),
+                EffectRow::pure(),
+            )),
         );
 
         // dom/location: () → Str
         self.env.set_global(
             "dom.location".to_string(),
-            Scheme::mono(Type::Fn(vec![], Box::new(Type::Str))),
+            Scheme::mono(Type::Fn(vec![], Box::new(Type::Str), EffectRow::pure())),
         );
 
         // dom/request-animation-frame: ∀a. (a → ()) → ()
@@ -1781,8 +2176,13 @@ impl Checker {
                     bounds: vec![],
                     vars: vec![tva],
                     ty: Type::Fn(
-                        vec![Type::Fn(vec![Type::Var(tva)], Box::new(Type::Unit))],
+                        vec![Type::Fn(
+                            vec![Type::Var(tva)],
+                            Box::new(Type::Unit),
+                            EffectRow::pure(),
+                        )],
                         Box::new(Type::Unit),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1803,10 +2203,15 @@ impl Checker {
                     vars: vec![tva],
                     ty: Type::Fn(
                         vec![
-                            Type::Fn(vec![Type::Var(tva)], Box::new(Type::Unit)),
+                            Type::Fn(
+                                vec![Type::Var(tva)],
+                                Box::new(Type::Unit),
+                                EffectRow::pure(),
+                            ),
                             Type::Int,
                         ],
                         Box::new(Type::Unit),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1918,6 +2323,7 @@ impl Checker {
                     ty: Type::Fn(
                         vec![Type::Var(tva), Type::Keyword],
                         Box::new(Type::Var(tva)),
+                        EffectRow::pure(),
                     ),
                 },
             );
@@ -1936,7 +2342,11 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Float)),
+                    ty: Type::Fn(
+                        vec![Type::Var(tva)],
+                        Box::new(Type::Float),
+                        EffectRow::pure(),
+                    ),
                 },
             );
         }
@@ -1947,6 +2357,7 @@ impl Checker {
             Scheme::mono(Type::Fn(
                 vec![Type::Float],
                 Box::new(Type::Dim(Dimension::SCALAR)),
+                EffectRow::pure(),
             )),
         );
 
@@ -2161,6 +2572,9 @@ impl Checker {
             ErrorCode::E0202
         } else if e.message.contains("field mismatch") || e.message.contains("missing fields") {
             ErrorCode::E0207
+        } else if e.message.contains("effect mismatch") || e.message.contains("infinite effect row")
+        {
+            ErrorCode::E0403
         } else {
             ErrorCode::E0200
         };
@@ -2181,6 +2595,10 @@ impl Checker {
             diag = diag
                 .with_why("the record fields do not match")
                 .with_fix("add or remove fields to make the records compatible");
+        } else if code == ErrorCode::E0403 {
+            diag = diag
+                .with_why("the effect rows are incompatible: one side performs an effect the other does not allow")
+                .with_fix("handle the effect with a `handle` block, or widen the effect annotation (e.g. add the effect to the `#{...}` set)");
         }
         self.errors.push(diag);
     }
@@ -2453,7 +2871,7 @@ impl Checker {
         if let ExprKind::DotAccess(obj, op) = &head.kind {
             if let ExprKind::Symbol(effect) = &obj.kind {
                 if effect.starts_with(char::is_uppercase) {
-                    self.current_fn_effects.insert(effect.to_string());
+                    self.perform_effect(effect);
                     // Look up operation in registry for type checking
                     if let Some(op_def) = self.effect_registry.get_op(effect, op).cloned() {
                         // Type-check arguments against declared param types
@@ -2712,15 +3130,26 @@ impl Checker {
         let arg_types: Vec<Type> = items[1..].iter().map(|a| self.infer(a)).collect();
         let ret = self.subst.fresh();
 
-        let expected_fn = Type::Fn(arg_types, Box::new(ret.clone()));
+        // The application's effect row: a fresh open row that unification
+        // will bind to the callee's (instantiated) row.
+        let app_row = EffectRow::open(self.subst.fresh_var());
+        let expected_fn = Type::Fn(arg_types, Box::new(ret.clone()), app_row.clone());
         if let Err(e) = unify(&mut self.subst, &func_ty, &expected_fn) {
             self.push_unify_error(e, span);
         }
 
-        // Propagate callee effects
+        // Propagate the callee's effects into the ambient row.
+        self.absorb_effect_row(&app_row);
+
+        // Belt-and-braces: also union the definition-time concrete labels
+        // recorded for named functions (covers paths where the row is not
+        // threaded through the type, e.g. multi-arity functions).
         if let ExprKind::Symbol(callee_name) = &head.kind {
-            if let Some(callee_effects) = self.fn_effects.get(callee_name).cloned() {
-                self.current_fn_effects = self.current_fn_effects.union(&callee_effects);
+            if let Some(callee_effects) = self.fn_effects.get(callee_name) {
+                let labels = callee_effects.labels.clone();
+                if !labels.is_empty() {
+                    self.absorb_effect_row(&EffectRow::closed(labels));
+                }
             }
         }
 
@@ -2739,6 +3168,13 @@ impl Checker {
 
         // Otherwise anonymous lambda: [fn [params] body...]
         if let ExprKind::List(params) = &args[0].kind {
+            // The lambda gets its own ambient effect row: defining an
+            // effectful lambda does not perform its effects — calling it
+            // does. The row travels on the lambda's function type.
+            let lam_tail = self.subst.fresh_var();
+            let saved_effects =
+                std::mem::replace(&mut self.current_fn_effects, EffectRow::open(lam_tail));
+
             self.push_scope();
             let param_types = self.infer_params(params);
 
@@ -2748,7 +3184,8 @@ impl Checker {
             }
             self.pop_scope();
 
-            return Type::Fn(param_types, Box::new(body_ty));
+            let row = std::mem::replace(&mut self.current_fn_effects, saved_effects);
+            return Type::Fn(param_types, Box::new(body_ty), row);
         }
 
         self.subst.fresh()
@@ -2762,8 +3199,11 @@ impl Checker {
         // Record definition
         self.add_definition(&name, name_span, span);
 
-        // Save and reset current_fn_effects
-        let saved_effects = std::mem::replace(&mut self.current_fn_effects, EffectSet::empty());
+        // Save the enclosing ambient row; this function body gets its own
+        // fresh open row (its effects live on its type, not the caller's).
+        let fn_tail = self.subst.fresh_var();
+        let saved_effects =
+            std::mem::replace(&mut self.current_fn_effects, EffectRow::open(fn_tail));
 
         // Multi-arity check
         if matches!(args[0].kind, ExprKind::Tuple(_)) {
@@ -2782,6 +3222,7 @@ impl Checker {
             self.env.set_global(name.clone(), scheme);
             // Store inferred effects and restore
             let inferred = std::mem::replace(&mut self.current_fn_effects, saved_effects);
+            let inferred = self.subst.resolve_effect_row(&inferred);
             self.fn_effects.insert(name, inferred);
             return Type::Unit;
         }
@@ -2802,7 +3243,15 @@ impl Checker {
             let param_types = self.infer_params(params);
 
             let temp_ret = self.subst.fresh();
-            let temp_fn_ty = Type::Fn(param_types.clone(), Box::new(temp_ret.clone()));
+            // The self-reference for recursion carries the ambient row, so
+            // recursive calls unify the row with itself (a no-op). It also
+            // keeps the ambient tail free in the env during the body, which
+            // stops inner `let`s from generalizing over it.
+            let temp_fn_ty = Type::Fn(
+                param_types.clone(),
+                Box::new(temp_ret.clone()),
+                self.current_fn_effects.clone(),
+            );
             self.env.set(name.clone(), Scheme::mono(temp_fn_ty));
 
             let mut body_ty = Type::Unit;
@@ -2816,7 +3265,14 @@ impl Checker {
 
             self.pop_scope();
 
-            let fn_ty = Type::Fn(param_types, Box::new(body_ty));
+            // The function's type carries its body's effect row. An
+            // unresolved tail generalizes with the type variables below,
+            // giving effect polymorphism: each use instantiates it fresh.
+            let fn_ty = Type::Fn(
+                param_types,
+                Box::new(body_ty),
+                self.current_fn_effects.clone(),
+            );
 
             // Check against pending sig if present
             if let Some((sig_ty, sig_span)) = self.pending_sigs.remove(&name) {
@@ -2842,13 +3298,16 @@ impl Checker {
                 }
             }
 
-            // Store inferred effects
+            // Store inferred effects (resolved: concrete labels + any
+            // still-open tail)
             let inferred = std::mem::replace(&mut self.current_fn_effects, saved_effects);
+            let inferred = self.subst.resolve_effect_row(&inferred);
 
-            // Check declared effects if present
+            // Check declared effects if present (assertion mode: every
+            // inferred concrete label must be declared)
             if let Some(ref declared) = declared_effects {
-                if !inferred.is_subset_of(declared) {
-                    for eff in &inferred.0 {
+                {
+                    for eff in &inferred.labels {
                         if !declared.contains(eff) {
                             self.errors.push(
                                 LoonDiagnostic::new(
@@ -2943,10 +3402,30 @@ impl Checker {
         if args.is_empty() {
             return Type::Unit;
         }
-        // Save current effects, infer body
+        // Save the enclosing ambient row. The handled body gets its own
+        // fresh open row so the handled labels can be subtracted before the
+        // residual is merged back into the enclosing row.
         let saved_effects = self.current_fn_effects.clone();
+        // Labels already in the enclosing row BEFORE the handled body: they
+        // came from performs outside this handle and must survive the scrub
+        // step below.
+        let ambient_labels_pre = self.subst.resolve_effect_row(&saved_effects).labels;
+        let body_tail = self.subst.fresh_var();
+        self.current_fn_effects = EffectRow::open(body_tail);
         let body_ty = self.infer(&args[0]);
-        let body_effects = self.current_fn_effects.clone();
+        // Restore the enclosing row before checking the handler clauses:
+        // clause bodies run at the handler, outside the handled region.
+        let body_row = std::mem::replace(&mut self.current_fn_effects, saved_effects);
+        // Track what the handler CLAUSES add to the enclosing row (clause
+        // bodies run outside the handled region, so their performs are
+        // genuine): a resolved-labels snapshot around the clause loop plus
+        // a slice of the perform log (which also catches a clause
+        // re-performing a label the body already forced into the chain).
+        let ambient_labels_post_body = self
+            .subst
+            .resolve_effect_row(&self.current_fn_effects)
+            .labels;
+        let perform_mark = self.perform_log.len();
 
         // The handler's ANSWER type: what every clause (and the `return` clause)
         // produces, and what the whole `handle` evaluates to. For a plain
@@ -3002,9 +3481,14 @@ impl Checker {
                     // escaping encoding an infinite type). The result is the
                     // shared answer, so a clause that returns a function checks.
                     let resume_arg = self.subst.fresh();
+                    let resume_row = EffectRow::open(self.subst.fresh_var());
                     self.env.set(
                         "resume".to_string(),
-                        Scheme::mono(Type::Fn(vec![resume_arg], Box::new(answer.clone()))),
+                        Scheme::mono(Type::Fn(
+                            vec![resume_arg],
+                            Box::new(answer.clone()),
+                            resume_row,
+                        )),
                     );
                     let cty = self.infer(clause_body);
                     if let Err(e) = unify(&mut self.subst, &answer, &cty) {
@@ -3024,8 +3508,80 @@ impl Checker {
             }
         }
 
-        // handle expression's effects = body_effects - handled
-        self.current_fn_effects = saved_effects.union(&body_effects.subtract(&handled));
+        // Labels the clauses themselves contributed to the enclosing row.
+        let mut clause_labels: BTreeSet<String> = self
+            .subst
+            .resolve_effect_row(&self.current_fn_effects)
+            .labels
+            .difference(&ambient_labels_post_body)
+            .cloned()
+            .collect();
+        clause_labels.extend(self.perform_log[perform_mark..].iter().cloned());
+
+        // Effect subtraction: the handle expression's row is the body's row
+        // minus the handled labels.
+        //
+        // Open-tail semantics (the evidence-passing-compatible choice): a
+        // handled label must not escape through the body row's tail, so we
+        // CONSTRAIN the tail at the handle boundary by unifying the body row
+        // with `{handled… | fresh}`. This forces every handled label into
+        // the concrete part of the row — and of every row linked to it, such
+        // as a function parameter called inside the body. When a caller
+        // later passes an effectful argument, its labels match those
+        // concrete labels instead of being absorbed by the residual tail, so
+        // the handled effect never reappears at the call site. The residual
+        // row keeps the (now constrained) open tail: effects the handler
+        // does not handle still flow out.
+        if !handled.0.is_empty() {
+            let want = EffectRow {
+                labels: handled.0.clone(),
+                tail: Some(self.subst.fresh_var()),
+            };
+            let _ = unify_effect_rows(&mut self.subst, &body_row, &want);
+        }
+        let resolved_body_row = self.subst.resolve_effect_row(&body_row);
+        let residual = EffectRow {
+            labels: resolved_body_row
+                .labels
+                .difference(&handled.0)
+                .cloned()
+                .collect(),
+            tail: resolved_body_row.tail,
+        };
+        // Merge the residual (unhandled) effects into the enclosing row.
+        self.absorb_effect_row(&residual);
+
+        // Scrub step: if the body row became ALIASED with the enclosing
+        // row during body inference (a recursive self-call inside the
+        // handle, or a parameter that was already linked to the enclosing
+        // row), the boundary constraint above forced the handled labels
+        // into the enclosing function's own row too — where the subtraction
+        // cannot see them, so the function (and every caller) would falsely
+        // report the handled effect. A handled label found in the enclosing
+        // row is genuine only if it was there before the body (performed
+        // outside the handle) or was added by a handler clause; anything
+        // else is boundary contamination and is removed, in place, from the
+        // whole chain so aliased rows (e.g. a parameter's row) are cleaned
+        // consistently. Known over-approximation kept: a parameter whose
+        // row was NOT aliased with the enclosing row here keeps the handled
+        // label concretely (that is the no-leak guarantee), so calling that
+        // parameter again outside the handle re-reports the label even for
+        // pure arguments (see effect_row_param_called_after_handle test).
+        if !handled.0.is_empty() {
+            let scrub: BTreeSet<String> = handled
+                .0
+                .iter()
+                .filter(|l| !ambient_labels_pre.contains(*l) && !clause_labels.contains(*l))
+                .cloned()
+                .collect();
+            if !scrub.is_empty() {
+                self.current_fn_effects
+                    .labels
+                    .retain(|l| !scrub.contains(l));
+                self.subst
+                    .scrub_effect_labels(self.current_fn_effects.tail, &scrub);
+            }
+        }
         answer
     }
 
@@ -3387,19 +3943,23 @@ impl Checker {
                     };
 
                     let ret = self.subst.fresh();
-                    let expected = Type::Fn(arg_tys, Box::new(ret.clone()));
+                    let app_row = EffectRow::open(self.subst.fresh_var());
+                    let expected = Type::Fn(arg_tys, Box::new(ret.clone()), app_row.clone());
                     if let Err(e) = unify(&mut self.subst, &func_ty, &expected) {
                         self.push_unify_error(e, step.span);
                     }
+                    self.absorb_effect_row(&app_row);
                     current = ret;
                 }
                 ExprKind::Symbol(_) => {
                     let func_ty = self.infer(step);
                     let ret = self.subst.fresh();
-                    let expected = Type::Fn(vec![current], Box::new(ret.clone()));
+                    let app_row = EffectRow::open(self.subst.fresh_var());
+                    let expected = Type::Fn(vec![current], Box::new(ret.clone()), app_row.clone());
                     if let Err(e) = unify(&mut self.subst, &func_ty, &expected) {
                         self.push_unify_error(e, step.span);
                     }
+                    self.absorb_effect_row(&app_row);
                     current = ret;
                 }
                 _ => {}
@@ -3498,8 +4058,19 @@ impl Checker {
                             })
                             .collect();
 
-                        let ctor_ty = Type::Fn(field_types, Box::new(result_ty.clone()));
-                        let vars: Vec<TypeVar> = type_params.iter().map(|(_, v)| *v).collect();
+                        // Constructors are effect-polymorphic: give them an open,
+                        // quantified tail (like builtins get in
+                        // effect_polymorphize_builtins) so a constructor can be
+                        // passed to any higher-order function regardless of the
+                        // effect row its function parameter carries.
+                        let effect_tail = self.subst.fresh_var();
+                        let ctor_ty = Type::Fn(
+                            field_types,
+                            Box::new(result_ty.clone()),
+                            EffectRow::open(effect_tail),
+                        );
+                        let mut vars: Vec<TypeVar> = type_params.iter().map(|(_, v)| *v).collect();
+                        vars.push(effect_tail);
                         let scheme = Scheme {
                             bounds: vec![],
                             vars,
@@ -3696,7 +4267,11 @@ impl Checker {
 
                                     self.pop_scope();
 
-                                    let fn_ty = Type::Fn(param_types, Box::new(body_ty));
+                                    let fn_ty = Type::Fn(
+                                        param_types,
+                                        Box::new(body_ty),
+                                        EffectRow::open(self.subst.fresh_var()),
+                                    );
                                     let scheme = generalize(&self.env, &self.subst, &fn_ty);
                                     method_schemes.insert(method_name.clone(), scheme.clone());
 
@@ -3759,7 +4334,13 @@ impl Checker {
         }
 
         let ret = types.pop().unwrap();
-        Type::Fn(types, Box::new(ret))
+        // Sigs say nothing about effects; an open row means the assertion
+        // constrains only the value types, never the effect row.
+        Type::Fn(
+            types,
+            Box::new(ret),
+            EffectRow::open(self.subst.fresh_var()),
+        )
     }
 
     /// Convert an AST expression into a Type
@@ -4366,7 +4947,7 @@ mod tests {
         assert!(errors.is_empty());
         let resolved = ty;
         assert!(
-            matches!(resolved, Type::Fn(params, ret) if params.len() == 1 && *ret == Type::Int)
+            matches!(resolved, Type::Fn(params, ret, _) if params.len() == 1 && *ret == Type::Int)
         );
     }
 
@@ -4505,7 +5086,7 @@ mod tests {
     fn infer_effects(
         src: &str,
     ) -> (
-        std::collections::HashMap<String, EffectSet>,
+        std::collections::HashMap<String, EffectRow>,
         Vec<LoonDiagnostic>,
     ) {
         let exprs = parse(src).unwrap();
@@ -4613,6 +5194,443 @@ mod tests {
         "#,
         );
         assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    // --- Effect row polymorphism tests ---
+
+    #[test]
+    fn effect_row_twice_generalizes_per_use() {
+        // ONE definition of `twice` serves a pure and an effectful use in the
+        // SAME program: the pure use stays pure, the IO use gets IO. This is
+        // the core of effect row polymorphism — the row tail generalizes with
+        // let-polymorphism and instantiates fresh per use.
+        let (effects, errors) = infer_effects(
+            r#"
+            [fn twice [f x] [f [f x]]]
+            [fn pure-use [] [twice [fn [x] [+ x 1]] 0]]
+            [fn io-use [] [twice [fn [p] [IO.read-file p]] "f"]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let twice = effects.get("twice").unwrap();
+        assert!(
+            twice.labels.is_empty(),
+            "twice has no concrete effects of its own, got: {}",
+            twice.render()
+        );
+        let pure_use = effects.get("pure-use").unwrap();
+        assert!(
+            !pure_use.contains("IO"),
+            "pure use of twice must stay pure, got: {}",
+            pure_use.render()
+        );
+        let io_use = effects.get("io-use").unwrap();
+        assert!(
+            io_use.contains("IO"),
+            "IO use of twice must carry IO, got: {}",
+            io_use.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_map_propagates_lambda_effects() {
+        let (effects, errors) = infer_effects(
+            r#"
+            [fn load-all [v] [map [fn [p] [IO.read-file p]] v]]
+            [fn squares [v] [map [fn [x] [* x x]] v]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let load_all = effects.get("load-all").unwrap();
+        assert!(
+            load_all.contains("IO"),
+            "map with an IO lambda must carry IO, got: {}",
+            load_all.render()
+        );
+        let squares = effects.get("squares").unwrap();
+        assert!(
+            !squares.contains("IO"),
+            "map with a pure lambda must stay pure, got: {}",
+            squares.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_filter_and_fold_propagate() {
+        let (effects, errors) = infer_effects(
+            r#"
+            [fn keep [v]
+              [filter [fn [x] [IO.read-file "f"] [> x 0]] v]]
+            [fn total [v]
+              [fold 0 [fn [a b] [IO.read-file "f"] [+ a b]] v]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let keep = effects.get("keep").unwrap();
+        assert!(
+            keep.contains("IO"),
+            "filter with an IO predicate must carry IO, got: {}",
+            keep.render()
+        );
+        let total = effects.get("total").unwrap();
+        assert!(
+            total.contains("IO"),
+            "fold with an IO reducer must carry IO, got: {}",
+            total.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_handle_with_open_tail_does_not_leak() {
+        // `run-io` handles IO around a call to its function ARGUMENT — the
+        // body row is open (the argument's effects flow through the tail).
+        // Handling must constrain that tail so IO cannot leak through it:
+        // callers passing an IO function must NOT get IO.
+        let (effects, errors) = infer_effects(
+            r#"
+            [fn run-io [f]
+              [handle [f "p"]
+                [IO.read-file p] [resume "data"]]]
+            [fn main [] [run-io [fn [p] [IO.read-file p]]]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let run_io = effects.get("run-io").unwrap();
+        assert!(
+            !run_io.contains("IO"),
+            "run-io handles IO, got: {}",
+            run_io.render()
+        );
+        let main = effects.get("main").unwrap();
+        assert!(
+            !main.contains("IO"),
+            "IO must not leak through the handled body's tail, got: {}",
+            main.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_handle_leaves_unhandled_effects() {
+        // Handling one effect leaves the other flowing out through the row.
+        let (effects, errors) = infer_effects(
+            r#"
+            [effect A [a [] Int]]
+            [effect B [b [] Int]]
+            [fn partial []
+              [handle [+ [A.a] [B.b]]
+                [A.a] [resume 1]]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let partial = effects.get("partial").unwrap();
+        assert!(
+            !partial.contains("A"),
+            "A is handled, got: {}",
+            partial.render()
+        );
+        assert!(
+            partial.contains("B"),
+            "B is unhandled and must remain, got: {}",
+            partial.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_recursive_call_inside_handle_stays_clean() {
+        // A recursive self-call INSIDE the handled body aliases the
+        // function's own (monomorphic) row with the body row; the handle
+        // boundary must not bake the handled label into the function's row.
+        let (effects, errors) = infer_effects(
+            r#"
+            [effect A [a [] Int]]
+            [fn weird [n]
+              [if [= n 0]
+                0
+                [handle [+ [A.a] [weird [- n 1]]]
+                  [A.a] [resume 1]]]]
+            [fn main [] #{} [println [weird 3]]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let weird = effects.get("weird").unwrap();
+        assert!(
+            !weird.contains("A"),
+            "weird fully handles A, got: {}",
+            weird.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_param_called_before_handle_stays_clean() {
+        // Calling a parameter before the handle links its row to the
+        // enclosing row; handling around a second call must not force the
+        // handled label into the function's own row (callers passing a PURE
+        // argument must stay clean).
+        let (effects, errors) = infer_effects(
+            r#"
+            [effect A [a [] Int]]
+            [fn h [f]
+              [f 1]
+              [handle [f 2]
+                [A.a] [resume 1]]]
+            [fn caller [] #{} [h [fn [x] [* x 2]]]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let caller = effects.get("caller").unwrap();
+        assert!(
+            !caller.contains("A"),
+            "caller passes a pure argument, got: {}",
+            caller.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_scrub_keeps_performs_from_outside_the_handle() {
+        // The scrub at the handle boundary must NOT remove a handled label
+        // that the function genuinely performs outside the handle, even when
+        // recursion aliases the body row with the function's own row.
+        let (effects, errors) = infer_effects(
+            r#"
+            [effect A [a [] Int]]
+            [fn g [n]
+              [A.a]
+              [if [= n 0]
+                0
+                [handle [g [- n 1]]
+                  [A.a] [resume 1]]]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let g = effects.get("g").unwrap();
+        assert!(
+            g.contains("A"),
+            "g performs A before the handle — must keep it, got: {}",
+            g.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_scrub_keeps_clause_performs() {
+        // A handler clause runs OUTSIDE the handled region; a clause that
+        // re-performs the handled effect (re-raise) keeps it in the
+        // function's row even when recursion aliases the rows.
+        let (effects, errors) = infer_effects(
+            r#"
+            [effect A [a [] Int]]
+            [fn h [n]
+              [if [= n 0]
+                0
+                [handle [h [- n 1]]
+                  [A.a] [do [A.a] [resume 1]]]]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let h = effects.get("h").unwrap();
+        assert!(
+            h.contains("A"),
+            "the clause re-performs A unhandled — must keep it, got: {}",
+            h.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_param_called_after_handle_overapproximates() {
+        // PINNED over-approximation (deliberate, Koka-style): when a
+        // parameter is called inside a handle and again AFTER it, the
+        // boundary forces the handled label into the parameter's row (that
+        // is the no-leak guarantee), so the later call re-absorbs the label
+        // into the function's row — even for callers passing a pure
+        // argument. Precision here would need subsumption-based (not
+        // equality-based) row unification. See DESIGN.md "Effect Rows".
+        let (effects, errors) = infer_effects(
+            r#"
+            [effect A [a [] Int]]
+            [fn run-both [f]
+              [handle [f 1]
+                [A.a] [resume 0]]
+              [f 2]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let run_both = effects.get("run-both").unwrap();
+        assert!(
+            run_both.contains("A"),
+            "current (pinned) behavior: the post-handle call re-reports A, got: {}",
+            run_both.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_occurs_check() {
+        // Unifying two rows that share a tail but disagree on labels would
+        // need the tail to absorb a label into itself (`e ~ {IO | e}`) — an
+        // infinite row. The occurs check must reject it.
+        let mut subst = Subst::new();
+        let tail = subst.fresh_var();
+        let a = EffectRow {
+            labels: std::iter::once("IO".to_string()).collect(),
+            tail: Some(tail),
+        };
+        let b = EffectRow {
+            labels: std::collections::BTreeSet::new(),
+            tail: Some(tail),
+        };
+        assert!(
+            unify_effect_rows(&mut subst, &a, &b).is_err(),
+            "occurs check must reject e ~ {{IO | e}}"
+        );
+        // Sanity: the same rows with distinct tails unify fine.
+        let mut subst = Subst::new();
+        let t1 = subst.fresh_var();
+        let t2 = subst.fresh_var();
+        let a = EffectRow {
+            labels: std::iter::once("IO".to_string()).collect(),
+            tail: Some(t1),
+        };
+        let b = EffectRow {
+            labels: std::collections::BTreeSet::new(),
+            tail: Some(t2),
+        };
+        assert!(unify_effect_rows(&mut subst, &a, &b).is_ok());
+        assert!(
+            subst.resolve_effect_row(&b).contains("IO"),
+            "the open tail must absorb the missing label"
+        );
+    }
+
+    #[test]
+    fn effect_row_closed_rows_mismatch_errors() {
+        let mut subst = Subst::new();
+        let a = EffectRow::closed(std::iter::once("IO".to_string()).collect());
+        let b = EffectRow::pure();
+        let err = unify_effect_rows(&mut subst, &a, &b).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("IO"), "error should name the effect: {msg}");
+    }
+
+    #[test]
+    fn effect_row_render_readable() {
+        let pure = EffectRow::pure();
+        assert_eq!(pure.render(), "pure");
+        let io = EffectRow::closed(std::iter::once("IO".to_string()).collect());
+        assert_eq!(io.render(), "IO");
+        let mut subst = Subst::new();
+        let open = EffectRow {
+            labels: ["Fail".to_string(), "IO".to_string()].into_iter().collect(),
+            tail: Some(subst.fresh_var()),
+        };
+        // Rows render without internal variable ids.
+        assert_eq!(open.render(), "Fail + IO + e");
+    }
+
+    #[test]
+    fn effect_row_sig_on_effectful_fn_passes() {
+        // A [sig] constrains value types only; it must not conflict with the
+        // function's inferred effect row.
+        let errors = check_errors(
+            r#"
+            [sig load : String -> String]
+            [fn load [path] #{IO} [IO.read-file path]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    #[test]
+    fn effect_row_annotation_still_asserts_with_hof() {
+        // Assertion mode survives rows: an effect annotation on a function
+        // that gets its effect FROM a higher-order call still asserts.
+        let errors = check_errors(
+            r#"
+            [fn twice [f x] [f [f x]]]
+            [fn io-use [] #{} [twice [fn [p] [IO.read-file p]] "f"]]
+        "#,
+        );
+        assert!(
+            !errors.is_empty(),
+            "declared pure but performs IO through twice — must error"
+        );
+        assert!(
+            errors[0].message().contains("undeclared effect"),
+            "error: {}",
+            errors[0].message()
+        );
+    }
+
+    #[test]
+    fn effect_row_ctor_passes_to_effectful_hof() {
+        // User ADT constructors get an open, quantified effect-row tail
+        // (like builtins), so passing one to a higher-order function whose
+        // parameter row carries concrete labels must not produce a false
+        // effect mismatch.
+        let errors = check_errors(
+            r#"
+            [type Box [MkBox Int]]
+            [fn do-both [f x]
+              [IO.println "hi"]
+              [f x]]
+            [fn main [] [println [do-both MkBox 1]]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    #[test]
+    fn effect_row_ctor_passes_through_handle_boundary() {
+        // A handle boundary forces the handled label into f's parameter row;
+        // an effect-polymorphic constructor must still unify with it.
+        let errors = check_errors(
+            r#"
+            [effect Ask [ask [] Int]]
+            [type Box [MkBox Int]]
+            [fn call-it [f]
+              [handle [f 1]
+                [Ask.ask] [resume 42]]]
+            [fn main [] [println [call-it MkBox]]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    #[test]
+    fn effect_row_mismatch_classified_as_e0403() {
+        // Effect-row unification failures must land in the E04xx effect
+        // family with effects-specific why/fix text, not fall through to the
+        // generic E0200 value-type mismatch.
+        let mut checker = Checker::new();
+        let a = EffectRow::closed(std::iter::once("IO".to_string()).collect());
+        let b = EffectRow::pure();
+        let err = unify_effect_rows(&mut checker.subst, &a, &b).unwrap_err();
+        checker.push_unify_error(err, Span::ZERO);
+        assert_eq!(checker.errors.len(), 1);
+        let diag = &checker.errors[0];
+        assert_eq!(diag.code, ErrorCode::E0403, "got: {diag:?}");
+        assert_eq!(diag.code.category(), "effect");
+        assert!(
+            diag.why.contains("effect"),
+            "why-text should talk about effects, got: {:?}",
+            diag.why
+        );
+    }
+
+    #[test]
+    fn infinite_effect_row_classified_as_e0403() {
+        // The row occurs check (`e ~ {IO | e}`) is also an effect error.
+        let mut checker = Checker::new();
+        let tail = checker.subst.fresh_var();
+        let a = EffectRow {
+            labels: std::iter::once("IO".to_string()).collect(),
+            tail: Some(tail),
+        };
+        let b = EffectRow {
+            labels: std::collections::BTreeSet::new(),
+            tail: Some(tail),
+        };
+        let err = unify_effect_rows(&mut checker.subst, &a, &b).unwrap_err();
+        checker.push_unify_error(err, Span::ZERO);
+        assert_eq!(checker.errors.len(), 1);
+        assert_eq!(checker.errors[0].code, ErrorCode::E0403);
     }
 
     // --- Row polymorphism / Record tests ---

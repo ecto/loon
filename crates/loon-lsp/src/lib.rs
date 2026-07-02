@@ -289,7 +289,7 @@ fn extract_prefix(text: &str, offset: usize) -> String {
 /// Classify a type into a CompletionItemKind.
 fn classify_completion_kind(ty: &Type) -> CompletionItemKind {
     match ty {
-        Type::Fn(_, _) => CompletionItemKind::FUNCTION,
+        Type::Fn(_, _, _) => CompletionItemKind::FUNCTION,
         Type::Con(_, _) => CompletionItemKind::ENUM,
         _ => CompletionItemKind::VARIABLE,
     }
@@ -480,7 +480,7 @@ mod tests {
     #[test]
     fn classify_fn_vs_variable() {
         assert_eq!(
-            classify_completion_kind(&Type::Fn(vec![Type::Int], Box::new(Type::Int))),
+            classify_completion_kind(&Type::Fn(vec![Type::Int], Box::new(Type::Int), loon_lang::types::EffectRow::pure())),
             CompletionItemKind::FUNCTION
         );
         assert_eq!(

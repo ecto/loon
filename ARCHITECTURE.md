@@ -63,62 +63,68 @@ A reduced `Form` will not round-trip the existing `.oo`/`.loon` corpus.
 
 ---
 
-## 2. Effect-row representation  ⚠️ diverges from the plan
+## 2. Effect-row representation  ✅ now row-based (updated)
 
-The plan (Stage 3) assumes *"effect rows unify alongside type rows"* and a
-single shared row representation. **The current implementation does not do
-this.** There are two unrelated mechanisms:
+*(This section originally documented a divergence: effects were a flat
+`EffectSet` accumulated in a checker side-channel, with no tail variable and
+no unification. That is no longer true — the effect-rows track landed
+row-based inference in the Rust checker.)*
 
-- **Type-level rows** (for records) — true row types with a tail variable:
+The plan's assumption — *"effect rows unify alongside type rows"* — **now
+holds.** Both row mechanisms exist and are structurally analogous:
+
+- **Type-level rows** (for records) — row types with a tail variable:
   ```rust
-  // types/mod.rs:211
   Row(Vec<(String, Type)>, Option<TypeVar>)   // None = closed, Some = open
   ```
-  unified structurally by `unify_rows` (`types/mod.rs:592`).
+  unified structurally by `unify_rows` (types/mod.rs).
 
-- **Effect rows** — *not* rows at all, but a plain set of names:
+- **Effect rows** — real rows with an optional tail variable:
   ```rust
-  // types/mod.rs:220
-  pub struct EffectSet(pub BTreeSet<String>);   // union / subtract / subset
+  pub struct EffectRow {
+      pub labels: BTreeSet<String>,   // concrete effect labels
+      pub tail: Option<TypeVar>,      // None = closed, Some = open
+  }
   ```
-  attached via `Type::Effect(Box<Type>, EffectSet)` (`types/mod.rs:208`).
+  carried on function types as `Type::Fn(params, ret, EffectRow)` and as
+  `Type::Effects(EffectRow)` for tail-variable bindings, unified through
+  the main `unify` via `unify_effect_rows` (types/mod.rs), with an occurs
+  check for infinite rows.
 
-Crucially, **effect sets are *not* unified** through `unify`. The main
-unifier has no real `Effect` case — effects are tracked by a separate
-side-channel in the checker:
+The checker still keeps `fn_effects: HashMap<String, EffectRow>` and an
+ambient `current_fn_effects: EffectRow` (check/mod.rs), but inference is now
+**row unification**, not accumulation: performs push labels through the
+ambient row's tail; calls link the callee's instantiated row into the
+ambient row; `handle` subtracts handled labels and constrains the body row's
+tail so handled effects cannot leak through it. The row tail generalizes
+with let-polymorphism, so effect polymorphism (a `compose`/`twice` whose
+effect row is inferred from its function arguments) **is representable** —
+the homepage `compose` story now type-checks. Row mismatches surface as
+`E0403`.
 
-```rust
-// check/mod.rs:86
-pub fn_effects: HashMap<String, EffectSet>,   // per-function inferred effects
-current_fn_effects: EffectSet,                // accumulator for current body
-```
-
-Inference = **accumulation**, not row unification: calling `Effect.op`
-inserts the effect name into `current_fn_effects` (`check/mod.rs:2447`); calls
-to other functions union their `fn_effects` (`check/mod.rs:2717`); `handle`
-subtracts the handled effects (`check/mod.rs:2996`). There is *no* effect-row
-tail variable, so effect polymorphism (a `compose` whose effect row is
-inferred from its function arguments) is **not** representable today — the
-homepage `compose` story is aspirational relative to the checker.
-
-> **Decision needed (D1):** keep the existing `EffectSet` (set-of-names,
-> accumulated) for the self-hosted checker — matching what exists — or move to
-> real row-unified effect rows with a tail var (what the plan and homepage
-> describe, a genuine semantics change). The single "shared effect-row
-> representation" the plan wants does not exist yet, so Stage 0 cannot just
-> import it; we have to choose what to define.
+> **D1 status:** the decision below predates this change. A row-based
+> self-hosted checker can now aim for **differential parity with the Rust
+> checker on effect inference** — the "no bridge / parity given up"
+> rationale no longer applies.
 
 ---
 
-## 3. Hygiene approach  ⚠️ docs and code disagree
+## 3. Hygiene approach  ⚠️ gensym-renaming, not scope sets
 
 - **The docs claim hygiene:** `guide/macros.loon` — *"Loon macros are
   hygienic by default (like Scheme's `syntax-rules`)."*
-- **The implementation has none.** `macros/mod.rs` is purely textual
-  substitution. Bindings are `HashMap<String, Vec<Expr>>` keyed by raw symbol
-  name (`macros/mod.rs:357`). There are no scopes, marks, or syntax objects.
-  A `gensym` helper exists but is `#[allow(dead_code)]` and never called
-  (`macros/mod.rs:95`). Variable capture is unprevented.
+- **The implementation is gensym-based binder renaming** (not scope sets).
+  `macros/mod.rs` substitutes over `HashMap<String, Vec<Expr>>` bindings
+  keyed by raw symbol name, but `expand_template` first collects the binders
+  the template itself introduces (`let` names, `fn`/`loop` params — see
+  `collect_template_binders`) and renames each to a per-expansion `gensym`
+  throughout the template. This prevents both capture directions for
+  template-introduced temporaries (covered by `macro_tests.rs` hygiene tests
+  and the `hygiene.oo` conformance program). It is NOT full scope-set
+  hygiene: macro parameters, unquoted binders (`[let ~name ...]`), named-fn
+  definition names, and match-pattern variables are left un-renamed, and a
+  template's reference to a global function is not referentially
+  transparent (a caller-scope local of the same name still shadows it).
 
 Expansion is top-down recursive (`expand_expr`, `macros/mod.rs:156`), re-
 expanding macro output so macros-producing-macros work. Two macro flavors:
@@ -140,6 +146,28 @@ expanding macro output so macros-producing-macros work. Two macro flavors:
 > or (b) implement scope-set hygiene in the Loon expander (matches the docs'
 > promise and the plan's torture-test gate, but then the Loon expander is
 > *not* differentially identical to the Rust one on capture cases — by design).
+
+### The `and`/`or` desugar (expander-level, all backends)
+
+`[and ...]`/`[or ...]` in CALL position are desugared by the macro expander
+into nested `[if ...]` with gensym temps, so they short-circuit identically
+on the interpreter, the EIR VM, and wasm (all consume expanded programs).
+Value semantics match the old eager builtins: first falsy (`and`) / first
+truthy (`or`) operand, else the last one; `[and]` → `true`, `[or]` → `false`.
+Three deliberate consequences (all pinned in the conformance corpus):
+
+- **Call-position `and`/`or` are effectively special forms.** The rewrite
+  runs before any scope information exists, so a local binding named
+  `and`/`or` cannot shadow them at call sites (`and-or-shadow.oo` pins this
+  on every backend). Every other operator/builtin IS shadowable by a local.
+- **Value-position `and`/`or` fall back to the eager variadic builtin on the
+  interpreter only.** The EIR VM and wasm have no callable builtin VALUES
+  (a pre-existing limit that applies to `+` etc. as well), so `[let f and]`
+  errors there — pinned by `and-or-value.oo`.
+- **Pipe steps get a dedicated rewrite:** `[pipe v [or a]]` is thread-last
+  partial application (`[or a v]`), so and/or steps become unary-lambda
+  steps wrapping the desugar (`expand_pipe`) instead of being desugared in
+  place — pinned by `pipe-and-or.oo`.
 
 ---
 
@@ -219,17 +247,19 @@ honest about the doc/impl gaps. I want your call on D1–D3 before writing
 
 **D1 — Effect representation: row-based, no bridge.** The self-hosted
 frontend will define real effect rows (effect-name fields + an optional tail
-variable) and infer them by unification, dropping compatibility with the Rust
-checker's flat `EffectSet`. The homepage `compose` example becomes
-expressible. (Differential parity with the Rust checker is intentionally
-given up here.)
+variable) and infer them by unification. The homepage `compose` example
+becomes expressible. *(Update: the Rust checker has since moved to the same
+row-based representation — see §2 — so the original caveat "differential
+parity with the Rust checker is intentionally given up" no longer applies;
+parity on effect inference is back on the table.)*
 
 **D2 — Macro hygiene: scope sets.** The Loon expander will implement
 Flatt/Racket-style scope-set hygiene, honoring the docs. `Form` symbols carry
 a scope-set slot from Stage 0 onward (the `Vec` field on `FSym`) so later
 stages extend `Form` rather than redefining it. Differential testing against
-the (unhygienic) Rust expander will be limited to capture-neutral cases;
-capture/​shadowing torture cases become Loon-only conformance tests.
+the (gensym-renaming, see §3) Rust expander will be limited to cases where
+the two models agree; scope-set-only torture cases become Loon-only
+conformance tests.
 
 **D3 — Continuations: multi-shot.** The compiler will target reified,
 multi-shot resumable continuations. The current EIR VM is one-shot

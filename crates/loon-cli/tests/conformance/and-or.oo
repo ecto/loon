@@ -1,0 +1,17 @@
+; and/or: short-circuit (the assert-eq operand must never run) and value
+; semantics (first falsy / first truthy, else last; nullary identities).
+; NOTE: integer 0 is deliberately absent — its truthiness diverges between
+; backends and is pinned in truthiness-zero.oo.
+; expect-fail: wasm — assert-eq is not implemented in codegen (clean
+; compile-time rejection), and booleans print as 1/0.
+[fn main []
+  [println [or true [assert-eq 1 2]]]
+  [println [and false [assert-eq 1 2]]]
+  [println [and 1 2]]
+  [println [and false 2]]
+  [println [or false 5]]
+  [println [or 3 5]]
+  [println [and]]
+  [println [or]]
+  [println [and true true 9]]
+  [println [or false false 7]]]

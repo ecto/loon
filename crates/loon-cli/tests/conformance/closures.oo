@@ -1,0 +1,15 @@
+; Closures: capture, higher-order functions, returned closures, recursion.
+; expect-fail: wasm — a closure VALUE passed to a HOF builtin is rejected at
+; codegen ("HOF requires a function argument"); clean compile-time rejection.
+[fn adder [n] [fn [x] [+ x n]]]
+[fn twice [f x] [f [f x]]]
+[fn fib [n] [if [< n 2] n [+ [fib [- n 1]] [fib [- n 2]]]]]
+[fn main []
+  [let add5 [adder 5]]
+  [println [add5 10]]
+  [println [twice add5 0]]
+  [println [twice [fn [x] [* x 3]] 2]]
+  [println [fib 10]]
+  [let counter-base 100]
+  [let bump [fn [x] [+ x counter-base]]]
+  [println [map #[1 2 3] bump]]]

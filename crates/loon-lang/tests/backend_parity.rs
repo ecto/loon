@@ -79,6 +79,25 @@ const CORPUS: &[(&str, &str)] = &[
          [fn body [] [* [C.pick] 2]] \
          [fn main [] [println [handle [body] [C.pick] [+ [resume 3] [resume 5]]]]]",
     ),
+    // and/or: short-circuiting (desugared to nested `if` at macro-expansion
+    // time, so both backends inherit it). `[or true X]` must never evaluate X;
+    // `[assert-eq 1 2]` would abort the program if it ran.
+    (
+        "and-or-short-circuit",
+        r#"[fn main []
+             [println [or true [assert-eq 1 2]]]
+             [println [and false [assert-eq 1 2]]]]"#,
+    ),
+    // and/or: value semantics (first falsy / first truthy, else last) and
+    // variadic/nullary forms.
+    (
+        "and-or-values",
+        r#"[fn main []
+             [println [and 1 2]] [println [and false 2]]
+             [println [or false 5]] [println [or 3 5]]
+             [println [and]] [println [or]]
+             [println [and true true 9]] [println [or false false 7]]]"#,
+    ),
     // strings
     ("str-split-join", r#"[fn main [] [println [join [split "a,b,c" ","] "-"]]]"#),
     ("str-case", r#"[fn main [] [println [str [uppercase "hi"] [lowercase "YO"]]]]"#),
@@ -115,6 +134,31 @@ const CORPUS: &[(&str, &str)] = &[
         "[effect E [op [] Int]] \
          [fn run [n] [handle [E.op] [E.op] [resume n]]] \
          [fn main [] [println [run 42]]]",
+    ),
+    // and/or pipe STEPS are thread-last partial application: [pipe v [or a]]
+    // ≡ [or a v] (short-circuit now, same values as the old eager builtin)
+    (
+        "pipe-and-or-steps",
+        "[fn main [] \
+           [println [pipe false [or 7]]] \
+           [println [pipe 5 [and true true]]] \
+           [println [pipe 0 [or false]]]]",
+    ),
+    // operator partials in pipe: +/* are variadic left folds, the rest are
+    // strictly binary (extra args, including the piped value, are ignored)
+    (
+        "pipe-operator-partials",
+        "[fn main [] \
+           [println [pipe 5 [+ 1 2]]] \
+           [println [pipe 2 [* 3 4]]] \
+           [println [pipe 5 [- 10 3]]] \
+           [println [pipe 5 [+ 1]]]]",
+    ),
+    // a local binding shadows the prelude Option/Result ctors at call sites,
+    // exactly as it shadows builtins (the ctors are pre-registered on the VM)
+    (
+        "local-shadows-prelude-ctor",
+        "[fn main [] [let Some [fn [x] [+ x 1]]] [println [Some 5]]]",
     ),
     // ── try/on-fail hygiene + evaluation order (fixed 2026-07-01) ──────────
     // The on-fail handler is lowered eagerly in the enclosing scope and applied
@@ -189,12 +233,28 @@ fn backends_agree() {
 fn known_divergences_are_pinned() {
     let abort = "[effect F [fail [] Int]] [fn body [] [+ 1 [F.fail]]] \
                  [fn main [] [println [handle [body] [F.fail] 999]]]";
-    assert_eq!(eir_output(abort).as_deref(), Ok("999"), "EIR abort (correct)");
-    assert_eq!(interp_output(abort).as_deref(), Ok("1000"), "interp abort (wrong)");
+    assert_eq!(
+        eir_output(abort).as_deref(),
+        Ok("999"),
+        "EIR abort (correct)"
+    );
+    assert_eq!(
+        interp_output(abort).as_deref(),
+        Ok("1000"),
+        "interp abort (wrong)"
+    );
 
     let fold_builtin = "[fn main [] [println [fold #[1 2 3 4] 0 +]]]";
-    assert_eq!(eir_output(fold_builtin).as_deref(), Ok("0"), "EIR builtin-as-fold-fn (gap)");
-    assert_eq!(interp_output(fold_builtin).as_deref(), Ok("10"), "interp builtin-as-fold-fn");
+    assert_eq!(
+        eir_output(fold_builtin).as_deref(),
+        Ok("0"),
+        "EIR builtin-as-fold-fn (gap)"
+    );
+    assert_eq!(
+        interp_output(fold_builtin).as_deref(),
+        Ok("10"),
+        "interp builtin-as-fold-fn"
+    );
 
     // nested-handlers: two effects handled by two stacked handlers. The EIR VM
     // composes them correctly (30); the legacy interp's replay strategy hits its

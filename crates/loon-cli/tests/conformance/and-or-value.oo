@@ -1,0 +1,9 @@
+; A bare `and`/`or` in VALUE position is not desugared. The legacy
+; interpreter resolves it to its eager variadic env builtin (prints false
+; here); the EIR VM and wasm have no callable builtin VALUES (pre-existing
+; limit), so the oracle fails with "value is not callable".
+; expect-fail: legacy — the eager builtin value works there, so it prints
+; false and exits 0 while the VM oracle errors.
+[fn main []
+  [let f and]
+  [println [f true false]]]

@@ -163,7 +163,7 @@ What's left to finish v0.2 properly.
 ### Hygienic macros
 - [x] `[macro when [condition & body] ...]`
 - [x] Quasiquoting: `` ` ``, `~`, `~@`
-- [x] Hygiene by default (Scheme-style)
+- [x] Hygiene by default (gensym-renaming of template binders; not full scope-sets — see ARCHITECTURE.md §3)
 - [x] `[macro+ ...]` type-aware macros (run after type inference)
 
 ---
