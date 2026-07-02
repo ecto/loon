@@ -645,6 +645,13 @@ fn tutorial_undeclared_effect() -> Tutorial {
     }
 }
 
+// Text-only (no live execution): E0403 comes from effect-row UNIFICATION
+// failing inside the checker. Every row the checker builds from source is
+// open (functions, lambdas, sigs, builtins and constructors all get an open
+// tail), and `#{...}` annotations are assertion-mode — they check inferred
+// labels and report E0401, they do not close the row — so there is no small
+// source program that reliably demonstrates E0403 today. Keep this tutorial
+// descriptive; do NOT add Demo/Fix steps that claim to reproduce it.
 fn tutorial_effect_mismatch() -> Tutorial {
     Tutorial {
         code: ErrorCode::E0403,
@@ -652,40 +659,40 @@ fn tutorial_effect_mismatch() -> Tutorial {
         steps: vec![
             TutorialStep::Text(
                 "Loon infers an effect row for every function: the set of \
-                 effects it may perform, like `IO + e`. This error occurs when \
-                 two effect rows can't be unified — most often a function \
-                 constrained to be pure (or to a fixed effect set) is used \
-                 somewhere that performs an additional effect."
+                 effects it may perform, like `IO + e`. The trailing `e` is \
+                 an open tail — extra effects a caller's argument may add. \
+                 E0403 is reported when two effect rows cannot be unified: \
+                 one side is a fixed (closed) set of effects and the other \
+                 side performs an effect that set does not allow, or a row \
+                 would have to contain itself (an infinite effect row)."
                     .to_string(),
             ),
-            TutorialStep::Demo {
-                code: r#"[fn twice [f x] / #{}
-  [f [f x]]]
-[twice [fn [n] [do [IO.println "tick"] n]] 1]
-;; error: effect mismatch: `pure` is not allowed to perform `IO`"#
+            TutorialStep::Text(
+                "  Example message:\n\
+                 \n\
+                 \x20   error: effect mismatch: `pure` is not allowed to perform `IO`\n\
+                 \n\
+                 Rows the checker infers from source are open, so in \
+                 practice effect problems usually surface as E0400 \
+                 (unhandled effect) or E0401 (undeclared effect) instead. \
+                 Note that the `#{...}` annotation on a function is an \
+                 assertion over the function's INFERRED effects — it reports \
+                 E0401 when the body performs something extra; it does not \
+                 close the row."
                     .to_string(),
-                explanation: "The `#{}` annotation closes twice's effect row to \
-                              `pure`, but the lambda argument performs IO, so the \
-                              rows can't unify."
+            ),
+            TutorialStep::Text(
+                "  Fix: widen the fixed effect set to include the missing \
+                 effect, or handle the effect with a `handle` block before \
+                 it reaches the constrained position:\n\
+                 \n\
+                 \x20   [handle [may-do-io]\n\
+                 \x20     [IO.read-file p] [resume \"stub\"]]\n\
+                 \n\
+                 See `loon explain E0400` and `loon explain E0401` for the \
+                 common effect errors."
                     .to_string(),
-            },
-            TutorialStep::Fix {
-                before: r#"[fn twice [f x] / #{} [f [f x]]]"#.to_string(),
-                after: r#"[fn twice [f x] [f [f x]]]"#.to_string(),
-                explanation: "Drop the closed annotation so the row stays open \
-                              (inference gives `twice` a polymorphic tail and it \
-                              inherits f's effects), add the effect to the set, \
-                              or handle the effect with a `handle` block."
-                    .to_string(),
-            },
-            TutorialStep::Try {
-                prompt: "Write a higher-order function without an effect annotation \
-                         and pass it an IO lambda."
-                    .to_string(),
-                hint: "Try: [fn twice [f x] [f [f x]]] [twice [fn [n] [do [IO.println \"tick\"] n]] 1]"
-                    .to_string(),
-                expected_output: None,
-            },
+            ),
         ],
     }
 }
