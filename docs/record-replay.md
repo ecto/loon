@@ -33,7 +33,8 @@ appended to `crash.oo` in Loon data format — a vector of maps:
 
 Clock reads, uuids, file reads, env lookups, and network calls are recorded.
 Log writes (`println`) are recorded too, purely for observability — the trace
-doubles as a structured log of the run. Pure operations (`parse-json`,
+doubles as a structured log of the run, and on replay they re-execute live
+rather than being matched against the trace. Pure operations (`parse-json`,
 `blake3`) are not recorded; they are deterministic given their arguments.
 Effects handled by an in-language `handle` never reach the trace at all —
 they are already deterministic.
@@ -54,7 +55,10 @@ recorded milliseconds. The file read returns the recorded contents — even if
 the file is gone. The execution is identical to the recorded run, including
 reproducing the crash at the same step, with the same output and the same
 error report. Run it under a debugger, add prints, replay again: the bug
-holds still while you look at it.
+holds still while you look at it. Log writes are never matched against the
+trace, so sprinkling `println`s through the program (or deleting them) does
+not invalidate the recording — the nondeterministic results are still fed
+back in order around them.
 
 ## Walkthrough: pinning down a flaky crash
 
@@ -116,13 +120,23 @@ trace recorded, replay stops with a diagnostic instead of feeding it a wrong
 value:
 
 ```
-error: replay diverged at step 2: trace recorded IO.println but the program performed IO.millis
+error: replay diverged at step 2: trace recorded IO.millis but the program performed IO.uuid
 fix: the program and the trace no longer agree; re-record with: loon run --record crash.oo prog.oo
+```
+
+The same operation with different *arguments* — say, a changed file path —
+is also a divergence, not a silent replay of the stale recorded result:
+
+```
+error: replay diverged at step 0: IO.read-file was recorded with args #["a.txt"] but the program passed #["b.txt"]
 ```
 
 Running past the end of the trace is diagnosed the same way, and a replay
 that finishes with unused entries left over prints a warning — both usually
-mean the program changed since the recording.
+mean the program changed since the recording. Log writes are exempt from
+all of this: `println` entries are observability-only and never
+order-checked, so added or removed prints neither diverge nor count as
+leftovers.
 
 ## Scope and limitations
 

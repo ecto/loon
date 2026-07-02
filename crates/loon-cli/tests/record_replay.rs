@@ -347,6 +347,166 @@ fn record_refuses_to_overwrite_the_program() {
     );
 }
 
+/// --record must not truncate arbitrary existing files either — in the worst
+/// case a module the program itself is about to load. Only paths that look
+/// like traces (or don't exist) are fair game; re-recording over an old
+/// trace still works.
+#[test]
+fn record_refuses_to_overwrite_non_trace_files() {
+    let dir = scratch_dir();
+    let util_src = "[pub fn helper [] 42]\n";
+    let util = write_file(&dir, "util.oo", util_src);
+    let main = write_file(
+        &dir,
+        "main.oo",
+        "[use util]\n[fn main [] [println [util.helper]]]\n",
+    );
+
+    // Recording over a module of the program: clean error, module untouched.
+    let out = loon(&run_args(&main, "--record", &util));
+    assert!(!out.ok, "recording over a module must fail");
+    assert!(
+        out.stderr.contains("does not look like a trace"),
+        "stderr:\n{}",
+        out.stderr
+    );
+    assert_eq!(
+        std::fs::read_to_string(&util).unwrap(),
+        util_src,
+        "the module source must be untouched"
+    );
+
+    // Re-recording over a real trace is allowed (the walkthrough workflow).
+    let trace = dir.join("trace.oo");
+    let first = loon(&run_args(&main, "--record", &trace));
+    assert!(first.ok, "first record failed:\n{}", first.stderr);
+    let second = loon(&run_args(&main, "--record", &trace));
+    assert!(
+        second.ok,
+        "re-recording over an existing trace must work:\n{}",
+        second.stderr
+    );
+}
+
+/// Log writes are observability-only: adding or removing `println`s between
+/// recording and replaying must not diverge — the recorded nondeterministic
+/// results are still fed back, and the new prints appear in the output.
+/// This is the documented "run it under a debugger, add prints" workflow.
+#[test]
+fn added_and_removed_printlns_do_not_diverge() {
+    let dir = scratch_dir();
+    let prog = write_file(
+        &dir,
+        "prog.oo",
+        r#"[fn main []
+  [let ms [IO.millis]]
+  [println "roll is \([% ms 7])"]
+  [println "done"]]
+"#,
+    );
+    let trace = dir.join("trace.oo");
+    let recorded = loon(&run_args(&prog, "--record", &trace));
+    assert!(recorded.ok, "record run failed:\n{}", recorded.stderr);
+
+    // Add a debug print before and after the effect.
+    let debugged = write_file(
+        &dir,
+        "debugged.oo",
+        r#"[fn main []
+  [println "debug: entering main"]
+  [let ms [IO.millis]]
+  [println "roll is \([% ms 7])"]
+  [println "debug: ms was \(ms)"]
+  [println "done"]]
+"#,
+    );
+    let replayed = loon(&replay_args(&trace, &debugged));
+    assert!(
+        replayed.ok,
+        "replay with added printlns must not diverge:\n{}",
+        replayed.stderr
+    );
+    assert!(replayed.stdout.contains("debug: entering main"));
+    // The recorded roll line replays byte-identically among the new lines.
+    let roll_line = recorded
+        .stdout
+        .lines()
+        .find(|l| l.starts_with("roll is"))
+        .unwrap();
+    assert!(
+        replayed.stdout.contains(roll_line),
+        "recorded value must still be fed back:\nrecorded: {}\nreplayed: {}",
+        recorded.stdout,
+        replayed.stdout
+    );
+    assert!(
+        !replayed.stderr.contains("unused trace entr"),
+        "leftover log entries must not warn:\n{}",
+        replayed.stderr
+    );
+
+    // Removing prints is fine too.
+    let quiet = write_file(
+        &dir,
+        "quiet.oo",
+        "[fn main []\n  [let ms [IO.millis]]\n  [println \"done\"]]\n",
+    );
+    let quiet_replay = loon(&replay_args(&trace, &quiet));
+    assert!(
+        quiet_replay.ok,
+        "replay with removed printlns must not diverge:\n{}",
+        quiet_replay.stderr
+    );
+    assert!(
+        !quiet_replay.stderr.contains("unused trace entr"),
+        "skipped log entries are not leftovers:\n{}",
+        quiet_replay.stderr
+    );
+}
+
+/// The same op with different arguments is a divergence, not a silent replay
+/// of a stale result: a changed file path must error, naming both arg lists.
+#[test]
+fn changed_args_are_a_divergence() {
+    let dir = scratch_dir();
+    let a = write_file(&dir, "a.txt", "SECRET-A");
+    write_file(&dir, "b.txt", "SECRET-B");
+    let a_path = a.to_string_lossy().replace('\\', "/");
+    let b_path = a_path.replace("a.txt", "b.txt");
+    let prog_a = write_file(
+        &dir,
+        "reads-a.oo",
+        &format!("[fn main [] [println [IO.read-file \"{a_path}\"]]]\n"),
+    );
+    let prog_b = write_file(
+        &dir,
+        "reads-b.oo",
+        &format!("[fn main [] [println [IO.read-file \"{b_path}\"]]]\n"),
+    );
+    let trace = dir.join("trace.oo");
+
+    let recorded = loon(&run_args(&prog_a, "--record", &trace));
+    assert!(recorded.ok, "record run failed:\n{}", recorded.stderr);
+
+    let diverged = loon(&replay_args(&trace, &prog_b));
+    assert!(!diverged.ok, "changed args must fail the replay");
+    assert!(
+        diverged.stderr.contains("replay diverged"),
+        "stderr:\n{}",
+        diverged.stderr
+    );
+    assert!(
+        diverged.stderr.contains("a.txt") && diverged.stderr.contains("b.txt"),
+        "stderr should show recorded vs live args:\n{}",
+        diverged.stderr
+    );
+    assert!(
+        !diverged.stdout.contains("SECRET-A"),
+        "the stale recorded result must not be fed back:\n{}",
+        diverged.stdout
+    );
+}
+
 /// Recorded strings containing control characters (including the lexer's
 /// U+0001/U+0002 interpolation sentinels) must produce a trace the replay
 /// loader can parse — the trace always reparses.

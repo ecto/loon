@@ -230,6 +230,40 @@ fn run_file(path: &PathBuf, record: Option<&std::path::Path>) {
                 );
                 std::process::exit(1);
             }
+            // The same slip can point --record at any other source file — a
+            // module the program loads, a manifest, another program. Refuse
+            // to truncate an existing file unless it looks like a trace
+            // (finalized vector `#[…]`, line-delimited `{:effect …}` entries,
+            // or empty). Re-recording over an old trace stays a one-liner.
+            match std::fs::read_to_string(trace_path) {
+                Ok(existing) => {
+                    let head = existing.trim_start();
+                    let looks_like_trace = head.is_empty()
+                        || head.starts_with("#[")
+                        || head.starts_with("{:effect");
+                    if !looks_like_trace {
+                        eprintln!(
+                            "{}: --record would overwrite {} which does not look like a \
+                             trace; choose a different trace path or delete the file first",
+                            "error".red().bold(),
+                            trace_path.display()
+                        );
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    // Exists but unreadable (binary, directory, permissions):
+                    // definitely not a trace we wrote.
+                    eprintln!(
+                        "{}: --record would overwrite {} which cannot be read as a \
+                         trace ({e}); choose a different trace path",
+                        "error".red().bold(),
+                        trace_path.display()
+                    );
+                    std::process::exit(1);
+                }
+            }
             let recorder = match loon_lang::eir::replay::TraceRecorder::create(trace_path) {
                 Ok(r) => r,
                 Err(e) => {

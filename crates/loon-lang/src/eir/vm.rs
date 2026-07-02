@@ -1262,8 +1262,9 @@ impl Vm {
         match built {
             Built::Println => {
                 // Under record/replay, bare `println` is treated as the
-                // `IO.println` effect so log writes land in the trace (for
-                // observability) and are order-checked on replay.
+                // `IO.println` effect so log writes land in the trace for
+                // observability. On replay it re-executes live and is not
+                // order-checked, so added/removed prints don't diverge.
                 if self.recorder.is_some() || self.replay.is_some() {
                     return self.perform_builtin_effect("IO", "println", args);
                 }
@@ -2179,9 +2180,11 @@ impl Vm {
     /// - Recording: run the real effect, then append `{effect op args result}`
     ///   to the trace (flushed immediately, so it survives a crash).
     /// - Replaying: consume the next trace entry and return its recorded
-    ///   result instead of touching the outside world. `IO.println` is the
-    ///   exception: it re-executes so replay output matches the recorded run.
-    ///   A mismatched or exhausted trace is a `ReplayDivergence` error.
+    ///   result instead of touching the outside world. Log writes
+    ///   (`IO.println`) are the exception: they re-execute live and never
+    ///   consume a trace entry, so adding or removing prints while debugging
+    ///   does not invalidate the trace. A mismatched or exhausted trace is a
+    ///   `ReplayDivergence` error.
     fn perform_builtin_effect(
         &mut self,
         effect: &str,
@@ -2190,6 +2193,9 @@ impl Vm {
     ) -> Result<Val, VmError> {
         let recorded = crate::eir::replay::is_recorded_op(effect, op);
         if recorded && self.replay.is_some() {
+            if crate::eir::replay::is_log_op(effect, op) {
+                return Ok(self.builtin_effect(effect, op, args));
+            }
             return self.replay_effect(effect, op, args);
         }
         let result = self.builtin_effect(effect, op, args);
@@ -2219,13 +2225,22 @@ impl Vm {
     }
 
     /// Replay path: feed the next recorded result back for this operation.
+    /// Log entries in the trace are skipped, never matched — log writes
+    /// re-execute live in `perform_builtin_effect` and do not reach here.
     fn replay_effect(&mut self, effect: &str, op: &str, args: &[Val]) -> Result<Val, VmError> {
         let cursor = self.replay.as_mut().expect("replay cursor");
+        while cursor
+            .entries
+            .get(cursor.idx)
+            .is_some_and(|e| crate::eir::replay::is_log_op(&e.effect, &e.op))
+        {
+            cursor.idx += 1;
+        }
         let idx = cursor.idx;
         if idx >= cursor.entries.len() {
             return Err(VmError::new(VmErrorKind::ReplayDivergence(format!(
                 "trace exhausted at step {idx}: the program performed {effect}.{op} \
-                 but the trace has only {idx} recorded operation(s)"
+                 but the trace has no more recorded operations"
             )))
             .with_span(self.current_span));
         }
@@ -2238,12 +2253,21 @@ impl Vm {
             )))
             .with_span(self.current_span));
         }
-        // Log writes re-execute so the replayed run prints what the recorded
-        // run printed; everything else returns the recorded result without
-        // touching the outside world.
-        if effect == "IO" && op == "println" {
-            return Ok(self.builtin_effect(effect, op, args));
+        // Same op but different arguments (say, a changed file path) means
+        // the program no longer matches the trace: feeding the stale result
+        // back would silently replay the wrong world.
+        let live_args: Vec<crate::eir::replay::TraceVal> =
+            args.iter().map(|a| self.val_to_trace(*a)).collect();
+        if entry.args != live_args {
+            let recorded = crate::eir::replay::TraceVal::Vec(entry.args.clone()).to_loon();
+            let live = crate::eir::replay::TraceVal::Vec(live_args).to_loon();
+            return Err(VmError::new(VmErrorKind::ReplayDivergence(format!(
+                "at step {idx}: {effect}.{op} was recorded with args {recorded} \
+                 but the program passed {live}"
+            )))
+            .with_span(self.current_span));
         }
+        // Return the recorded result without touching the outside world.
         Ok(self.trace_to_val(&entry.result))
     }
 

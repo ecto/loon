@@ -4,7 +4,8 @@
 //! so every nondeterministic operation — file reads, clock reads, uuid, env
 //! lookups, network calls — has its *result* appended to a trace file in Loon
 //! data format. Log writes (`IO.println`) are recorded too, purely for
-//! observability and divergence detection.
+//! observability: on replay they re-execute live and are never order-checked,
+//! so adding or removing prints does not invalidate a trace.
 //!
 //! `loon replay trace.oo prog.oo` runs the same program feeding the recorded
 //! results back in order: same program + same trace = identical execution,
@@ -173,7 +174,8 @@ impl TraceEntry {
 /// Should this builtin (unhandled) effect operation be recorded and replayed?
 ///
 /// Everything whose result depends on the outside world is recorded — plus
-/// `IO.println` and `IO.write-file` for observability and ordering checks.
+/// `IO.write-file` for ordering checks and `IO.println` for observability
+/// (see [`is_log_op`]).
 /// Pure data transforms (`parse-json`, `to-json`, `blake3`) are deterministic
 /// given their arguments and are re-executed live on both paths. Effects
 /// handled by an in-language `handle` never reach this path at all.
@@ -183,6 +185,14 @@ pub fn is_recorded_op(effect: &str, op: &str) -> bool {
         "IO" => !matches!(op, "parse-json" | "to-json" | "blake3"),
         _ => false,
     }
+}
+
+/// Is this a log write? Log writes are recorded for observability (the trace
+/// doubles as a structured log of the run) but are *not* order-checked on
+/// replay: they re-execute live and never consume a trace entry, so adding or
+/// removing prints while debugging does not invalidate the trace.
+pub fn is_log_op(effect: &str, op: &str) -> bool {
+    effect == "IO" && op == "println"
 }
 
 /// Incremental trace writer: appends one entry per line and flushes after
@@ -339,9 +349,14 @@ impl ReplayCursor {
         Self { entries, idx: 0 }
     }
 
-    /// Entries not yet consumed.
+    /// Nondeterministic entries not yet consumed. Log entries are never
+    /// consumed on replay (they are observability-only), so they do not
+    /// count as leftovers.
     pub fn remaining(&self) -> usize {
-        self.entries.len().saturating_sub(self.idx)
+        self.entries[self.idx.min(self.entries.len())..]
+            .iter()
+            .filter(|e| !is_log_op(&e.effect, &e.op))
+            .count()
     }
 }
 
@@ -460,6 +475,30 @@ mod tests {
             .unwrap();
             assert_eq!(parsed[0].result, TraceVal::Float(f), "source was {src}");
         }
+    }
+
+    #[test]
+    fn log_entries_are_not_counted_as_leftovers() {
+        assert!(is_log_op("IO", "println"));
+        assert!(!is_log_op("IO", "read-file"));
+        assert!(!is_log_op("Net", "println"));
+
+        let log = TraceEntry {
+            effect: "IO".to_string(),
+            op: "println".to_string(),
+            args: vec![],
+            result: TraceVal::Unit,
+        };
+        let clock = TraceEntry {
+            effect: "IO".to_string(),
+            op: "millis".to_string(),
+            args: vec![],
+            result: TraceVal::Int(1),
+        };
+        let cursor = ReplayCursor::new(vec![log.clone(), clock, log]);
+        // Only the nondeterministic entry counts; the logs around it are
+        // observability-only and never consumed on replay.
+        assert_eq!(cursor.remaining(), 1);
     }
 
     #[test]
