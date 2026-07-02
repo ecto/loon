@@ -1,0 +1,27 @@
+; Demo: record a run with real IO + real clock, then replay it with NO
+; kernel at all — every nondeterministic result comes off the tape, so the
+; replay is bit-identical even though it touches nothing real.
+;
+;   loon run os/demo-tape.oo
+[use sys]
+[use kernel]
+[use tape]
+
+[fn prog []
+  [Fs.write-file "/tmp/loon-tape-demo" "hello from the past"]
+  [let contents [Fs.read-file "/tmp/loon-tape-demo"]]
+  [let t [Clock.millis]]
+  [let r [Rand.int 1000]]
+  [str "read '" contents "' at t=" t " (roll: " r ")"]]
+
+[fn main []
+  [IO.println "recording (real IO, real clock):"]
+  [let rec [kernel [fn [] [record prog]]]]
+  [let live [get rec :result]]
+  [let log [get rec :tape]]
+  [IO.println [str "  live:   " live]]
+  [IO.println [str "  tape:   " log]]
+  [IO.println "replaying from tape (no kernel, no real IO):"]
+  [let ghost [replay prog log]]
+  [IO.println [str "  replay: " ghost]]
+  [IO.println [if [= live ghost] "REPLAY IDENTICAL" "REPLAY DIVERGED"]]]

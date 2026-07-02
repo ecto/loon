@@ -10,6 +10,9 @@
     [li-el "Algebraic effects with handle/resume"]
     [li-el "Multi-shot delimited continuations"]
     [li-el "Effect handler towers: one program, prod/test/replay"]
+    [li-el "Loon OS: syscalls are effects, the kernel is a handler"]
+    [li-el
+      "Record/replay, deterministic simulation, agent containment as handlers"]
     [li-el "Async as effects: cooperative scheduler, structured concurrency"]
     [li-el "Real TCP/HTTP sockets — serve HTTP from Loon"]
     [li-el "HTTP framework with capability-typed routes"]
@@ -118,7 +121,66 @@
             "Cross-backend conformance suite: one corpus of programs, every backend must agree — divergence is a failing test."]
           [li-el
             "Effect-row polish in the checker: more precise inferred rows across handlers and higher-order code."]]]
-      
+
+      ; ── v0.8.0 — Loon OS: syscalls are effects ─────────────────────────
+      [blog-article
+        "The Kernel Is Just a Handler"
+        "Jul 1, 2026"
+        
+        [p
+          "A syscall is an effect. Follow that one sentence far enough and the kernel stops being privileged code behind a trap — it becomes the outermost handler wrapped around your program. Loon OS is that idea, shipped: an operating-system layer written entirely in Loon, where sandboxing, chroot, strace, record/replay, deterministic simulation, and agent containment are all the same move — wrap the program in a different handler."]
+        
+        [blog-h3 "The whole kernel"]
+        [p
+          "The kernel does nothing special. It is the last handler standing: it translates the Sys effects a program performs into real syscalls. That is the entire thing."]
+        [blog-code
+          [str
+            "[fn kernel [thunk]\n"
+            "  [handle [thunk]\n"
+            "    [Fs.read-file p]    [resume [IO.read-file p]]\n"
+            "    [Fs.write-file p c] [resume [IO.write-file p c]]\n"
+            "    [Clock.now]         [resume [IO.now]]\n"
+            "    [Rand.int n]        [resume [imod [IO.millis] n]]\n"
+            "    [Env.get k]         [resume [Env.get k]]]]"]]
+        
+        [blog-h3 "chroot is a library"]
+        [p
+          "A program never names its kernel — it just performs Fs effects. So containment is interposition: slip a handler between the program and the kernel that rewrites paths before forwarding them. Nesting sandboxes is handler composition. strace is the same shape with a log line. A read-only mount is the same shape with a denial."]
+        [blog-code
+          [str
+            "[fn sandboxed [thunk root]\n"
+            "  [handle [thunk]\n"
+            "    [Fs.read-file p]    [resume [Fs.read-file [str root p]]]\n"
+            "    [Fs.write-file p c] [resume [Fs.write-file [str root p] c]]]]"]]
+        
+        [blog-h3 "Record a run, replay it exactly"]
+        [p
+          "Every source of nondeterminism — the clock, randomness, the results of IO — is an effect. So recording a run means logging each effect result to a tape; replaying means answering those same effects from the tape, with no kernel underneath. A production crash ships home as a tape and replays bit-for-bit, touching nothing real."]
+        [blog-code
+          [str
+            "recording (real IO, real clock):\n"
+            "  live:   read 'hello from the past' at t=1782950917104 (roll: 104)\n"
+            "replaying from tape (no kernel, no real IO):\n"
+            "  replay: read 'hello from the past' at t=1782950917104 (roll: 104)\n"
+            "REPLAY IDENTICAL"]]
+        
+        [blog-h3 "An agent's permissions are its handler stack"]
+        [p
+          "An untrusted agent is just a thunk, and its permission grant is the tower you run it under. A reference monitor consults a policy on every request; a denied op never executes — the agent gets an EACCES value back instead of a trap, so its own control flow stays intact. Run it inside a sealed simulation and the entire agent behavior — every attempt, allowed and denied — is audited and reproducible from a seed."]
+        [blog-code
+          [str
+            "; an agent tries to steal credentials and phone home\n"
+            "answer file: '42 (compute the answer)'   ; honest work: done\n"
+            "exfil file:  '<never written>'           ; theft: blocked\n"
+            "audit log:\n"
+            "  {:op :read  :path /etc/credentials :got EACCES: /etc/credentials}\n"
+            "  {:op :write :path /evil/exfil      :got :denied}\n"
+            "rerun, same seed: AGENT RUN REPRODUCED EXACTLY"]]
+        
+        [blog-h3 "What building it cost"]
+        [p
+          "The OS is eight small files and no new runtime primitives — but writing it flushed out two real bugs in the compiler, both now fixed and pinned with regression tests. The first time a handler forwarded an effect to the handler beneath it, the VM re-entered its own clause and looped forever; the fix was proper deep-handler semantics. And the supervision retry pattern silently corrupted itself, because try compiled its recovery closure with no variable capture. The interposition every one of these features stands on works now — and the register VM is the reference for what effects mean."]]
+
       ; ── v0.7.0 — Effects, towers, and two frameworks ───────────────────
       [blog-article
         "Effect Handlers, End to End"

@@ -1,0 +1,39 @@
+; Demo: cooperative processes — spawn, yield, and message passing, all in
+; pure Loon. A ping-pong pair passes a counter back and forth; a background
+; worker interleaves via yield.
+;
+;   loon run os/demo-procs.oo
+[use sys]
+[use sched]
+
+[fn ponger []
+  [let m [Proc.recv]]
+  [IO.println [str "  pong got " m]]
+  [Proc.send [get m :from] {:n [+ [get m :n] 1] :from [Proc.self]}]
+  [let m2 [Proc.recv]]
+  [IO.println [str "  pong got " m2]]
+  "pong done"]
+
+[fn worker [label]
+  [IO.println [str "  " label " tick 1"]]
+  [Proc.yield]
+  [IO.println [str "  " label " tick 2"]]
+  [Proc.yield]
+  [IO.println [str "  " label " tick 3"]]
+  [str label " done"]]
+
+[fn main-proc []
+  [let me [Proc.self]]
+  [let pong [Proc.spawn ponger]]
+  [let w [Proc.spawn [fn [] [worker "worker"]]]]
+  [Proc.send pong {:n 1 :from me}]
+  [let reply [Proc.recv]]
+  [IO.println [str "  ping got " reply]]
+  [Proc.send pong {:n [+ [get reply :n] 1] :from me}]
+  "ping done"]
+
+[fn main []
+  [IO.println "booting process world:"]
+  [let st [run-procs main-proc]]
+  [IO.println [str "exit values: " [get st :done]]]
+  [IO.println [if [deadlocked? st] "DEADLOCK detected" "world quiescent"]]]
