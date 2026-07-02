@@ -26,6 +26,16 @@ pub fn lower(checker: &Checker) -> Module {
 
 // ─── Lowering context ──────────────────────────────────────────────────────
 
+/// How a name entered scope — decides whether it SHADOWS at call sites.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BindKind {
+    /// let / fn param / pattern / set! — shadows builtins and functions.
+    Local,
+    /// A named fn's self-binding or a nullary-ctor value — value form only;
+    /// calls still resolve through func_map/ctor_map (direct Call).
+    Fn,
+}
+
 struct Lower<'a> {
     checker: &'a Checker,
     module: Module,
@@ -35,8 +45,13 @@ struct Lower<'a> {
     cur_block: Option<BlockId>,
     /// Next register index for the current function.
     next_reg: u32,
-    /// Variable scope: name → Reg.
-    scopes: Vec<HashMap<String, Reg>>,
+    /// Variable scope: name → (Reg, how it was bound). The kind decides
+    /// shadowing at CALL sites: a `Local` binding (let / param / pattern)
+    /// shadows operators, builtins, and top-level functions; a `Fn` binding
+    /// (a named fn's self-binding, a nullary-ctor value) is just the value
+    /// form of something that still resolves through func_map/ctor_map for
+    /// direct calls.
+    scopes: Vec<HashMap<String, (Reg, BindKind)>>,
     /// Interned string dedup: string → StringId.
     string_map: HashMap<String, StringId>,
     /// Known ADT constructors: name → (tag, arity).
@@ -115,14 +130,35 @@ impl<'a> Lower<'a> {
 
     fn bind(&mut self, name: &str, reg: Reg) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), reg);
+            scope.insert(name.to_string(), (reg, BindKind::Local));
+        }
+    }
+
+    /// Bind a named fn's self-binding / nullary ctor value: usable as a
+    /// value, but NOT a shadow at call sites (calls keep resolving through
+    /// func_map/ctor_map to a direct Call).
+    fn bind_fn(&mut self, name: &str, reg: Reg) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_string(), (reg, BindKind::Fn));
         }
     }
 
     fn lookup(&self, name: &str) -> Option<Reg> {
         for scope in self.scopes.iter().rev() {
-            if let Some(&r) = scope.get(name) {
+            if let Some(&(r, _)) = scope.get(name) {
                 return Some(r);
+            }
+        }
+        None
+    }
+
+    /// The innermost binding of `name`, only if it is a genuine LOCAL
+    /// (let / param / pattern) — the kind of binding that shadows
+    /// builtins/operators/functions at call sites.
+    fn lookup_local(&self, name: &str) -> Option<Reg> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(&(r, kind)) = scope.get(name) {
+                return (kind == BindKind::Local).then_some(r);
             }
         }
         None
@@ -779,10 +815,11 @@ impl<'a> Lower<'a> {
             self.next_reg = saved_next_reg;
             self.scopes = saved_scopes;
 
-            // Bind function name in current scope
+            // Bind function name in current scope (value form; calls still
+            // resolve through func_map to a direct Call)
             let r = self.reg();
             self.emit(Op::Close(r, func_id, Vec::new(), span));
-            self.bind(&name, r);
+            self.bind_fn(&name, r);
             r
         } else {
             // Anonymous lambda: [fn [params] body...]
@@ -808,7 +845,7 @@ impl<'a> Lower<'a> {
             // as a free variable so the closure captures the local, not the
             // builtin.
             let resolve = |name: &str| -> bool {
-                self.lookup(name).is_none()
+                self.lookup_local(name).is_none()
                     && (self.resolve_builtin(name).is_some() || is_operator(name))
             };
             let mut free_vars = Vec::new();
@@ -1020,7 +1057,7 @@ impl<'a> Lower<'a> {
 
         let r = self.reg();
         self.emit(Op::Close(r, func_id, Vec::new(), span));
-        self.bind(name, r);
+        self.bind_fn(name, r);
         r
     }
 
@@ -1429,7 +1466,7 @@ impl<'a> Lower<'a> {
                     // Try builtin recognition (thread-last: append current as last arg)
                     if let ExprKind::Symbol(name) = &head.kind {
                         // Local bindings shadow builtins here too.
-                        if let Some(local) = self.lookup(name) {
+                        if let Some(local) = self.lookup_local(name) {
                             let mut all_args = explicit_args;
                             all_args.push(current);
                             let r = self.reg();
@@ -1481,7 +1518,7 @@ impl<'a> Lower<'a> {
                 }
                 ExprKind::Symbol(name) => {
                     // Single symbol step: [pipe x f] → [f x]
-                    if let Some(local) = self.lookup(name) {
+                    if let Some(local) = self.lookup_local(name) {
                         let r = self.reg();
                         self.emit(Op::Invoke(r, local, vec![current], step.span));
                         current = r;
@@ -1681,7 +1718,7 @@ impl<'a> Lower<'a> {
                                 // As in lower_fn: a lexically shadowed name is
                                 // a free var to capture, not a builtin.
                                 let resolve = |name: &str| -> bool {
-                                    self.lookup(name).is_none()
+                                    self.lookup_local(name).is_none()
                                         && (self.resolve_builtin(name).is_some()
                                             || is_operator(name))
                                 };
@@ -1911,7 +1948,7 @@ impl<'a> Lower<'a> {
             // like the interpreter (where builtins live in the same env as
             // locals and inner scopes win). Without this check `[let + my-fn]
             // [+ 3 4]` silently called the builtin `+`.
-            if let Some(local) = self.lookup(name) {
+            if let Some(local) = self.lookup_local(name) {
                 let args: Vec<Reg> = arg_exprs.iter().map(|e| self.lower_expr(e)).collect();
                 let r = self.reg();
                 self.emit(Op::Invoke(r, local, args, span));
@@ -2003,7 +2040,7 @@ impl<'a> Lower<'a> {
                                 // Nullary — register as a value
                                 let r = self.reg();
                                 self.emit(Op::Adt(r, tag, Vec::new(), arg.span));
-                                self.bind(name, r);
+                                self.bind_fn(name, r);
                             }
                         }
                     }
@@ -2012,7 +2049,7 @@ impl<'a> Lower<'a> {
                     if let Some(&(tag, _)) = self.ctor_map.get(name.as_str()) {
                         let r = self.reg();
                         self.emit(Op::Adt(r, tag, Vec::new(), arg.span));
-                        self.bind(name, r);
+                        self.bind_fn(name, r);
                     }
                 }
                 _ => {}
