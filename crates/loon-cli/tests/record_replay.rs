@@ -98,7 +98,7 @@ fn replay_reproduces_recorded_run_exactly() {
   [let ms [IO.millis]]
   [let roll [% ms 97]]
   [println "roll is \(roll)"]
-  [println "id \(IO.uuid)"]]
+  [println "id" [IO.uuid]]]
 "#,
     );
     let trace = dir.join("trace.oo");
@@ -106,6 +106,14 @@ fn replay_reproduces_recorded_run_exactly() {
     let recorded = loon(&run_args(&prog, "--record", &trace));
     assert!(recorded.ok, "record run failed:\n{}", recorded.stderr);
     assert!(trace.exists(), "trace file was not written");
+    // The uuid must be genuinely recorded (not a constant): the replay
+    // assertions below only prove something if a nondeterministic value is
+    // actually fed back from the trace.
+    let content = std::fs::read_to_string(&trace).unwrap();
+    assert!(
+        content.contains(":op \"uuid\""),
+        "trace should contain a recorded uuid entry:\n{content}"
+    );
 
     let replay1 = loon(&replay_args(&trace, &prog));
     assert!(replay1.ok, "first replay failed:\n{}", replay1.stderr);
@@ -205,8 +213,15 @@ fn crash_trace_persists_and_replays_the_crash() {
     assert!(!r1.ok && !r2.ok, "replays must reproduce the crash");
     assert_eq!(recorded.stdout, r1.stdout, "crash-run stdout must replay");
     assert_eq!(r1.stdout, r2.stdout);
-    assert!(r1.stderr.contains("assertion failed"), "stderr:\n{}", r1.stderr);
-    assert_eq!(r1.stderr, r2.stderr, "even the crash report is deterministic");
+    assert!(
+        r1.stderr.contains("assertion failed"),
+        "stderr:\n{}",
+        r1.stderr
+    );
+    assert_eq!(
+        r1.stderr, r2.stderr,
+        "even the crash report is deterministic"
+    );
 }
 
 /// The bundled demo sample records and replays end-to-end. The demo crashes
@@ -309,6 +324,59 @@ fn leftover_trace_entries_warn() {
     );
 }
 
+/// Traces use the same .oo extension as programs, so a tab-completion slip
+/// could point --record at the program itself; that must be a clean error,
+/// not a silently destroyed source file.
+#[test]
+fn record_refuses_to_overwrite_the_program() {
+    let dir = scratch_dir();
+    let src = "[fn main [] [println [IO.millis]]]\n";
+    let prog = write_file(&dir, "selfie.oo", src);
+
+    let out = loon(&run_args(&prog, "--record", &prog));
+    assert!(!out.ok, "recording over the program itself must fail");
+    assert!(
+        out.stderr.contains("would overwrite the program"),
+        "stderr:\n{}",
+        out.stderr
+    );
+    assert_eq!(
+        std::fs::read_to_string(&prog).unwrap(),
+        src,
+        "the program source must be untouched"
+    );
+}
+
+/// Recorded strings containing control characters (including the lexer's
+/// U+0001/U+0002 interpolation sentinels) must produce a trace the replay
+/// loader can parse — the trace always reparses.
+#[test]
+fn control_chars_in_recorded_strings_replay() {
+    let dir = scratch_dir();
+    let data = dir.join("c.txt");
+    std::fs::write(&data, b"a\x01b\x02c\rd").unwrap();
+    let data_path = data.to_string_lossy().replace('\\', "/");
+    let prog = write_file(
+        &dir,
+        "readc.oo",
+        &format!("[fn main [] [println [len [IO.read-file \"{data_path}\"]]]]\n"),
+    );
+    let trace = dir.join("trace.oo");
+
+    let recorded = loon(&run_args(&prog, "--record", &trace));
+    assert!(recorded.ok, "record run failed:\n{}", recorded.stderr);
+    assert_eq!(recorded.stdout.trim(), "7");
+
+    std::fs::remove_file(&data).unwrap();
+    let replayed = loon(&replay_args(&trace, &prog));
+    assert!(
+        replayed.ok,
+        "replay must load the trace it just wrote:\n{}",
+        replayed.stderr
+    );
+    assert_eq!(recorded.stdout, replayed.stdout);
+}
+
 /// --record is an EIR VM feature; combining it with another backend is a
 /// clean error, not silent no-recording.
 #[test]
@@ -316,7 +384,7 @@ fn record_rejects_non_default_backends() {
     let dir = scratch_dir();
     let prog = write_file(&dir, "p.oo", "[fn main [] [println 1]]\n");
     let trace = dir.join("t.oo");
-    for flag in ["--legacy", "--wasm"] {
+    for flag in ["--legacy", "--wasm", "--native"] {
         let out = loon_str(&[
             "run",
             prog.to_str().unwrap(),
@@ -326,7 +394,8 @@ fn record_rejects_non_default_backends() {
         ]);
         assert!(!out.ok, "{flag} + --record should be rejected");
         assert!(
-            out.stderr.contains("--record requires the default EIR VM backend"),
+            out.stderr
+                .contains("--record requires the default EIR VM backend"),
             "stderr for {flag}:\n{}",
             out.stderr
         );

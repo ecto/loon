@@ -213,6 +213,23 @@ fn run_file(path: &PathBuf, record: Option<&std::path::Path>) {
     let base_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let result = match record {
         Some(trace_path) => {
+            // Creating the recorder truncates the trace file, and traces use
+            // the same .oo extension as programs — refuse to clobber the
+            // program with its own trace on a tab-completion slip.
+            let clobbers_program = trace_path == path.as_path()
+                || matches!(
+                    (std::fs::canonicalize(path), std::fs::canonicalize(trace_path)),
+                    (Ok(a), Ok(b)) if a == b
+                );
+            if clobbers_program {
+                eprintln!(
+                    "{}: --record would overwrite the program {} with its trace; \
+                     choose a different trace path (e.g. trace.oo)",
+                    "error".red().bold(),
+                    path.display()
+                );
+                std::process::exit(1);
+            }
             let recorder = match loon_lang::eir::replay::TraceRecorder::create(trace_path) {
                 Ok(r) => r,
                 Err(e) => {
