@@ -259,6 +259,10 @@ pub struct HeapStats {
     pub total_bytes: u64,
     /// Peak number of live objects (snapshot of heap length high-water mark).
     pub peak_objects: usize,
+    /// High-water mark of the frame stack (sampled at each Perform).
+    pub max_frames: usize,
+    /// High-water mark of the dynamic handler stack (sampled at each Perform).
+    pub max_handlers: usize,
 }
 
 /// Result of running the VM.
@@ -954,6 +958,30 @@ impl Vm {
 
             Op::Perform(dst, _eff_sid, op_sid, args, _evidence, _span) => {
                 let vals = self.read_regs(args);
+                // Perf telemetry: unbounded growth here is the O(N^2) signature
+                // (each perform re-scans/copies the stacks), so track highs.
+                self.heap_stats.max_frames = self.heap_stats.max_frames.max(self.frames.len());
+                self.heap_stats.max_handlers =
+                    self.heap_stats.max_handlers.max(self.handlers.len());
+                if std::env::var_os("LOON_TRACE_PERFORM").is_some() {
+                    let names: Vec<&str> = self
+                        .frames
+                        .iter()
+                        .map(|fr| {
+                            self.module.funcs[fr.func.0 as usize]
+                                .name
+                                .as_deref()
+                                .unwrap_or("anon")
+                        })
+                        .collect();
+                    eprintln!(
+                        "perform: frames={} handlers={} stack={:?} cur={}",
+                        self.frames.len(),
+                        self.handlers.len(),
+                        names,
+                        self.module.funcs[self.func.0 as usize].name.as_deref().unwrap_or("anon"),
+                    );
+                }
                 // Find the innermost handler for this operation on the dynamic
                 // stack, with its prompt depth. (Evidence is ignored: capturing
                 // a continuation needs the prompt boundary, which only the
@@ -2715,6 +2743,29 @@ mod tests {
             run_output(r#"[println [Process.env "LOON_TEST_VAR"]]"#),
             vec!["hello-env".to_string()]
         );
+    }
+
+    #[test]
+    fn vm_tail_resume_runs_in_constant_stack() {
+        // The syscall fast path: a handler clause ending in [resume ...] seals
+        // as a tail resume (End::TailInvoke), so a perform/resume loop must not
+        // grow the frame stack with iteration count. Before this, each cycle
+        // leaked the handler frame as a fresh prompt, the captured segment grew
+        // per iteration, and effect loops were O(N^2) time / O(N) memory.
+        let run_n = |n: i64| {
+            let src = format!(
+                "[effect Tick [next [Int] Int]] \
+                 [fn work [acc n] [if [<= n 0] acc [recur [Tick.next acc] [- n 1]]]] \
+                 [fn main [] [println [handle [work 0 {n}] [Tick.next a] [resume [+ a 1]]]]]"
+            );
+            let r = eval_eir(&src).expect("vm error");
+            assert_eq!(r.output, vec![n.to_string()]);
+            r.heap_stats.max_frames
+        };
+        let small = run_n(100);
+        let large = run_n(4000);
+        assert_eq!(small, large, "frame high-water mark must not scale with N");
+        assert!(large < 10, "expected O(1) frames, got {large}");
     }
 
     #[test]
