@@ -63,50 +63,49 @@ A reduced `Form` will not round-trip the existing `.oo`/`.loon` corpus.
 
 ---
 
-## 2. Effect-row representation  ⚠️ diverges from the plan
+## 2. Effect-row representation  ✅ now row-based (updated)
 
-The plan (Stage 3) assumes *"effect rows unify alongside type rows"* and a
-single shared row representation. **The current implementation does not do
-this.** There are two unrelated mechanisms:
+*(This section originally documented a divergence: effects were a flat
+`EffectSet` accumulated in a checker side-channel, with no tail variable and
+no unification. That is no longer true — the effect-rows track landed
+row-based inference in the Rust checker.)*
 
-- **Type-level rows** (for records) — true row types with a tail variable:
+The plan's assumption — *"effect rows unify alongside type rows"* — **now
+holds.** Both row mechanisms exist and are structurally analogous:
+
+- **Type-level rows** (for records) — row types with a tail variable:
   ```rust
-  // types/mod.rs:211
   Row(Vec<(String, Type)>, Option<TypeVar>)   // None = closed, Some = open
   ```
-  unified structurally by `unify_rows` (`types/mod.rs:592`).
+  unified structurally by `unify_rows` (types/mod.rs).
 
-- **Effect rows** — *not* rows at all, but a plain set of names:
+- **Effect rows** — real rows with an optional tail variable:
   ```rust
-  // types/mod.rs:220
-  pub struct EffectSet(pub BTreeSet<String>);   // union / subtract / subset
+  pub struct EffectRow {
+      pub labels: BTreeSet<String>,   // concrete effect labels
+      pub tail: Option<TypeVar>,      // None = closed, Some = open
+  }
   ```
-  attached via `Type::Effect(Box<Type>, EffectSet)` (`types/mod.rs:208`).
+  carried on function types as `Type::Fn(params, ret, EffectRow)` and as
+  `Type::Effects(EffectRow)` for tail-variable bindings, unified through
+  the main `unify` via `unify_effect_rows` (types/mod.rs), with an occurs
+  check for infinite rows.
 
-Crucially, **effect sets are *not* unified** through `unify`. The main
-unifier has no real `Effect` case — effects are tracked by a separate
-side-channel in the checker:
+The checker still keeps `fn_effects: HashMap<String, EffectRow>` and an
+ambient `current_fn_effects: EffectRow` (check/mod.rs), but inference is now
+**row unification**, not accumulation: performs push labels through the
+ambient row's tail; calls link the callee's instantiated row into the
+ambient row; `handle` subtracts handled labels and constrains the body row's
+tail so handled effects cannot leak through it. The row tail generalizes
+with let-polymorphism, so effect polymorphism (a `compose`/`twice` whose
+effect row is inferred from its function arguments) **is representable** —
+the homepage `compose` story now type-checks. Row mismatches surface as
+`E0403`.
 
-```rust
-// check/mod.rs:86
-pub fn_effects: HashMap<String, EffectSet>,   // per-function inferred effects
-current_fn_effects: EffectSet,                // accumulator for current body
-```
-
-Inference = **accumulation**, not row unification: calling `Effect.op`
-inserts the effect name into `current_fn_effects` (`check/mod.rs:2447`); calls
-to other functions union their `fn_effects` (`check/mod.rs:2717`); `handle`
-subtracts the handled effects (`check/mod.rs:2996`). There is *no* effect-row
-tail variable, so effect polymorphism (a `compose` whose effect row is
-inferred from its function arguments) is **not** representable today — the
-homepage `compose` story is aspirational relative to the checker.
-
-> **Decision needed (D1):** keep the existing `EffectSet` (set-of-names,
-> accumulated) for the self-hosted checker — matching what exists — or move to
-> real row-unified effect rows with a tail var (what the plan and homepage
-> describe, a genuine semantics change). The single "shared effect-row
-> representation" the plan wants does not exist yet, so Stage 0 cannot just
-> import it; we have to choose what to define.
+> **D1 status:** the decision below predates this change. A row-based
+> self-hosted checker can now aim for **differential parity with the Rust
+> checker on effect inference** — the "no bridge / parity given up"
+> rationale no longer applies.
 
 ---
 
@@ -248,10 +247,11 @@ honest about the doc/impl gaps. I want your call on D1–D3 before writing
 
 **D1 — Effect representation: row-based, no bridge.** The self-hosted
 frontend will define real effect rows (effect-name fields + an optional tail
-variable) and infer them by unification, dropping compatibility with the Rust
-checker's flat `EffectSet`. The homepage `compose` example becomes
-expressible. (Differential parity with the Rust checker is intentionally
-given up here.)
+variable) and infer them by unification. The homepage `compose` example
+becomes expressible. *(Update: the Rust checker has since moved to the same
+row-based representation — see §2 — so the original caveat "differential
+parity with the Rust checker is intentionally given up" no longer applies;
+parity on effect inference is back on the table.)*
 
 **D2 — Macro hygiene: scope sets.** The Loon expander will implement
 Flatt/Racket-style scope-set hygiene, honoring the docs. `Form` symbols carry

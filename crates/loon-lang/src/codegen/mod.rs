@@ -635,7 +635,13 @@ impl Compiler {
         self.next_fn_idx += 1;
         self.push_function(
             map_assoc,
-            MapsRuntime::gen_map_assoc(cr.vec_new_idx, cr.vec_push_idx, cr.vec_get_idx, val_eq, pair),
+            MapsRuntime::gen_map_assoc(
+                cr.vec_new_idx,
+                cr.vec_push_idx,
+                cr.vec_get_idx,
+                val_eq,
+                pair,
+            ),
         );
         self.maps_runtime = Some(MapsRuntime {
             val_eq_idx: val_eq,
@@ -662,7 +668,11 @@ impl Compiler {
         idx
     }
     fn ensure_str_case(&mut self, upper: bool) -> u32 {
-        if let Some(idx) = if upper { self.uppercase_idx } else { self.lowercase_idx } {
+        if let Some(idx) = if upper {
+            self.uppercase_idx
+        } else {
+            self.lowercase_idx
+        } {
             return idx;
         }
         // Allocates a new string from the bump heap, so the memory + heap-ptr
@@ -717,7 +727,10 @@ impl Compiler {
         // (which produces no output). Synthesize an empty `main` so the wasm
         // backend still has an entry point and matches that behaviour, rather
         // than failing with "no main export".
-        let span = stmts.first().map(|s| s.span).unwrap_or(crate::syntax::Span::ZERO);
+        let span = stmts
+            .first()
+            .map(|s| s.span)
+            .unwrap_or(crate::syntax::Span::ZERO);
         let mut main_items = vec![
             Expr::new(ExprKind::Symbol("fn".into()), span),
             Expr::new(ExprKind::Symbol("main".into()), span),
@@ -871,8 +884,10 @@ impl Compiler {
                                         (parts.first().map(|e| &e.kind), parts.last())
                                     {
                                         if parts.len() >= 2 {
-                                            let key =
-                                                format!("{name}#{}", Self::parse_params(params).len());
+                                            let key = format!(
+                                                "{name}#{}",
+                                                Self::parse_params(params).len()
+                                            );
                                             returns.push((key, last));
                                         }
                                     }
@@ -908,7 +923,9 @@ impl Compiler {
             ExprKind::List(items) => match items.first().map(|e| &e.kind) {
                 Some(ExprKind::Symbol(s)) => match s.as_str() {
                     "str" | "str-concat" | "substring" | "lowercase" | "uppercase" => true,
-                    "resume" => items.get(1).is_some_and(|e| Self::expr_returns_string(e, fns)),
+                    "resume" => items
+                        .get(1)
+                        .is_some_and(|e| Self::expr_returns_string(e, fns)),
                     // A `handle` yields a string when every handler-clause body
                     // does (tail-resumptive handlers feed those values back as
                     // the operations' results).
@@ -921,7 +938,9 @@ impl Compiler {
                         }
                         all
                     }
-                    "do" => items.last().is_some_and(|e| Self::expr_returns_string(e, fns)),
+                    "do" => items
+                        .last()
+                        .is_some_and(|e| Self::expr_returns_string(e, fns)),
                     "if" => {
                         items.len() >= 4
                             && Self::expr_returns_string(&items[2], fns)
@@ -1025,7 +1044,10 @@ impl Compiler {
             .iter()
             .map(|&i| old_fns[i].take().unwrap())
             .collect();
-        self.fn_indices = kept_fn_indices.iter().map(|&i| remap[&old_ids[i]]).collect();
+        self.fn_indices = kept_fn_indices
+            .iter()
+            .map(|&i| remap[&old_ids[i]])
+            .collect();
         // Rewrite Call / ReturnCall targets
         for func in &mut self.functions {
             for instr in &mut func.instructions {
@@ -1217,9 +1239,7 @@ impl Compiler {
                                     || self.expr_is_float(&items[2], floats))
                         }
                         "do" => items.last().is_some_and(|e| self.expr_is_float(e, floats)),
-                        "if" => {
-                            items.len() >= 3 && self.expr_is_float(&items[2], floats)
-                        }
+                        "if" => items.len() >= 3 && self.expr_is_float(&items[2], floats),
                         "let" => items.last().is_some_and(|e| self.expr_is_float(e, floats)),
                         "match" => self.match_is_float(items, floats),
                         // Dimensioned quantities carry a float magnitude.
@@ -1243,11 +1263,7 @@ impl Compiler {
     }
     /// A `match` is float when every arm body is float, evaluated with the arm's
     /// destructured ADT fields bound to their declared float-ness.
-    fn match_is_float(
-        &self,
-        items: &[Expr],
-        floats: &std::collections::HashSet<String>,
-    ) -> bool {
+    fn match_is_float(&self, items: &[Expr], floats: &std::collections::HashSet<String>) -> bool {
         let mut i = 2; // items[0]=match, items[1]=scrutinee
         let mut saw_arm = false;
         while i + 1 < items.len() {
@@ -1560,7 +1576,8 @@ impl Compiler {
                     ctx.instructions.push(WasmInstruction::LocalGet(slot));
                     ctx.instructions.push(WasmInstruction::I32WrapI64);
                     ctx.instructions.push(WasmInstruction::I64Load(3, 16));
-                    ctx.instructions.push(WasmInstruction::I64Const((j * 8) as i64));
+                    ctx.instructions
+                        .push(WasmInstruction::I64Const((j * 8) as i64));
                     ctx.instructions.push(WasmInstruction::I64Add);
                     ctx.instructions.push(WasmInstruction::I32WrapI64);
                     ctx.instructions.push(WasmInstruction::I64Load(3, 0));
@@ -2031,7 +2048,8 @@ impl<'a> FnCtx<'a> {
         let (to, tl) = self.compiler.intern_string("true");
         let (fo, fl) = self.compiler.intern_string("false");
         self.instructions.push(W::I64Eqz);
-        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+        self.instructions
+            .push(W::If(BlockType::Result(ValType::I64)));
         self.instructions
             .push(W::I64Const(((fo as i64) << 32) | fl as i64));
         self.instructions.push(W::Else);
@@ -2242,7 +2260,8 @@ impl<'a> FnCtx<'a> {
                         // `else` (mirrors the non-tail `if`).
                         self.compile_expr(&items[1])?;
                         self.instructions.push(W::I64Eqz);
-                        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+                        self.instructions
+                            .push(W::If(BlockType::Result(ValType::I64)));
                         if items.len() > 3 {
                             self.compile_tail(&items[3])?;
                         } else {
@@ -2264,7 +2283,8 @@ impl<'a> FnCtx<'a> {
                     "when" if items.len() >= 3 => {
                         self.compile_expr(&items[1])?;
                         self.instructions.push(W::I64Eqz);
-                        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+                        self.instructions
+                            .push(W::If(BlockType::Result(ValType::I64)));
                         self.instructions.push(W::I64Const(0));
                         self.instructions.push(W::Else);
                         let last = items.len() - 1;
@@ -2491,8 +2511,9 @@ impl<'a> FnCtx<'a> {
                     let args = &items[1..];
                     if args.is_empty() {
                         let (offset, len) = self.compiler.intern_string("");
-                        self.instructions
-                            .push(WasmInstruction::I64Const(((offset as i64) << 32) | len as i64));
+                        self.instructions.push(WasmInstruction::I64Const(
+                            ((offset as i64) << 32) | len as i64,
+                        ));
                         return Ok(());
                     }
                     self.compiler.ensure_string_runtime();
@@ -2690,10 +2711,7 @@ impl<'a> FnCtx<'a> {
                 "when" => {
                     // [when c body…] -> [if c [do body…] 0]
                     let cond = items[1].clone();
-                    let mut body = vec![Expr::new(
-                        ExprKind::Symbol("do".into()),
-                        items[0].span,
-                    )];
+                    let mut body = vec![Expr::new(ExprKind::Symbol("do".into()), items[0].span)];
                     body.extend(items[2..].iter().cloned());
                     let do_expr = Expr::new(ExprKind::List(body), items[0].span);
                     let zero = Expr::new(ExprKind::Int(0), items[0].span);
@@ -2711,10 +2729,7 @@ impl<'a> FnCtx<'a> {
                 "unless" => {
                     // [unless c body…] -> [if c 0 [do body…]]
                     let cond = items[1].clone();
-                    let mut body = vec![Expr::new(
-                        ExprKind::Symbol("do".into()),
-                        items[0].span,
-                    )];
+                    let mut body = vec![Expr::new(ExprKind::Symbol("do".into()), items[0].span)];
                     body.extend(items[2..].iter().cloned());
                     let do_expr = Expr::new(ExprKind::List(body), items[0].span);
                     let zero = Expr::new(ExprKind::Int(0), items[0].span);
@@ -2914,7 +2929,8 @@ impl<'a> FnCtx<'a> {
                             _ => {}
                         }
                     }
-                    self.instructions.push(WasmInstruction::Br(depth.max(0) as u32));
+                    self.instructions
+                        .push(WasmInstruction::Br(depth.max(0) as u32));
                     return Ok(());
                 }
                 "map" | "filter" | "each" => {
@@ -3047,12 +3063,14 @@ impl<'a> FnCtx<'a> {
                 // just below the effect-handler slots.
                 const STATE_CELL: i32 = 248;
                 if effect == "State" && op == "get" {
-                    self.instructions.push(WasmInstruction::I32Const(STATE_CELL));
+                    self.instructions
+                        .push(WasmInstruction::I32Const(STATE_CELL));
                     self.instructions.push(WasmInstruction::I64Load(3, 0));
                     return Ok(());
                 }
                 if effect == "State" && op == "put" {
-                    self.instructions.push(WasmInstruction::I32Const(STATE_CELL));
+                    self.instructions
+                        .push(WasmInstruction::I32Const(STATE_CELL));
                     self.compile_expr(&items[1])?;
                     self.instructions.push(WasmInstruction::I64Store(3, 0));
                     self.instructions.push(WasmInstruction::I64Const(0));
@@ -3072,7 +3090,8 @@ impl<'a> FnCtx<'a> {
                         self.instructions.push(W::I64Load(3, 0));
                         self.instructions.push(W::LocalTee(h));
                         self.instructions.push(W::I64Eqz);
-                        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+                        self.instructions
+                            .push(W::If(BlockType::Result(ValType::I64)));
                         // No handler installed → default host import.
                         let import_idx = self.compiler.get_or_create_effect_import(effect, op);
                         for arg in &items[1..] {
@@ -3236,10 +3255,7 @@ impl<'a> FnCtx<'a> {
             let is_default = match &pattern.kind {
                 ExprKind::Symbol(s) => {
                     s == "_"
-                        || !matches!(
-                            self.compiler.adt_constructors.get(s.as_str()),
-                            Some((_, 0))
-                        )
+                        || !matches!(self.compiler.adt_constructors.get(s.as_str()), Some((_, 0)))
                 }
                 _ => false,
             };
@@ -3275,7 +3291,8 @@ impl<'a> FnCtx<'a> {
                 self.instructions.push(WasmInstruction::LocalGet(scrutinee));
                 self.instructions.push(WasmInstruction::I32WrapI64);
                 self.instructions.push(WasmInstruction::I64Load(3, 0));
-                self.instructions.push(WasmInstruction::I64Const(tag as i64));
+                self.instructions
+                    .push(WasmInstruction::I64Const(tag as i64));
                 self.instructions.push(WasmInstruction::I64Eq);
                 self.instructions
                     .push(WasmInstruction::If(BlockType::Result(ValType::I64)));
@@ -3325,7 +3342,8 @@ impl<'a> FnCtx<'a> {
                     self.instructions.push(WasmInstruction::LocalGet(scrutinee));
                     self.instructions.push(WasmInstruction::I32WrapI64);
                     self.instructions.push(WasmInstruction::I64Load(3, 0));
-                    self.instructions.push(WasmInstruction::I64Const(tag as i64));
+                    self.instructions
+                        .push(WasmInstruction::I64Const(tag as i64));
                     self.instructions.push(WasmInstruction::I64Eq);
                 }
                 _ => return Err("match: unsupported pattern".into()),
@@ -3447,7 +3465,8 @@ impl<'a> FnCtx<'a> {
                     cctx.instructions.push(WasmInstruction::LocalGet(slot));
                     cctx.instructions.push(WasmInstruction::I32WrapI64);
                     cctx.instructions.push(WasmInstruction::I64Load(3, 16));
-                    cctx.instructions.push(WasmInstruction::I64Const((j * 8) as i64));
+                    cctx.instructions
+                        .push(WasmInstruction::I64Const((j * 8) as i64));
                     cctx.instructions.push(WasmInstruction::I64Add);
                     cctx.instructions.push(WasmInstruction::I32WrapI64);
                     cctx.instructions.push(WasmInstruction::I64Load(3, 0));
@@ -3507,8 +3526,7 @@ impl<'a> FnCtx<'a> {
     /// value first.
     fn prepare_fn_arg(&mut self, f: &Expr) -> Result<FnRepr, String> {
         match &f.kind {
-            ExprKind::List(items)
-                if matches!(items.first().map(|e| &e.kind), Some(ExprKind::Symbol(s)) if s == "fn") =>
+            ExprKind::List(items) if matches!(items.first().map(|e| &e.kind), Some(ExprKind::Symbol(s)) if s == "fn") =>
             {
                 self.compile_closure(&items[1..])?;
                 let l = self.alloc_local();
@@ -3528,7 +3546,9 @@ impl<'a> FnCtx<'a> {
                 } else if name == "lowercase" || name == "uppercase" {
                     // Unary string builtins usable as HOF arguments, e.g.
                     // `[map lowercase words]`.
-                    Ok(FnRepr::Named(self.compiler.ensure_str_case(name == "uppercase")))
+                    Ok(FnRepr::Named(
+                        self.compiler.ensure_str_case(name == "uppercase"),
+                    ))
                 } else {
                     Err(format!("codegen: HOF function '{name}' not found"))
                 }
@@ -3862,7 +3882,8 @@ impl<'a> FnCtx<'a> {
         self.instructions.push(W::LocalSet(group));
         self.instructions.push(W::LocalGet(group));
         self.instructions.push(W::I64Eqz);
-        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+        self.instructions
+            .push(W::If(BlockType::Result(ValType::I64)));
         self.instructions.push(W::Call(rt.vec_new_idx));
         self.instructions.push(W::Else);
         self.instructions.push(W::LocalGet(group));
@@ -3903,8 +3924,7 @@ impl<'a> FnCtx<'a> {
         self.compiler.force_heap = true;
         let addr = self.compiler.handler_slot_addr("Fail.fail");
         match &items[2].kind {
-            ExprKind::List(hitems)
-                if matches!(hitems.first().map(|e| &e.kind), Some(ExprKind::Symbol(s)) if s == "fn") =>
+            ExprKind::List(hitems) if matches!(hitems.first().map(|e| &e.kind), Some(ExprKind::Symbol(s)) if s == "fn") =>
             {
                 self.compile_closure(&hitems[1..])?;
             }
@@ -3989,10 +4009,8 @@ impl<'a> FnCtx<'a> {
                             let addr = self.compiler.handler_slot_addr(&format!("{eff}.{op}"));
                             // The handler closure takes the operation's parameters
                             // (zero or more), matching the call site.
-                            let paramlist = Expr::new(
-                                ExprKind::List(pitems[1..].to_vec()),
-                                pat.span,
-                            );
+                            let paramlist =
+                                Expr::new(ExprKind::List(pitems[1..].to_vec()), pat.span);
                             // Build + store the handler closure, save old slot.
                             self.compile_closure(&[paramlist, hbody.clone()])?;
                             let htmp = self.alloc_local();
@@ -4211,7 +4229,8 @@ impl<'a> FnCtx<'a> {
         self.instructions.push(W::LocalGet(v));
         self.instructions.push(W::I64Const(0x1_0000_0000));
         self.instructions.push(W::I64GeS);
-        self.instructions.push(W::If(BlockType::Result(ValType::I64)));
+        self.instructions
+            .push(W::If(BlockType::Result(ValType::I64)));
         self.instructions.push(W::LocalGet(v));
         self.instructions.push(W::I64Const(0xFFFF_FFFF));
         self.instructions.push(W::I64And);
@@ -4479,16 +4498,20 @@ mod tests {
     #[test]
     fn compile_loop_recur_is_valid() {
         valid("[fn main [] [println [loop [i 0 a 0] [if [>= i 5] a [recur [+ i 1] [+ a i]]]]]]");
-        valid("[fn sumto [n] [loop [i 1 a 0] [if [> i n] a [recur [+ i 1] [+ a i]]]]] \
-               [fn main [] [println [sumto 100]]]");
+        valid(
+            "[fn sumto [n] [loop [i 1 a 0] [if [> i n] a [recur [+ i 1] [+ a i]]]]] \
+               [fn main [] [println [sumto 100]]]",
+        );
     }
 
     #[test]
     fn compile_match_is_valid() {
         valid("[type O [Some Int] [None]] [fn main [] [println [match [Some 5] [Some n] n [None] 0]]]");
         valid("[type C [R] [G] [B]] [fn f [c] [match c [R] 1 [G] 2 [B] 3]] [fn main [] [println [f [B]]]]");
-        valid("[type L [Cons Int L] [Nil]] [fn s [xs] [match xs [Cons h t] [+ h [s t]] [Nil] 0]] \
-               [fn main [] [println [s [Cons 10 [Cons 20 [Nil]]]]]]");
+        valid(
+            "[type L [Cons Int L] [Nil]] [fn s [xs] [match xs [Cons h t] [+ h [s t]] [Nil] 0]] \
+               [fn main [] [println [s [Cons 10 [Cons 20 [Nil]]]]]]",
+        );
     }
 
     #[test]
@@ -4572,7 +4595,9 @@ mod tests {
         // range + map/filter/each/fold over vectors, with both lambda-literal
         // and named-function arguments, applied per element via the table.
         valid(r#"[fn main [] [each [fn [x] [println x]] [range 0 4]]]"#);
-        valid(r#"[fn sq [x] [* x x]] [fn main [] [each [fn [x] [println x]] [map sq [range 1 5]]]]"#);
+        valid(
+            r#"[fn sq [x] [* x x]] [fn main [] [each [fn [x] [println x]] [map sq [range 1 5]]]]"#,
+        );
         valid(r#"[fn main [] [each [fn [x] [println x]] [filter [fn [x] [> x 2]] [range 0 6]]]]"#);
         valid(r#"[fn main [] [println [fold 0 [fn [acc x] [+ acc x]] [range 1 11]]]]"#);
         valid(

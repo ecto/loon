@@ -469,6 +469,69 @@ Callers handle effects at the call site:
   [Fail.fail msg]     => [Config.default]]
 ```
 
+### Effect Rows — Inference-Only Polymorphism
+
+Effects are inferred as **rows**: a set of concrete effect labels plus an
+optional polymorphic *tail* variable, mirroring the record row polymorphism
+used for structural records. There is **no new syntax** — rows exist only
+inside the checker, and diagnostics render them readably (`IO`, `IO + Fail`,
+or `IO + e` when the tail matters). Row unification failures report as
+`E0403` (effect mismatch), in the E04xx effect family, with its own
+`loon explain` tutorial.
+
+The tail is what lets higher-order functions generalize over the effects of
+their arguments. `twice` below has type `∀a e. ((a → a | e), a) → a | e` —
+its effects *are* its argument's effects:
+
+```loon
+[fn twice [f x] [f [f x]]]
+
+[twice [fn [x] [* x 2]] 3]                ; pure — no effects
+[twice [fn [p] [IO.read-file p]] "cfg"]   ; performs IO
+```
+
+Both uses come from ONE definition: the row tail generalizes with
+let-polymorphism and instantiates fresh at every use, so a pure use stays
+pure while an effectful use carries its lambda's effects. Builtins like
+`map`, `filter`, and `fold` are effect-polymorphic the same way — mapping an
+IO lambda makes the call site perform IO; mapping a pure one doesn't.
+
+`[handle ...]` subtracts the handled labels from the body's row. When the
+body's row has an open tail (e.g. the body calls a function argument), the
+handle boundary **constrains the tail** by unifying the body row with
+`{handled… | fresh}`: every handled label is forced into the concrete part
+of the row — and of every row linked to it — so a handled effect can never
+leak back out through the tail at some later call site. Unhandled effects
+still flow out through the (fresh) residual tail. This keeps rows compatible
+with evidence-passing compilation: at any concrete call site the
+instantiated row resolves to concrete labels, which is exactly what the EIR
+backend threads evidence by.
+
+Because the boundary constraint works by *equality* unification (like
+Koka's), forcing labels into linked rows needs a correction and has one
+known imprecision:
+
+- **Aliased rows are scrubbed.** When the body row is aliased with the
+  enclosing function's own row — a recursive self-call inside the handle,
+  or a parameter already called before it — the boundary would bake the
+  handled label into the function's own row. The checker scrubs those
+  labels back out of the enclosing chain, keeping labels that were
+  performed outside the handle or by a handler clause (clauses run outside
+  the handled region). So `[fn weird [n] ... [handle [+ [A.a] [weird ...]]
+  [A.a] [resume 1]]]` infers a **clean** row for `weird`.
+- **Post-handle calls over-approximate.** A parameter called inside a
+  handle keeps the handled label concretely in its row (that is the
+  no-leak guarantee). If the same parameter is called again *after* the
+  handle, that later call re-absorbs the label, so the function — and
+  callers passing even a *pure* argument — report the handled effect.
+  Effects are a may-analysis, so this is sound but imprecise; precision
+  here would need subsumption-based row typing. Pinned by
+  `effect_row_param_called_after_handle_overapproximates`.
+
+Effect annotations (`#{IO Fail}`) and `[sig]` keep their assertion
+semantics: annotations check that every inferred concrete label is declared;
+sigs constrain value types and never fight the inferred row.
+
 ### Error Handling — `Result` and `?` as Sugar
 
 `Result` is Loon's conventional error type. The `?` operator is sugar for performing and handling the `Fail` effect:

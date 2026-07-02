@@ -33,6 +33,7 @@ pub enum ErrorCode {
     E0400, // unhandled effect
     E0401, // undeclared effect
     E0402, // unknown effect operation
+    E0403, // effect mismatch
 
     // Module errors
     E0500, // unresolved module
@@ -65,6 +66,7 @@ impl ErrorCode {
             ErrorCode::E0400 => "E0400",
             ErrorCode::E0401 => "E0401",
             ErrorCode::E0402 => "E0402",
+            ErrorCode::E0403 => "E0403",
             ErrorCode::E0500 => "E0500",
             ErrorCode::E0501 => "E0501",
             ErrorCode::E0502 => "E0502",
@@ -89,7 +91,7 @@ impl ErrorCode {
             | ErrorCode::E0207
             | ErrorCode::E0208 => "type",
             ErrorCode::E0300 | ErrorCode::E0301 | ErrorCode::E0302 => "ownership",
-            ErrorCode::E0400 | ErrorCode::E0401 | ErrorCode::E0402 => "effect",
+            ErrorCode::E0400 | ErrorCode::E0401 | ErrorCode::E0402 | ErrorCode::E0403 => "effect",
             ErrorCode::E0500 | ErrorCode::E0501 | ErrorCode::E0502 => "module",
             ErrorCode::W0100 => "warning",
         }
@@ -116,6 +118,7 @@ impl ErrorCode {
             ErrorCode::E0400 => "unhandled effect",
             ErrorCode::E0401 => "undeclared effect",
             ErrorCode::E0402 => "unknown effect operation",
+            ErrorCode::E0403 => "effect mismatch",
             ErrorCode::E0500 => "unresolved module",
             ErrorCode::E0501 => "private symbol",
             ErrorCode::E0502 => "circular dependency",

@@ -958,6 +958,7 @@ fn explain_error(code: &str) {
         "E0206" => Some(ErrorCode::E0206),
         "E0207" => Some(ErrorCode::E0207),
         "E0401" => Some(ErrorCode::E0401),
+        "E0403" => Some(ErrorCode::E0403),
         "E0500" => Some(ErrorCode::E0500),
         "E0501" => Some(ErrorCode::E0501),
         "E0502" => Some(ErrorCode::E0502),
