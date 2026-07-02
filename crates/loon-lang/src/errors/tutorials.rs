@@ -45,6 +45,7 @@ pub fn get_tutorial(code: ErrorCode) -> Option<Tutorial> {
         ErrorCode::E0400 => Some(tutorial_unhandled_effect()),
         ErrorCode::E0401 => Some(tutorial_undeclared_effect()),
         ErrorCode::E0402 => None,
+        ErrorCode::E0403 => Some(tutorial_effect_mismatch()),
         ErrorCode::E0500 => Some(tutorial_unresolved_module()),
         ErrorCode::E0501 => Some(tutorial_private_symbol()),
         ErrorCode::E0502 => Some(tutorial_circular_dependency()),
@@ -638,6 +639,51 @@ fn tutorial_undeclared_effect() -> Tutorial {
             TutorialStep::Try {
                 prompt: "Write a pure function with no effects.".to_string(),
                 hint: "Try: [fn square [x] [* x x]] [square 5]".to_string(),
+                expected_output: None,
+            },
+        ],
+    }
+}
+
+fn tutorial_effect_mismatch() -> Tutorial {
+    Tutorial {
+        code: ErrorCode::E0403,
+        title: "Effect mismatch".to_string(),
+        steps: vec![
+            TutorialStep::Text(
+                "Loon infers an effect row for every function: the set of \
+                 effects it may perform, like `IO + e`. This error occurs when \
+                 two effect rows can't be unified — most often a function \
+                 constrained to be pure (or to a fixed effect set) is used \
+                 somewhere that performs an additional effect."
+                    .to_string(),
+            ),
+            TutorialStep::Demo {
+                code: r#"[fn twice [f x] / #{}
+  [f [f x]]]
+[twice [fn [n] [do [IO.println "tick"] n]] 1]
+;; error: effect mismatch: `pure` is not allowed to perform `IO`"#
+                    .to_string(),
+                explanation: "The `#{}` annotation closes twice's effect row to \
+                              `pure`, but the lambda argument performs IO, so the \
+                              rows can't unify."
+                    .to_string(),
+            },
+            TutorialStep::Fix {
+                before: r#"[fn twice [f x] / #{} [f [f x]]]"#.to_string(),
+                after: r#"[fn twice [f x] [f [f x]]]"#.to_string(),
+                explanation: "Drop the closed annotation so the row stays open \
+                              (inference gives `twice` a polymorphic tail and it \
+                              inherits f's effects), add the effect to the set, \
+                              or handle the effect with a `handle` block."
+                    .to_string(),
+            },
+            TutorialStep::Try {
+                prompt: "Write a higher-order function without an effect annotation \
+                         and pass it an IO lambda."
+                    .to_string(),
+                hint: "Try: [fn twice [f x] [f [f x]]] [twice [fn [n] [do [IO.println \"tick\"] n]] 1]"
+                    .to_string(),
                 expected_output: None,
             },
         ],

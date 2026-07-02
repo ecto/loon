@@ -475,7 +475,9 @@ Effects are inferred as **rows**: a set of concrete effect labels plus an
 optional polymorphic *tail* variable, mirroring the record row polymorphism
 used for structural records. There is **no new syntax** — rows exist only
 inside the checker, and diagnostics render them readably (`IO`, `IO + Fail`,
-or `IO + e` when the tail matters).
+or `IO + e` when the tail matters). Row unification failures report as
+`E0403` (effect mismatch), in the E04xx effect family, with its own
+`loon explain` tutorial.
 
 The tail is what lets higher-order functions generalize over the effects of
 their arguments. `twice` below has type `∀a e. ((a → a | e), a) → a | e` —

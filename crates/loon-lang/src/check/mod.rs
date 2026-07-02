@@ -2565,6 +2565,9 @@ impl Checker {
             ErrorCode::E0202
         } else if e.message.contains("field mismatch") || e.message.contains("missing fields") {
             ErrorCode::E0207
+        } else if e.message.contains("effect mismatch") || e.message.contains("infinite effect row")
+        {
+            ErrorCode::E0403
         } else {
             ErrorCode::E0200
         };
@@ -2585,6 +2588,10 @@ impl Checker {
             diag = diag
                 .with_why("the record fields do not match")
                 .with_fix("add or remove fields to make the records compatible");
+        } else if code == ErrorCode::E0403 {
+            diag = diag
+                .with_why("the effect rows are incompatible: one side performs an effect the other does not allow")
+                .with_fix("handle the effect with a `handle` block, or widen the effect annotation (e.g. add the effect to the `#{...}` set)");
         }
         self.errors.push(diag);
     }
@@ -5395,6 +5402,46 @@ mod tests {
         "#,
         );
         assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    #[test]
+    fn effect_row_mismatch_classified_as_e0403() {
+        // Effect-row unification failures must land in the E04xx effect
+        // family with effects-specific why/fix text, not fall through to the
+        // generic E0200 value-type mismatch.
+        let mut checker = Checker::new();
+        let a = EffectRow::closed(std::iter::once("IO".to_string()).collect());
+        let b = EffectRow::pure();
+        let err = unify_effect_rows(&mut checker.subst, &a, &b).unwrap_err();
+        checker.push_unify_error(err, Span::ZERO);
+        assert_eq!(checker.errors.len(), 1);
+        let diag = &checker.errors[0];
+        assert_eq!(diag.code, ErrorCode::E0403, "got: {diag:?}");
+        assert_eq!(diag.code.category(), "effect");
+        assert!(
+            diag.why.contains("effect"),
+            "why-text should talk about effects, got: {:?}",
+            diag.why
+        );
+    }
+
+    #[test]
+    fn infinite_effect_row_classified_as_e0403() {
+        // The row occurs check (`e ~ {IO | e}`) is also an effect error.
+        let mut checker = Checker::new();
+        let tail = checker.subst.fresh_var();
+        let a = EffectRow {
+            labels: std::iter::once("IO".to_string()).collect(),
+            tail: Some(tail),
+        };
+        let b = EffectRow {
+            labels: std::collections::BTreeSet::new(),
+            tail: Some(tail),
+        };
+        let err = unify_effect_rows(&mut checker.subst, &a, &b).unwrap_err();
+        checker.push_unify_error(err, Span::ZERO);
+        assert_eq!(checker.errors.len(), 1);
+        assert_eq!(checker.errors[0].code, ErrorCode::E0403);
     }
 
     // --- Row polymorphism / Record tests ---
