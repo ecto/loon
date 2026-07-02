@@ -148,6 +148,28 @@ expanding macro output so macros-producing-macros work. Two macro flavors:
 > promise and the plan's torture-test gate, but then the Loon expander is
 > *not* differentially identical to the Rust one on capture cases — by design).
 
+### The `and`/`or` desugar (expander-level, all backends)
+
+`[and ...]`/`[or ...]` in CALL position are desugared by the macro expander
+into nested `[if ...]` with gensym temps, so they short-circuit identically
+on the interpreter, the EIR VM, and wasm (all consume expanded programs).
+Value semantics match the old eager builtins: first falsy (`and`) / first
+truthy (`or`) operand, else the last one; `[and]` → `true`, `[or]` → `false`.
+Three deliberate consequences (all pinned in the conformance corpus):
+
+- **Call-position `and`/`or` are effectively special forms.** The rewrite
+  runs before any scope information exists, so a local binding named
+  `and`/`or` cannot shadow them at call sites (`and-or-shadow.oo` pins this
+  on every backend). Every other operator/builtin IS shadowable by a local.
+- **Value-position `and`/`or` fall back to the eager variadic builtin on the
+  interpreter only.** The EIR VM and wasm have no callable builtin VALUES
+  (a pre-existing limit that applies to `+` etc. as well), so `[let f and]`
+  errors there — pinned by `and-or-value.oo`.
+- **Pipe steps get a dedicated rewrite:** `[pipe v [or a]]` is thread-last
+  partial application (`[or a v]`), so and/or steps become unary-lambda
+  steps wrapping the desugar (`expand_pipe`) instead of being desugared in
+  place — pinned by `pipe-and-or.oo`.
+
 ---
 
 ## 4. Codegen target  ⚠️ runtime is one-shot, plan recommends multi-shot
