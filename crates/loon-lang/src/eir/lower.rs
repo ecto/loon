@@ -1445,6 +1445,30 @@ impl<'a> Lower<'a> {
                             current = r;
                             continue;
                         }
+                        // Operator partial step, e.g. [pipe 5 [+ 1]] → [+ 1 5]
+                        // (thread-last). The interpreter supports this because
+                        // operators are ordinary env functions there.
+                        if explicit_args.len() == 1 {
+                            if let Some(binop) = match name.as_str() {
+                                "+" => Some(BinOp::Add),
+                                "-" => Some(BinOp::Sub),
+                                "*" => Some(BinOp::Mul),
+                                "/" => Some(BinOp::Div),
+                                "%" => Some(BinOp::Rem),
+                                "=" => Some(BinOp::Eq),
+                                "!=" => Some(BinOp::Ne),
+                                "<" => Some(BinOp::Lt),
+                                ">" => Some(BinOp::Gt),
+                                "<=" => Some(BinOp::Le),
+                                ">=" => Some(BinOp::Ge),
+                                _ => None,
+                            } {
+                                let r = self.reg();
+                                self.emit(Op::Bin(r, binop, explicit_args[0], current, step.span));
+                                current = r;
+                                continue;
+                            }
+                        }
                     }
 
                     // General case: indirect call

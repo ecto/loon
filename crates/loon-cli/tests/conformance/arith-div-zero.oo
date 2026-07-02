@@ -1,0 +1,6 @@
+; expect-fail: legacy — division by zero errors on the interpreter but
+; evaluates to () on the EIR VM; the backends disagree on the error class.
+; expect-fail: wasm — i64.div_s traps on zero, which surfaces as a wasmtime
+; trap, not the VM's silent () nor the interpreter's runtime error.
+[fn main []
+  [println [/ 1 0]]]

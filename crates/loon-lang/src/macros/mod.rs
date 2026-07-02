@@ -70,7 +70,6 @@ pub struct ExpansionStep {
 pub struct MacroExpander {
     macros: HashMap<String, MacroDef>,
     type_aware_macros: HashMap<String, MacroDef>,
-    #[allow(dead_code)]
     gensym_counter: u32,
     pub expansion_traces: HashMap<u32, ExpansionTrace>,
 }
@@ -91,7 +90,6 @@ impl MacroExpander {
         }
     }
 
-    #[allow(dead_code)]
     fn gensym(&mut self, name: &str) -> String {
         self.gensym_counter += 1;
         format!("__gensym_{name}_{}", self.gensym_counter)
@@ -694,7 +692,7 @@ fn collect_template_binders(
     params: &HashMap<String, Vec<Expr>>,
     out: &mut Vec<String>,
 ) {
-    let mut push = |name: &str, params: &HashMap<String, Vec<Expr>>, out: &mut Vec<String>| {
+    let push = |name: &str, params: &HashMap<String, Vec<Expr>>, out: &mut Vec<String>| {
         if !params.contains_key(name) && !out.iter().any(|n| n == name) {
             out.push(name.to_string());
         }

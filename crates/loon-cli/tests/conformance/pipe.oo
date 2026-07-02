@@ -1,0 +1,8 @@
+; pipe is thread-last: builtins, user functions, and bare-symbol steps.
+; expect-fail: wasm — the reverse builtin is not ported to codegen
+; ("unknown function 'reverse'"); clean rejection.
+[fn dbl [x] [* x 2]]
+[fn main []
+  [pipe [range 1 4] [map dbl] [each [fn [x] [println x]]]]
+  [println [pipe #[3 1 2] sort reverse]]
+  [println [pipe 5 dbl [+ 1]]]]
