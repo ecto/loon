@@ -11,8 +11,7 @@ use std::path::PathBuf;
 fn check_project(manifest: &str, dep_name: &str, dep_src: &str, main_src: &str) -> Vec<String> {
     static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("loon_grants_{}_{n}", std::process::id()));
+    let dir: PathBuf = std::env::temp_dir().join(format!("loon_grants_{}_{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("pkg.oo"), manifest).unwrap();

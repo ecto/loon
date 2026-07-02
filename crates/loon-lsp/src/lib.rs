@@ -569,7 +569,10 @@ mod tests {
         let src = "; header\n[let   x   42] ; the answer\n";
         let edits = formatting_edits(src).expect("should produce an edit");
         let new_text = &edits[0].new_text;
-        assert!(new_text.contains("; header"), "leading comment lost:\n{new_text}");
+        assert!(
+            new_text.contains("; header"),
+            "leading comment lost:\n{new_text}"
+        );
         assert!(
             new_text.contains("; the answer"),
             "trailing comment lost:\n{new_text}"

@@ -4113,8 +4113,7 @@ impl Checker {
             std::collections::BTreeMap::new();
         for (fname, effects) in &mod_checker.fn_effects {
             for eff in &effects.0 {
-                if Self::AMBIENT_EFFECTS.contains(&eff.as_str())
-                    && !granted.contains(eff.as_str())
+                if Self::AMBIENT_EFFECTS.contains(&eff.as_str()) && !granted.contains(eff.as_str())
                 {
                     let entry = violations.entry(eff).or_insert(fname);
                     // keep the lexicographically first fn for determinism

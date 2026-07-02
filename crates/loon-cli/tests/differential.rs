@@ -86,7 +86,11 @@ fn map_keys_use_structural_equality_on_all_backends() {
     let src = r#"[fn main []
         [let m [assoc [assoc {} [str "a" "b"] 1] [str "a" "b"] 2]]
         [println [len m]]]"#;
-    assert_eq!(run_src(src, &[]), "1", "EIR VM should dedup equal string keys");
+    assert_eq!(
+        run_src(src, &[]),
+        "1",
+        "EIR VM should dedup equal string keys"
+    );
     assert_eq!(run_src(src, &["--legacy"]), "1", "legacy should dedup");
     assert_eq!(run_src(src, &["--wasm"]), "1", "wasm should dedup");
 }
@@ -192,7 +196,10 @@ fn bench_collections_matches_interpreter() {
     assert!(interp.ok, "interpreter failed:\n{}", interp.stderr);
     let wasm = run("bench-collections.oo", true);
     assert!(wasm.ok, "wasm run failed:\n{}", wasm.stderr);
-    assert_eq!(interp.stdout, wasm.stdout, "bench-collections stdout diverged");
+    assert_eq!(
+        interp.stdout, wasm.stdout,
+        "bench-collections stdout diverged"
+    );
 }
 
 /// Samples that exercise a feature the wasm backend does not implement yet.
@@ -246,7 +253,11 @@ fn unsupported_samples_reject_cleanly() {
 #[test]
 fn definitions_only_file_runs_as_noop_on_wasm() {
     let interp = run("test-suite.oo", false);
-    assert!(interp.ok, "interpreter failed for test-suite.oo:\n{}", interp.stderr);
+    assert!(
+        interp.ok,
+        "interpreter failed for test-suite.oo:\n{}",
+        interp.stderr
+    );
 
     let wasm = run("test-suite.oo", true);
     assert!(

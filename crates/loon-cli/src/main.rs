@@ -325,7 +325,10 @@ fn run_wasm_module(wasm_bytes: Vec<u8>) {
             },
         )
         .unwrap_or_else(|e| {
-            eprintln!("{}: failed to link print-f64: {e}", "wasmtime error".red().bold());
+            eprintln!(
+                "{}: failed to link print-f64: {e}",
+                "wasmtime error".red().bold()
+            );
             std::process::exit(1);
         });
     // Host implementation of the `IO.read-file` effect: read the path string
@@ -350,7 +353,10 @@ fn run_wasm_module(wasm_bytes: Vec<u8>) {
                 let len = (packed & 0xffff_ffff) as usize;
                 let path = {
                     let data = mem.data(&caller);
-                    match data.get(ptr..ptr + len).and_then(|b| std::str::from_utf8(b).ok()) {
+                    match data
+                        .get(ptr..ptr + len)
+                        .and_then(|b| std::str::from_utf8(b).ok())
+                    {
                         Some(s) => s.to_string(),
                         None => return 0,
                     }
@@ -373,7 +379,10 @@ fn run_wasm_module(wasm_bytes: Vec<u8>) {
             },
         )
         .unwrap_or_else(|e| {
-            eprintln!("{}: failed to link IO.read-file: {e}", "wasmtime error".red().bold());
+            eprintln!(
+                "{}: failed to link IO.read-file: {e}",
+                "wasmtime error".red().bold()
+            );
             std::process::exit(1);
         });
     wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |s: &mut WasiCtx| s).unwrap_or_else(

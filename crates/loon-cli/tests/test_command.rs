@@ -60,7 +60,11 @@ fn strip_ansi(s: &str) -> String {
 #[test]
 fn passing_suite_exits_zero() {
     let out = run_test("[test adds [] [assert-eq [+ 1 1] 2]]");
-    assert!(out.ok, "passing suite should exit 0; stdout:\n{}", out.stdout);
+    assert!(
+        out.ok,
+        "passing suite should exit 0; stdout:\n{}",
+        out.stdout
+    );
     assert!(out.stdout.contains("pass adds"), "{}", out.stdout);
     assert!(out.stdout.contains("1 passed"), "{}", out.stdout);
 }
@@ -71,7 +75,11 @@ fn failing_assert_fails_and_exits_nonzero() {
         "[test adds [] [assert-eq [+ 1 1] 2]]\n\
          [test breaks [] [assert-eq [+ 1 1] 3]]",
     );
-    assert!(!out.ok, "a failing assert must exit non-zero; stdout:\n{}", out.stdout);
+    assert!(
+        !out.ok,
+        "a failing assert must exit non-zero; stdout:\n{}",
+        out.stdout
+    );
     assert!(out.stdout.contains("pass adds"), "{}", out.stdout);
     assert!(out.stdout.contains("FAIL breaks"), "{}", out.stdout);
     assert!(out.stdout.contains("1 passed, 1 failed"), "{}", out.stdout);
@@ -85,7 +93,11 @@ fn tests_run_on_eir_vm_with_handler_semantics() {
         "[effect Log [note [] Unit]]\n\
          [test handled [] [assert-eq [handle [do [Log.note] 7] [Log.note] [resume 0]] 7]]",
     );
-    assert!(out.ok, "handler test should pass on the VM; stdout:\n{}", out.stdout);
+    assert!(
+        out.ok,
+        "handler test should pass on the VM; stdout:\n{}",
+        out.stdout
+    );
     assert!(out.stdout.contains("pass handled"), "{}", out.stdout);
 }
 
