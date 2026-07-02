@@ -64,6 +64,8 @@
     [fn [log] [[resume [Clock.millis]] [conj log {:op :clock}]]]
     [Clock.now]
     [fn [log] [[resume [Clock.now]] [conj log {:op :clock}]]]
+    [Clock.sleep ms]
+    [fn [log] [[resume [Clock.sleep ms]] [conj log {:op :sleep :ms ms}]]]
     [Rand.int n]
     [fn [log] [[resume [Rand.int n]] [conj log {:op :rand}]]]
     [Env.get k]

@@ -39,6 +39,16 @@
 ; Re-run thunk against a recorded tape: every nondeterministic result comes
 ; from the tape (in order), writes are suppressed. No kernel needed at all —
 ; a replayed program touches nothing real.
+; Pull the next recorded result, or fail loudly if the tape is spent. A
+; replay that performs more effects than were recorded (or in a different
+; order) has DIVERGED from the recording; detecting that beats silently
+; resuming with Unit and returning corrupt data. `resume` is passed in as a
+; value — it is the handle's continuation, usable anywhere.
+[fn replay-next [t resume label]
+  [if [empty? t]
+    [Fail.fail [str "replay desync: tape exhausted at " label]]
+    [[resume [first t]] [drop 1 t]]]]
+
 [pub
   fn
   replay
@@ -48,15 +58,15 @@
     [return x]
     [fn [t] x]
     [Fs.read-file p]
-    [fn [t] [[resume [first t]] [drop 1 t]]]
+    [fn [t] [replay-next t resume "Fs.read-file"]]
     [Fs.write-file p c]
     [fn [t] [[resume []] t]]
     [Clock.now]
-    [fn [t] [[resume [first t]] [drop 1 t]]]
+    [fn [t] [replay-next t resume "Clock.now"]]
     [Clock.millis]
-    [fn [t] [[resume [first t]] [drop 1 t]]]
+    [fn [t] [replay-next t resume "Clock.millis"]]
     [Rand.int n]
-    [fn [t] [[resume [first t]] [drop 1 t]]]
+    [fn [t] [replay-next t resume "Rand.int"]]
     [Env.get k]
-    [fn [t] [[resume [first t]] [drop 1 t]]]]
+    [fn [t] [replay-next t resume "Env.get"]]]
     tape]]

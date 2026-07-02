@@ -5,7 +5,15 @@
 ; Nesting sandboxes is just handler composition.
 [use sys]
 
-; chroot: every path is re-rooted under `root` before forwarding
+; A path escapes its jail if it contains a `..` component: re-rooting by
+; string concat ([str root p]) would otherwise let `/../etc/passwd` resolve
+; above `root` once the real filesystem collapses the `..`. Reject any path
+; with `..` rather than try to normalize (normalization is subtle and
+; symlinks defeat it anyway — deny is the safe default for a demo jail).
+[pub fn escapes? [p] [contains? p ".."]]
+
+; chroot: every path is re-rooted under `root` before forwarding; a path that
+; tries to traverse out with `..` is denied (catch with `try`).
 [pub
   fn
   sandboxed
@@ -13,9 +21,13 @@
   [handle
     [thunk]
     [Fs.read-file p]
-    [resume [Fs.read-file [str root p]]]
+    [if [escapes? p]
+      [Fail.fail [str "sandbox: path escapes jail: " p]]
+      [resume [Fs.read-file [str root p]]]]
     [Fs.write-file p c]
-    [resume [Fs.write-file [str root p] c]]]]
+    [if [escapes? p]
+      [Fail.fail [str "sandbox: path escapes jail: " p]]
+      [resume [Fs.write-file [str root p] c]]]]]
 
 ; read-only: writes abort with Fail (catch with `try`); reads pass through
 [pub

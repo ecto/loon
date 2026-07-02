@@ -137,6 +137,59 @@ fn gated_denial_is_a_sentinel_not_an_abort() {
 }
 
 #[test]
+fn sandbox_denies_dotdot_traversal() {
+    // A jailed path containing `..` would resolve above the jail root once the
+    // real filesystem collapses it; the sandbox rejects it instead.
+    let out = run(r#"
+        [use sys]
+        [use sim]
+        [use sandbox]
+        [fn escape [] [Fs.read-file "/../etc/passwd"]]
+        [fn main []
+          [let r [simulate
+                   [fn [] [try [sandboxed escape "/jail"] [fn [m] [str "BLOCKED: " m]]]]
+                   1 {}]]
+          [println [get r :result]]]
+    "#)
+    .join("\n");
+    assert!(out.contains("BLOCKED: sandbox: path escapes jail: /../etc/passwd"), "{out}");
+}
+
+#[test]
+fn audited_records_clock_sleep() {
+    // The flight recorder must log Clock.sleep, not let it slip through
+    // unrecorded while the (virtual) clock still advances.
+    let out = run(r#"
+        [use sys]
+        [use sim]
+        [use agent]
+        [fn sleepy [] [do [Clock.sleep 500] [Rand.int 10]]]
+        [fn main []
+          [let w [simulate [fn [] [audited sleepy]] 1 {}]]
+          [println [str "time=" [get w :time] " audit=" [get [get w :result] :audit]]]]
+    "#)
+    .join("\n");
+    assert!(out.contains("time=500"), "sleep must advance the clock: {out}");
+    assert!(out.contains("{:op :sleep :ms 500}"), "sleep must be audited: {out}");
+}
+
+#[test]
+fn replay_detects_desync_loudly() {
+    // A replay that reads more than the tape recorded has diverged; it must
+    // fail loudly, not silently resume with Unit.
+    let out = run(r#"
+        [use sys]
+        [use tape]
+        [fn two-reads [] [str [Fs.read-file "/a"] "-" [Fs.read-file "/b"]]]
+        [fn main []
+          [println [try [replay two-reads #["only-one"]]
+                        [fn [m] [str "CAUGHT: " m]]]]]
+    "#)
+    .join("\n");
+    assert!(out.contains("CAUGHT: replay desync: tape exhausted"), "{out}");
+}
+
+#[test]
 fn chaos_demo_reproduces_faults_and_supervisor_recovers() {
     let out = run_demo("demo-chaos.oo").join("\n");
     // seed 3 injects faults; the supervisor absorbs them within its budget

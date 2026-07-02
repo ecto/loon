@@ -51,6 +51,8 @@ struct Lower<'a> {
     func_map: HashMap<String, FuncId>,
     /// Current loop header block (for recur → Jmp back to loop).
     recur_target: Option<BlockId>,
+    /// Monotonic counter for compiler-synthesized (gensym) binding names.
+    gensym_counter: u32,
 }
 
 impl<'a> Lower<'a> {
@@ -73,7 +75,17 @@ impl<'a> Lower<'a> {
             evidence_scope: HashMap::new(),
             func_map: HashMap::new(),
             recur_target: None,
+            gensym_counter: 0,
         }
+    }
+
+    /// A binding name that cannot collide with any user symbol. The tokenizer
+    /// splits on whitespace, so no user identifier can contain a space; a name
+    /// with one is safe to use as a synthesized (gensym) binding key.
+    fn fresh_name(&mut self, prefix: &str) -> String {
+        let n = self.gensym_counter;
+        self.gensym_counter += 1;
+        format!("{prefix} {n}")
     }
 
     fn finish(self) -> Module {
@@ -1758,22 +1770,38 @@ impl<'a> Lower<'a> {
         }
 
         let body = &args[0];
-        let handler_expr = if args.len() > 1 {
-            Some(&args[args.len() - 1])
-        } else {
-            None
-        };
+        // The on-fail handler is the SECOND arg, matching the tree-walking
+        // interpreter (which reads args[1]). For the canonical two-arg form
+        // this is also the last arg; taking args[1] specifically keeps the two
+        // backends in agreement even when extra args are present.
+        let handler_expr = args.get(1);
 
         if let Some(on_fail) = handler_expr {
             // Desugar through lower_handle so the Fail clause gets the same
             // machinery as any handler clause — in particular free-variable
-            // capture. The previous hand-rolled lowering compiled the on-fail
-            // expression in a fresh function with NO captures, so an on-fail
-            // closure referencing enclosing locals ([try [child] [fn [m]
-            // [retry child]]]) silently mis-resolved them.
+            // capture (a hand-rolled lowering forgot captures, so on-fail
+            // closures over enclosing locals — the supervision retry pattern —
+            // mis-resolved them).
             //
-            //   [try BODY ON-FAIL] → [handle BODY [Fail.fail __fail_msg]
-            //                                     [ON-FAIL __fail_msg]]
+            //   [try BODY ON-FAIL] → [handle BODY [Fail.fail <msg>] [<fn> <msg>]]
+            //
+            // ON-FAIL is lowered EAGERLY here in the enclosing scope and bound
+            // to a gensym, then applied inside the clause. This matters for
+            // hygiene and evaluation order:
+            //   - lowering it out here (not inside the clause) means the
+            //     handler's implicit `resume` and the message binding are NOT
+            //     in scope while the user's ON-FAIL is compiled, so an ON-FAIL
+            //     that references an enclosing `resume` (or the gensym) resolves
+            //     to the user's binding, not the injected one;
+            //   - it evaluates once, before the body, like the interpreter —
+            //     so a side-effecting handler-producing expression runs on the
+            //     success path too;
+            //   - putting a gensym VALUE (not ON-FAIL itself) in head position
+            //     means a bare-symbol or computed handler is applied correctly.
+            let on_fail_reg = self.lower_expr(on_fail);
+            let fn_name = self.fresh_name("try-onfail");
+            let msg_name = self.fresh_name("try-msg");
+            self.bind(&fn_name, on_fail_reg);
             let pattern = Expr::new(
                 ExprKind::List(vec![
                     Expr::new(
@@ -1783,14 +1811,14 @@ impl<'a> Lower<'a> {
                         ),
                         span,
                     ),
-                    Expr::new(ExprKind::Symbol("__fail_msg".to_string()), span),
+                    Expr::new(ExprKind::Symbol(msg_name.clone()), span),
                 ]),
                 span,
             );
             let clause_body = Expr::new(
                 ExprKind::List(vec![
-                    on_fail.clone(),
-                    Expr::new(ExprKind::Symbol("__fail_msg".to_string()), span),
+                    Expr::new(ExprKind::Symbol(fn_name), span),
+                    Expr::new(ExprKind::Symbol(msg_name), span),
                 ]),
                 span,
             );

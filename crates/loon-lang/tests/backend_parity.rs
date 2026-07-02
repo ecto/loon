@@ -116,6 +116,44 @@ const CORPUS: &[(&str, &str)] = &[
          [fn run [n] [handle [E.op] [E.op] [resume n]]] \
          [fn main [] [println [run 42]]]",
     ),
+    // ── try/on-fail hygiene + evaluation order (fixed 2026-07-01) ──────────
+    // The on-fail handler is lowered eagerly in the enclosing scope and applied
+    // via gensym bindings, so the injected message/continuation names cannot
+    // shadow user variables, and the handler expression evaluates once (even on
+    // the success path). All four must now agree across backends.
+    (
+        // enclosing `__fail_msg` is NOT shadowed by the injected message binding
+        "try-no-shadow-failmsg",
+        r#"[fn main []
+             [do [let __fail_msg "USER"]
+                 [println [try [Fail.fail "boom"] [fn [m] [str m "/" __fail_msg]]]]]]"#,
+    ),
+    (
+        // enclosing `resume` is NOT shadowed by the handler's implicit continuation
+        "try-no-shadow-resume",
+        r#"[fn main []
+             [do [let resume 42]
+                 [println [try [Fail.fail "x"] [fn [m] [str "r=" resume]]]]]]"#,
+    ),
+    (
+        // the handler-producing expression is evaluated eagerly, once — its side
+        // effect shows up even when the body succeeds
+        "try-onfail-eager",
+        r#"[fn mk [] [do [println "MAKING"] [fn [m] "h"]]]
+           [fn main [] [println [try [+ 1 2] [mk]]]]"#,
+    ),
+    (
+        // on-fail closes over an enclosing local (the supervision retry pattern)
+        "try-onfail-captures-local",
+        r#"[fn run [tag]
+             [try [Fail.fail "e"] [fn [m] [str tag ":" m]]]]
+           [fn main [] [println [run "job7"]]]"#,
+    ),
+    (
+        // a 3-arg try picks the SECOND arg as the handler on both backends
+        "try-three-arg-uses-second",
+        r#"[fn main [] [println [try [Fail.fail "x"] [fn [m] 99] 7]]]"#,
+    ),
 ];
 
 #[test]
