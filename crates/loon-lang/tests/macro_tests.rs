@@ -429,3 +429,24 @@ fn hygiene_named_fn_definitions_still_introduce_their_name() {
     );
     assert_eq!(result, interp::Value::Int(42));
 }
+
+#[test]
+fn malformed_bare_let_in_template_does_not_panic() {
+    // A template containing a bare `[let]` used to index out of bounds inside
+    // collect_template_binders and panic (which also took the LSP down on
+    // in-progress edits). It must expand without panicking.
+    let exprs = parse("[macro m [] `[let]] [m]").unwrap();
+    let mut expander = MacroExpander::new();
+    let _ = expander.expand_program(&exprs); // Ok or Err — just no panic
+}
+
+#[test]
+fn and_or_pipe_steps_desugar_to_lambda_steps() {
+    // [pipe v [or a]] must NOT collapse to a bare-value step (which pipe
+    // rejects); it becomes a unary-lambda step preserving thread-last
+    // semantics: [pipe false [or 7]] ≡ [or 7 false] = 7.
+    let result = eval("[pipe false [or 7]]");
+    assert_eq!(result, interp::Value::Int(7));
+    let result = eval("[pipe 5 [and true true]]");
+    assert_eq!(result, interp::Value::Int(5));
+}

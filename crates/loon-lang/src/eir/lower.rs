@@ -1484,12 +1484,31 @@ impl<'a> Lower<'a> {
                         }
                         // Operator partial step, e.g. [pipe 5 [+ 1]] → [+ 1 5]
                         // (thread-last). The interpreter supports this because
-                        // operators are ordinary env functions there.
-                        if explicit_args.len() == 1 {
-                            if let Some(binop) = match name.as_str() {
+                        // operators are ordinary env functions there, and its
+                        // semantics are what we mirror:
+                        // - `+`/`*` are VARIADIC left folds: [pipe 5 [+ 1 2]]
+                        //   is [+ 1 2 5] = 8.
+                        // - the rest are strictly BINARY and ignore extra
+                        //   arguments: [pipe 5 [- 10 3]] is [- 10 3 5] = 7
+                        //   (the piped value is arg 3 and is dropped).
+                        if !explicit_args.is_empty() {
+                            let variadic = match name.as_str() {
                                 "+" => Some(BinOp::Add),
-                                "-" => Some(BinOp::Sub),
                                 "*" => Some(BinOp::Mul),
+                                _ => None,
+                            };
+                            if let Some(binop) = variadic {
+                                let mut acc = explicit_args[0];
+                                for &a in explicit_args[1..].iter().chain([&current]) {
+                                    let r = self.reg();
+                                    self.emit(Op::Bin(r, binop, acc, a, step.span));
+                                    acc = r;
+                                }
+                                current = acc;
+                                continue;
+                            }
+                            if let Some(binop) = match name.as_str() {
+                                "-" => Some(BinOp::Sub),
                                 "/" => Some(BinOp::Div),
                                 "%" => Some(BinOp::Rem),
                                 "=" => Some(BinOp::Eq),
@@ -1500,8 +1519,11 @@ impl<'a> Lower<'a> {
                                 ">=" => Some(BinOp::Ge),
                                 _ => None,
                             } {
+                                // Binary: [op e0 (e1 | current)] — any further
+                                // args were still evaluated above, as interp.
+                                let rhs = explicit_args.get(1).copied().unwrap_or(current);
                                 let r = self.reg();
-                                self.emit(Op::Bin(r, binop, explicit_args[0], current, step.span));
+                                self.emit(Op::Bin(r, binop, explicit_args[0], rhs, step.span));
                                 current = r;
                                 continue;
                             }
@@ -1537,7 +1559,18 @@ impl<'a> Lower<'a> {
                         current = r;
                     }
                 }
-                _ => {}
+                _ => {
+                    // A step that is neither a list nor a symbol (e.g. a bare
+                    // literal). The interpreter rejects these at runtime
+                    // ("pipe step must be a list or symbol"); lowering it as
+                    // an invocation of a non-callable value gives the same
+                    // error CLASS at the same point instead of silently
+                    // dropping the step (which produced a wrong value).
+                    let func = self.lower_expr(step);
+                    let r = self.reg();
+                    self.emit(Op::Invoke(r, func, vec![current], step.span));
+                    current = r;
+                }
             }
         }
         current
@@ -1935,23 +1968,27 @@ impl<'a> Lower<'a> {
 
         // Check if it's a known function
         if let ExprKind::Symbol(name) = &head.kind {
+            // A LOCAL binding (let / fn param / pattern binding) shadows
+            // operators, builtins, constructors, and top-level functions at
+            // call sites, just like the interpreter (where builtins live in
+            // the same env as locals and inner scopes win). Without this
+            // check `[let + my-fn] [+ 3 4]` silently called the builtin `+`,
+            // and `[let Some inc] [Some 5]` constructed the ADT. This must
+            // run BEFORE the ctor check: the prelude Option/Result ctors are
+            // always registered, so ctor-first would make `Some`/`None`/`Ok`/
+            // `Err` unshadowable on this backend only.
+            if let Some(local) = self.lookup_local(name) {
+                let args: Vec<Reg> = arg_exprs.iter().map(|e| self.lower_expr(e)).collect();
+                let r = self.reg();
+                self.emit(Op::Invoke(r, local, args, span));
+                return r;
+            }
+
             // Check for ADT constructor
             if let Some(&(tag, _arity)) = self.ctor_map.get(name.as_str()) {
                 let fields: Vec<Reg> = arg_exprs.iter().map(|e| self.lower_expr(e)).collect();
                 let r = self.reg();
                 self.emit(Op::Adt(r, tag, fields, span));
-                return r;
-            }
-
-            // A LOCAL binding (let / fn param / pattern binding) shadows
-            // operators, builtins, and top-level functions at call sites, just
-            // like the interpreter (where builtins live in the same env as
-            // locals and inner scopes win). Without this check `[let + my-fn]
-            // [+ 3 4]` silently called the builtin `+`.
-            if let Some(local) = self.lookup_local(name) {
-                let args: Vec<Reg> = arg_exprs.iter().map(|e| self.lower_expr(e)).collect();
-                let r = self.reg();
-                self.emit(Op::Invoke(r, local, args, span));
                 return r;
             }
 

@@ -135,6 +135,31 @@ const CORPUS: &[(&str, &str)] = &[
          [fn run [n] [handle [E.op] [E.op] [resume n]]] \
          [fn main [] [println [run 42]]]",
     ),
+    // and/or pipe STEPS are thread-last partial application: [pipe v [or a]]
+    // ≡ [or a v] (short-circuit now, same values as the old eager builtin)
+    (
+        "pipe-and-or-steps",
+        "[fn main [] \
+           [println [pipe false [or 7]]] \
+           [println [pipe 5 [and true true]]] \
+           [println [pipe 0 [or false]]]]",
+    ),
+    // operator partials in pipe: +/* are variadic left folds, the rest are
+    // strictly binary (extra args, including the piped value, are ignored)
+    (
+        "pipe-operator-partials",
+        "[fn main [] \
+           [println [pipe 5 [+ 1 2]]] \
+           [println [pipe 2 [* 3 4]]] \
+           [println [pipe 5 [- 10 3]]] \
+           [println [pipe 5 [+ 1]]]]",
+    ),
+    // a local binding shadows the prelude Option/Result ctors at call sites,
+    // exactly as it shadows builtins (the ctors are pre-registered on the VM)
+    (
+        "local-shadows-prelude-ctor",
+        "[fn main [] [let Some [fn [x] [+ x 1]]] [println [Some 5]]]",
+    ),
 ];
 
 #[test]

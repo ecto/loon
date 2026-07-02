@@ -185,14 +185,34 @@ impl MacroExpander {
                     // Value semantics match the eager builtins exactly: return the
                     // first falsy (and) / truthy (or) operand, else the last one;
                     // `[and]` is true, `[or]` is false. Each operand is evaluated
-                    // at most once (bound to a gensym temp). A bare `and`/`or` in
-                    // value position is untouched and still resolves to the eager
-                    // variadic builtin function.
+                    // at most once (bound to a gensym temp).
+                    //
+                    // Consequences (documented in ARCHITECTURE.md):
+                    // - Call-position `and`/`or` are effectively SPECIAL FORMS
+                    //   now: the rewrite happens before any scope information
+                    //   exists, so a local binding named `and`/`or` cannot
+                    //   shadow them at call sites.
+                    // - A bare `and`/`or` in value position is untouched. On
+                    //   the interpreter it resolves to the eager variadic env
+                    //   builtin; the EIR VM and wasm have no callable builtin
+                    //   values (pre-existing), so it fails there — pinned by
+                    //   the `and-or-value.oo` conformance program.
                     if name == "and" || name == "or" {
                         let is_and = name == "and";
                         let operands: Result<Vec<_>, _> =
                             items[1..].iter().map(|e| self.expand_expr(e)).collect();
                         return Ok(self.desugar_and_or(is_and, &operands?, expr.span));
+                    }
+
+                    // `pipe` steps get special treatment: an `[and ...]`/`[or ...]`
+                    // STEP is thread-last partial application ([pipe v [or 7]] ≡
+                    // [or 7 v]), so desugaring it in place would corrupt the step
+                    // shape (a one-operand step collapses to a bare value, a
+                    // multi-operand one becomes a [do ...] the pipe would try to
+                    // call). Rewrite such steps into a unary lambda wrapping the
+                    // short-circuit desugar of [op operands... piped-value].
+                    if name == "pipe" {
+                        return self.expand_pipe(items, expr.span);
                     }
                 }
                 // Not a macro call — recursively expand children
@@ -256,6 +276,49 @@ impl MacroExpander {
                 Expr::new(ExprKind::List(vec![sym("do"), let_form, if_form]), span)
             }
         }
+    }
+
+    /// Expand a `[pipe seed step...]` form. Steps expand normally except
+    /// `[and ...]`/`[or ...]` steps, which become `[[fn [g] <desugar of
+    /// [op operands... g]>]]` — a single-element list whose head is a unary
+    /// lambda, the pipe-step shape every backend calls with the piped value.
+    /// This preserves both the thread-last value semantics the eager builtins
+    /// had ([pipe v [or a]] ≡ [or a v]) and short-circuit evaluation.
+    fn expand_pipe(&mut self, items: &[Expr], span: Span) -> Result<Expr, String> {
+        let mut out = Vec::with_capacity(items.len());
+        out.push(items[0].clone()); // the `pipe` symbol itself
+        for (i, arg) in items[1..].iter().enumerate() {
+            let is_step = i > 0; // items[1] is the seed value, not a step
+            let and_or = match &arg.kind {
+                ExprKind::List(sub) if is_step && !sub.is_empty() => match &sub[0].kind {
+                    ExprKind::Symbol(s) if s == "and" || s == "or" => Some((s == "and", sub)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            match and_or {
+                Some((is_and, sub)) => {
+                    let operands: Result<Vec<_>, _> =
+                        sub[1..].iter().map(|e| self.expand_expr(e)).collect();
+                    let mut operands = operands?;
+                    let g = self.gensym(if is_and { "and" } else { "or" });
+                    let gsym = Expr::new(ExprKind::Symbol(g), arg.span);
+                    operands.push(gsym.clone());
+                    let body = self.desugar_and_or(is_and, &operands, arg.span);
+                    let lambda = Expr::new(
+                        ExprKind::List(vec![
+                            Expr::new(ExprKind::Symbol("fn".to_string()), arg.span),
+                            Expr::new(ExprKind::List(vec![gsym]), arg.span),
+                            body,
+                        ]),
+                        arg.span,
+                    );
+                    out.push(Expr::new(ExprKind::List(vec![lambda]), arg.span));
+                }
+                None => out.push(self.expand_expr(arg)?),
+            }
+        }
+        Ok(Expr::new(ExprKind::List(out), span))
     }
 
     fn expand_type_aware_expr(&mut self, expr: &Expr) -> Result<Expr, String> {
@@ -702,8 +765,11 @@ fn collect_template_binders(
             if let ExprKind::Symbol(head) = &items[0].kind {
                 match head.as_str() {
                     "let" => {
-                        // [let name value] / [let mut name value]
-                        let ni = if matches!(&items[1].kind, ExprKind::Symbol(s) if s == "mut") {
+                        // [let name value] / [let mut name value]. A malformed
+                        // bare `[let]` has no binder — items.get keeps this
+                        // total (it used to index out of bounds and panic).
+                        let ni = if matches!(items.get(1).map(|e| &e.kind), Some(ExprKind::Symbol(s)) if s == "mut")
+                        {
                             2
                         } else {
                             1
