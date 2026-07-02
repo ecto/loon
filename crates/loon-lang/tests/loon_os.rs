@@ -98,6 +98,45 @@ fn read_only_sandbox_denies_writes() {
 }
 
 #[test]
+fn agent_demo_contains_untrusted_code() {
+    let out = run_demo("demo-agent.oo").join("\n");
+    // honest work succeeded
+    assert!(out.contains("answer file: '42 (compute the answer)'"), "{out}");
+    // both hostile ops neutralized: sentinels in the agent's own result...
+    assert!(out.contains(":stole EACCES: /etc/credentials"), "{out}");
+    assert!(out.contains(":exfil-result :denied"), "{out}");
+    // ...and the exfil file was never written to the (virtual) filesystem
+    assert!(out.contains("exfil file:  '<never written>'"), "{out}");
+    // the flight recorder captured every attempt, including the denied ones
+    assert!(out.contains("{:op :read :path /etc/credentials :got EACCES"), "{out}");
+    assert!(out.contains("{:op :write :path /evil/exfil"), "{out}");
+    // whole run is seed-deterministic
+    assert!(out.contains("AGENT RUN REPRODUCED EXACTLY"), "{out}");
+}
+
+#[test]
+fn gated_denial_is_a_sentinel_not_an_abort() {
+    // A denied op resumes the agent with a value, so the agent keeps running
+    // and its later work still completes (no cross-handler abort).
+    let out = run(r#"
+        [use sys]
+        [use kernel]
+        [use agent]
+        [fn prog []
+          [let a [Fs.read-file "/allowed"]]
+          [let b [Fs.read-file "/secret"]]
+          [str "a=" a " b=" b " alive"]]
+        [fn main []
+          [IO.println
+            [kernel [fn []
+              [gated prog [fn [req] [= [get req :path] "/allowed"]]]]]]]
+    "#)
+    .join("\n");
+    assert!(out.contains("b=EACCES: /secret"), "{out}");
+    assert!(out.contains("alive"), "denied op must not abort the agent: {out}");
+}
+
+#[test]
 fn chaos_demo_reproduces_faults_and_supervisor_recovers() {
     let out = run_demo("demo-chaos.oo").join("\n");
     // seed 3 injects faults; the supervisor absorbs them within its budget
