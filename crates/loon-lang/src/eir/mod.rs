@@ -8,6 +8,7 @@ pub mod lower;
 #[cfg(feature = "native")]
 pub mod native;
 pub mod net;
+pub mod replay;
 pub mod trace;
 pub mod value64;
 pub mod vm;

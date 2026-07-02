@@ -44,7 +44,7 @@
         [div {:class "hero-text"}
           [a-el {:class "hero-pill" :href "/changelog"}
             [span {:class "hero-pill-tag"} "New"]
-            [span {:class "hero-pill-text"} "Effect handlers, end to end"]
+            [span {:class "hero-pill-text"} "Record a crash, replay it forever"]
             [span {:class "hero-pill-arrow"} "→"]]
           [div {:class "hero-wordmark"} "loon"]
           [p {:class "hero-tagline"}
@@ -130,6 +130,38 @@
           "; The caller decides how to handle it\n"
           "[handle [greet]\n"
           "  [Ask.prompt q] [resume \"World\"]]  ; \"Hello, World!\""]]
+
+      [tour-section
+        "Capabilities, not trust"
+        "Dependencies are pure by default. A package touches the network only if your manifest grants it Net — grants are per-dependency, audited transitively, and effect rows make undeclared authority a loon check failure, not a sandbox kill."
+        "Concepts: Effects"
+        "/concepts/effects"
+        [str
+          "; pkg.oo — authority is declared, per dep\n"
+          "{:deps\n"
+          "  {\"github.com/cam/json\" \"^1.2\"          ; pure\n"
+          "   \"github.com/cam/http\"\n"
+          "     {:version \"^1.0\" :grant #[\"Net\"]}}}\n"
+          "\n"
+          "; loon audit --capabilities\n"
+          ";   github.com/cam/json -> pure (no effects)\n"
+          ";   github.com/cam/http -> Net"]]
+
+      [tour-section
+        "Record a crash, replay it forever"
+        "Every nondeterministic effect result — clock, files, network — can be recorded to a trace. Replay feeds them back in order: same trace, same execution, same crash, every time. Flaky bugs hold still while you debug them."
+        "Changelog"
+        "/changelog"
+        [str
+          "$ loon run app.oo --record crash.oo\n"
+          "error: assertion failed: 0 != -1\n"
+          "note: crash trace saved to crash.oo\n"
+          "\n"
+          "; deterministic from here on\n"
+          "$ loon replay crash.oo app.oo\n"
+          "error: assertion failed: 0 != -1  ; same crash,\n"
+          "$ loon replay crash.oo app.oo    ; every time\n"
+          "error: assertion failed: 0 != -1"]]
 
       [tour-section
         "Pattern matching"
