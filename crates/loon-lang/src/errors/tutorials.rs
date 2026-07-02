@@ -46,6 +46,7 @@ pub fn get_tutorial(code: ErrorCode) -> Option<Tutorial> {
         ErrorCode::E0401 => Some(tutorial_undeclared_effect()),
         ErrorCode::E0402 => None,
         ErrorCode::E0403 => Some(tutorial_effect_mismatch()),
+        ErrorCode::E0404 => None,
         ErrorCode::E0500 => Some(tutorial_unresolved_module()),
         ErrorCode::E0501 => Some(tutorial_private_symbol()),
         ErrorCode::E0502 => Some(tutorial_circular_dependency()),

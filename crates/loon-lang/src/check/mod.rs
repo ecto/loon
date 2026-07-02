@@ -4642,6 +4642,10 @@ impl Checker {
             .modules
             .insert(canonical, TypeModuleState::Loaded(exports.clone()));
 
+        // Capability enforcement: if this module is declared as a dependency
+        // in pkg.oo, its inferred effect rows must stay within its :grant.
+        self.enforce_dep_grants(&module_path, &mod_checker, &base_dir, span);
+
         // Propagate any diagnostics from the module
         for mut e in mod_checker.errors {
             e.what = format!("in module '{module_path}': {}", e.what);
@@ -4650,6 +4654,82 @@ impl Checker {
 
         self.import_exports(&module_path, &args[1..], &exports, span);
         Type::Unit
+    }
+
+    /// Effects that carry ambient authority — they reach outside the program
+    /// through VM builtins when unhandled (real filesystem, network, clock,
+    /// environment). These are what a pkg.oo `:grant` governs. User-declared
+    /// effects need a caller-supplied handler to mean anything (no ambient
+    /// escape, and an unhandled one is a loud VM error), and `Fail` is pure
+    /// control flow — neither is subject to grants.
+    const AMBIENT_EFFECTS: &'static [&'static str] = &["IO", "Net", "Process", "Env", "Async"];
+
+    /// Enforce pkg.oo capability grants on an imported module: if `module_path`
+    /// is declared as a dependency in the importing project's manifest, every
+    /// ambient effect inferred anywhere in the module must appear in the dep's
+    /// `:grant` list (an absent/empty grant means the dep is declared pure).
+    /// Static supply-chain security: the checker proves a dependency cannot
+    /// touch the network/filesystem unless the manifest says so.
+    fn enforce_dep_grants(
+        &mut self,
+        module_path: &str,
+        mod_checker: &Checker,
+        base_dir: &std::path::Path,
+        span: Span,
+    ) {
+        // Grants only apply to modules declared as manifest dependencies;
+        // plain project-local modules are unrestricted.
+        let Ok(Some(manifest)) = crate::pkg::Manifest::load(base_dir) else {
+            return;
+        };
+        let Some(dep) = manifest.deps.get(module_path) else {
+            return;
+        };
+        let granted: std::collections::HashSet<&str> =
+            dep.grant.iter().map(|s| s.as_str()).collect();
+
+        // One diagnostic per ungranted effect, citing one offending function
+        // (BTreeMap for deterministic output order).
+        let mut violations: std::collections::BTreeMap<&String, &String> =
+            std::collections::BTreeMap::new();
+        for (fname, effects) in &mod_checker.fn_effects {
+            for eff in &effects.labels {
+                if Self::AMBIENT_EFFECTS.contains(&eff.as_str()) && !granted.contains(eff.as_str())
+                {
+                    let entry = violations.entry(eff).or_insert(fname);
+                    // keep the lexicographically first fn for determinism
+                    if fname < *entry {
+                        *entry = fname;
+                    }
+                }
+            }
+        }
+
+        let grant_desc = if dep.grant.is_empty() {
+            "declares it pure (no :grant)".to_string()
+        } else {
+            format!("grants it only {:?}", dep.grant)
+        };
+        for (eff, fname) in violations {
+            self.errors.push(
+                LoonDiagnostic::new(
+                    ErrorCode::E0404,
+                    format!(
+                        "dependency '{module_path}' performs effect `{eff}` \
+                         (e.g. in `{fname}`) but pkg.oo {grant_desc}"
+                    ),
+                )
+                .with_why(
+                    "a dependency's effect row is its capability set: code whose \
+                     grant lacks an effect must not be able to perform it",
+                )
+                .with_fix(format!(
+                    "add \"{eff}\" to the :grant list for \"{module_path}\" in \
+                     pkg.oo — or use a dependency that doesn't need it"
+                ))
+                .with_label(span, "capability violation", true),
+            );
+        }
     }
 
     /// Collect the exported type schemes from a checked module.
@@ -4705,10 +4785,16 @@ impl Checker {
                         for (name, scheme) in &exports.schemes {
                             self.env
                                 .set_global(format!("{alias}.{name}"), scheme.clone());
+                            // The runtime (lower.rs collect_imports) splices all
+                            // module forms in, so unqualified names resolve too —
+                            // mirror that here or the checker rejects programs
+                            // that run fine.
+                            self.env.set_global(name.clone(), scheme.clone());
                         }
                         for (name, scheme) in &exports.constructors {
                             self.constructors
                                 .insert(format!("{alias}.{name}"), scheme.clone());
+                            self.constructors.insert(name.clone(), scheme.clone());
                         }
                         return;
                     }
@@ -4766,14 +4852,19 @@ impl Checker {
             }
         }
 
-        // Default: qualified import (mod.name)
+        // Default: qualified (mod.name) AND unqualified. The runtime
+        // (lower.rs collect_imports) splices every module form into the
+        // program, so `[use mod]` makes `name` itself resolvable — the checker
+        // must match, or `loon check` rejects programs `loon run` accepts.
         for (name, scheme) in &exports.schemes {
             self.env
                 .set_global(format!("{module_path}.{name}"), scheme.clone());
+            self.env.set_global(name.clone(), scheme.clone());
         }
         for (name, scheme) in &exports.constructors {
             self.constructors
                 .insert(format!("{module_path}.{name}"), scheme.clone());
+            self.constructors.insert(name.clone(), scheme.clone());
         }
     }
 

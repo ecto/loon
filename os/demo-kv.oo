@@ -1,0 +1,111 @@
+; Demo: a distributed KV store on a deterministically lossy network.
+;
+; One server process, two client processes. Clients send seq-numbered puts
+; as Net datagrams; the network (net.oo `lossy`) drops 25% and duplicates
+; 10% of packets — in BOTH directions, requests and acks. Clients retry on
+; ack timeout (poll via Proc.try-recv + yield). The dice are the sim's
+; seeded PRNG, so the packet loss is bit-for-bit reproducible: same seed,
+; same drops, same retries, same world. Different seed, different storm —
+; but the protocol still converges to the same final database.
+;
+;   loon run os/demo-kv.oo
+[use sys]
+[use sched]
+[use sim]
+[use net]
+
+; ── client: send-with-retry over the lossy net ──────────────────────────
+; Poll for the ack matching `seq`: up to `polls` yields, discarding stale
+; (duplicate) acks. :timeout if it never arrives.
+[fn await-ack [seq polls]
+  [if [<= polls 0]
+    :timeout
+    [do
+      [Proc.yield]
+      [let r [Proc.try-recv]]
+      [if [= r :none]
+        [recur seq [- polls 1]]
+        [if [= [get [get r :msg] :ack -1] seq]
+          [get r :msg]
+          [recur seq [- polls 1]]]]]]]
+
+; Fire the request until its ack lands; returns how many retries it took.
+[fn send-until [server req seq attempts]
+  [Net.send server req]
+  [if [= [await-ack seq 6] :timeout]
+    [recur server req seq [+ attempts 1]]
+    attempts]]
+
+; Put every item, counting total retries.
+[fn client [server me items i retries]
+  [if [>= i [len items]]
+    retries
+    [do
+      [let item [nth items i]]
+      [let seq [+ [* me 1000] i]]
+      [let n
+      [send-until
+        server
+        {:op :put :key [get item :key] :val [get item :val] :seq seq :from me}
+        seq
+        0]]
+      [recur server me items [+ i 1] [+ retries n]]]]]
+
+; ── server: apply puts, ack every request (acks may be eaten too) ───────
+[fn server-loop [db]
+  [let m [Proc.recv]]
+  [if [= [get m :op] :stop]
+    db
+    [do
+      [let db2
+      [if [= [get m :op] :put] [assoc db [get m :key] [get m :val]] db]]
+      [Net.send [get m :from] {:ack [get m :seq]}]
+      [recur db2]]]]
+
+; ── the world ────────────────────────────────────────────────────────────
+[fn spawn-client [server items]
+  [Proc.spawn
+    [fn []
+      [let r [lossy [fn [] [client server [Proc.self] items 0 0]] 25 10]]
+      [Proc.send 0 {:done [Proc.self] :retries r}]
+      r]]]
+
+[fn world []
+  [let server [Proc.spawn [fn [] [lossy [fn [] [server-loop {}]] 25 10]]]]
+  [let c1 [spawn-client server #[{:key "alpha" :val 1} {:key "beta" :val 2}]]]
+  [let c2 [spawn-client server #[{:key "gamma" :val 3} {:key "delta" :val 4}]]]
+  [let d1 [Proc.recv]]
+  [let d2 [Proc.recv]]
+  [Proc.send server {:op :stop}] ; control plane: reliable in-world send
+  [+ [get d1 :retries] [get d2 :retries]]]
+
+[fn server-db [st]
+  ; the server is the first spawn -> pid 1; its exit value is the final db
+  [let entry [first [filter [get st :done] [fn [e] [= [get e :pid] 1]]]]]
+  [get entry :value]]
+
+[fn run-world [seed] [simulate [fn [] [run-procs world]] seed {}]]
+
+[fn main []
+  [let w1 [run-world 42]]
+  [let st1 [get w1 :result]]
+  [let w2 [run-world 42]]
+  [let w3 [run-world 7]]
+  [let db1 [server-db st1]]
+  [IO.println "kv store over a 25%-loss 10%-dup network, seed 42:"]
+  [IO.println [str "  final db:      " db1]]
+  [IO.println
+    [str
+      "  total retries: "
+      [get [first [filter [get st1 :done] [fn [e] [= [get e :pid] 0]]]] :value]]]
+  [IO.println
+    [if [= w1 w2]
+      "  same seed:     STORM REPRODUCED EXACTLY"
+      "  same seed:     diverged (bug!)"]]
+  [let db3 [server-db [get w3 :result]]]
+  [IO.println
+    [str
+      "seed 7: different storm, "
+      [if [= db1 db3]
+        "SAME converged database (protocol wins)"
+        [str "DIFFERENT database (protocol bug!): " db3]]]]]

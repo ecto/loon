@@ -13,10 +13,13 @@
 ; tape.oo (record/replay): an agent that can only touch what its row + policy
 ; allow, whose every action is auditable, and whose whole run replays exactly.
 ;
-; Denials resume with a sentinel rather than aborting with Fail. That keeps
-; the agent's own control flow intact (it sees an error value, like a real
-; EACCES) and, because there is no cross-handler abort, composes cleanly
-; under the state-threading handlers (audited, simulate).
+; Denials resume with a sentinel rather than aborting with Fail. This is a
+; deliberate capability-design choice, not a workaround: the agent sees an
+; error value (like a real EACCES) and keeps running, so one denied op does
+; not tear down the whole computation, and it composes cleanly under the
+; state-threading handlers (audited, simulate). (An abort *would* now surface
+; loudly — an uncaught Fail raised in a clause is a hard VM error rather than
+; a silent unit — but resume-with-sentinel is the better monitor semantics.)
 [use sys]
 
 ; A denied read yields this sentinel; a denied write yields :denied.

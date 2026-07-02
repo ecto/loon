@@ -272,6 +272,24 @@ fn known_divergences_are_pinned() {
         "interp abort (wrong)"
     );
 
+    // CONVERGED (2026-07-01, phase-2): an uncaught Fail raised in a handler
+    // clause — whose enclosing `try` was frozen into the continuation — used to
+    // fall through to silent unit on the EIR VM (result collapsed to "()"). It
+    // now raises a loud UnhandledEffect error, matching the tree-walker. Both
+    // backends error (messages differ in format, so this is asserted as
+    // both-error rather than a CORPUS equality entry).
+    let frozen_try = "[effect E [op [Int] Int]] \
+                      [fn body [] [try [E.op 1] [fn [m] [str \"caught \" m]]]] \
+                      [fn main [] [println [handle [body] [E.op x] [Fail.fail \"denied\"]]]]";
+    assert!(
+        eir_output(frozen_try).is_err(),
+        "EIR uncaught clause-Fail now errors"
+    );
+    assert!(
+        interp_output(frozen_try).is_err(),
+        "interp uncaught clause-Fail errors"
+    );
+
     let fold_builtin = "[fn main [] [println [fold #[1 2 3 4] 0 +]]]";
     assert_eq!(
         eir_output(fold_builtin).as_deref(),
@@ -291,8 +309,15 @@ fn known_divergences_are_pinned() {
     let nested = "[effect A [a [] Int]] [effect B [b [] Int]] \
                   [fn body [] [+ [A.a] [B.b]]] \
                   [fn main [] [println [handle [handle [body] [A.a] [resume 10]] [B.b] [resume 20]]]]";
-    assert_eq!(eir_output(nested).as_deref(), Ok("30"), "EIR nested handlers (correct)");
-    assert!(interp_output(nested).is_err(), "interp nested handlers (broken)");
+    assert_eq!(
+        eir_output(nested).as_deref(),
+        Ok("30"),
+        "EIR nested handlers (correct)"
+    );
+    assert!(
+        interp_output(nested).is_err(),
+        "interp nested handlers (broken)"
+    );
 
     // forward-to-outer: a handler clause re-performing the handled effect runs
     // OUTSIDE its own handle (deep-handler semantics), so the perform reaches
@@ -305,8 +330,16 @@ fn known_divergences_are_pinned() {
         [fn body [] [F.read "x"]]
         [fn wrapped [] [handle [body] [F.read p] [resume [str "w:" [F.read p]]]]]
         [fn main [] [println [handle [wrapped] [F.read p] [resume [str "k:" p]]]]]"#;
-    assert_eq!(eir_output(forward).as_deref(), Ok("w:k:x"), "EIR forward-to-outer (correct)");
-    assert_eq!(interp_output(forward).as_deref(), Ok("k:x"), "interp forward-to-outer (wrong)");
+    assert_eq!(
+        eir_output(forward).as_deref(),
+        Ok("w:k:x"),
+        "EIR forward-to-outer (correct)"
+    );
+    assert_eq!(
+        interp_output(forward).as_deref(),
+        Ok("k:x"),
+        "interp forward-to-outer (wrong)"
+    );
 
     // inner-handle-survives-resume: an inner handle suspended inside a captured
     // continuation must still handle its effect after the outer handler
@@ -317,8 +350,15 @@ fn known_divergences_are_pinned() {
          [fn inner [] [+ [A.geta] [B.getb]]] \
          [fn body [] [handle [inner] [B.getb] [resume 10]]] \
          [fn main [] [println [handle [body] [A.geta] [resume 1]]]]";
-    assert_eq!(eir_output(suspended).as_deref(), Ok("11"), "EIR suspended inner handle (correct)");
-    assert!(interp_output(suspended).is_err(), "interp suspended inner handle (broken)");
+    assert_eq!(
+        eir_output(suspended).as_deref(),
+        Ok("11"),
+        "EIR suspended inner handle (correct)"
+    );
+    assert!(
+        interp_output(suspended).is_err(),
+        "interp suspended inner handle (broken)"
+    );
 
     // try-on-fail capture: the on-fail closure references enclosing locals
     // (`child`, `n`) and RETRIES after an abort — the supervision pattern.
@@ -338,6 +378,14 @@ fn known_divergences_are_pinned() {
                     [S.get] [fn [st] [[resume st] [+ st 1]]]]
                   0]]
           [println r]]"#;
-    assert_eq!(eir_output(sup_retry).as_deref(), Ok("ok"), "EIR try-retry captures (correct)");
-    assert_ne!(interp_output(sup_retry).as_deref(), Ok("ok"), "interp try-retry captures (broken)");
+    assert_eq!(
+        eir_output(sup_retry).as_deref(),
+        Ok("ok"),
+        "EIR try-retry captures (correct)"
+    );
+    assert_ne!(
+        interp_output(sup_retry).as_deref(),
+        Ok("ok"),
+        "interp try-retry captures (broken)"
+    );
 }
