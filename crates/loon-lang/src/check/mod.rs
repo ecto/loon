@@ -3885,8 +3885,7 @@ impl Checker {
                     let func_ty = self.infer(step);
                     let ret = self.subst.fresh();
                     let app_row = EffectRow::open(self.subst.fresh_var());
-                    let expected =
-                        Type::Fn(vec![current], Box::new(ret.clone()), app_row.clone());
+                    let expected = Type::Fn(vec![current], Box::new(ret.clone()), app_row.clone());
                     if let Err(e) = unify(&mut self.subst, &func_ty, &expected) {
                         self.push_unify_error(e, step.span);
                     }
@@ -3989,9 +3988,19 @@ impl Checker {
                             })
                             .collect();
 
-                        let ctor_ty =
-                            Type::Fn(field_types, Box::new(result_ty.clone()), EffectRow::pure());
-                        let vars: Vec<TypeVar> = type_params.iter().map(|(_, v)| *v).collect();
+                        // Constructors are effect-polymorphic: give them an open,
+                        // quantified tail (like builtins get in
+                        // effect_polymorphize_builtins) so a constructor can be
+                        // passed to any higher-order function regardless of the
+                        // effect row its function parameter carries.
+                        let effect_tail = self.subst.fresh_var();
+                        let ctor_ty = Type::Fn(
+                            field_types,
+                            Box::new(result_ty.clone()),
+                            EffectRow::open(effect_tail),
+                        );
+                        let mut vars: Vec<TypeVar> = type_params.iter().map(|(_, v)| *v).collect();
+                        vars.push(effect_tail);
                         let scheme = Scheme {
                             bounds: vec![],
                             vars,
@@ -4257,7 +4266,11 @@ impl Checker {
         let ret = types.pop().unwrap();
         // Sigs say nothing about effects; an open row means the assertion
         // constrains only the value types, never the effect row.
-        Type::Fn(types, Box::new(ret), EffectRow::open(self.subst.fresh_var()))
+        Type::Fn(
+            types,
+            Box::new(ret),
+            EffectRow::open(self.subst.fresh_var()),
+        )
     }
 
     /// Convert an AST expression into a Type
@@ -5347,6 +5360,41 @@ mod tests {
             "error: {}",
             errors[0].message()
         );
+    }
+
+    #[test]
+    fn effect_row_ctor_passes_to_effectful_hof() {
+        // User ADT constructors get an open, quantified effect-row tail
+        // (like builtins), so passing one to a higher-order function whose
+        // parameter row carries concrete labels must not produce a false
+        // effect mismatch.
+        let errors = check_errors(
+            r#"
+            [type Box [MkBox Int]]
+            [fn do-both [f x]
+              [IO.println "hi"]
+              [f x]]
+            [fn main [] [println [do-both MkBox 1]]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+    }
+
+    #[test]
+    fn effect_row_ctor_passes_through_handle_boundary() {
+        // A handle boundary forces the handled label into f's parameter row;
+        // an effect-polymorphic constructor must still unify with it.
+        let errors = check_errors(
+            r#"
+            [effect Ask [ask [] Int]]
+            [type Box [MkBox Int]]
+            [fn call-it [f]
+              [handle [f 1]
+                [Ask.ask] [resume 42]]]
+            [fn main [] [println [call-it MkBox]]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
     }
 
     // --- Row polymorphism / Record tests ---
