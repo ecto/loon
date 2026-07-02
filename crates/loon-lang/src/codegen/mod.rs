@@ -643,11 +643,18 @@ impl Compiler {
                 pair,
             ),
         );
+        let map_has_key = self.next_fn_idx;
+        self.next_fn_idx += 1;
+        self.push_function(
+            map_has_key,
+            MapsRuntime::gen_map_has_key(cr.vec_get_idx, val_eq),
+        );
         self.maps_runtime = Some(MapsRuntime {
             val_eq_idx: val_eq,
             pair_idx: pair,
             map_get_idx: map_get,
             map_assoc_idx: map_assoc,
+            map_has_key_idx: map_has_key,
         });
     }
     fn ensure_split_runtime(&mut self) -> u32 {
@@ -3771,6 +3778,10 @@ impl<'a> FnCtx<'a> {
         Ok(())
     }
     /// `[merge a b]` — `a` with every `[k v]` entry of `b` assoc'd in.
+    /// `[merge a b]` — LEFT-biased union, matching the EIR VM (the semantic
+    /// reference) and the legacy interpreter: keys already in `a` keep their
+    /// position AND value; only keys unique to `b` are appended, in `b`'s
+    /// order. So `[merge {:a 1 :b 2} {:b 9 :c 3}]` is `{:a 1 :b 2 :c 3}`.
     fn compile_merge(&mut self, a: &Expr, b: &Expr) -> Result<(), String> {
         use WasmInstruction as W;
         self.compiler.ensure_maps_runtime();
@@ -3818,12 +3829,20 @@ impl<'a> FnCtx<'a> {
         self.instructions.push(W::I32WrapI64);
         self.instructions.push(W::I64Load(3, 8));
         self.instructions.push(W::LocalSet(v));
-        // result = map_assoc(result, k, v)
+        // Left-biased: only insert b's key when a (= result) lacks it, so a's
+        // existing value and position win.
+        // if map_has_key(result, k) == 0 { result = map_assoc(result, k, v) }
+        self.instructions.push(W::LocalGet(result));
+        self.instructions.push(W::LocalGet(k));
+        self.instructions.push(W::Call(mr.map_has_key_idx));
+        self.instructions.push(W::I64Eqz);
+        self.instructions.push(W::If(BlockType::Empty));
         self.instructions.push(W::LocalGet(result));
         self.instructions.push(W::LocalGet(k));
         self.instructions.push(W::LocalGet(v));
         self.instructions.push(W::Call(mr.map_assoc_idx));
         self.instructions.push(W::LocalSet(result));
+        self.instructions.push(W::End);
         self.instructions.push(W::LocalGet(i));
         self.instructions.push(W::I64Const(1));
         self.instructions.push(W::I64Add);
@@ -4780,6 +4799,15 @@ mod tests {
         valid(r#"[fn main [] [let m [assoc [assoc {} "a" 1] "b" 2]] [println [len m]]]"#);
         valid(r#"[fn main [] [let m [assoc {} 1 100]] [println [get m 1]]]"#);
         valid(r#"[fn main [] [println [len [entries {"a" 1 "b" 2}]]]]"#);
+    }
+    #[test]
+    fn compile_merge_left_biased_is_valid() {
+        // `merge` guards each right-map key with `map_has_key` (left-biased), so
+        // the emitted `if`/`map_assoc` sequence must still form a valid module.
+        // Behavioral left-bias is enforced end-to-end by the conformance suite's
+        // map-merge-bias.oo running through wasmtime.
+        valid(r#"[fn main [] [println [get [merge {:a 1 :b 2} {:b 9 :c 3}] :b]]]"#);
+        valid(r#"[fn main [] [println [get [merge {:x 0} {:x 5}] :x]]]"#);
     }
     #[test]
     fn str_coerces_integers_to_decimal() {
