@@ -231,6 +231,43 @@ fn ctor_under_handler_runs_on_interp() {
     );
 }
 
+/// A recursive call INSIDE the handled body. The monomorphic self-reference
+/// aliases the function's own row with the body row; the handle boundary
+/// must not bake the handled label into the function's row, so a `#{}`
+/// (pure) annotation on the caller still checks.
+const RECURSIVE_CALL_IN_HANDLE: &str = "\
+[effect A [a [] Int]]
+[fn weird [n]
+  [if [= n 0]
+    0
+    [handle [+ [A.a] [weird [- n 1]]]
+      [A.a] [resume 1]]]]
+[fn main [] #{}
+  [println [weird 3]]]";
+
+#[test]
+fn recursive_call_in_handle_checks_clean() {
+    let (effects, errors) = check(RECURSIVE_CALL_IN_HANDLE);
+    assert!(errors.is_empty(), "must check cleanly, got: {errors:?}");
+    let weird = effects.get("weird").unwrap();
+    assert!(
+        !weird.contains("A"),
+        "weird fully handles A, got: {}",
+        weird.render()
+    );
+}
+
+#[test]
+fn recursive_call_in_handle_runs_on_eir_vm() {
+    // Each level under [resume 1] contributes 1: 1+1+1+0 = 3.
+    assert_eq!(eir_output(RECURSIVE_CALL_IN_HANDLE).as_deref(), Ok("3"));
+}
+
+#[test]
+fn recursive_call_in_handle_runs_on_interp() {
+    assert_eq!(interp_output(RECURSIVE_CALL_IN_HANDLE).as_deref(), Ok("3"));
+}
+
 // PRE-EXISTING runtime gap (also present on main, before effect rows): the
 // EIR VM cannot call a user ADT constructor that was passed around as a
 // first-class value ("value is not callable"), independent of effect rows —

@@ -8,7 +8,7 @@ use crate::syntax::Span;
 use crate::types::*;
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -90,6 +90,11 @@ pub struct Checker {
     /// row). Kept open during inference; effects are added by unifying
     /// through the tail so every row in a body shares one chain.
     current_fn_effects: EffectRow,
+    /// Append-only log of every directly performed effect label, in
+    /// inference order. `infer_handle` slices it (by index marks) to tell
+    /// labels genuinely performed by handler clauses apart from labels the
+    /// handle boundary forced into an aliased row (see the scrub step).
+    perform_log: Vec<String>,
     /// Registry of declared effects (built-in + user-defined)
     pub effect_registry: crate::effects::EffectRegistry,
     /// Base directory for module resolution (None = no file-system access)
@@ -122,6 +127,7 @@ impl Checker {
             pending_sigs: HashMap::new(),
             fn_effects: HashMap::new(),
             current_fn_effects: EffectRow::pure(),
+            perform_log: Vec::new(),
             effect_registry: crate::effects::EffectRegistry::new(),
             base_dir: None,
             pub_names: HashSet::new(),
@@ -244,6 +250,7 @@ impl Checker {
     /// (never inserted into the local concrete part) so that every row that
     /// has been linked with the ambient row observes it too.
     fn perform_effect(&mut self, label: &str) {
+        self.perform_log.push(label.to_string());
         let want = EffectRow {
             labels: std::iter::once(label.to_string()).collect(),
             tail: Some(self.subst.fresh_var()),
@@ -3399,12 +3406,26 @@ impl Checker {
         // fresh open row so the handled labels can be subtracted before the
         // residual is merged back into the enclosing row.
         let saved_effects = self.current_fn_effects.clone();
+        // Labels already in the enclosing row BEFORE the handled body: they
+        // came from performs outside this handle and must survive the scrub
+        // step below.
+        let ambient_labels_pre = self.subst.resolve_effect_row(&saved_effects).labels;
         let body_tail = self.subst.fresh_var();
         self.current_fn_effects = EffectRow::open(body_tail);
         let body_ty = self.infer(&args[0]);
         // Restore the enclosing row before checking the handler clauses:
         // clause bodies run at the handler, outside the handled region.
         let body_row = std::mem::replace(&mut self.current_fn_effects, saved_effects);
+        // Track what the handler CLAUSES add to the enclosing row (clause
+        // bodies run outside the handled region, so their performs are
+        // genuine): a resolved-labels snapshot around the clause loop plus
+        // a slice of the perform log (which also catches a clause
+        // re-performing a label the body already forced into the chain).
+        let ambient_labels_post_body = self
+            .subst
+            .resolve_effect_row(&self.current_fn_effects)
+            .labels;
+        let perform_mark = self.perform_log.len();
 
         // The handler's ANSWER type: what every clause (and the `return` clause)
         // produces, and what the whole `handle` evaluates to. For a plain
@@ -3487,6 +3508,16 @@ impl Checker {
             }
         }
 
+        // Labels the clauses themselves contributed to the enclosing row.
+        let mut clause_labels: BTreeSet<String> = self
+            .subst
+            .resolve_effect_row(&self.current_fn_effects)
+            .labels
+            .difference(&ambient_labels_post_body)
+            .cloned()
+            .collect();
+        clause_labels.extend(self.perform_log[perform_mark..].iter().cloned());
+
         // Effect subtraction: the handle expression's row is the body's row
         // minus the handled labels.
         //
@@ -3519,6 +3550,38 @@ impl Checker {
         };
         // Merge the residual (unhandled) effects into the enclosing row.
         self.absorb_effect_row(&residual);
+
+        // Scrub step: if the body row became ALIASED with the enclosing
+        // row during body inference (a recursive self-call inside the
+        // handle, or a parameter that was already linked to the enclosing
+        // row), the boundary constraint above forced the handled labels
+        // into the enclosing function's own row too — where the subtraction
+        // cannot see them, so the function (and every caller) would falsely
+        // report the handled effect. A handled label found in the enclosing
+        // row is genuine only if it was there before the body (performed
+        // outside the handle) or was added by a handler clause; anything
+        // else is boundary contamination and is removed, in place, from the
+        // whole chain so aliased rows (e.g. a parameter's row) are cleaned
+        // consistently. Known over-approximation kept: a parameter whose
+        // row was NOT aliased with the enclosing row here keeps the handled
+        // label concretely (that is the no-leak guarantee), so calling that
+        // parameter again outside the handle re-reports the label even for
+        // pure arguments (see effect_row_param_called_after_handle test).
+        if !handled.0.is_empty() {
+            let scrub: BTreeSet<String> = handled
+                .0
+                .iter()
+                .filter(|l| !ambient_labels_pre.contains(*l) && !clause_labels.contains(*l))
+                .cloned()
+                .collect();
+            if !scrub.is_empty() {
+                self.current_fn_effects
+                    .labels
+                    .retain(|l| !scrub.contains(l));
+                self.subst
+                    .scrub_effect_labels(self.current_fn_effects.tail, &scrub);
+            }
+        }
         answer
     }
 
@@ -5269,6 +5332,132 @@ mod tests {
             partial.contains("B"),
             "B is unhandled and must remain, got: {}",
             partial.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_recursive_call_inside_handle_stays_clean() {
+        // A recursive self-call INSIDE the handled body aliases the
+        // function's own (monomorphic) row with the body row; the handle
+        // boundary must not bake the handled label into the function's row.
+        let (effects, errors) = infer_effects(
+            r#"
+            [effect A [a [] Int]]
+            [fn weird [n]
+              [if [= n 0]
+                0
+                [handle [+ [A.a] [weird [- n 1]]]
+                  [A.a] [resume 1]]]]
+            [fn main [] #{} [println [weird 3]]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let weird = effects.get("weird").unwrap();
+        assert!(
+            !weird.contains("A"),
+            "weird fully handles A, got: {}",
+            weird.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_param_called_before_handle_stays_clean() {
+        // Calling a parameter before the handle links its row to the
+        // enclosing row; handling around a second call must not force the
+        // handled label into the function's own row (callers passing a PURE
+        // argument must stay clean).
+        let (effects, errors) = infer_effects(
+            r#"
+            [effect A [a [] Int]]
+            [fn h [f]
+              [f 1]
+              [handle [f 2]
+                [A.a] [resume 1]]]
+            [fn caller [] #{} [h [fn [x] [* x 2]]]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let caller = effects.get("caller").unwrap();
+        assert!(
+            !caller.contains("A"),
+            "caller passes a pure argument, got: {}",
+            caller.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_scrub_keeps_performs_from_outside_the_handle() {
+        // The scrub at the handle boundary must NOT remove a handled label
+        // that the function genuinely performs outside the handle, even when
+        // recursion aliases the body row with the function's own row.
+        let (effects, errors) = infer_effects(
+            r#"
+            [effect A [a [] Int]]
+            [fn g [n]
+              [A.a]
+              [if [= n 0]
+                0
+                [handle [g [- n 1]]
+                  [A.a] [resume 1]]]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let g = effects.get("g").unwrap();
+        assert!(
+            g.contains("A"),
+            "g performs A before the handle — must keep it, got: {}",
+            g.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_scrub_keeps_clause_performs() {
+        // A handler clause runs OUTSIDE the handled region; a clause that
+        // re-performs the handled effect (re-raise) keeps it in the
+        // function's row even when recursion aliases the rows.
+        let (effects, errors) = infer_effects(
+            r#"
+            [effect A [a [] Int]]
+            [fn h [n]
+              [if [= n 0]
+                0
+                [handle [h [- n 1]]
+                  [A.a] [do [A.a] [resume 1]]]]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let h = effects.get("h").unwrap();
+        assert!(
+            h.contains("A"),
+            "the clause re-performs A unhandled — must keep it, got: {}",
+            h.render()
+        );
+    }
+
+    #[test]
+    fn effect_row_param_called_after_handle_overapproximates() {
+        // PINNED over-approximation (deliberate, Koka-style): when a
+        // parameter is called inside a handle and again AFTER it, the
+        // boundary forces the handled label into the parameter's row (that
+        // is the no-leak guarantee), so the later call re-absorbs the label
+        // into the function's row — even for callers passing a pure
+        // argument. Precision here would need subsumption-based (not
+        // equality-based) row unification. See DESIGN.md "Effect Rows".
+        let (effects, errors) = infer_effects(
+            r#"
+            [effect A [a [] Int]]
+            [fn run-both [f]
+              [handle [f 1]
+                [A.a] [resume 0]]
+              [f 2]]
+        "#,
+        );
+        assert!(errors.is_empty(), "errors: {:?}", errors);
+        let run_both = effects.get("run-both").unwrap();
+        assert!(
+            run_both.contains("A"),
+            "current (pinned) behavior: the post-handle call re-reports A, got: {}",
+            run_both.render()
         );
     }
 

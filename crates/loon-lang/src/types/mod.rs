@@ -525,6 +525,47 @@ impl Subst {
         EffectRow { labels, tail }
     }
 
+    /// Remove `remove` labels from every `Type::Effects` binding reachable
+    /// through `tail`'s binding chain.
+    ///
+    /// Used by the checker at a `handle` boundary: when the handled body's
+    /// row was aliased with the enclosing function's own row (a recursive
+    /// self-call inside the body, or a parameter called both inside and
+    /// outside the handle), the boundary constraint forces the handled
+    /// labels into that shared chain. Scrubbing removes them in place so
+    /// every row that resolves through the chain (the function's own row,
+    /// its parameters' rows) is cleaned consistently.
+    pub fn scrub_effect_labels(
+        &mut self,
+        tail: Option<TypeVar>,
+        remove: &BTreeSet<String>,
+    ) {
+        let mut cur = tail;
+        let mut seen: std::collections::HashSet<TypeVar> = std::collections::HashSet::new();
+        while let Some(v) = cur {
+            if !seen.insert(v) {
+                break;
+            }
+            let idx = v.0 as usize;
+            let bound = match self.bindings.get(idx) {
+                Some(Some(t)) => t.clone(),
+                _ => break,
+            };
+            match bound {
+                Type::Effects(mut inner) => {
+                    let next = inner.tail;
+                    if inner.labels.iter().any(|l| remove.contains(l)) {
+                        inner.labels.retain(|l| !remove.contains(l));
+                        self.bindings[idx] = Some(Type::Effects(inner));
+                    }
+                    cur = next;
+                }
+                Type::Var(u) => cur = Some(u),
+                _ => break,
+            }
+        }
+    }
+
     /// Occurs check: does TypeVar v occur in type ty?
     fn occurs_in(&self, v: TypeVar, ty: &Type) -> bool {
         match self.resolve(ty) {
