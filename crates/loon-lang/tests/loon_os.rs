@@ -68,6 +68,37 @@ fn sim_demo_is_deterministic_per_seed() {
 }
 
 #[test]
+fn kv_demo_survives_lossy_network_deterministically() {
+    // The phase-2 exit demo: a KV server + 2 clients over a 25%-drop/10%-dup
+    // network whose dice come from the sim's seeded PRNG. All puts must land
+    // (retries recover the drops), the same seed must reproduce the identical
+    // world, and a different seed must converge to the same database.
+    let out = run_demo("demo-kv.oo").join("\n");
+    assert!(out.contains("final db:      {alpha 1 gamma 3 beta 2 delta 4}"), "{out}");
+    assert!(out.contains("STORM REPRODUCED EXACTLY"), "{out}");
+    assert!(out.contains("SAME converged database"), "{out}");
+}
+
+#[test]
+fn try_recv_is_nonblocking() {
+    // try-recv returns :none instead of parking — no deadlock when the
+    // mailbox is empty, {:msg m} when something is waiting.
+    let out = run(r#"
+        [use sys]
+        [use sched]
+        [fn main []
+          [let st [run-procs [fn []
+            [let empty [Proc.try-recv]]
+            [Proc.send [Proc.self] "hi"]
+            [let full [Proc.try-recv]]
+            [str empty "/" [get full :msg]]]]]
+          [println [get [first [get st :done]] :value]]]
+    "#)
+    .join("\n");
+    assert!(out.contains(":none/hi"), "{out}");
+}
+
+#[test]
 fn scheduler_detects_deadlock() {
     let out = run(r#"
         [use sys]

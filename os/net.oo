@@ -1,0 +1,42 @@
+; Loon OS — the network is a handler.
+;
+; `Net.send` is an unreliable datagram: this handler rolls the dice and
+; either drops the packet, duplicates it, or delivers it into the target's
+; Proc mailbox. Wrap a process body in `lossy` and its sends become exactly
+; as unreliable as you ask for — and because the dice are the Rand effect,
+; which the simulation handler beneath seeds, THE PACKET LOSS ITSELF IS
+; DETERMINISTIC. A distributed-systems bug found at seed 42 replays at seed
+; 42, drop for drop, forever. (FoundationDB's simulation testing, as a
+; 20-line wrapper.)
+;
+; Composition per process: lossy <- process body; Rand forwards out through
+; the scheduler to the sim; surviving packets forward as Proc.send to the
+; scheduler. Delays/reordering need virtual-time delivery queues — future
+; work; drops + dups already exercise every retry path.
+[use sys]
+
+; Wrap a process body: each Net.send is dropped with drop-pct/100
+; probability, duplicated with dup-pct/100, delivered otherwise.
+[pub
+  fn
+  lossy
+  [thunk drop-pct dup-pct]
+  [handle
+    [thunk]
+    [Net.send target packet]
+    [if [< [Rand.int 100] drop-pct]
+      [resume []] ; the network ate it
+      [do
+        [Proc.send target packet]
+        [if [< [Rand.int 100] dup-pct] [Proc.send target packet] []]
+        [resume []]]]]]
+
+; A reliable network, for differential runs against the same protocol.
+[pub
+  fn
+  reliable
+  [thunk]
+  [handle
+    [thunk]
+    [Net.send target packet]
+    [do [Proc.send target packet] [resume []]]]]
