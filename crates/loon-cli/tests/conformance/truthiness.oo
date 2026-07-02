@@ -1,0 +1,13 @@
+; Canonical truthiness: ONLY `false` and unit are falsy. Everything else is
+; truthy — empty string, empty vector, and empty map all drive the THEN branch;
+; only false drives the ELSE branch. All three backends agree on these cases.
+; (integer/float zero is a wasm-only exception, pinned in truthiness-zero.oo;
+;  None is covered in truthiness-none.oo since wasm can't codegen bare `None`.)
+; No expect-fail: this program ENFORCES the agreement.
+[fn main []
+  [println [if "" "empty-str-truthy" "FALSY"]]
+  [println [if #[] "empty-vec-truthy" "FALSY"]]
+  [println [if {} "empty-map-truthy" "FALSY"]]
+  [println [if false "TRUTHY" "false-falsy"]]
+  [println [if [and 1 "x"] "and-truthy" "FALSY"]]
+  [println [if [or false #[]] "or-truthy" "FALSY"]]]
