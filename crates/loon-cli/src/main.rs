@@ -219,6 +219,12 @@ fn run_file_native(path: &PathBuf) {
 }
 
 fn run_file_legacy(path: &PathBuf) {
+    eprintln!(
+        "{}: --legacy runs the tree-walking interpreter, which diverges from \
+         the EIR VM on nested handlers, effect forwarding, and abort, and is \
+         slated for removal. Run without --legacy to use the reference backend.",
+        "warning".yellow().bold()
+    );
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -658,122 +664,91 @@ fn test_file(path: &PathBuf) {
     };
 
     let filename = path.to_string_lossy().to_string();
-    match loon_lang::parser::parse(&source) {
-        Ok(exprs) => {
-            // First eval all definitions
-            let mut env = loon_lang::interp::Env::new();
-            loon_lang::interp::register_builtins_pub(&mut env);
-            loon_lang::interp::sync_global_env_pub(&env);
+    // Tests run on the EIR VM — the reference backend for effect/handler
+    // semantics (the legacy tree-walker diverges on nested handlers, effect
+    // forwarding, and abort; see backend_parity). Each test is executed by
+    // appending a synthetic `main` that calls it (last-binding-wins, so it
+    // shadows any real `main` in the file), then running the whole module.
+    let exprs = match loon_lang::parser::parse(&source) {
+        Ok(e) => e,
+        Err(e) => {
+            loon_lang::errors::report_error(&filename, &source, &e.message, e.span);
+            std::process::exit(1);
+        }
+    };
 
-            for expr in &exprs {
-                if let Err(e) = loon_lang::interp::eval(expr, &mut env) {
-                    eprintln!("{}: {e}", "error".red().bold());
-                    std::process::exit(1);
-                }
-            }
-
-            // Find and run test functions (names starting with "test-")
-            let mut passed = 0;
-            let mut failed = 0;
-            let test_fns: Vec<String> = {
-                let mut names = Vec::new();
-                for expr in &exprs {
-                    if let loon_lang::ast::ExprKind::List(items) = &expr.kind {
-                        if items.len() >= 3 {
-                            if let loon_lang::ast::ExprKind::Symbol(s) = &items[0].kind {
-                                if s == "test" {
-                                    // [test name [params] body...] or [test fn name [params] body...]
-                                    if let loon_lang::ast::ExprKind::Symbol(s2) = &items[1].kind {
-                                        if s2 == "fn" {
-                                            // [test fn name ...] — name is items[2]
-                                            if items.len() >= 4 {
-                                                if let loon_lang::ast::ExprKind::Symbol(name) =
-                                                    &items[2].kind
-                                                {
-                                                    names.push(name.clone());
-                                                }
-                                            }
-                                        } else {
-                                            // [test name [params] body...] — name is items[1]
-                                            names.push(s2.clone());
+    // Discover test function names: [test name [params] body...] or
+    // [test fn name [params] body...].
+    let test_fns: Vec<String> = {
+        let mut names = Vec::new();
+        for expr in &exprs {
+            if let loon_lang::ast::ExprKind::List(items) = &expr.kind {
+                if items.len() >= 3 {
+                    if let loon_lang::ast::ExprKind::Symbol(s) = &items[0].kind {
+                        if s == "test" {
+                            if let loon_lang::ast::ExprKind::Symbol(s2) = &items[1].kind {
+                                if s2 == "fn" {
+                                    if items.len() >= 4 {
+                                        if let loon_lang::ast::ExprKind::Symbol(name) =
+                                            &items[2].kind
+                                        {
+                                            names.push(name.clone());
                                         }
                                     }
+                                } else {
+                                    names.push(s2.clone());
                                 }
                             }
                         }
                     }
                 }
-                names
-            };
-
-            if test_fns.is_empty() {
-                println!("No tests found in {filename}");
-                return;
-            }
-
-            println!(
-                "  Running {} tests from {}...",
-                test_fns.len().bold(),
-                filename.dimmed()
-            );
-
-            for name in &test_fns {
-                let start = std::time::Instant::now();
-                // Call the test function with no args
-                if let Some(loon_lang::interp::Value::Fn(lf)) = env.get(name) {
-                    let mut test_env = env.clone();
-                    match loon_lang::interp::eval(
-                        &loon_lang::ast::Expr::new(
-                            loon_lang::ast::ExprKind::List(vec![loon_lang::ast::Expr::new(
-                                loon_lang::ast::ExprKind::Symbol(name.clone()),
-                                loon_lang::syntax::Span::new(0, 0),
-                            )]),
-                            loon_lang::syntax::Span::new(0, 0),
-                        ),
-                        &mut test_env,
-                    ) {
-                        Ok(_) => {
-                            let elapsed = start.elapsed();
-                            println!(
-                                "  {} {name} ({:.1}ms)",
-                                "pass".green(),
-                                elapsed.as_secs_f64() * 1000.0
-                            );
-                            passed += 1;
-                        }
-                        Err(e) => {
-                            let elapsed = start.elapsed();
-                            println!(
-                                "  {} {name} ({:.1}ms)\n    {}",
-                                "FAIL".red().bold(),
-                                elapsed.as_secs_f64() * 1000.0,
-                                e
-                            );
-                            failed += 1;
-                        }
-                    }
-                    let _ = lf;
-                }
-            }
-
-            println!();
-            if failed == 0 {
-                println!("  {} {} passed", "✓".green().bold(), passed);
-            } else {
-                println!(
-                    "  {} passed, {} failed",
-                    passed.to_string().green(),
-                    failed.to_string().red().bold()
-                );
-            }
-            if failed > 0 {
-                std::process::exit(1);
             }
         }
-        Err(e) => {
-            loon_lang::errors::report_error(&filename, &source, &e.message, e.span);
-            std::process::exit(1);
+        names
+    };
+
+    if test_fns.is_empty() {
+        println!("No tests found in {filename}");
+        return;
+    }
+
+    println!(
+        "  Running {} tests from {}...",
+        test_fns.len().bold(),
+        filename.dimmed()
+    );
+
+    let base_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let mut passed = 0;
+    let mut failed = 0;
+
+    for name in &test_fns {
+        let start = std::time::Instant::now();
+        let harness = format!("{source}\n[fn main [] [{name}]]");
+        let result = loon_lang::eir::vm::eval_eir_with_base_dir(&harness, base_dir);
+        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+        match result {
+            Ok(_) => {
+                println!("  {} {name} ({elapsed:.1}ms)", "pass".green());
+                passed += 1;
+            }
+            Err(e) => {
+                println!("  {} {name} ({elapsed:.1}ms)\n    {e}", "FAIL".red().bold());
+                failed += 1;
+            }
         }
+    }
+
+    println!();
+    if failed == 0 {
+        println!("  {} {} passed", "✓".green().bold(), passed);
+    } else {
+        println!(
+            "  {} passed, {} failed",
+            passed.to_string().green(),
+            failed.to_string().red().bold()
+        );
+        std::process::exit(1);
     }
 }
 
