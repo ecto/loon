@@ -560,12 +560,9 @@ impl Vm {
                 }
             };
         if let Some(dst) = base {
-            // Push the handler frame as a fresh prompt and re-establish the
-            // handle's handlers at it, so performs inside the resumed segment
-            // are handled (even though the original `handle` may be gone). The
-            // re-established handlers are scoped to this prompt frame: they are
-            // popped when it returns (see return_val), so they do not leak onto
-            // the dynamic handler stack and shadow a later, unrelated handle.
+            // Push the handler frame as a fresh prompt returning into `dst`,
+            // so the continuation is self-contained even when resumed after
+            // its original `handle` has exited (an escaping continuation).
             self.frames.push(Frame {
                 func: self.func,
                 block: self.block,
@@ -574,14 +571,24 @@ impl Vm {
                 ret_reg: dst,
                 captures: std::mem::take(&mut self.captures),
             });
-            let prompt = self.frames.len() - 1;
-            for h in prompt_handlers {
-                self.handlers.push(DynHandler {
-                    prompt_depth: prompt,
-                    ephemeral: true,
-                    ..h
-                });
-            }
+        }
+        // Re-establish the snapshotted handlers (the handle's own, plus any
+        // inner handle's that were suspended inside the segment). Perform moved
+        // them off the dynamic stack into the snapshot; without this, performs
+        // inside the resumed segment would not find their handlers. Snapshot
+        // depths are relative to the prompt; the saved frames are pushed
+        // directly above the current top, so absolute depth = prompt + rel.
+        // They are ephemeral: pruned automatically once their prompt frame
+        // leaves the stack (see prune_ephemeral_handlers), or removed by their
+        // own depth-matched PopHandler when a suspended handle completes
+        // normally inside the resumed segment.
+        let prompt = self.frames.len().saturating_sub(1);
+        for h in prompt_handlers {
+            self.handlers.push(DynHandler {
+                prompt_depth: prompt + h.prompt_depth,
+                ephemeral: true,
+                ..h
+            });
         }
         for f in saved {
             self.frames.push(f);
@@ -965,15 +972,27 @@ impl Vm {
                 if let Some((hval, prompt_depth)) = found {
                     // Capture the continuation: every frame above the prompt,
                     // plus the current execution point (already advanced past
-                    // this perform), as a multi-shot Obj::Continuation. Snapshot
-                    // this handle's handlers too, so the continuation can
-                    // re-establish them if resumed after the handle exits.
+                    // this perform), as a multi-shot Obj::Continuation.
+                    //
+                    // Every handler at or above the prompt is delimited by the
+                    // captured segment: the prompt's own handlers (deep-handler
+                    // semantics — the clause body runs OUTSIDE its own handle,
+                    // so a re-perform forwards to the next handler out instead
+                    // of recursing into itself) and any inner handle's handlers
+                    // whose frames are being captured. Move them all into the
+                    // continuation snapshot, with depths stored RELATIVE to the
+                    // prompt so `resume_continuation` can re-establish them at
+                    // whatever depth the segment is re-installed.
                     let prompt_handlers: Vec<DynHandler> = self
                         .handlers
                         .iter()
-                        .filter(|h| h.prompt_depth == prompt_depth)
-                        .cloned()
+                        .filter(|h| h.prompt_depth >= prompt_depth)
+                        .map(|h| DynHandler {
+                            prompt_depth: h.prompt_depth - prompt_depth,
+                            ..h.clone()
+                        })
                         .collect();
+                    self.handlers.retain(|h| h.prompt_depth < prompt_depth);
                     let saved: Vec<Frame> = self.frames.split_off(prompt_depth + 1);
                     let cont = Obj::Continuation {
                         saved,
@@ -1040,7 +1059,21 @@ impl Vm {
             }
 
             Op::PopHandler(_) => {
-                self.handlers.pop();
+                // Remove the innermost handler installed at THIS frame depth.
+                // Depth-matched rather than a blind pop: if the handle's body
+                // performed, Perform already moved this handle's handlers into
+                // the continuation snapshot, and a blind pop here (on the
+                // abort/no-resume path) would remove some outer handle's
+                // handler instead. Matching PushHandler's prompt_depth
+                // (frames.len() at the handle) makes the pop a no-op then.
+                let depth = self.frames.len();
+                if let Some(idx) = self
+                    .handlers
+                    .iter()
+                    .rposition(|h| h.prompt_depth == depth)
+                {
+                    self.handlers.remove(idx);
+                }
             }
         }
         Ok(())
