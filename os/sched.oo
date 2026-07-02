@@ -1,0 +1,99 @@
+; Loon OS — the scheduler.
+;
+; A blocked process is an unresumed continuation; the process table is a
+; queue of them. Cooperative round-robin: every Proc effect is a yield
+; point. Pure — the whole scheduler state is one immutable map threaded
+; through handler clauses (the escaping-continuation pattern):
+;
+;   {:queue    #[{:pid n :step [fn [st] st']}]   runnable steps
+;    :mail     {pid #[msgs]}                      undelivered messages
+;    :waiting  {pid k-or-:none}                   parked on recv
+;    :next-pid n
+;    :done     #[{:pid n :value v}]}              exit values
+;
+; A "step" is st -> st: run one process slice, return the updated state.
+; Fresh processes wrap their thunk in a new handle; parked processes are
+; continuations that re-establish their own handler when resumed.
+[use sys]
+
+[fn enqueue [st pid step]
+  [update st :queue [fn [q] [conj q {:pid pid :step step}]]]]
+
+; Run one slice of process `pid`. Returns st -> st.
+[fn run-slice [pid thunk]
+  [handle
+    [thunk]
+    [return x]
+    [fn [st] [update st :done [fn [d] [conj d {:pid pid :value x}]]]]
+    
+    [Proc.self]
+    [fn [st] [[resume pid] st]]
+    
+    [Proc.spawn t]
+    [fn [st]
+      [let child [get st :next-pid]]
+      [let st2
+      [enqueue
+        [assoc st :next-pid [+ child 1]]
+        child
+        [fn [s] [[run-slice child t] s]]]]
+      [[resume child] st2]]
+    
+    [Proc.yield]
+    ; park the continuation at the back of the run queue
+    [fn [st] [enqueue st pid [fn [s] [[resume []] s]]]]
+    
+    [Proc.recv]
+    [fn [st]
+      [let inbox [get [get st :mail] pid #[]]]
+      [if [> [len inbox] 0]
+        [do
+          [let st2 [update st :mail [fn [m] [assoc m pid [drop 1 inbox]]]]]
+          [[resume [first inbox]] st2]]
+        ; nothing waiting — park until someone sends to us
+        [update st :waiting [fn [w] [assoc w pid [fn [msg] [resume msg]]]]]]]
+    
+    [Proc.send target msg]
+    [fn [st]
+      [let k [get [get st :waiting] target :none]]
+      [if [= k :none]
+        ; not parked — leave the message in the mailbox
+        [do
+          [let st2
+          [update
+            st
+            :mail
+            [fn [m] [assoc m target [conj [get m target #[]] msg]]]]]
+          [[resume []] st2]]
+        ; parked on recv — wake it with the message
+        [do
+          [let st2 [update st :waiting [fn [w] [assoc w target :none]]]]
+          [[resume []] [enqueue st2 target [fn [s] [[k msg] s]]]]]]]]]
+
+; Drain the run queue round-robin until empty (tail-recursive).
+[fn drain [st]
+  [let q [get st :queue]]
+  [if [empty? q]
+    st
+    [do
+      [let entry [first q]]
+      [let st2 [assoc st :queue [drop 1 q]]]
+      [drain [[get entry :step] st2]]]]]
+
+; Boot a process world: run `main-thunk` as pid 0, schedule until quiescent.
+; Returns the final state; :done holds exit values, and a non-empty :waiting
+; with an empty queue means deadlocked processes (reported by deadlocked?).
+[pub
+  fn
+  run-procs
+  [main-thunk]
+  [let st0 {:queue #[] :mail {} :waiting {} :next-pid 1 :done #[]}]
+  [drain [[run-slice 0 main-thunk] st0]]]
+
+; processes still parked on recv after the world went quiet
+[pub
+  fn
+  deadlocked?
+  [st]
+  [let stuck [filter [vals [get st :waiting]] [fn [k] [not [= k :none]]]]]
+  [not [empty? stuck]]]

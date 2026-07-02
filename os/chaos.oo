@@ -1,0 +1,39 @@
+; Loon OS — chaos engineering as a handler.
+;
+; A fault-injecting wrapper: each Fs operation fails with probability
+; pct/100. Randomness comes from the Rand effect BELOW this handler, so
+; under sim.oo the chaos itself is seeded and deterministic: the same seed
+; produces the same faults in the same order, forever. Reproducible chaos.
+[use sys]
+
+[pub
+  fn
+  chaotic
+  [thunk pct]
+  [handle
+    [thunk]
+    [Fs.read-file p]
+    [if [< [Rand.int 100] pct]
+      [Fail.fail [str "chaos: read error on " p]]
+      [resume [Fs.read-file p]]]
+    [Fs.write-file p c]
+    [if [< [Rand.int 100] pct]
+      [Fail.fail [str "chaos: write error on " p]]
+      [resume [Fs.write-file p c]]]]]
+
+; Supervision: run child-fn, restarting on Fail up to n times. A supervisor
+; is nothing but a Fail handler with a restart policy — wrap any thunk
+; (including a process body handed to Proc.spawn).
+[pub
+  fn
+  supervise
+  [child-fn n]
+  [try
+    [child-fn]
+    [fn [msg]
+      [if [> n 0]
+        [do
+          [IO.println
+            [str "  [supervisor] child failed: " msg " — restarting"]]
+          [supervise child-fn [- n 1]]]
+        [str "gave up: " msg]]]]]

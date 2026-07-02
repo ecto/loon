@@ -116,6 +116,44 @@ const CORPUS: &[(&str, &str)] = &[
          [fn run [n] [handle [E.op] [E.op] [resume n]]] \
          [fn main [] [println [run 42]]]",
     ),
+    // ── try/on-fail hygiene + evaluation order (fixed 2026-07-01) ──────────
+    // The on-fail handler is lowered eagerly in the enclosing scope and applied
+    // via gensym bindings, so the injected message/continuation names cannot
+    // shadow user variables, and the handler expression evaluates once (even on
+    // the success path). All four must now agree across backends.
+    (
+        // enclosing `__fail_msg` is NOT shadowed by the injected message binding
+        "try-no-shadow-failmsg",
+        r#"[fn main []
+             [do [let __fail_msg "USER"]
+                 [println [try [Fail.fail "boom"] [fn [m] [str m "/" __fail_msg]]]]]]"#,
+    ),
+    (
+        // enclosing `resume` is NOT shadowed by the handler's implicit continuation
+        "try-no-shadow-resume",
+        r#"[fn main []
+             [do [let resume 42]
+                 [println [try [Fail.fail "x"] [fn [m] [str "r=" resume]]]]]]"#,
+    ),
+    (
+        // the handler-producing expression is evaluated eagerly, once — its side
+        // effect shows up even when the body succeeds
+        "try-onfail-eager",
+        r#"[fn mk [] [do [println "MAKING"] [fn [m] "h"]]]
+           [fn main [] [println [try [+ 1 2] [mk]]]]"#,
+    ),
+    (
+        // on-fail closes over an enclosing local (the supervision retry pattern)
+        "try-onfail-captures-local",
+        r#"[fn run [tag]
+             [try [Fail.fail "e"] [fn [m] [str tag ":" m]]]]
+           [fn main [] [println [run "job7"]]]"#,
+    ),
+    (
+        // a 3-arg try picks the SECOND arg as the handler on both backends
+        "try-three-arg-uses-second",
+        r#"[fn main [] [println [try [Fail.fail "x"] [fn [m] 99] 7]]]"#,
+    ),
 ];
 
 #[test]
@@ -167,4 +205,51 @@ fn known_divergences_are_pinned() {
                   [fn main [] [println [handle [handle [body] [A.a] [resume 10]] [B.b] [resume 20]]]]";
     assert_eq!(eir_output(nested).as_deref(), Ok("30"), "EIR nested handlers (correct)");
     assert!(interp_output(nested).is_err(), "interp nested handlers (broken)");
+
+    // forward-to-outer: a handler clause re-performing the handled effect runs
+    // OUTSIDE its own handle (deep-handler semantics), so the perform reaches
+    // the next handler out — the interposition substrate tracing/sandboxing
+    // wrappers are built on. The EIR VM used to re-enter its own handler here
+    // and loop forever; it now forwards ("w:k:x"). The legacy interp forwards
+    // but then LOSES the wrapper clause's continuation, returning the outer
+    // handler's value alone ("k:x"). EIR correct.
+    let forward = r#"[effect F [read [String] String]]
+        [fn body [] [F.read "x"]]
+        [fn wrapped [] [handle [body] [F.read p] [resume [str "w:" [F.read p]]]]]
+        [fn main [] [println [handle [wrapped] [F.read p] [resume [str "k:" p]]]]]"#;
+    assert_eq!(eir_output(forward).as_deref(), Ok("w:k:x"), "EIR forward-to-outer (correct)");
+    assert_eq!(interp_output(forward).as_deref(), Ok("k:x"), "interp forward-to-outer (wrong)");
+
+    // inner-handle-survives-resume: an inner handle suspended inside a captured
+    // continuation must still handle its effect after the outer handler
+    // resumes — its handlers travel with the segment (the EIR VM snapshots and
+    // re-establishes them). The legacy interp hits its sequential-effects guard
+    // and errors. EIR correct.
+    let suspended = "[effect A [geta [] Int]] [effect B [getb [] Int]] \
+         [fn inner [] [+ [A.geta] [B.getb]]] \
+         [fn body [] [handle [inner] [B.getb] [resume 10]]] \
+         [fn main [] [println [handle [body] [A.geta] [resume 1]]]]";
+    assert_eq!(eir_output(suspended).as_deref(), Ok("11"), "EIR suspended inner handle (correct)");
+    assert!(interp_output(suspended).is_err(), "interp suspended inner handle (broken)");
+
+    // try-on-fail capture: the on-fail closure references enclosing locals
+    // (`child`, `n`) and RETRIES after an abort — the supervision pattern.
+    // lower_try used to compile the on-fail expression with no captures, so
+    // the retry called garbage ("value is not callable" / silent corruption);
+    // it now desugars through lower_handle and inherits real free-variable
+    // capture. The legacy interp truncates the program silently. EIR correct.
+    let sup_retry = r#"
+        [effect S [get [] Int]]
+        [fn sup [child n]
+          [try [child]
+               [fn [m] [if [> n 0] [sup child [- n 1]] "gave up"]]]]
+        [fn main []
+          [let r [[handle
+                    [sup [fn [] [if [< [S.get] 2] [Fail.fail "boom"] "ok"]] 5]
+                    [return x] [fn [st] x]
+                    [S.get] [fn [st] [[resume st] [+ st 1]]]]
+                  0]]
+          [println r]]"#;
+    assert_eq!(eir_output(sup_retry).as_deref(), Ok("ok"), "EIR try-retry captures (correct)");
+    assert_ne!(interp_output(sup_retry).as_deref(), Ok("ok"), "interp try-retry captures (broken)");
 }

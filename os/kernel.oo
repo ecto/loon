@@ -1,0 +1,32 @@
+; Loon OS — the kernel handler.
+;
+; The kernel is not special: it is just the last handler standing. It
+; translates Sys effects into the VM's builtin effects (real syscalls).
+; Everything else in the OS is a wrapping handler somewhere above this one.
+[use sys]
+
+[pub
+  fn
+  kernel
+  [thunk]
+  [handle
+    [thunk]
+    [Fs.read-file p]
+    [resume [IO.read-file p]]
+    [Fs.write-file p c]
+    [resume [IO.write-file p c]]
+    [Clock.now]
+    [resume [IO.now]]
+    [Clock.millis]
+    [resume [IO.millis]]
+    ; no blocking-sleep builtin yet — a no-op under the real kernel; the
+    ; simulation handler (sim.oo) gives it meaning by advancing virtual time
+    [Clock.sleep ms]
+    [resume []]
+    ; not cryptographic — clock-derived entropy, fine for jitter/sampling
+    [Rand.int n]
+    [resume [imod [IO.millis] n]]
+    ; forwarding from inside the clause reaches the VM builtin (no handler
+    ; above the kernel), which reads the real environment
+    [Env.get k]
+    [resume [Env.get k]]]]
