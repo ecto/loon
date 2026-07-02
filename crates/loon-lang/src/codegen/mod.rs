@@ -1532,6 +1532,7 @@ impl Compiler {
             loop_vars: Vec::new(),
             float_locals: std::collections::HashSet::new(),
             string_locals: std::collections::HashSet::new(),
+            fn_locals: std::collections::HashSet::new(),
         };
         for (i, p) in params.iter().enumerate() {
             if let ClosureParam::Simple(s) = p {
@@ -1836,6 +1837,11 @@ struct FnCtx<'a> {
     /// Names of locals currently bound to string values (so bare `println`
     /// formats them as strings rather than integers).
     string_locals: std::collections::HashSet<String>,
+    /// Names in `locals` bound by a NAMED nested fn (`[fn helper …]`) — the
+    /// codegen analogue of the EIR lowerer's `BindKind::Fn`: usable as a
+    /// value/closure, but not a shadow for a same-named top-level fn at call
+    /// sites (those keep the direct `Call`).
+    fn_locals: std::collections::HashSet<String>,
 }
 
 impl<'a> FnCtx<'a> {
@@ -1843,6 +1849,23 @@ impl<'a> FnCtx<'a> {
         let i = self.local_count;
         self.local_count += 1;
         i
+    }
+
+    /// Run `f` with the current name→local bindings snapshotted, restoring
+    /// them afterwards. Used for match arms, whose pattern binders are
+    /// arm-scoped on the interpreter and the EIR VM (which push/pop a real
+    /// scope): without this a `[Full len]` binder would keep routing later
+    /// `[len …]` calls to a stale closure-call for the rest of the function.
+    /// (`let` is deliberately NOT scoped this way — the interpreter's
+    /// statement-form `let` binds in the enclosing scope, matching the flat
+    /// per-function locals model here.)
+    fn scoped<F: FnOnce(&mut Self) -> Result<(), String>>(&mut self, f: F) -> Result<(), String> {
+        let saved_locals = self.locals.clone();
+        let saved_fn = self.fn_locals.clone();
+        let result = f(self);
+        self.locals = saved_locals;
+        self.fn_locals = saved_fn;
+        result
     }
 
     /// Emit code that prints the i64 currently on the stack as a decimal number
@@ -2160,6 +2183,7 @@ impl<'a> FnCtx<'a> {
                             let name = name.clone();
                             self.compile_closure(&items[2..])?;
                             let local = self.alloc_local();
+                            self.fn_locals.insert(name.clone());
                             self.locals.insert(name, local);
                             self.instructions.push(WasmInstruction::LocalTee(local));
                             return Ok(());
@@ -2294,14 +2318,19 @@ impl<'a> FnCtx<'a> {
             return Ok(());
         }
         if let ExprKind::Symbol(s) = &items[0].kind {
-            // A LOCAL binding (let / fn param / match binding) shadows builtins
-            // and operators at call sites, matching the interpreter and the
-            // EIR VM. Without this, `[let sum f] [sum xs]` silently compiled
-            // the builtin arm below against the closure value — a miscompile.
-            // Special forms (if/let/do/...) can never be shadowed.
+            // A LOCAL binding (let / fn param / match binding) shadows
+            // builtins, operators, AND top-level fns at call sites, matching
+            // the interpreter and the EIR VM (whose lookup_local check runs
+            // before its func_map check). Without this, `[let sum f] [sum xs]`
+            // silently compiled the builtin arm below against the closure
+            // value — a miscompile. A NAMED nested fn's self-binding
+            // (`fn_locals`, the analogue of the lowerer's BindKind::Fn) does
+            // not shadow a same-named top-level fn — that call stays a direct
+            // `Call`. Special forms (if/let/do/...) can never be shadowed.
             if self.locals.contains_key(s.as_str())
                 && !crate::eir::lower::is_special_form(s)
-                && !self.compiler.fn_map.contains_key(s.as_str())
+                && (!self.fn_locals.contains(s.as_str())
+                    || !self.compiler.fn_map.contains_key(s.as_str()))
             {
                 return self.compile_closure_call_local(s, &items[1..]);
             }
@@ -3161,20 +3190,22 @@ impl<'a> FnCtx<'a> {
         ));
         for (ci, (_, body)) in int_arms.iter().enumerate() {
             self.instructions.push(WasmInstruction::End);
-            self.compile_maybe_tail(body, tail)?;
+            self.scoped(|c| c.compile_maybe_tail(body, tail))?;
             self.instructions
                 .push(WasmInstruction::Br((nc - ci) as u32));
         }
         self.instructions.push(WasmInstruction::End);
         if let Some(body) = default_body {
-            // Bind the catch-all variable (if any) to the scrutinee.
-            if let Some(name) = default_var {
-                let local = self.alloc_local();
-                self.locals.insert(name, local);
-                self.instructions.push(WasmInstruction::LocalGet(scrutinee));
-                self.instructions.push(WasmInstruction::LocalSet(local));
-            }
-            self.compile_maybe_tail(body, tail)?;
+            self.scoped(|c| {
+                // Bind the catch-all variable (if any) to the scrutinee.
+                if let Some(name) = default_var {
+                    let local = c.alloc_local();
+                    c.locals.insert(name, local);
+                    c.instructions.push(WasmInstruction::LocalGet(scrutinee));
+                    c.instructions.push(WasmInstruction::LocalSet(local));
+                }
+                c.compile_maybe_tail(body, tail)
+            })?;
         } else {
             self.instructions.push(WasmInstruction::I64Const(0));
         }
@@ -3213,15 +3244,17 @@ impl<'a> FnCtx<'a> {
                 _ => false,
             };
             if is_default {
-                if let ExprKind::Symbol(name) = &pattern.kind {
-                    if name != "_" {
-                        let local = self.alloc_local();
-                        self.locals.insert(name.clone(), local);
-                        self.instructions.push(WasmInstruction::LocalGet(scrutinee));
-                        self.instructions.push(WasmInstruction::LocalSet(local));
+                self.scoped(|c| {
+                    if let ExprKind::Symbol(name) = &pattern.kind {
+                        if name != "_" {
+                            let local = c.alloc_local();
+                            c.locals.insert(name.clone(), local);
+                            c.instructions.push(WasmInstruction::LocalGet(scrutinee));
+                            c.instructions.push(WasmInstruction::LocalSet(local));
+                        }
                     }
-                }
-                self.compile_maybe_tail(body, tail)?;
+                    c.compile_maybe_tail(body, tail)
+                })?;
                 have_default = true;
                 break;
             }
@@ -3247,23 +3280,27 @@ impl<'a> FnCtx<'a> {
                 self.instructions
                     .push(WasmInstruction::If(BlockType::Result(ValType::I64)));
                 let field_floats = self.compiler.adt_float_fields.get(&cn).cloned();
-                for (fi, fp) in pat_items[1..].iter().enumerate() {
-                    if let ExprKind::Symbol(fn_) = &fp.kind {
-                        if fn_ != "_" {
-                            let local = self.alloc_local();
-                            self.locals.insert(fn_.clone(), local);
-                            if field_floats.as_ref().and_then(|f| f.get(fi)).copied() == Some(true) {
-                                self.float_locals.insert(fn_.clone());
+                self.scoped(|c| {
+                    for (fi, fp) in pat_items[1..].iter().enumerate() {
+                        if let ExprKind::Symbol(fn_) = &fp.kind {
+                            if fn_ != "_" {
+                                let local = c.alloc_local();
+                                c.locals.insert(fn_.clone(), local);
+                                if field_floats.as_ref().and_then(|f| f.get(fi)).copied()
+                                    == Some(true)
+                                {
+                                    c.float_locals.insert(fn_.clone());
+                                }
+                                c.instructions.push(WasmInstruction::LocalGet(scrutinee));
+                                c.instructions.push(WasmInstruction::I32WrapI64);
+                                c.instructions
+                                    .push(WasmInstruction::I64Load(3, (8 + fi * 8) as u32));
+                                c.instructions.push(WasmInstruction::LocalSet(local));
                             }
-                            self.instructions.push(WasmInstruction::LocalGet(scrutinee));
-                            self.instructions.push(WasmInstruction::I32WrapI64);
-                            self.instructions
-                                .push(WasmInstruction::I64Load(3, (8 + fi * 8) as u32));
-                            self.instructions.push(WasmInstruction::LocalSet(local));
                         }
                     }
-                }
-                self.compile_maybe_tail(body, tail)?;
+                    c.compile_maybe_tail(body, tail)
+                })?;
                 self.instructions.push(WasmInstruction::Else);
                 open += 1;
                 i += 2;
@@ -3295,7 +3332,7 @@ impl<'a> FnCtx<'a> {
             }
             self.instructions
                 .push(WasmInstruction::If(BlockType::Result(ValType::I64)));
-            self.compile_maybe_tail(body, tail)?;
+            self.scoped(|c| c.compile_maybe_tail(body, tail))?;
             self.instructions.push(WasmInstruction::Else);
             open += 1;
             i += 2;
@@ -3382,6 +3419,7 @@ impl<'a> FnCtx<'a> {
             loop_vars: Vec::new(),
             float_locals: std::collections::HashSet::new(),
             string_locals: std::collections::HashSet::new(),
+            fn_locals: std::collections::HashSet::new(),
         };
         cctx.locals.insert("__env_ptr".to_string(), 0);
         for (i, p) in params.iter().enumerate() {

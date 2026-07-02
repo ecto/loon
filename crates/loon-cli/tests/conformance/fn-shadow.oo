@@ -1,0 +1,9 @@
+; A genuine LOCAL binding (let) shadows a same-named top-level fn at call
+; sites on every backend; a NAMED nested fn still resolves through the
+; direct-call path and can be called after its definition.
+[fn dbl [x] [* x 2]]
+[fn main []
+  [let dbl [fn [x] [+ x 100]]]
+  [println [dbl 1]]
+  [fn helper [x] [+ x 1]]
+  [println [helper 41]]]

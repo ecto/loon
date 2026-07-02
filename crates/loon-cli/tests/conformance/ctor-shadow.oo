@@ -1,0 +1,6 @@
+; The prelude Option/Result constructors are pre-registered on the compiled
+; backends, but a genuine local binding still shadows them at call sites,
+; exactly as it shadows builtins.
+[fn main []
+  [let Some [fn [x] [+ x 1]]]
+  [println [Some 5]]]
