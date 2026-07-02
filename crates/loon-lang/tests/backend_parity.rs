@@ -198,6 +198,37 @@ const CORPUS: &[(&str, &str)] = &[
         "try-three-arg-uses-second",
         r#"[fn main [] [println [try [Fail.fail "x"] [fn [m] 99] 7]]]"#,
     ),
+    // Canonical truthiness: ONLY `false` and unit are falsy. Integer 0, float
+    // 0.0, empty string, and empty collections are all TRUTHY and drive the
+    // THEN branch; only `false` drives the ELSE branch. The EIR VM is the
+    // reference; the legacy interpreter used to treat Int(0) as falsy and now
+    // agrees. (None is a heap Option ctor and is likewise truthy — see the
+    // dedicated entry below.)
+    (
+        "truthiness-falsy-set",
+        r#"[fn main []
+             [println [if 0 "T" "F"]]
+             [println [if 0.0 "T" "F"]]
+             [println [if "" "T" "F"]]
+             [println [if #[] "T" "F"]]
+             [println [if {} "T" "F"]]
+             [println [if false "T" "F"]]]"#,
+    ),
+    // None (an Option constructor, distinct from unit) is TRUTHY on both
+    // backends — it is a heap value, not `false`/unit.
+    (
+        "truthiness-none-truthy",
+        r#"[fn main [] [println [if None "T" "F"]]]"#,
+    ),
+    // and/or thread truthiness through the same test: `[and 0 "x"]` keeps going
+    // past 0 (truthy) and yields "x"; `[or false #[]]` skips false and yields
+    // the empty vector, which prints truthy.
+    (
+        "truthiness-and-or",
+        r#"[fn main []
+             [println [if [and 0 "x"] "T" "F"]]
+             [println [if [or false #[]] "T" "F"]]]"#,
+    ),
 ];
 
 #[test]

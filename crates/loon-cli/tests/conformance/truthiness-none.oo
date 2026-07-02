@@ -1,0 +1,7 @@
+; expect-fail: wasm — codegen does not support a bare `None` symbol (emits
+; `unbound symbol 'None'`), so this program can't compile to wasm at all. The
+; truthiness of None (it is TRUTHY, being a heap-allocated Option constructor,
+; not unit) is exercised on the EIR VM and the legacy interpreter, which agree.
+; This is a wasm codegen gap for Option constructors, not a truthiness gap.
+[fn main []
+  [println [if None "none-truthy" "FALSY"]]]
