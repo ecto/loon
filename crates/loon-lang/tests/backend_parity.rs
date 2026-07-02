@@ -192,6 +192,18 @@ fn known_divergences_are_pinned() {
     assert_eq!(eir_output(abort).as_deref(), Ok("999"), "EIR abort (correct)");
     assert_eq!(interp_output(abort).as_deref(), Ok("1000"), "interp abort (wrong)");
 
+    // CONVERGED (2026-07-01, phase-2): an uncaught Fail raised in a handler
+    // clause — whose enclosing `try` was frozen into the continuation — used to
+    // fall through to silent unit on the EIR VM (result collapsed to "()"). It
+    // now raises a loud UnhandledEffect error, matching the tree-walker. Both
+    // backends error (messages differ in format, so this is asserted as
+    // both-error rather than a CORPUS equality entry).
+    let frozen_try = "[effect E [op [Int] Int]] \
+                      [fn body [] [try [E.op 1] [fn [m] [str \"caught \" m]]]] \
+                      [fn main [] [println [handle [body] [E.op x] [Fail.fail \"denied\"]]]]";
+    assert!(eir_output(frozen_try).is_err(), "EIR uncaught clause-Fail now errors");
+    assert!(interp_output(frozen_try).is_err(), "interp uncaught clause-Fail errors");
+
     let fold_builtin = "[fn main [] [println [fold #[1 2 3 4] 0 +]]]";
     assert_eq!(eir_output(fold_builtin).as_deref(), Ok("0"), "EIR builtin-as-fold-fn (gap)");
     assert_eq!(interp_output(fold_builtin).as_deref(), Ok("10"), "interp builtin-as-fold-fn");

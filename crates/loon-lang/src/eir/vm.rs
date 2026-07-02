@@ -1027,11 +1027,24 @@ impl Vm {
                         self.w(*dst, Val::UNIT);
                     }
                 } else {
-                    // Unhandled: a builtin effect (real IO, etc.).
+                    // No dynamic handler: fall through to a builtin effect
+                    // (real IO, clock, net, …). If it isn't a builtin either,
+                    // the effect is genuinely unhandled — raise a loud error
+                    // rather than silently yielding unit. This notably makes an
+                    // uncaught `Fail.fail` abort with a message, including one
+                    // raised inside a handler clause whose enclosing `try` was
+                    // frozen into the continuation (see UnhandledEffect docs).
                     let effect = self.module.strings[_eff_sid.0 as usize].clone();
                     let op_name = self.module.strings[op_sid.0 as usize].clone();
-                    let result = self.builtin_effect(&effect, &op_name, &vals);
-                    self.w(*dst, result);
+                    match self.builtin_effect(&effect, &op_name, &vals) {
+                        Some(result) => self.w(*dst, result),
+                        None => {
+                            return Err(VmError::new(VmErrorKind::UnhandledEffect(format!(
+                                "{effect}.{op_name}"
+                            )))
+                            .with_span(self.current_span));
+                        }
+                    }
                 }
             }
 
@@ -2180,8 +2193,13 @@ impl Vm {
 
     // ── Effect builtins ────────────────────────────────────────────────
 
-    fn builtin_effect(&mut self, effect: &str, op: &str, args: &[Val]) -> Val {
-        match (effect, op) {
+    /// Handle an effect that reached the bottom of the dynamic handler stack.
+    /// Returns `Some(v)` for a real builtin effect (IO, Net, Clock, …), and
+    /// `None` when the (effect, op) pair has no builtin meaning — a genuinely
+    /// unhandled effect, which `Perform` turns into a loud error rather than
+    /// silently collapsing to unit (matching the tree-walking interpreter).
+    fn builtin_effect(&mut self, effect: &str, op: &str, args: &[Val]) -> Option<Val> {
+        Some(match (effect, op) {
             ("IO", "println") => {
                 let s: Vec<String> = args.iter().map(|v| self.val_to_string(*v)).collect();
                 let line = s.join(" ");
@@ -2262,8 +2280,8 @@ impl Vm {
             ("Const", "c") => Val::float(299_792_458.0),
             ("Physics", "yield-strength") => Val::float(250.0),
             ("Physics", "gravity") => Val::float(9.80665),
-            _ => Val::UNIT,
-        }
+            _ => return None,
+        })
     }
 
     // ── Value display ──────────────────────────────────────────────────
@@ -2370,6 +2388,13 @@ pub enum VmErrorKind {
     StackOverflow,
     /// `assert-eq` failed with mismatched values.
     AssertFailed(String, String),
+    /// An effect reached the bottom of the handler stack with no handler and
+    /// no builtin meaning. Carries the "Effect.op" name. Notably covers an
+    /// uncaught `Fail.fail` — an abort with no surrounding `try`/`Fail` handler,
+    /// including one raised inside a handler clause (whose body runs at its
+    /// `handle`'s prompt, outside the dynamic extent of any `try` in the
+    /// handled body). Loud beats silently collapsing the result to unit.
+    UnhandledEffect(String),
 }
 
 impl VmError {
@@ -2397,6 +2422,12 @@ impl std::fmt::Display for VmError {
             VmErrorKind::StackOverflow => write!(f, "stack overflow"),
             VmErrorKind::AssertFailed(actual, expected) => {
                 write!(f, "assertion failed: {actual} != {expected}")
+            }
+            VmErrorKind::UnhandledEffect(name) => {
+                write!(
+                    f,
+                    "unhandled effect: {name} — add a [handle ...] block to handle this effect"
+                )
             }
         }
     }
@@ -2684,6 +2715,43 @@ mod tests {
             run_output(r#"[println [Process.env "LOON_TEST_VAR"]]"#),
             vec!["hello-env".to_string()]
         );
+    }
+
+    #[test]
+    fn vm_unhandled_fail_is_loud() {
+        // An uncaught Fail must raise a loud error, not silently collapse to
+        // unit. This covers the deep-handler case: a `try` installed INSIDE a
+        // handled body is frozen into the continuation when a clause runs, so a
+        // Fail raised by that clause finds no live handler — it must error, not
+        // vanish. (Matches the tree-walking interpreter.)
+        let src = "[effect E [op [Int] Int]] \
+                   [fn body [] [try [E.op 1] [fn [m] [str \"caught \" m]]]] \
+                   [fn main [] [handle [body] [E.op x] [Fail.fail \"denied\"]]]";
+        let err = eval_eir(src).expect_err("uncaught Fail should error");
+        assert!(
+            matches!(err.kind, VmErrorKind::UnhandledEffect(ref n) if n == "Fail.fail"),
+            "expected UnhandledEffect(Fail.fail), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn vm_unhandled_user_effect_is_loud() {
+        // A user-defined effect with no handler and no builtin meaning is an
+        // error too, not silent unit.
+        let src = "[effect Foo [bar [] Int]] [fn main [] [Foo.bar]]";
+        let err = eval_eir(src).expect_err("unhandled user effect should error");
+        assert!(matches!(err.kind, VmErrorKind::UnhandledEffect(ref n) if n == "Foo.bar"));
+    }
+
+    #[test]
+    fn vm_outer_try_still_catches_clause_fail() {
+        // A `try` ENCLOSING the whole handle stays live while the clause runs,
+        // so it still catches a Fail the clause raises — only the frozen
+        // inner-try case is uncatchable.
+        let src = "[effect E [op [Int] Int]] \
+                   [fn guarded [] [handle [E.op 1] [E.op x] [Fail.fail \"boom\"]]] \
+                   [fn main [] [println [try [guarded] [fn [m] [str \"caught: \" m]]]]]";
+        assert_eq!(run_output(src), vec!["caught: boom".to_string()]);
     }
 
     #[test]

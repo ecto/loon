@@ -1,0 +1,30 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", "web/dist", "-l", "3333"],
+      "port": 3333
+    },
+    {
+      "name": "hpglot-preview",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8765", "--directory", "/tmp/hyperpolyglot"],
+      "port": 8765
+    },
+    {
+      "name": "honeyjar-backend",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "cd /Users/cam/Developer/honeyjar-monorepo/apps/backend && ENABLE_CAMPAIGNS=true yarn dev"],
+      "port": 3005
+    },
+    {
+      "name": "honeyjar-frontend",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "cd /Users/cam/Developer/honeyjar-monorepo/apps/frontend && yarn dev"],
+      "port": 3000,
+      "autoPort": false
+    }
+  ]
+}
