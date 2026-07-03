@@ -11,7 +11,7 @@ pub mod net;
 mod value;
 
 pub use env::Env;
-pub use value::Value;
+pub use value::{OrdMap, Value};
 
 use crate::ast::{Expr, ExprKind};
 use crate::module::ModuleCache;
@@ -896,7 +896,7 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
             Ok(Value::Set(vals?))
         }
         ExprKind::Map(pairs) => {
-            let mut map = imbl::HashMap::new();
+            let mut map = value::OrdMap::new();
             for (k, v) in pairs {
                 map.insert(eval(k, env)?, eval(v, env)?);
             }
@@ -2621,7 +2621,7 @@ pub(crate) fn eval_catch_errors(source: &str) -> Value {
     let exprs = match crate::parser::parse(source) {
         Ok(exprs) => exprs,
         Err(e) => {
-            let error_map: imbl::HashMap<Value, Value> = [
+            let error_map: value::OrdMap = [
                 (Value::Keyword("code".into()), Value::Str("E0000".into())),
                 (Value::Keyword("what".into()), Value::Str(e.message.into())),
                 (

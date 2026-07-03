@@ -302,6 +302,36 @@ The ownership model governs the *handles* to persistent data (who can read, who 
 [let m2 [assoc m :version "0.2"]]
 ```
 
+**Insertion order is guaranteed.** Maps preserve the order in which keys were
+first inserted, and that order is observable: `keys` (`vals` on the EIR VM /
+`values` on the interpreter), `entries`, iteration, and printing/display all
+follow insertion order — never sorted-by-key or hash order. All three backends
+(the EIR VM, the legacy interpreter, and the WASM codegen) back maps with an
+insertion-ordered structure, so a program prints its maps in insertion order
+regardless of how it runs.
+
+The update rules keep positions stable:
+
+- `assoc` of an **existing** key updates its value *in place* — the key keeps
+  its position.
+- `assoc` of a **new** key appends it at the end.
+- `merge` is **left-biased** on every backend: keys already in the left map keep
+  their position *and* value; keys only in the right map append in the right
+  map's order. So `[merge {:a 1 :b 2} {:b 9 :c 3}]` is `{:a 1 :b 2 :c 3}`.
+
+Order does **not** leak into equality. On the EIR VM and the interpreter, two
+maps with the same keys and values are equal (and hash equal) regardless of
+insertion order, so `[= {:a 1 :b 2} {:b 2 :a 1}]` is `true`.
+
+> **Backend caveat.** The WASM codegen does not yet implement *structural*
+> equality for compound values: on that backend `=` compares maps (and vectors)
+> by reference, so even `[= {:a 1} {:a 1}]` is `false` there. Order-independent
+> value equality is therefore an EIR-VM / interpreter guarantee for now, pinned
+> as an `expect-fail: wasm` divergence in the conformance suite. Likewise, a map
+> used *as* a set element or map key currently hashes order-dependently on the
+> EIR VM (the interpreter hashes it order-independently); only the value
+> equality operator `=` is order-independent on the VM.
+
 ### Sets
 
 ```loon

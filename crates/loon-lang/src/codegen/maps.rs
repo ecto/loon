@@ -19,6 +19,7 @@ pub struct MapsRuntime {
     pub pair_idx: u32,
     pub map_get_idx: u32,
     pub map_assoc_idx: u32,
+    pub map_has_key_idx: u32,
 }
 
 impl MapsRuntime {
@@ -110,6 +111,60 @@ impl MapsRuntime {
         i.push(LocalGet(4));
         i.push(I64Const(1));
         i.push(Call(vec_get_idx));
+        i.push(Return);
+        i.push(End);
+        // i++
+        i.push(LocalGet(3));
+        i.push(I64Const(1));
+        i.push(I64Add);
+        i.push(LocalSet(3));
+        i.push(Br(0));
+        i.push(End);
+        i.push(End);
+        i.push(I64Const(0));
+        FunctionBody {
+            params: vec![ValType::I64, ValType::I64],
+            results: vec![ValType::I64],
+            locals: vec![ValType::I64; 3], // 2,3,4
+            instructions: i,
+        }
+    }
+
+    /// `map_has_key(m, k) -> i64` — 1 if `k` is present, else 0. Unlike
+    /// `map_get`, this distinguishes a missing key from a key bound to `0`
+    /// (or `false`), which `merge`'s left-bias guard needs.
+    pub(super) fn gen_map_has_key(vec_get_idx: u32, val_eq_idx: u32) -> FunctionBody {
+        // locals: 2=len 3=i 4=p
+        let mut i = Vec::new();
+        i.push(LocalGet(0));
+        i.push(I32WrapI64);
+        i.push(I64Load(3, 0)); // len at header offset 0
+        i.push(LocalSet(2));
+        i.push(I64Const(0));
+        i.push(LocalSet(3));
+        i.push(Block(BlockType::Empty));
+        i.push(Loop(BlockType::Empty));
+        // if i >= len break
+        i.push(LocalGet(3));
+        i.push(LocalGet(2));
+        i.push(I64LtS);
+        i.push(I32Eqz);
+        i.push(BrIf(1));
+        // p = vec_get(m, i)
+        i.push(LocalGet(0));
+        i.push(LocalGet(3));
+        i.push(Call(vec_get_idx));
+        i.push(LocalSet(4));
+        // if val_eq(vec_get(p,0), k) != 0: return 1
+        i.push(LocalGet(4));
+        i.push(I64Const(0));
+        i.push(Call(vec_get_idx));
+        i.push(LocalGet(1));
+        i.push(Call(val_eq_idx));
+        i.push(I64Eqz);
+        i.push(I32Eqz);
+        i.push(If(BlockType::Empty));
+        i.push(I64Const(1));
         i.push(Return);
         i.push(End);
         // i++

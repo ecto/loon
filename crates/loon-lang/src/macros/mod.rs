@@ -1007,7 +1007,7 @@ fn ast_value_to_expr(val: &interp::Value, span: Span) -> Result<Expr, String> {
 // Helper functions for extracting fields from Value::Map
 
 fn get_str_field(
-    m: &imbl::HashMap<interp::Value, interp::Value>,
+    m: &interp::OrdMap,
     field: &str,
 ) -> Result<String, String> {
     m.get(&interp::Value::Keyword(field.into()))
@@ -1019,7 +1019,7 @@ fn get_str_field(
 }
 
 fn get_int_field(
-    m: &imbl::HashMap<interp::Value, interp::Value>,
+    m: &interp::OrdMap,
     field: &str,
 ) -> Result<i64, String> {
     m.get(&interp::Value::Keyword(field.into()))
@@ -1031,7 +1031,7 @@ fn get_int_field(
 }
 
 fn get_bool_field(
-    m: &imbl::HashMap<interp::Value, interp::Value>,
+    m: &interp::OrdMap,
     field: &str,
 ) -> Result<bool, String> {
     m.get(&interp::Value::Keyword(field.into()))
@@ -1043,7 +1043,7 @@ fn get_bool_field(
 }
 
 fn get_keyword_field(
-    m: &imbl::HashMap<interp::Value, interp::Value>,
+    m: &interp::OrdMap,
     field: &str,
 ) -> Result<String, String> {
     m.get(&interp::Value::Keyword(field.into()))
@@ -1055,7 +1055,7 @@ fn get_keyword_field(
 }
 
 fn get_vec_field(
-    m: &imbl::HashMap<interp::Value, interp::Value>,
+    m: &interp::OrdMap,
     field: &str,
 ) -> Result<imbl::Vector<interp::Value>, String> {
     m.get(&interp::Value::Keyword(field.into()))
