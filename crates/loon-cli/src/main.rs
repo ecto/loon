@@ -355,9 +355,13 @@ fn run_file(path: &PathBuf, record: Option<&std::path::Path>) {
             }
             if let Some(trace_path) = record {
                 eprintln!(
-                    "{} crash trace saved to {} — reproduce it with: loon replay {} {}",
+                    "{} crash trace saved to {} — reproduce it with: loon replay {} {}\n\
+                     {} after fixing, prove the crash is gone with: loon verify {} {}",
                     "note:".bold(),
                     trace_path.display(),
+                    trace_path.display(),
+                    path.display(),
+                    "note:".bold(),
                     trace_path.display(),
                     path.display()
                 );
