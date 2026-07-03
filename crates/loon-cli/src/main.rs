@@ -1,3 +1,4 @@
+mod json_diag;
 mod repl;
 
 use clap::{Parser, Subcommand};
@@ -52,7 +53,19 @@ enum Command {
     /// Run tests in a file
     Test { file: PathBuf },
     /// Type-check without building
-    Check { file: PathBuf },
+    Check {
+        file: PathBuf,
+        /// Emit diagnostics as JSON Lines on stdout (machine interface;
+        /// see docs/machine-interface.md)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print a compact language card for LLM system prompts
+    Card {
+        /// Emit the card as structured JSON sections
+        #[arg(long)]
+        json: bool,
+    },
     /// Explain an error code
     Explain { code: String },
     /// Start the LSP server
@@ -173,7 +186,8 @@ fn main() {
             ref trace,
             ref file,
         } => replay_file(trace, file),
-        Command::Check { ref file } => check_file(file),
+        Command::Check { ref file, json } => check_file(file, json),
+        Command::Card { json } => print_card(json),
         Command::Build { ref file, release } => build_file(file, release),
         Command::Repl => repl::run_repl(),
         Command::New { ref name } => new_project(name),
@@ -925,7 +939,7 @@ fn run_wasm_module(wasm_bytes: Vec<u8>) {
 
 type WasiCtx = wasmtime_wasi::preview1::WasiP1Ctx;
 
-fn check_file(path: &PathBuf) {
+fn check_file(path: &PathBuf, json: bool) {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -948,7 +962,14 @@ fn check_file(path: &PathBuf) {
                     .with_derived_copy_types(&checker.derived_copy_types);
                 errors = own.check_program(&checker.expanded_program);
             }
-            if errors.is_empty() {
+            if json {
+                // Machine interface: pure JSONL on stdout, exit codes
+                // unchanged (non-empty diagnostics → exit 1, as before).
+                json_diag::emit_report(&filename, &source, &errors);
+                if !errors.is_empty() {
+                    std::process::exit(1);
+                }
+            } else if errors.is_empty() {
                 println!("{}", "OK — no type errors".green().bold());
             } else {
                 for err in &errors {
@@ -958,9 +979,42 @@ fn check_file(path: &PathBuf) {
             }
         }
         Err(e) => {
-            loon_lang::errors::report_error(&filename, &source, &e.message, e.span);
+            if json {
+                let diag: loon_lang::errors::LoonDiagnostic = e.into();
+                json_diag::emit_report(&filename, &source, std::slice::from_ref(&diag));
+            } else {
+                loon_lang::errors::report_error(&filename, &source, &e.message, e.span);
+            }
             std::process::exit(1);
         }
+    }
+}
+
+/// `loon card`: print the compact language card for LLM system prompts.
+/// Content lives in card.md (versioned with the compiler); `--json` emits
+/// {"schema_version", "loon_version", "card"} plus per-section entries.
+fn print_card(json: bool) {
+    const CARD: &str = include_str!("card.md");
+    let version = env!("GIT_VERSION");
+    let card = CARD.replace("{{VERSION}}", version);
+    if json {
+        // Split on `## ` headings into structured sections.
+        let mut sections = Vec::new();
+        for chunk in card.split("\n## ") {
+            let (title, body) = match chunk.split_once('\n') {
+                Some((t, b)) => (t.trim_start_matches("# ").trim(), b.trim()),
+                None => (chunk.trim(), ""),
+            };
+            sections.push(serde_json::json!({ "title": title, "body": body }));
+        }
+        let out = serde_json::json!({
+            "schema_version": json_diag::SCHEMA_VERSION,
+            "loon_version": version,
+            "sections": sections,
+        });
+        println!("{out}");
+    } else {
+        println!("{card}");
     }
 }
 
