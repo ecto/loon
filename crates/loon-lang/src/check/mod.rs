@@ -6043,6 +6043,29 @@ mod tests {
     }
 
     #[test]
+    fn desugared_forms_are_warning_free() {
+        // Core desugars (if-let/when-let/and/or) generate ifs and matches
+        // over gensym temps; neither E0209 nor W0100 may fire on code the
+        // user never wrote.
+        for src in [
+            "[if-let [x [Some 1]] x 0]",
+            "[if-let [x None] x 0]",
+            "[when-let [x [Some 1]] [println x]]",
+            "[or 0 \"fallback\"]",
+            "[and 1 2]",
+        ] {
+            let warnings: Vec<_> = check_errors(src)
+                .into_iter()
+                .filter(|e| e.code.is_warning())
+                .collect();
+            assert!(
+                warnings.is_empty(),
+                "desugar of {src:?} produced warnings: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
     fn wildcard_warning_lists_caught_constructors() {
         let errors = check_errors(
             "[type Color Red Green Blue]\n\
