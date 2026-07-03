@@ -373,7 +373,11 @@ fn hygiene_macro_temp_does_not_clobber_user_binding() {
         tmp
     "#,
     );
-    assert_eq!(result, interp::Value::Int(100), "macro temp clobbered user `tmp`");
+    assert_eq!(
+        result,
+        interp::Value::Int(100),
+        "macro temp clobbered user `tmp`"
+    );
 }
 
 #[test]
@@ -387,7 +391,11 @@ fn hygiene_macro_temp_does_not_capture_user_argument() {
         [my-or false r]
     "#,
     );
-    assert_eq!(result, interp::Value::Int(42), "template `r` captured the caller's `r`");
+    assert_eq!(
+        result,
+        interp::Value::Int(42),
+        "template `r` captured the caller's `r`"
+    );
 }
 
 #[test]

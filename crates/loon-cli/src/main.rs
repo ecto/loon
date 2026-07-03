@@ -238,9 +238,8 @@ fn run_file(path: &PathBuf, record: Option<&std::path::Path>) {
             match std::fs::read_to_string(trace_path) {
                 Ok(existing) => {
                     let head = existing.trim_start();
-                    let looks_like_trace = head.is_empty()
-                        || head.starts_with("#[")
-                        || head.starts_with("{:effect");
+                    let looks_like_trace =
+                        head.is_empty() || head.starts_with("#[") || head.starts_with("{:effect");
                     if !looks_like_trace {
                         eprintln!(
                             "{}: --record would overwrite {} which does not look like a \
@@ -362,10 +361,7 @@ fn replay_file(trace_path: &PathBuf, path: &PathBuf) {
         }
         Err(e) => {
             let filename = path.display().to_string();
-            let diverged = matches!(
-                e.kind,
-                loon_lang::eir::vm::VmErrorKind::ReplayDivergence(_)
-            );
+            let diverged = matches!(e.kind, loon_lang::eir::vm::VmErrorKind::ReplayDivergence(_));
             if let Some(span) = e.span {
                 loon_lang::errors::report_error(&filename, &source, &e.to_string(), span);
             } else {

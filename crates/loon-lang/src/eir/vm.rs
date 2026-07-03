@@ -2388,7 +2388,12 @@ impl Vm {
     /// same override rule the lowerer applies to `ctor_map`). The prelude's
     /// Option/Result are always registered, so `Some`/`None` resolve here.
     fn ctor_tag(&self, name: &str) -> Option<u16> {
-        self.module.ctors.iter().rev().find(|c| c.name == name).map(|c| c.tag)
+        self.module
+            .ctors
+            .iter()
+            .rev()
+            .find(|c| c.name == name)
+            .map(|c| c.tag)
     }
 
     /// The textual name of a symbol/keyword id: compile-time ids index the
@@ -2549,7 +2554,10 @@ impl Vm {
                 Val::UNIT
             }
             ("IO", "file-exists?") => {
-                let p = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let p = args
+                    .first()
+                    .map(|v| self.val_to_string(*v))
+                    .unwrap_or_default();
                 Val::bool(std::path::Path::new(&p).exists())
             }
             ("IO", "delete-file") => {
@@ -2575,7 +2583,10 @@ impl Vm {
                 Val::UNIT
             }
             ("IO", "list-dir") => {
-                let p = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let p = args
+                    .first()
+                    .map(|v| self.val_to_string(*v))
+                    .unwrap_or_default();
                 let names: Vec<String> = match std::fs::read_dir(&p) {
                     Ok(entries) => entries
                         .filter_map(|e| e.ok())
@@ -2588,7 +2599,10 @@ impl Vm {
                 self.alloc(Obj::Vec(vals))
             }
             ("IO", "mtime") => {
-                let p = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let p = args
+                    .first()
+                    .map(|v| self.val_to_string(*v))
+                    .unwrap_or_default();
                 let millis = std::fs::metadata(&p)
                     .and_then(|m| m.modified())
                     .ok()
@@ -2601,7 +2615,7 @@ impl Vm {
                 if let Some(ms) = args.first() {
                     if ms.is_int() {
                         std::thread::sleep(std::time::Duration::from_millis(
-                            ms.as_int().max(0) as u64,
+                            ms.as_int().max(0) as u64
                         ));
                     }
                 }
@@ -2636,7 +2650,10 @@ impl Vm {
             }
             ("IO", "uuid") => self.alloc_str(gen_uuid_v4()),
             ("IO", "parse-json") => {
-                let text = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let text = args
+                    .first()
+                    .map(|v| self.val_to_string(*v))
+                    .unwrap_or_default();
                 match serde_json::from_str::<serde_json::Value>(&text) {
                     Ok(json) => self.json_to_val(json),
                     // The interpreter performs Fail.fail here; unhandled, that
@@ -2661,11 +2678,17 @@ impl Vm {
             }
             #[cfg(feature = "pkg-fetch")]
             ("IO", "blake3") => {
-                let text = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let text = args
+                    .first()
+                    .map(|v| self.val_to_string(*v))
+                    .unwrap_or_default();
                 self.alloc_str(blake3::hash(text.as_bytes()).to_hex().to_string())
             }
             ("Process", "exec") => {
-                let cmd_str = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let cmd_str = args
+                    .first()
+                    .map(|v| self.val_to_string(*v))
+                    .unwrap_or_default();
                 let input = args.get(1).map(|v| self.val_to_string(*v));
                 let parts: Vec<&str> = cmd_str.split_whitespace().collect();
                 if parts.is_empty() {
@@ -2693,8 +2716,7 @@ impl Vm {
                 match output {
                     Ok(out) => {
                         // {:exit-code Int :stdout Str :stderr Str}, as interp.
-                        let code =
-                            self.safe_int(out.status.code().unwrap_or(-1) as i64);
+                        let code = self.safe_int(out.status.code().unwrap_or(-1) as i64);
                         let stdout =
                             self.alloc_str(String::from_utf8_lossy(&out.stdout).into_owned());
                         let stderr =
@@ -2720,7 +2742,7 @@ impl Vm {
                 if let Some(ms) = args.first() {
                     if ms.is_int() {
                         std::thread::sleep(std::time::Duration::from_millis(
-                            ms.as_int().max(0) as u64,
+                            ms.as_int().max(0) as u64
                         ));
                     }
                 }
@@ -2730,8 +2752,15 @@ impl Vm {
             // None when unset (the prelude Option ctors are always
             // registered by the lowerer).
             ("Process", "env") => {
-                let k = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
-                match (std::env::var(&k), self.ctor_tag("Some"), self.ctor_tag("None")) {
+                let k = args
+                    .first()
+                    .map(|v| self.val_to_string(*v))
+                    .unwrap_or_default();
+                match (
+                    std::env::var(&k),
+                    self.ctor_tag("Some"),
+                    self.ctor_tag("None"),
+                ) {
                     (Ok(v), Some(some_tag), _) => {
                         let s = self.alloc_str(v);
                         self.alloc(Obj::Adt(some_tag, vec![s]))
@@ -2747,7 +2776,11 @@ impl Vm {
                 self.alloc(Obj::Vec(vals))
             }
             ("Process", "exit") => {
-                let code = args.first().filter(|v| v.is_int()).map(|v| v.as_int()).unwrap_or(0);
+                let code = args
+                    .first()
+                    .filter(|v| v.is_int())
+                    .map(|v| v.as_int())
+                    .unwrap_or(0);
                 std::process::exit(code as i32);
             }
             // NOTE: `Env.lookup`/`Env.get` used to be a VM-only convenience
@@ -2784,10 +2817,10 @@ impl Vm {
             ("Physics", "yield-strength") => Val::float(250.0),
             ("Physics", "gravity") => Val::float(9.80665),
             _ => {
-                return Err(VmError::new(VmErrorKind::UnhandledEffect(format!(
-                    "{effect}.{op}"
-                )))
-                .with_span(self.current_span));
+                return Err(
+                    VmError::new(VmErrorKind::UnhandledEffect(format!("{effect}.{op}")))
+                        .with_span(self.current_span),
+                );
             }
         })
     }
@@ -2835,8 +2868,10 @@ impl Vm {
                     }
                 }
                 Some(Obj::Vec(items)) => {
-                    let inner: Vec<String> =
-                        items.iter().map(|v| self.val_to_string_inner(*v, true)).collect();
+                    let inner: Vec<String> = items
+                        .iter()
+                        .map(|v| self.val_to_string_inner(*v, true))
+                        .collect();
                     format!("#[{}]", inner.join(" "))
                 }
                 Some(Obj::Map(map)) => {

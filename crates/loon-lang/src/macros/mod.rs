@@ -639,7 +639,6 @@ impl MacroExpander {
 
     // ── Procedural Expansion ─────────────────────────────────────────
 
-
     fn expand_procedural(
         &mut self,
         mac: &MacroDef,
@@ -780,8 +779,10 @@ fn collect_template_binders(
                     }
                     "fn" => {
                         // [fn [params] body...] or [fn name [params] body...]
-                        let pi = if matches!(&items.get(1).map(|e| &e.kind), Some(ExprKind::Symbol(_)))
-                        {
+                        let pi = if matches!(
+                            &items.get(1).map(|e| &e.kind),
+                            Some(ExprKind::Symbol(_))
+                        ) {
                             2
                         } else {
                             1
