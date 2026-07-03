@@ -1,0 +1,8 @@
+; prior: Clojure — `(when [] ...)` RUNS: empty collections are truthy; only
+; nil and false are falsy.
+; expectation: Loon agrees exactly, with None playing nil: [when #[] ...]
+; runs its body.
+; principle: where the prior is good, match it exactly (agent-first.md P1).
+; expect-stdout: runs
+[fn main []
+  [when #[] [println "runs"]]]

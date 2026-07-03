@@ -1,0 +1,16 @@
+; prior: Rust — `if let Some(x) = v.iter().find(...)` binds the found element,
+; else-arm on None.
+; expectation: [if-let [x [find pred v]] ...] binds the found element and runs
+; then; when nothing matches, the else arm runs. (Loon's find yields the
+; element or (), and if-let treats any non-Some truthy value as the binding —
+; both shapes satisfy the Rust reading.)
+; principle: if-let is Rust's if-let under a Clojure surface (agent-first.md P1).
+; expect-stdout: found:3
+; expect-stdout: none-found
+[fn main []
+  [if-let [x [find [fn [n] [> n 2]] #[1 2 3]]]
+    [println [str "found:" x]]
+    [println "not-found"]]
+  [if-let [x [find [fn [n] [> n 9]] #[1 2 3]]]
+    [println [str "found:" x]]
+    [println "none-found"]]]

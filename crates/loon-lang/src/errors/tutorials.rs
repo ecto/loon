@@ -39,6 +39,7 @@ pub fn get_tutorial(code: ErrorCode) -> Option<Tutorial> {
         ErrorCode::E0206 => Some(tutorial_non_exhaustive_match()),
         ErrorCode::E0207 => Some(tutorial_field_mismatch()),
         ErrorCode::E0208 => Some(tutorial_dimension_mismatch()),
+        ErrorCode::E0209 => Some(tutorial_always_truthy()),
         ErrorCode::E0300 => Some(tutorial_use_after_move()),
         ErrorCode::E0301 => Some(tutorial_mutate_immutable()),
         ErrorCode::E0302 => Some(tutorial_double_borrow()),
@@ -51,6 +52,45 @@ pub fn get_tutorial(code: ErrorCode) -> Option<Tutorial> {
         ErrorCode::E0501 => Some(tutorial_private_symbol()),
         ErrorCode::E0502 => Some(tutorial_circular_dependency()),
         ErrorCode::W0100 => None, // warnings don't need tutorials
+    }
+}
+
+fn tutorial_always_truthy() -> Tutorial {
+    Tutorial {
+        code: ErrorCode::E0209,
+        title: "Condition is always truthy".to_string(),
+        steps: vec![
+            TutorialStep::Text(
+                "Loon's truthiness rule: a value is truthy unless it says no \
+                 (false) or says nothing ((), None). The falsy set is exactly \
+                 {false, (), None} — 0, 0.0, \"\" (empty string), and empty \
+                 collections are all values, and therefore truthy. This warning \
+                 fires when a condition's inferred type can never produce any \
+                 of the three falsy values, so one branch is dead."
+                    .to_string(),
+            ),
+            TutorialStep::Demo {
+                code: r#"[if [len items] "has items" "empty"]  ;; len returns Int — never falsy"#
+                    .to_string(),
+                explanation: "An Int condition is ALWAYS truthy — even 0 — so \
+                              the else branch can never run. This is usually a \
+                              Python prior (0 falsy) leaking in."
+                    .to_string(),
+            },
+            TutorialStep::Fix {
+                before: r#"[if [len items] "has items" "empty"]"#.to_string(),
+                after: r#"[if [> [len items] 0] "has items" "empty"]"#.to_string(),
+                explanation: "Test the property you mean explicitly (or use \
+                              [empty? items])."
+                    .to_string(),
+            },
+            TutorialStep::Try {
+                prompt: "Write a condition over an Option instead: [if-let [x [find f v]] ...]"
+                    .to_string(),
+                hint: "Option, Bool, and Unit conditions are fine — they can be falsy.".to_string(),
+                expected_output: None,
+            },
+        ],
     }
 }
 

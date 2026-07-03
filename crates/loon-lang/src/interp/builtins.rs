@@ -1380,6 +1380,15 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
+    builtin!(env, "none?", |_, args: &[Value]| {
+        // Complement of some?: true for the "says nothing" values None and ().
+        match &args[0] {
+            Value::Unit => Ok(Value::Bool(true)),
+            Value::Adt(tag, _) if tag == "None" => Ok(Value::Bool(true)),
+            _ => Ok(Value::Bool(false)),
+        }
+    });
+
     builtin!(env, "nil?", |_, args: &[Value]| {
         match &args[0] {
             Value::Unit => Ok(Value::Bool(true)),

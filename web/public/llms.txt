@@ -7,7 +7,7 @@ files use `.oo`.
 ## Semantics in one sentence each
 
 - Truthiness: a value is truthy unless it says no (`false`) or says nothing (`()`, `None`).
-- The falsy set is exactly `false`, `()`, and `None` — `0`, `""`, and empty collections are truthy. (None-falsy is the ruled semantics; if your build treats `None` as truthy, it predates the ruling.)
+- The falsy set is exactly `false`, `()`, and `None` — `0`, `""`, and empty collections are truthy.
 - Division by zero is a runtime error, not `0`, `Inf`, or `None`.
 - A handler clause that does not call `resume` aborts: the rest of the handled computation is discarded and the clause body becomes the value of the `handle`.
 - Maps preserve insertion order.
@@ -34,12 +34,12 @@ files use `.oo`.
 "hi \(name), \([+ 1 2])"            ; string interpolation with \(expr)
 [expr]?                             ; postfix ? unwraps Ok / re-raises Err as Fail.fail
 [test adds [] [assert-eq [+ 1 1] 2]]  ; test form (run with loon test)
+[if-let [x expr] then else]         ; binds Some payload (or truthy value) to x; falsy -> else
 ```
 
 Gotchas: `and`/`or` and `if` all short-circuit. `fn` bodies allow multiple
 exprs; `if` branches do not — wrap in `[do ...]`. There is no `nil`/`null`
-and no `def`. `str` converts to string (no `to-string`). There is no
-`if-let`.
+and no `def`. `str` converts to string (no `to-string`).
 
 ## Option / Result
 

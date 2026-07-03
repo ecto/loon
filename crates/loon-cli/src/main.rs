@@ -975,7 +975,12 @@ fn check_file(path: &PathBuf, json: bool) {
                 for err in &errors {
                     loon_lang::errors::report_diagnostic(&filename, &source, err);
                 }
-                std::process::exit(1);
+                // Warnings (E0209, W0100, ...) are advisory: report them but
+                // only a true error fails the check.
+                if errors.iter().any(|e| !e.code.is_warning()) {
+                    std::process::exit(1);
+                }
+                println!("{}", "OK — warnings only".yellow().bold());
             }
         }
         Err(e) => {
@@ -1480,6 +1485,7 @@ fn explain_error(code: &str) {
         "E0205" => Some(ErrorCode::E0205),
         "E0206" => Some(ErrorCode::E0206),
         "E0207" => Some(ErrorCode::E0207),
+        "E0209" => Some(ErrorCode::E0209),
         "E0401" => Some(ErrorCode::E0401),
         "E0403" => Some(ErrorCode::E0403),
         "E0404" => Some(ErrorCode::E0404),

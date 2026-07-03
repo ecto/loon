@@ -1,0 +1,9 @@
+; prior: Clojure — `(if nil :a :b)` yields :b; nil punning drives control flow.
+; expectation: None is Loon's nil: falsy in if, skipped by or. Both arms
+; behave exactly as a Clojure reader expects.
+; principle: None plays nil (agent-first.md P1, the truthiness example).
+; expect-stdout: else-arm
+; expect-stdout: fallback
+[fn main []
+  [println [if None "then-arm" "else-arm"]]
+  [println [or None "fallback"]]]

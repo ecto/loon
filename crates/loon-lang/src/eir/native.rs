@@ -48,6 +48,7 @@ const PAYLOAD: u64 = 0x0000_FFFF_FFFF_FFFF;
 const VAL_UNIT: u64 = BASE | TAG_IMM;
 const VAL_TRUE: u64 = BASE | TAG_IMM | 1;
 const VAL_FALSE: u64 = BASE | TAG_IMM | 2;
+const VAL_NONE: u64 = BASE | TAG_IMM | 3;
 
 // ─── Runtime helper functions ───────────────────────────────────────────────
 
@@ -727,11 +728,15 @@ fn compile_is_truthy(
     builder: &mut FunctionBuilder,
     val: cranelift_codegen::ir::Value,
 ) -> cranelift_codegen::ir::Value {
+    // The falsy set is exactly {false, (), None}.
     let false_const = builder.ins().iconst(I64, VAL_FALSE as i64);
     let unit_const = builder.ins().iconst(I64, VAL_UNIT as i64);
+    let none_const = builder.ins().iconst(I64, VAL_NONE as i64);
     let not_false = builder.ins().icmp(IntCC::NotEqual, val, false_const);
     let not_unit = builder.ins().icmp(IntCC::NotEqual, val, unit_const);
-    builder.ins().band(not_false, not_unit)
+    let not_none = builder.ins().icmp(IntCC::NotEqual, val, none_const);
+    let both = builder.ins().band(not_false, not_unit);
+    builder.ins().band(both, not_none)
 }
 
 // ─── Unary operations ───────────────────────────────────────────────────────

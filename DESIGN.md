@@ -156,9 +156,11 @@ There is no null, nil, or undefined. Use `Option` for values that might not exis
 
 ### Truthiness
 
-In boolean position — `if`, `and`, `or`, `when`, `not`, and any predicate that tests a value for truth — **only `false` and unit `()` are falsy**. Everything else is truthy, including integer `0`, float `0.0`, the empty string `""`, and empty collections (`#[]`, `{}`). There is no "empty is false" coercion: `[if 0 :a :b]` takes the `:a` branch. `None` is a heap-allocated `Option` constructor (not unit), so it too is truthy; match on it with `[match o None … [Some x] …]` rather than testing it for truth.
+In boolean position — `if`, `and`, `or`, `when`, `not`, and any predicate that tests a value for truth — **the falsy set is exactly `false`, unit `()`, and `None`**. The one-sentence rule: a value is truthy unless it says no (`false`) or says nothing (`()`, `None`). Everything else is truthy, including integer `0`, float `0.0`, the empty string `""`, and empty collections (`#[]`, `{}`). There is no "empty is false" coercion: `[if 0 :a :b]` takes the `:a` branch — and the checker warns (E0209) when a condition's type can never be falsy, stating this rule in the fix text.
 
-The EIR VM defines this behavior; the tree-walking interpreter matches it. The wasm backend uses an untagged `i64` value model in which `0`, `false`, and unit share a bit pattern, so integer/float zero is currently falsy there — a known divergence pending a tagged representation.
+`None` says nothing, so it is falsy — this is Clojure's rule with `None` playing `nil`, and it makes `[or maybe-x default]` the blessed default-value idiom. `Some x` is truthy for ANY payload, including `[Some false]`: the wrapper says something regardless of what's inside. To unwrap while testing, use `[if-let [x expr] then else]` / `[when-let [x expr] body…]`, which bind the `Some` payload (or the value itself for other truthy results). The predicates `some?` and `none?` are exact complements over the "says nothing" set. See [docs/agent-first.md](docs/agent-first.md) for why this rule is stated in one sentence and taught by a diagnostic.
+
+The EIR VM defines this behavior (where `None` is an immediate, non-allocating singleton); the tree-walking interpreter matches it. The wasm backend uses an untagged `i64` value model in which `0`, `false`, and unit share a bit pattern, so integer/float zero is currently falsy there — a known divergence pending a tagged representation. A bare `None` does not compile on wasm at all (pinned in the conformance corpus): not-compiling is an acceptable gap, wrong truthiness would not be.
 
 ### No Dimensionless — Physics Type System
 
