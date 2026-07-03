@@ -3794,7 +3794,14 @@ impl Checker {
         // if the inferred type can NEVER be falsy, one branch is dead: warn
         // and teach the rule (E0209).
         let cond_ty = self.infer(&args[0]);
-        self.warn_if_never_falsy(&cond_ty, args[0].span);
+        // Skip the lint for compiler-generated conditions (the gensym temps
+        // produced by the and/or and if-let/when-let desugars): the user
+        // never wrote that `if`, so there is nothing to teach at its span.
+        let is_gensym_cond =
+            matches!(&args[0].kind, ExprKind::Symbol(s) if s.starts_with("__gensym_"));
+        if !is_gensym_cond {
+            self.warn_if_never_falsy(&cond_ty, args[0].span);
+        }
         let then_ty = self.infer(&args[1]);
         if args.len() > 2 {
             let else_ty = self.infer(&args[2]);
@@ -3963,8 +3970,12 @@ impl Checker {
                             ),
                         );
                     }
-                } else if !caught.is_empty() {
-                    // Warning: transparent wildcard
+                } else if !caught.is_empty()
+                    && !matches!(&args[0].kind, ExprKind::Symbol(s) if s.starts_with("__gensym_"))
+                {
+                    // Warning: transparent wildcard. (Skipped for matches on
+                    // compiler-generated gensym temps — e.g. the if-let
+                    // desugar's unwrap match — which the user never wrote.)
                     let caught_str = caught
                         .iter()
                         .map(|s| s.as_str())

@@ -1,0 +1,9 @@
+; prior: Python — `if len(items):` as an emptiness test.
+; expectation: len returns Int, which can never be falsy, so the then arm
+; ALWAYS runs — even for an empty vector. E0209 fires and teaches the rule;
+; the blessed spellings are [empty? v] or [> [len v] 0].
+; principle: a latent prior mismatch becomes a taught rule (agent-first.md P2).
+; expect-stdout: looks-nonempty
+; expect-check: E0209
+[fn main []
+  [println [if [len #[]] "looks-nonempty" "empty"]]]

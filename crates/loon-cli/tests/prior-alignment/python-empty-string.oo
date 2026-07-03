@@ -1,0 +1,8 @@
+; prior: Python — `if "":` skips the branch (empty string is falsy).
+; expectation: Loon DIVERGES: "" is a value and therefore truthy. The
+; divergence is taught by E0209 on the never-falsy String condition.
+; principle: diverge loudly (agent-first.md P1/P2).
+; expect-stdout: empty-string-is-truthy
+; expect-check: E0209
+[fn main []
+  [println [if "" "empty-string-is-truthy" "empty-string-is-falsy"]]]

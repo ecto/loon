@@ -1,0 +1,13 @@
+; prior: Rust — `opt.unwrap_or(default)`.
+; expectation: [if-let [x opt] x default] is the direct spelling; [or opt d]
+; is the blessed default-value idiom when the Some payload itself (not the
+; unwrapped value) is acceptable.
+; principle: one blessed idiom, in the language (agent-first.md checklist).
+; expect-stdout: 7
+; expect-stdout: 0
+; expect-stdout: fallback
+[fn unwrap-or [o d] [if-let [x o] x d]]
+[fn main []
+  [println [unwrap-or [Some 7] 0]]
+  [println [unwrap-or None 0]]
+  [println [or None "fallback"]]]

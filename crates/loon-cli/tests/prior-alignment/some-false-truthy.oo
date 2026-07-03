@@ -1,0 +1,12 @@
+; prior: Rust — `Some(false)` is a present value; `if opt.is_some()` is true.
+; expectation: [if [Some false] ...] takes the then arm: the Option wrapper
+; "says something" regardless of payload. [if-let [x [Some false]]] binds
+; x=false and still runs then — payload truthiness is irrelevant.
+; principle: the wrapper speaks, not the payload (agent-first.md P1).
+; expect-stdout: some-false-truthy
+; expect-stdout: bound:false
+[fn main []
+  [println [if [Some false] "some-false-truthy" "FALSY"]]
+  [if-let [x [Some false]]
+    [println [str "bound:" x]]
+    [println "BAD"]]]

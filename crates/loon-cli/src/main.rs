@@ -654,7 +654,12 @@ fn check_file(path: &PathBuf) {
                 for err in &errors {
                     loon_lang::errors::report_diagnostic(&filename, &source, err);
                 }
-                std::process::exit(1);
+                // Warnings (E0209, W0100, ...) are advisory: report them but
+                // only a true error fails the check.
+                if errors.iter().any(|e| !e.code.is_warning()) {
+                    std::process::exit(1);
+                }
+                println!("{}", "OK — warnings only".yellow().bold());
             }
         }
         Err(e) => {
