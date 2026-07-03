@@ -214,6 +214,15 @@ impl MacroExpander {
                     if name == "pipe" {
                         return self.expand_pipe(items, expr.span);
                     }
+
+                    // Core desugar: `[if-let [x expr] then else?]` and
+                    // `[when-let [x expr] body...]`. Like and/or these are
+                    // expanded here (before any backend sees them) so all
+                    // backends agree; a user macro of the same name takes
+                    // precedence via the lookup above.
+                    if name == "if-let" || name == "when-let" {
+                        return self.desugar_if_let(name == "if-let", &items[1..], expr.span);
+                    }
                 }
                 // Not a macro call — recursively expand children
                 let expanded_items: Result<Vec<_>, _> =
@@ -276,6 +285,96 @@ impl MacroExpander {
                 Expr::new(ExprKind::List(vec![sym("do"), let_form, if_form]), span)
             }
         }
+    }
+
+    /// Desugar `[if-let [x expr] then else?]` (and `[when-let [x expr]
+    /// body...]`, which is if-let with an implicit-do body and no else).
+    ///
+    /// Semantics: `expr` is evaluated ONCE. If it yields `[Some v]`, `x` is
+    /// bound to the payload `v` and `then` runs. If it yields a falsy value
+    /// (`None`, `false`, `()` — the whole falsy set), `else` runs (or nothing
+    /// for when-let). Any OTHER truthy value binds `x` to the value itself
+    /// and runs `then` — so if-let works over both Option-returning and
+    /// plain-truthy expressions. Note the payload's truthiness is irrelevant:
+    /// `[Some false]` takes the then-branch with `x` bound to `false`.
+    ///
+    /// Expansion (g, v are gensyms; hygienic against user code):
+    ///   [do [let g expr]
+    ///       [if g
+    ///           [do [let x [match g [Some v] v _ g]] then]
+    ///           else]]
+    fn desugar_if_let(&mut self, is_if_let: bool, args: &[Expr], span: Span) -> Result<Expr, String> {
+        let form = if is_if_let { "if-let" } else { "when-let" };
+        let binding = match args.first().map(|b| &b.kind) {
+            Some(ExprKind::List(pair)) if pair.len() == 2 => pair,
+            _ => {
+                return Err(format!(
+                    "{form} expects a binding pair: [{form} [x expr] ...] — \
+                     the first argument must be a two-element [name expr] form"
+                ))
+            }
+        };
+        let name = match &binding[0].kind {
+            ExprKind::Symbol(s) if !s.starts_with(char::is_uppercase) && !s.starts_with(':') => {
+                s.clone()
+            }
+            _ => {
+                return Err(format!(
+                    "{form} binding must start with a lowercase variable name: [{form} [x expr] ...]"
+                ))
+            }
+        };
+        if is_if_let && !(2..=3).contains(&args.len()) {
+            return Err("if-let expects [if-let [x expr] then else?]".to_string());
+        }
+        if !is_if_let && args.len() < 2 {
+            return Err("when-let expects [when-let [x expr] body...]".to_string());
+        }
+
+        let value = self.expand_expr(&binding[1])?;
+        let then_e = if is_if_let {
+            self.expand_expr(&args[1])?
+        } else {
+            // when-let: implicit do over the body forms
+            let mut body = vec![Expr::new(ExprKind::Symbol("do".to_string()), span)];
+            for b in &args[1..] {
+                body.push(self.expand_expr(b)?);
+            }
+            Expr::new(ExprKind::List(body), span)
+        };
+        let else_e = if is_if_let { args.get(2).cloned() } else { None };
+        let else_e = match else_e {
+            Some(e) => Some(self.expand_expr(&e)?),
+            None => None,
+        };
+
+        let sym = |s: &str| Expr::new(ExprKind::Symbol(s.to_string()), span);
+        let g = self.gensym(form);
+        let v = self.gensym("payload");
+        // [match g [Some v] v _ g] — unwrap a Some, pass anything else through.
+        let unwrap = Expr::new(
+            ExprKind::List(vec![
+                sym("match"),
+                sym(&g),
+                Expr::new(ExprKind::List(vec![sym("Some"), sym(&v)]), span),
+                sym(&v),
+                sym("_"),
+                sym(&g),
+            ]),
+            span,
+        );
+        let bind_x = Expr::new(ExprKind::List(vec![sym("let"), sym(&name), unwrap]), span);
+        let then_do = Expr::new(ExprKind::List(vec![sym("do"), bind_x, then_e]), span);
+        let mut if_form = vec![sym("if"), sym(&g), then_do];
+        if let Some(e) = else_e {
+            if_form.push(e);
+        }
+        let if_form = Expr::new(ExprKind::List(if_form), span);
+        let bind_g = Expr::new(ExprKind::List(vec![sym("let"), sym(&g), value]), span);
+        Ok(Expr::new(
+            ExprKind::List(vec![sym("do"), bind_g, if_form]),
+            span,
+        ))
     }
 
     /// Expand a `[pipe seed step...]` form. Steps expand normally except

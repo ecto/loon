@@ -289,6 +289,23 @@ const CORPUS: &[(&str, &str)] = &[
              [println [= None [do]]]
              [println [= None [Some 1]]]]"#,
     ),
+    // if-let/when-let: expr evaluates once; Some v binds the payload, any
+    // other truthy value binds the value itself, falsy (None/false/()) takes
+    // the else arm (or nothing for when-let). Payload truthiness is
+    // irrelevant: Some(false) binds x=false and runs THEN.
+    (
+        "if-let-when-let",
+        r#"[fn main []
+             [println [if-let [x [Some 5]] [str "some:" x] "else"]]
+             [println [if-let [x None] [str "bad:" x] "none-else"]]
+             [println [if-let [x [Some false]] [str "payload:" x] "BAD"]]
+             [println [if-let [x 7] [str "plain:" x] "BAD"]]
+             [println [if-let [x false] "BAD" "false-else"]]
+             [println [if-let [x [Some 1]] [str "no-else:" x]]]
+             [when-let [x [Some 2]] [println "wl-first"] [println [str "wl:" x]]]
+             [when-let [x None] [println "BAD"]]
+             [when-let [x "s"] [println [str "wl-plain:" x]]]]"#,
+    ),
     // some?/none? exist as exact complements on both backends: none? is true
     // for the "says nothing" values (None and unit), some? for everything
     // else — including Some(false).
