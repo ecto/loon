@@ -1,0 +1,10 @@
+; Map value-equality is order-INDEPENDENT: two maps with the same key/value
+; pairs are `=` regardless of insertion order. Holds on the EIR VM (oracle) and
+; the interpreter.
+; expect-fail: wasm — wasm codegen has no structural `=` for compound values; it
+;   compares maps (and vectors) by reference, so `[= {:a 1} {:a 1}]` is already
+;   false there. Order-independent map equality is a VM/interp guarantee until
+;   wasm grows a deep `=`. Retire this annotation when it does.
+[fn main []
+  [println [= {:a 1 :b 2} {:b 2 :a 1}]]   ; true  — same pairs, diff order
+  [println [= {:a 1 :b 2} {:a 1 :b 3}]]]  ; false — :b differs

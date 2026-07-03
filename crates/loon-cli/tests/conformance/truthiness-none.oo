@@ -1,0 +1,16 @@
+; expect-fail: wasm — codegen does not support a bare `None` symbol (emits
+; `unbound symbol 'None'`), so this program can't compile to wasm at all. That
+; is an acceptable gap: wasm not compiling is fine, silently getting the
+; truthiness of None WRONG would not be.
+;
+; The ruling under test: the falsy set is exactly {false, (), None} — a value
+; is truthy unless it says no (false) or says nothing ((), None). None drives
+; the ELSE branch; Some(x) is truthy for ANY x, including Some(false) and
+; Some(()), because the Option wrapper "says something" regardless of payload.
+; The EIR VM and the legacy interpreter agree.
+[fn main []
+  [println [if None "TRUTHY" "none-falsy"]]
+  [println [if [Some false] "some-false-truthy" "FALSY"]]
+  [println [if [Some [do]] "some-unit-truthy" "FALSY"]]
+  [println [if [Some 0] "some-zero-truthy" "FALSY"]]
+  [println [or None "default-via-or"]]]

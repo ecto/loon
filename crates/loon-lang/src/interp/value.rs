@@ -16,6 +16,154 @@ pub type ChannelId = u32;
 
 pub type BuiltinFn = Arc<dyn Fn(&str, &[Value]) -> Result<Value, InterpError> + Send + Sync>;
 
+/// An insertion-ordered persistent map backing `Value::Map`. `keys`, `values`,
+/// `iter`, and display all follow the order keys were first inserted, matching
+/// the EIR VM's `OrdMap` (see `eir/vm.rs`) so both backends print/iterate maps
+/// identically. Lookup stays O(1) via the inner `imbl::HashMap`; an
+/// `imbl::Vector` of keys records order. Both halves are persistent, so
+/// clone/share stays cheap.
+///
+/// Equality and hashing are ORDER-INDEPENDENT: two maps with the same keys and
+/// values compare equal and hash equal regardless of insertion order, so
+/// `{:a 1 :b 2} == {:b 2 :a 1}` stays true and maps remain usable as set/map
+/// keys.
+#[derive(Clone, Default)]
+pub struct OrdMap {
+    map: imbl::HashMap<Value, Value>,
+    order: imbl::Vector<Value>, // keys, insertion order, no duplicates
+}
+
+impl OrdMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn len(&self) -> usize {
+        self.order.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+    pub fn get(&self, k: &Value) -> Option<&Value> {
+        self.map.get(k)
+    }
+    pub fn contains_key(&self, k: &Value) -> bool {
+        self.map.contains_key(k)
+    }
+    /// Insert in place; a brand-new key is appended to the order, an existing
+    /// key keeps its position (only its value updates). Returns the previous
+    /// value, if any.
+    pub fn insert(&mut self, k: Value, v: Value) -> Option<Value> {
+        let prev = self.map.insert(k.clone(), v);
+        if prev.is_none() {
+            self.order.push_back(k);
+        }
+        prev
+    }
+    /// Persistent insert: returns a new map with `k`→`v`, mirroring
+    /// `imbl::HashMap::update`. New key appends; existing key keeps position.
+    pub fn update(&self, k: Value, v: Value) -> Self {
+        let mut out = self.clone();
+        out.insert(k, v);
+        out
+    }
+    /// Persistent remove: returns a new map without `k`, preserving the order
+    /// of the remaining keys. Mirrors `imbl::HashMap::without`.
+    pub fn without(&self, k: &Value) -> Self {
+        if !self.map.contains_key(k) {
+            return self.clone();
+        }
+        let mut map = self.map.clone();
+        map.remove(k);
+        let order = self.order.iter().filter(|x| *x != k).cloned().collect();
+        OrdMap { map, order }
+    }
+    /// Left-biased union (values already in `self` win), preserving `self`'s
+    /// order and appending `other`'s new keys in their order. Mirrors the VM's
+    /// merge semantics.
+    pub fn union(&self, other: Self) -> Self {
+        let mut out = self.clone();
+        for k in other.order.iter() {
+            if !out.map.contains_key(k) {
+                out.insert(k.clone(), other.map.get(k).unwrap().clone());
+            }
+        }
+        out
+    }
+    pub fn keys(&self) -> impl Iterator<Item = &Value> + '_ {
+        self.order.iter()
+    }
+    pub fn values(&self) -> impl Iterator<Item = &Value> + '_ {
+        self.order.iter().map(move |k| self.map.get(k).unwrap())
+    }
+    pub fn iter(&self) -> impl Iterator<Item = (&Value, &Value)> + '_ {
+        self.order
+            .iter()
+            .map(move |k| (k, self.map.get(k).unwrap()))
+    }
+}
+
+impl fmt::Debug for OrdMap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map().entries(self.iter()).finish()
+    }
+}
+
+impl PartialEq for OrdMap {
+    /// Order-independent structural equality: same keys mapping to same values.
+    fn eq(&self, other: &Self) -> bool {
+        self.map == other.map
+    }
+}
+impl Eq for OrdMap {}
+
+impl Hash for OrdMap {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Commutative XOR — order-independent, matches the old imbl::HashMap.
+        let mut h: u64 = 0;
+        for (k, v) in self.map.iter() {
+            let mut sub = std::hash::DefaultHasher::new();
+            k.hash(&mut sub);
+            v.hash(&mut sub);
+            h ^= sub.finish();
+        }
+        h.hash(state);
+    }
+}
+
+impl FromIterator<(Value, Value)> for OrdMap {
+    fn from_iter<I: IntoIterator<Item = (Value, Value)>>(iter: I) -> Self {
+        let mut m = OrdMap::new();
+        for (k, v) in iter {
+            m.insert(k, v);
+        }
+        m
+    }
+}
+
+impl IntoIterator for OrdMap {
+    type Item = (Value, Value);
+    type IntoIter = std::vec::IntoIter<(Value, Value)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.order
+            .iter()
+            .map(|k| (k.clone(), self.map.get(k).unwrap().clone()))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a OrdMap {
+    type Item = (&'a Value, &'a Value);
+    type IntoIter = std::vec::IntoIter<(&'a Value, &'a Value)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.order
+            .iter()
+            .map(|k| (k, self.map.get(k).unwrap()))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+}
+
 /// A function parameter: simple name or destructuring pattern.
 #[derive(Debug, Clone)]
 pub enum Param {
@@ -71,7 +219,7 @@ pub enum Value {
     Keyword(Rc<str>),
     Vec(imbl::Vector<Value>),
     Set(imbl::HashSet<Value>),
-    Map(imbl::HashMap<Value, Value>),
+    Map(OrdMap),
     Tuple(Vec<Value>),
     Fn(LoonFn),
     Builtin(String, BuiltinFn),
@@ -159,7 +307,16 @@ impl Hash for Value {
 
 impl Value {
     pub fn is_truthy(&self) -> bool {
-        !matches!(self, Value::Bool(false) | Value::Unit | Value::Int(0))
+        // Canonical truthiness (matches the EIR VM, the semantic reference):
+        // the falsy set is exactly {false, (), None} — a value is truthy
+        // unless it says no (false) or says nothing ((), None). Everything
+        // else is truthy — including integer 0, 0.0, "" (empty string),
+        // empty collections, and Some(x) for ANY x (even Some(false)).
+        match self {
+            Value::Bool(false) | Value::Unit => false,
+            Value::Adt(tag, fields) => !(tag == "None" && fields.is_empty()),
+            _ => true,
+        }
     }
 
     pub fn is_callable(&self) -> bool {

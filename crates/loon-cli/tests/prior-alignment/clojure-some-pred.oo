@@ -1,0 +1,13 @@
+; prior: Clojure — `(some? x)` is "not nil"; here, "not None/()".
+; expectation: some? and none? are exact complements over the "says nothing"
+; set; Some(false) is some?.
+; principle: predicates in the language, not the docs (agent-first.md checklist).
+; expect-stdout: false
+; expect-stdout: true
+; expect-stdout: true
+; expect-stdout: false
+[fn main []
+  [println [some? None]]
+  [println [none? None]]
+  [println [some? [Some false]]]
+  [println [none? 42]]]

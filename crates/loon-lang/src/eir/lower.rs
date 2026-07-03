@@ -2203,6 +2203,9 @@ impl Lower<'_> {
             "assert-eq" => Some(Built::AssertEq),
             "concat" => Some(Built::Concat),
             "slice" => Some(Built::Slice),
+            "some?" => Some(Built::SomeP),
+            "none?" => Some(Built::NoneP),
+            "nil?" => Some(Built::NoneP),
             _ => None,
         }
     }

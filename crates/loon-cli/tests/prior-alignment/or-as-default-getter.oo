@@ -1,0 +1,15 @@
+; prior: Python/Clojure/JS — `x or default` / `(or x default)` as the
+; default-value idiom for possibly-absent values.
+; expectation: None and () are falsy, so or skips them and yields the
+; default; present values (including 0 and "") pass through because they are
+; truthy values in Loon.
+; principle: the blessed idiom works over the whole "says nothing" set
+; (agent-first.md P1); the 0/"" difference from Python is covered by E0209
+; at the if-site, and here 0 passing through is what or-as-default SHOULD do.
+; expect-stdout: fallback
+; expect-stdout: fallback
+; expect-stdout: 0
+[fn main []
+  [println [or None "fallback"]]
+  [println [or [get {} :missing] "fallback"]]
+  [println [or 0 "fallback"]]]

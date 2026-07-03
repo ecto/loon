@@ -1,0 +1,19 @@
+; expect-fail: wasm — codegen does not support a bare `None` symbol (emits
+; `unbound symbol 'None'`), so this program can't compile to wasm at all;
+; not-compiling is acceptable, wrong truthiness would not be.
+;
+; if-let / when-let (core desugars, expanded before any backend runs):
+; `[if-let [x expr] then else?]` evaluates expr ONCE; Some v binds x=v and
+; runs then; a falsy result (None, false, ()) runs else; any other truthy
+; value binds x to the value itself. when-let is the same with an implicit
+; do body and no else. Some(false) binds x=false and still runs THEN —
+; payload truthiness is irrelevant.
+[fn main []
+  [println [if-let [x [Some 5]] [str "some:" x] "else"]]
+  [println [if-let [x None] [str "bad:" x] "none-else"]]
+  [println [if-let [x [Some false]] [str "payload:" x] "BAD"]]
+  [println [if-let [x 7] [str "plain:" x] "BAD"]]
+  [println [if-let [x false] "BAD" "false-else"]]
+  [when-let [x [Some 2]] [println "wl-first"] [println [str "wl:" x]]]
+  [when-let [x None] [println "BAD"]]
+  [println "end"]]

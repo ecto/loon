@@ -79,6 +79,17 @@ const CORPUS: &[(&str, &str)] = &[
          [fn body [] [* [C.pick] 2]] \
          [fn main [] [println [handle [body] [C.pick] [+ [resume 3] [resume 5]]]]]",
     ),
+    // A handler clause that does NOT call `resume` ABORTS: the captured
+    // continuation is discarded and the enclosing `handle` yields the clause
+    // value directly. Here the body would compute [+ 1 [F.fail]], but the
+    // non-resuming clause 999 wins — the `[+ 1 ...]` is never resumed. Both
+    // backends now agree on 999.
+    (
+        "effect-abort-discards-continuation",
+        "[effect F [fail [] Int]] \
+         [fn body [] [+ 1 [F.fail]]] \
+         [fn main [] [println [handle [body] [F.fail] 999]]]",
+    ),
     // and/or: short-circuiting (desugared to nested `if` at macro-expansion
     // time, so both backends inherit it). `[or true X]` must never evaluate X;
     // `[assert-eq 1 2]` would abort the program if it ran.
@@ -120,6 +131,55 @@ const CORPUS: &[(&str, &str)] = &[
     ("map-get", "[fn main [] [println [get {:a 1 :b 2} :b]]]"),
     ("map-assoc", "[fn main [] [println [get [assoc {:a 1} :c 9] :c]]]"),
     ("map-keys", "[fn main [] [println [len [keys {:a 1 :b 2 :c 3}]]]]"),
+    // ── map insertion order (guaranteed identical across backends) ─────────
+    // A literal iterates/prints in the order keys were written, NOT sorted or
+    // hashed. `:c :a :b` would print sorted as `:a :b :c` on a key-ordered map
+    // and in hash order on a hash map; insertion order is the only ruling.
+    (
+        "map-order-keys",
+        "[fn main [] [println [keys {:c 3 :a 1 :b 2}]]]",
+    ),
+    (
+        "map-order-display",
+        "[fn main [] [println {:c 3 :a 1 :b 2}]]",
+    ),
+    (
+        // values follow key order — read them back via [get] per key so this
+        // stays independent of the vals/values builtin-naming split.
+        "map-order-values",
+        "[fn main [] [let m {:c 3 :a 1 :b 2}] \
+         [println [map [keys m] [fn [k] [get m k]]]]]",
+    ),
+    (
+        // assoc of an EXISTING key updates in place: order is unchanged, only
+        // the value moves. `:a` stays in slot 2, now 99.
+        "map-order-assoc-update",
+        "[fn main [] [let m {:c 3 :a 1 :b 2}] \
+         [let m2 [assoc m :a 99]] \
+         [println [keys m2]] \
+         [println [map [keys m2] [fn [k] [get m2 k]]]]]",
+    ),
+    (
+        // assoc of a NEW key appends it to the end.
+        "map-order-assoc-append",
+        "[fn main [] [println [keys [assoc {:c 3 :a 1 :b 2} :d 4]]]]",
+    ),
+    (
+        // merge is left-biased: existing keys keep their position AND value,
+        // new keys from the right append in their order. `:b` keeps slot 2 and
+        // value 2 (not 9); `:c` appends.
+        "map-order-merge",
+        "[fn main [] [let mm [merge {:a 1 :b 2} {:b 9 :c 3}]] \
+         [println [keys mm]] \
+         [println [map [keys mm] [fn [k] [get mm k]]]]]",
+    ),
+    (
+        // Value equality is ORDER-INDEPENDENT: two maps with the same k/v pairs
+        // are equal regardless of insertion order. Ordering must not leak into
+        // equality.
+        "map-eq-order-independent",
+        "[fn main [] [println [= {:a 1 :b 2} {:b 2 :a 1}]]]",
+    ),
     // control / pattern
     ("when", "[fn main [] [when [> 3 2] [println \"yes\"]]]"),
     ("nested-let", "[fn main [] [let a 2] [let b [* a 3]] [let c [+ a b]] [println c]]"),
@@ -198,6 +258,84 @@ const CORPUS: &[(&str, &str)] = &[
         "try-three-arg-uses-second",
         r#"[fn main [] [println [try [Fail.fail "x"] [fn [m] 99] 7]]]"#,
     ),
+    // Canonical truthiness: the falsy set is exactly {false, (), None} — a
+    // value is truthy unless it says no (false) or says nothing ((), None).
+    // Integer 0, float 0.0, empty string, and empty collections are all
+    // TRUTHY and drive the THEN branch. The EIR VM is the reference; the
+    // legacy interpreter used to treat Int(0) as falsy and now agrees.
+    // (None's falsiness has its own entry below.)
+    (
+        "truthiness-falsy-set",
+        r#"[fn main []
+             [println [if 0 "T" "F"]]
+             [println [if 0.0 "T" "F"]]
+             [println [if "" "T" "F"]]
+             [println [if #[] "T" "F"]]
+             [println [if {} "T" "F"]]
+             [println [if false "T" "F"]]]"#,
+    ),
+    // None is FALSY on both backends: it "says nothing", like (). Some(x) is
+    // truthy for ANY payload — including Some(false) and Some(0) — because
+    // the wrapper says something regardless of what's inside. (This flips the
+    // pre-#66-stopgap "None is truthy" pin; the falsy set is now closed at
+    // {false, (), None}.)
+    (
+        "truthiness-none-falsy",
+        r#"[fn main []
+             [println [if None "T" "F"]]
+             [println [if [Some false] "T" "F"]]
+             [println [if [Some 0] "T" "F"]]
+             [println [= None None]]
+             [println [= None [do]]]
+             [println [= None [Some 1]]]]"#,
+    ),
+    // if-let/when-let: expr evaluates once; Some v binds the payload, any
+    // other truthy value binds the value itself, falsy (None/false/()) takes
+    // the else arm (or nothing for when-let). Payload truthiness is
+    // irrelevant: Some(false) binds x=false and runs THEN.
+    (
+        "if-let-when-let",
+        r#"[fn main []
+             [println [if-let [x [Some 5]] [str "some:" x] "else"]]
+             [println [if-let [x None] [str "bad:" x] "none-else"]]
+             [println [if-let [x [Some false]] [str "payload:" x] "BAD"]]
+             [println [if-let [x 7] [str "plain:" x] "BAD"]]
+             [println [if-let [x false] "BAD" "false-else"]]
+             [println [if-let [x [Some 1]] [str "no-else:" x]]]
+             [when-let [x [Some 2]] [println "wl-first"] [println [str "wl:" x]]]
+             [when-let [x None] [println "BAD"]]
+             [when-let [x "s"] [println [str "wl-plain:" x]]]]"#,
+    ),
+    // some?/none? exist as exact complements on both backends: none? is true
+    // for the "says nothing" values (None and unit), some? for everything
+    // else — including Some(false).
+    (
+        "some-none-predicates",
+        r#"[fn main []
+             [println [some? None]] [println [none? None]]
+             [println [some? [Some false]]] [println [none? [Some false]]]
+             [println [some? [do]]] [println [none? [do]]]
+             [println [some? 0]] [println [none? 0]]]"#,
+    ),
+    // `[or maybe-x default]` is the blessed default-value idiom: None is
+    // falsy, so `or` skips it and yields the default; a present Some passes
+    // through as the Some itself (unwrap separately).
+    (
+        "or-none-default-idiom",
+        r#"[fn main []
+             [println [or None "fallback"]]
+             [println [or [Some 5] "fallback"]]
+             [println [or false None "last"]]]"#,
+    ),
+    // and/or thread truthiness through the same test: `[and 0 "x"]` keeps going
+    // past 0 (truthy) and yields "x"; `[or false #[]]` skips false and yields
+    // the empty vector, which prints truthy.
+    (
+        "truthiness-and-or",
+        r#"[fn main []
+             [println [if [and 0 "x"] "T" "F"]]
+             [println [if [or false #[]] "T" "F"]]]"#,
+    ),
 ];
 
 #[test]
@@ -219,31 +357,53 @@ fn backends_agree() {
     );
 }
 
+/// Integer division / modulo by zero must RAISE on BOTH backends — never
+/// silently return `()`. The EIR VM used to return unit here (a silent-failure
+/// regression); it now raises a "division by zero" / "modulo by zero" runtime
+/// error, agreeing with the interpreter. Float division by zero is IEEE (inf),
+/// NOT an error, on both backends — verified here so the fix doesn't overreach.
+#[test]
+fn int_divide_by_zero_raises_on_both_backends() {
+    for (src, needle) in [
+        ("[fn main [] [println [/ 5 0]]]", "division by zero"),
+        ("[fn main [] [println [% 5 0]]]", "modulo by zero"),
+    ] {
+        let eir = eir_output(src);
+        let interp = interp_output(src);
+        assert!(eir.is_err(), "EIR VM must error on {src:?}, got {eir:?}");
+        assert!(
+            interp.is_err(),
+            "interp must error on {src:?}, got {interp:?}"
+        );
+        assert!(
+            eir.as_ref().unwrap_err().contains(needle),
+            "EIR VM error for {src:?} should mention {needle:?}, got {:?}",
+            eir.unwrap_err()
+        );
+    }
+
+    // Float division by zero stays IEEE (infinity), not an error, on both.
+    let finf = "[fn main [] [println [/ 1.0 0.0]]]";
+    assert!(eir_output(finf).is_ok(), "float /0.0 must not error on EIR");
+    assert!(
+        interp_output(finf).is_ok(),
+        "float /0.0 must not error on interp"
+    );
+}
+
 /// Known divergences between the backends, PINNED so any change is noticed.
 /// Each records the program and the (eir, interp) outputs observed today, with
 /// a note on which backend is correct — a worklist for unification.
 ///
-/// - effect-abort: a handler clause that does NOT resume must DISCARD the
-///   continuation (algebraic-effects abort). The EIR VM does (999); the legacy
-///   interp wrongly resumes with the clause value (1 + 999 = 1000). EIR correct.
+/// (The non-resuming-abort divergence has been RETIRED: the legacy interp now
+/// discards the continuation like the EIR VM, so it lives in CORPUS as
+/// `effect-abort-discards-continuation` and is enforced for agreement.)
+///
 /// - fold-builtin-arg: a binary builtin (`+`) passed as a HOF function. The EIR
 ///   VM wraps a builtin used as a value in an arity-1 closure, so binary use via
 ///   fold misfires (0); the interp dispatches variadically (10). interp correct.
 #[test]
 fn known_divergences_are_pinned() {
-    let abort = "[effect F [fail [] Int]] [fn body [] [+ 1 [F.fail]]] \
-                 [fn main [] [println [handle [body] [F.fail] 999]]]";
-    assert_eq!(
-        eir_output(abort).as_deref(),
-        Ok("999"),
-        "EIR abort (correct)"
-    );
-    assert_eq!(
-        interp_output(abort).as_deref(),
-        Ok("1000"),
-        "interp abort (wrong)"
-    );
-
     // CONVERGED (2026-07-01, phase-2): an uncaught Fail raised in a handler
     // clause — whose enclosing `try` was frozen into the continuation — used to
     // fall through to silent unit on the EIR VM (result collapsed to "()"). It

@@ -1,0 +1,11 @@
+; `merge` is left-biased on ALL THREE backends: keys already in the left map
+; keep their value AND position, keys unique to the right map append in the
+; right map's order. Enforces the cross-backend agreement the map-order ruling
+; requires — no expect-fail: the VM, interp, and wasm codegen must all match.
+[fn main []
+  [let m [merge {:a 1 :b 2} {:b 9 :c 3}]]
+  [println [get m :a]]        ; 1  (only in left)
+  [println [get m :b]]        ; 2  (in both — LEFT wins, stays 2 not 9)
+  [println [get m :c]]        ; 3  (only in right — appended)
+  [println [get [merge {:x 0} {:x 5}] :x]]   ; 0 (left wins even when it is 0)
+  [println [get [merge {:p 1} {:q 2}] :q]]]  ; 2 (new key appends)

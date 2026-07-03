@@ -11,7 +11,7 @@
 
 use crate::ast::{Expr, ExprKind};
 use crate::interp::env::Env;
-use crate::interp::value::{LoonFn, Param, Value};
+use crate::interp::value::{LoonFn, OrdMap, Param, Value};
 use crate::interp::{
     access_field, bind_param, err, err_at, eval_impl_def, eval_test_def, eval_type_def,
     extract_param, extract_params, pattern_matches, perform_effect, try_builtin_handler, IResult,
@@ -943,7 +943,7 @@ impl Machine {
 
             Proc::MakeMap(pairs, span) => {
                 if pairs.is_empty() {
-                    self.focus = Focus::Return(Value::Map(imbl::HashMap::new()));
+                    self.focus = Focus::Return(Value::Map(OrdMap::new()));
                 } else {
                     // Flatten pairs into alternating key, value, key, value...
                     let mut flat: Vec<Proc> = Vec::with_capacity(pairs.len() * 2);
@@ -1254,7 +1254,7 @@ impl Machine {
                 if pending_key.is_none() {
                     // We just evaluated a key — next evaluate its value
                     if remaining.is_empty() {
-                        let map: imbl::HashMap<Value, Value> = pairs.into_iter().collect();
+                        let map: OrdMap = pairs.into_iter().collect();
                         self.focus = Focus::Return(Value::Map(map));
                     } else {
                         let next_v = remaining.remove(0);
@@ -1270,7 +1270,7 @@ impl Machine {
                     // We just evaluated a value — store the pair
                     pairs.push((pending_key.unwrap(), val));
                     if remaining.is_empty() {
-                        let map: imbl::HashMap<Value, Value> = pairs.into_iter().collect();
+                        let map: OrdMap = pairs.into_iter().collect();
                         self.focus = Focus::Return(Value::Map(map));
                     } else {
                         let next_k = remaining.remove(0);

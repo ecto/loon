@@ -195,6 +195,69 @@ pub fn is_log_op(effect: &str, op: &str) -> bool {
     effect == "IO" && op == "println"
 }
 
+/// The recorded final outcome of a run, appended to the trace at record time
+/// as one extra map: `{:outcome "crash" :error-class "assert-failed"
+/// :error "assertion failed: 0 != -1" :steps 3}` or `{:outcome "ok" :steps 3}`.
+///
+/// `:steps` counts the *nondeterministic* (non-log) entries the run recorded —
+/// for a crash, the number of recorded ops consumed before it died. `loon
+/// verify` uses this as ground truth: without it (traces written by older
+/// versions), verify can still detect divergence but cannot certify that a
+/// crash is the *same* crash the recording died of. The trace loader ignores
+/// outcome maps on the replay path, so old and new readers both accept both
+/// trace generations.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraceOutcome {
+    /// "ok" for a run that completed, "crash" for one that errored.
+    pub status: String,
+    /// Stable machine-readable error class (see `VmErrorKind::class`), for
+    /// crash outcomes.
+    pub error_class: Option<String>,
+    /// The human-readable error message of the crash.
+    pub error: Option<String>,
+    /// Nondeterministic (non-log) entries recorded before the run ended.
+    pub steps: Option<usize>,
+}
+
+impl TraceOutcome {
+    /// Serialize as a single-line Loon map.
+    pub fn to_loon(&self) -> String {
+        let mut s = format!("{{:outcome \"{}\"", escape_str(&self.status));
+        if let Some(class) = &self.error_class {
+            s.push_str(&format!(" :error-class \"{}\"", escape_str(class)));
+        }
+        if let Some(err) = &self.error {
+            s.push_str(&format!(" :error \"{}\"", escape_str(err)));
+        }
+        if let Some(steps) = self.steps {
+            s.push_str(&format!(" :steps {steps}"));
+        }
+        s.push('}');
+        s
+    }
+
+    pub fn is_crash(&self) -> bool {
+        self.status == "crash"
+    }
+}
+
+/// Append a recorded outcome to a (line-delimited, not yet finalized) trace
+/// file. Called by the CLI after the recorded run ends, before finalizing.
+pub fn append_outcome(path: &Path, outcome: &TraceOutcome) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    writeln!(file, "{}", outcome.to_loon())?;
+    file.flush()
+}
+
+/// Number of nondeterministic (non-log) entries — the step unit used by
+/// `TraceOutcome::steps` and `loon verify`.
+pub fn nondet_count(entries: &[TraceEntry]) -> usize {
+    entries
+        .iter()
+        .filter(|e| !is_log_op(&e.effect, &e.op))
+        .count()
+}
+
 /// Incremental trace writer: appends one entry per line and flushes after
 /// every write, so the trace persists even if the program crashes mid-run.
 pub struct TraceRecorder {
@@ -258,8 +321,16 @@ pub fn finalize_trace_file(path: &Path) -> std::io::Result<()> {
 
 /// Parse a trace file's source into entries. Accepts both the finalized
 /// vector form `#[{…} {…}]` and the crash-time line-delimited form (a
-/// sequence of top-level maps).
+/// sequence of top-level maps). Outcome maps (see [`TraceOutcome`]) are
+/// tolerated and skipped — the replay path never matches against them.
 pub fn parse_trace(src: &str) -> Result<Vec<TraceEntry>, String> {
+    parse_trace_full(src).map(|(entries, _outcome)| entries)
+}
+
+/// Like [`parse_trace`], but also returns the recorded outcome if the trace
+/// carries one (traces from older versions do not — `None` then; `loon
+/// verify` degrades gracefully in that case).
+pub fn parse_trace_full(src: &str) -> Result<(Vec<TraceEntry>, Option<TraceOutcome>), String> {
     let exprs = crate::parser::parse(src).map_err(|e| format!("parse error: {}", e.message))?;
     let entry_exprs: Vec<&crate::ast::Expr> = match exprs.as_slice() {
         [single] if matches!(single.kind, crate::ast::ExprKind::Vec(_)) => match &single.kind {
@@ -270,10 +341,47 @@ pub fn parse_trace(src: &str) -> Result<Vec<TraceEntry>, String> {
     };
 
     let mut entries = Vec::with_capacity(entry_exprs.len());
+    let mut outcome = None;
     for (i, expr) in entry_exprs.iter().enumerate() {
+        if let Some(o) = parse_outcome(expr) {
+            // Last one wins; a well-formed trace has exactly one, at the end.
+            outcome = Some(o);
+            continue;
+        }
         entries.push(parse_entry(expr).map_err(|e| format!("trace entry {i}: {e}"))?);
     }
-    Ok(entries)
+    Ok((entries, outcome))
+}
+
+/// Parse a map as a [`TraceOutcome`] if it has an `:outcome` key; `None`
+/// means "not an outcome map" (a regular entry, handled by `parse_entry`).
+fn parse_outcome(expr: &crate::ast::Expr) -> Option<TraceOutcome> {
+    use crate::ast::ExprKind;
+    let ExprKind::Map(pairs) = &expr.kind else {
+        return None;
+    };
+    let mut status = None;
+    let mut error_class = None;
+    let mut error = None;
+    let mut steps = None;
+    for (k, v) in pairs {
+        let ExprKind::Keyword(key) = &k.kind else {
+            continue;
+        };
+        match (key.as_str(), &v.kind) {
+            ("outcome", ExprKind::Str(s)) => status = Some(decode_str(s)),
+            ("error-class", ExprKind::Str(s)) => error_class = Some(decode_str(s)),
+            ("error", ExprKind::Str(s)) => error = Some(decode_str(s)),
+            ("steps", ExprKind::Int(n)) if *n >= 0 => steps = Some(*n as usize),
+            _ => {}
+        }
+    }
+    status.map(|status| TraceOutcome {
+        status,
+        error_class,
+        error,
+        steps,
+    })
 }
 
 fn parse_entry(expr: &crate::ast::Expr) -> Result<TraceEntry, String> {
@@ -499,6 +607,101 @@ mod tests {
         // Only the nondeterministic entry counts; the logs around it are
         // observability-only and never consumed on replay.
         assert_eq!(cursor.remaining(), 1);
+    }
+
+    #[test]
+    fn outcome_roundtrips_and_is_skipped_by_the_replay_loader() {
+        let crash = TraceOutcome {
+            status: "crash".to_string(),
+            error_class: Some("assert-failed".to_string()),
+            error: Some("assertion failed: 0 != -1".to_string()),
+            steps: Some(3),
+        };
+        let src = format!(
+            "{}\n{}\n",
+            "{:effect \"IO\" :op \"millis\" :args #[] :result 42}",
+            crash.to_loon()
+        );
+        // Replay path: the outcome map is tolerated, not treated as an entry.
+        let entries = parse_trace(&src).expect("parse_trace");
+        assert_eq!(entries.len(), 1);
+        // Verify path: the outcome roundtrips.
+        let (entries, outcome) = parse_trace_full(&src).expect("parse_trace_full");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(outcome, Some(crash.clone()));
+
+        // Also inside the finalized vector form.
+        let vector = format!("#[{} {}]", entries[0].to_loon(), crash.to_loon());
+        let (v_entries, v_outcome) = parse_trace_full(&vector).expect("vector form");
+        assert_eq!(v_entries.len(), 1);
+        assert_eq!(v_outcome, Some(crash));
+    }
+
+    #[test]
+    fn ok_outcome_serializes_without_error_fields() {
+        let ok = TraceOutcome {
+            status: "ok".to_string(),
+            error_class: None,
+            error: None,
+            steps: Some(2),
+        };
+        assert_eq!(ok.to_loon(), "{:outcome \"ok\" :steps 2}");
+        let (_, outcome) = parse_trace_full(&ok.to_loon()).unwrap();
+        assert_eq!(outcome, Some(ok));
+    }
+
+    #[test]
+    fn old_traces_without_outcome_parse_with_none() {
+        let src = "{:effect \"IO\" :op \"millis\" :args #[] :result 42}\n";
+        let (entries, outcome) = parse_trace_full(src).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(outcome, None);
+    }
+
+    #[test]
+    fn append_outcome_then_finalize_keeps_the_trace_loadable() {
+        let dir = std::env::temp_dir().join(format!(
+            "loon-replay-outcome-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.oo");
+        std::fs::write(
+            &path,
+            "{:effect \"IO\" :op \"millis\" :args #[] :result 7}\n",
+        )
+        .unwrap();
+        let outcome = TraceOutcome {
+            status: "crash".to_string(),
+            error_class: Some("divide-by-zero".to_string()),
+            error: Some("division by zero".to_string()),
+            steps: Some(1),
+        };
+        append_outcome(&path, &outcome).unwrap();
+        finalize_trace_file(&path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.trim_start().starts_with("#["), "trace:\n{content}");
+        let (entries, parsed) = parse_trace_full(&content).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(parsed, Some(outcome));
+    }
+
+    #[test]
+    fn nondet_count_ignores_log_entries() {
+        let log = TraceEntry {
+            effect: "IO".to_string(),
+            op: "println".to_string(),
+            args: vec![],
+            result: TraceVal::Unit,
+        };
+        let clock = TraceEntry {
+            effect: "IO".to_string(),
+            op: "millis".to_string(),
+            args: vec![],
+            result: TraceVal::Int(1),
+        };
+        assert_eq!(nondet_count(&[log.clone(), clock, log]), 1);
     }
 
     #[test]

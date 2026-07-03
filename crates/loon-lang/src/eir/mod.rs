@@ -369,4 +369,8 @@ pub enum Built {
     KeywordizeKeys,
     AssertEq,
     Concat,
+    /// `some?` — false for None/unit, true otherwise.
+    SomeP,
+    /// `none?` — true for None/unit (complement of `some?`).
+    NoneP,
 }

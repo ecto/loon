@@ -196,14 +196,10 @@ const SAMPLES: &[&str] = &[
 /// Same contract as the corpus annotations: each entry must keep diverging;
 /// when one starts conforming, the suite fails so the entry gets retired.
 const SAMPLE_EXPECT_FAIL_LEGACY: &[(&str, &str)] = &[
-    (
-        "word-count.oo",
-        "map iteration order differs between backends",
-    ),
-    (
-        "word-freq.oo",
-        "map iteration order differs between backends",
-    ),
+    // word-count.oo / word-freq.oo used to diverge because the interp's map was
+    // hash-ordered while the VM's was key-ordered. Both backends now use an
+    // insertion-ordered map (interp: value::OrdMap, VM: vm::OrdMap), so the
+    // samples agree and are enforced above rather than pinned here.
     (
         "state.oo",
         "interp cannot run the CPS State handler ([[handle ...] init])",

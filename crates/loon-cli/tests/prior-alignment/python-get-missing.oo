@@ -1,0 +1,8 @@
+; prior: Python — `if m.get('missing'):` skips the branch when the key is absent.
+; expectation: [get m :missing] yields () ("says nothing"), which is falsy, so
+; the else arm runs. The surface reading and the Loon behavior agree.
+; principle: Priors are part of the spec (agent-first.md P1) — absence is falsy.
+; expect-stdout: absent
+[fn main []
+  [let m {:a 1}]
+  [println [if [get m :missing] "present" "absent"]]]

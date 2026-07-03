@@ -138,6 +138,102 @@ all of this: `println` entries are observability-only and never
 order-checked, so added or removed prints neither diverge nor count as
 leftovers.
 
+## `loon verify` — the fix oracle
+
+Replay makes a crash reproducible; `loon verify` turns that reproducer into
+a *verifier*. After you (or an agent) change the program, one command answers
+the only question that matters: is the recorded crash actually gone?
+
+```bash
+loon verify crash.oo samples/replay-demo.oo
+```
+
+It replays the trace against the program and classifies the outcome into a
+three-state contract, each with its own exit code:
+
+| Verdict | Exit | Meaning |
+|---|---|---|
+| `FIXED` | 0 | The program consumed the trace compatibly and the recorded crash did not reproduce. The bug is gone — under the exact world that used to kill it. |
+| `REPRODUCED` | 10 | The program crashed with the same error class at the same step as the recording. The bug still exists. |
+| `DIVERGED` | 11 | The program requested a different effect op (or the same op with different args) before reaching the crash point, or crashed with a *different* error. The change altered behavior beyond the bug — the verdict names the step and the expected vs requested op. |
+
+Bad input (missing trace, unparseable program, wrong usage) exits 1, never a
+verdict.
+
+"Consumed compatibly" is defined carefully: a fixed program may legitimately
+stop performing effects before the end of the trace (a guard now short-circuits)
+or keep going *past* the end of it (the recording stopped at the crash; the fix
+sails on to the next batch). Both are `FIXED` — the guarantee is that the whole
+recorded history was replayed without a mismatch and without the recorded
+crash. What the program does beyond the recorded history is explicitly not
+verified, and the verdict says so.
+
+### The recorded outcome
+
+To make the comparison exact, `loon run --record` now appends the run's
+outcome to the trace as one extra map:
+
+```loon
+{:outcome "crash" :error-class "assert-failed"
+ :error "assertion failed: 0 != -1" :steps 3}
+```
+
+`:steps` counts the nondeterministic (non-log) operations recorded —
+the crash's position on the tape. Error classes are stable machine-readable
+names: `assert-failed`, `divide-by-zero`, `unhandled-effect`, `not-callable`,
+`stack-overflow`, `trap`.
+
+Traces recorded by older versions have no outcome map. They still replay and
+verify, but without ground truth the verdicts degrade: `COMPLETED` (exit 0)
+instead of `FIXED`, `CRASHED` (exit 10, with the crash class and step)
+instead of `REPRODUCED` — and the detail text states which guarantee cannot
+be made and suggests re-recording. `DIVERGED` needs no ground truth and is
+unchanged.
+
+### `--json` for harnesses
+
+```bash
+loon verify crash.oo prog.oo --json
+```
+
+emits a single JSON object on the last line of stdout (replayed log writes
+still print above it):
+
+```json
+{
+  "verdict": "fixed",             // "fixed" | "reproduced" | "diverged"
+                                  //   | "completed" | "crashed" (old traces)
+  "exit_code": 0,                 // 0 | 10 | 11
+  "step": 1,                      // most relevant step index, or null
+  "detail": "program completed without the recorded crash (…)",
+  "trace_ops_consumed": 1,        // nondeterministic ops fed back
+  "trace_ops_total": 1,           // nondeterministic ops in the trace
+  "recorded_outcome": {           // null for old traces
+    "status": "crash",            // "crash" | "ok"
+    "error_class": "divide-by-zero",
+    "error": "division by zero",
+    "steps": 1
+  }
+}
+```
+
+### The agent workflow
+
+This is [Principle 3 of agent-first design](agent-first.md): the language as
+an oracle for its own output. The loop:
+
+1. **Record** the failure: `loon run prog.oo --record crash.oo` (rerun until
+   the flaky crash lands on tape — the trace survives the crash).
+2. **Confirm** the reproducer: `loon verify crash.oo prog.oo` → `REPRODUCED`
+   (exit 10). You now hold a bug that cannot escape.
+3. **Fix** the program.
+4. **Verify**: `loon verify crash.oo prog.oo` → `FIXED` (exit 0) means the
+   crash is gone under the exact recorded world — knowledge, not belief.
+   `DIVERGED` (exit 11) means the change did more than fix the bug: the
+   verdict names the first step where behavior differs.
+5. **Ship the proof**: attach the trace and the verify output to the PR. Any
+   reviewer (or CI) can re-run the same command and get the same verdict.
+
 ## Scope and limitations
 
 - Record/replay runs on the default backend (the EIR register VM).

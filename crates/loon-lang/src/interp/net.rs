@@ -476,7 +476,7 @@ fn parse_request(stream: &TcpStream) -> Result<HttpRequest, ()> {
 
 // --- Map helpers ---
 
-fn get_map_int(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<u16> {
+fn get_map_int(m: &super::value::OrdMap, key: &str) -> Option<u16> {
     m.get(&Value::Keyword(key.into())).and_then(|v| {
         if let Value::Int(n) = v {
             Some(*n as u16)
@@ -486,7 +486,7 @@ fn get_map_int(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<u16> {
     })
 }
 
-fn get_map_str(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<String> {
+fn get_map_str(m: &super::value::OrdMap, key: &str) -> Option<String> {
     m.get(&Value::Keyword(key.into())).and_then(|v| {
         if let Value::Str(s) = v {
             Some(s.to_string())
@@ -496,7 +496,7 @@ fn get_map_str(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<String> {
     })
 }
 
-fn get_map_map(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<imbl::HashMap<Value, Value>> {
+fn get_map_map(m: &super::value::OrdMap, key: &str) -> Option<super::value::OrdMap> {
     m.get(&Value::Keyword(key.into())).and_then(|v| {
         if let Value::Map(inner) = v {
             Some(inner.clone())
@@ -506,7 +506,7 @@ fn get_map_map(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<imbl::HashM
     })
 }
 
-fn get_str_from_pairs(m: &imbl::HashMap<Value, Value>, key: &str) -> Option<String> {
+fn get_str_from_pairs(m: &super::value::OrdMap, key: &str) -> Option<String> {
     // Try keyword key first, then string key
     m.get(&Value::Keyword(key.into()))
         .or_else(|| m.get(&Value::Str(key.into())))

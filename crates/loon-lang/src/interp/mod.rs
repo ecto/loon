@@ -11,7 +11,7 @@ pub mod net;
 mod value;
 
 pub use env::Env;
-pub use value::Value;
+pub use value::{OrdMap, Value};
 
 use crate::ast::{Expr, ExprKind};
 use crate::module::ModuleCache;
@@ -896,7 +896,7 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
             Ok(Value::Set(vals?))
         }
         ExprKind::Map(pairs) => {
-            let mut map = imbl::HashMap::new();
+            let mut map = value::OrdMap::new();
             for (k, v) in pairs {
                 map.insert(eval(k, env)?, eval(v, env)?);
             }
@@ -1757,28 +1757,38 @@ fn eval_handle(args: &[Expr], env: &mut Env) -> IResult {
                 if let Some(ref performed) = e.performed_effect {
                     // Run handler with INSIDE_HANDLE restored so it can use builtin effects
                     restore();
-                    let handler_result = run_handler(performed, &handlers, env)?;
+                    let outcome = run_handler(performed, &handlers, env)?;
                     INSIDE_HANDLE.with(|h| *h.borrow_mut() = true);
 
-                    if let Some(resume_val) = handler_result {
-                        // Count how many times this effect.op has been overridden already
-                        let count = overrides
-                            .iter()
-                            .filter(|(eff, op, _, _)| {
-                                eff == &performed.effect && op == &performed.operation
-                            })
-                            .count();
-                        overrides.push((
-                            performed.effect.clone(),
-                            performed.operation.clone(),
-                            count,
-                            resume_val,
-                        ));
-                        // Re-evaluate body with the new override
-                        continue;
-                    } else {
-                        restore();
-                        return Err(e);
+                    match outcome {
+                        HandlerOutcome::Resumed(resume_val) => {
+                            // Count how many times this effect.op has been overridden already
+                            let count = overrides
+                                .iter()
+                                .filter(|(eff, op, _, _)| {
+                                    eff == &performed.effect && op == &performed.operation
+                                })
+                                .count();
+                            overrides.push((
+                                performed.effect.clone(),
+                                performed.operation.clone(),
+                                count,
+                                resume_val,
+                            ));
+                            // Re-evaluate body with the new override
+                            continue;
+                        }
+                        HandlerOutcome::Aborted(val) => {
+                            // Non-resuming clause: discard the captured
+                            // continuation. The rest of `body` never runs; the
+                            // `handle` yields the clause value directly.
+                            restore();
+                            return Ok(val);
+                        }
+                        HandlerOutcome::NoMatch => {
+                            restore();
+                            return Err(e);
+                        }
                     }
                 } else {
                     restore();
@@ -1817,6 +1827,11 @@ thread_local! {
     static EFFECT_COUNTERS: RefCell<HashMap<(String, String), usize>> = RefCell::new(HashMap::new());
     static EFFECT_OVERRIDES: RefCell<Vec<(String, String, usize, Value)>> = const { RefCell::new(Vec::new()) };
     static INSIDE_HANDLE: RefCell<bool> = const { RefCell::new(false) };
+    /// Set to true by the `resume` builtin when a handler clause actually calls
+    /// `resume`. Cleared before evaluating each clause. Lets `run_handler`
+    /// distinguish a resuming clause (feed value back, replay body) from a
+    /// non-resuming clause (abort: discard the continuation, return clause value).
+    static RESUME_CALLED: RefCell<bool> = const { RefCell::new(false) };
     /// Type methods: type_name → method_name → Vec<(ctor_name, param_names, body_exprs)>
     static TYPE_METHODS: RefCell<HashMap<String, HashMap<String, Vec<MethodImpl>>>> = RefCell::new(HashMap::new());
     /// ADT field names: ctor_name → Vec<field_name> (for named fields / record types)
@@ -1909,15 +1924,29 @@ fn collect_handlers<'a>(handler_args: &'a [Expr]) -> Vec<Handler<'a>> {
     handlers
 }
 
+/// Outcome of running a matched handler clause.
+enum HandlerOutcome {
+    /// No clause matched the performed effect.
+    NoMatch,
+    /// The clause called `resume val` — feed `val` back to the effect call site
+    /// and continue the body (standard resumable-handler behavior).
+    Resumed(Value),
+    /// The clause did NOT call `resume` — abort: discard the captured
+    /// continuation, the enclosing `handle` yields this clause value directly.
+    Aborted(Value),
+}
+
 /// Try to match a performed effect against handlers.
-/// Returns Ok(Some(resume_val)) if handled (resume was called),
-/// Ok(None) if no handler matched,
-/// Err if the handler errored.
+/// Returns:
+/// - Ok(NoMatch) if no handler matched (effect propagates outward),
+/// - Ok(Resumed(v)) if the clause called `resume v`,
+/// - Ok(Aborted(v)) if the clause returned `v` without calling `resume`,
+/// - Err if the handler errored (or re-performed an unhandled effect).
 fn run_handler(
     performed: &PerformedEffect,
     handlers: &[Handler<'_>],
     env: &mut Env,
-) -> Result<Option<Value>, InterpError> {
+) -> Result<HandlerOutcome, InterpError> {
     for handler in handlers {
         if performed.effect == handler.effect && performed.operation == handler.op {
             env.push_scope();
@@ -1927,20 +1956,39 @@ fn run_handler(
                 }
             }
             // `resume` returns the value it's called with — this becomes
-            // the return value of the handled effect call site.
+            // the return value of the handled effect call site — AND records
+            // that this clause resumed, so a clause that never calls `resume`
+            // is treated as an abort (continuation discarded).
             env.set(
                 "resume".to_string(),
                 Value::Builtin(
                     "resume".to_string(),
-                    Arc::new(|_, args: &[Value]| Ok(args.first().cloned().unwrap_or(Value::Unit))),
+                    Arc::new(|_, args: &[Value]| {
+                        RESUME_CALLED.with(|r| *r.borrow_mut() = true);
+                        Ok(args.first().cloned().unwrap_or(Value::Unit))
+                    }),
                 ),
             );
+            // Track whether `resume` fires during this clause. Save/restore the
+            // outer flag so nested handles don't clobber each other.
+            let prev_resume = RESUME_CALLED.with(|r| {
+                let old = *r.borrow();
+                *r.borrow_mut() = false;
+                old
+            });
             let result = eval(handler.body, env);
+            let resumed = RESUME_CALLED.with(|r| *r.borrow());
+            RESUME_CALLED.with(|r| *r.borrow_mut() = prev_resume);
             env.pop_scope();
-            return result.map(Some);
+            let val = result?;
+            return Ok(if resumed {
+                HandlerOutcome::Resumed(val)
+            } else {
+                HandlerOutcome::Aborted(val)
+            });
         }
     }
-    Ok(None)
+    Ok(HandlerOutcome::NoMatch)
 }
 
 /// Evaluate [try body on-fail]
@@ -2573,7 +2621,7 @@ pub(crate) fn eval_catch_errors(source: &str) -> Value {
     let exprs = match crate::parser::parse(source) {
         Ok(exprs) => exprs,
         Err(e) => {
-            let error_map: imbl::HashMap<Value, Value> = [
+            let error_map: value::OrdMap = [
                 (Value::Keyword("code".into()), Value::Str("E0000".into())),
                 (Value::Keyword("what".into()), Value::Str(e.message.into())),
                 (

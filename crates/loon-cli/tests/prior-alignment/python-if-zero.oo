@@ -1,0 +1,10 @@
+; prior: Python — `if 0:` skips the branch (0 is falsy).
+; expectation: Loon DIVERGES: 0 is a value and therefore truthy, so the then
+; arm runs. The divergence is LOUD: the checker's E0209 warning fires on the
+; Int-typed condition and its fix text states the falsy-set rule.
+; principle: diverge from a bad prior loudly at the point of divergence
+; (agent-first.md P1/P2) — never silently.
+; expect-stdout: zero-is-truthy
+; expect-check: E0209
+[fn main []
+  [println [if 0 "zero-is-truthy" "zero-is-falsy"]]]

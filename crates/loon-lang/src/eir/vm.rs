@@ -261,6 +261,11 @@ pub struct Vm {
     /// keys, `[keyword s]`) that are not in the module's compile-time string
     /// table. A runtime symbol's id is `module.strings.len() + index`.
     runtime_syms: Vec<String>,
+    /// The ADT tag of the `None` constructor (latest definition wins, same
+    /// rule as `ctor_tag`). Nullary ADTs with this tag are normalized to the
+    /// immediate singleton `Val::NONE` at every construction site, so `None`
+    /// never allocates and `is_truthy` stays a pure bit test.
+    none_tag: Option<u16>,
 }
 
 /// Heap allocation statistics collected during VM execution.
@@ -289,6 +294,12 @@ pub struct VmResult {
 
 impl Vm {
     pub fn new(module: Module) -> Self {
+        let none_tag = module
+            .ctors
+            .iter()
+            .rev()
+            .find(|c| c.name == "None")
+            .map(|c| c.tag);
         Self {
             module: Rc::new(module),
             heap: Vec::new(),
@@ -308,6 +319,19 @@ impl Vm {
             recorder: None,
             replay: None,
             runtime_syms: Vec::new(),
+            none_tag,
+        }
+    }
+
+    /// Construct an ADT value, normalizing the nullary `None` constructor to
+    /// the immediate singleton `Val::NONE`. Every ADT construction site MUST
+    /// go through this (never `alloc(Obj::Adt(..))` directly), otherwise a
+    /// heap-allocated `None` would escape the falsy set and `=`.
+    fn make_adt(&mut self, tag: u16, fields: Vec<Val>) -> Val {
+        if fields.is_empty() && self.none_tag == Some(tag) {
+            Val::NONE
+        } else {
+            self.alloc(Obj::Adt(tag, fields))
         }
     }
 
@@ -324,6 +348,21 @@ impl Vm {
     /// Trace entries not yet consumed by the replay (0 when not replaying).
     pub fn replay_remaining(&self) -> usize {
         self.replay.as_ref().map(|r| r.remaining()).unwrap_or(0)
+    }
+
+    /// Nondeterministic (non-log) trace entries successfully fed back so far.
+    /// This is the step unit `loon verify` compares against a recorded
+    /// outcome's `:steps` — meaningful even after the run errors out.
+    pub fn replay_consumed(&self) -> usize {
+        self.replay
+            .as_ref()
+            .map(|r| {
+                r.entries[..r.idx.min(r.entries.len())]
+                    .iter()
+                    .filter(|e| !crate::eir::replay::is_log_op(&e.effect, &e.op))
+                    .count()
+            })
+            .unwrap_or(0)
     }
 
     /// Run the module's entry function.
@@ -724,7 +763,9 @@ impl Vm {
 
                 End::Switch(scrutinee, ref cases, default) => {
                     let v = self.r(scrutinee);
-                    let tag = if let Some(Obj::Adt(t, _)) = self.get_obj(v) {
+                    let tag = if v.is_none() {
+                        self.none_tag.unwrap_or(0)
+                    } else if let Some(Obj::Adt(t, _)) = self.get_obj(v) {
                         *t
                     } else if v.is_int() {
                         v.as_int() as u16
@@ -864,7 +905,7 @@ impl Vm {
             Op::Bin(dst, binop, a, b, _) => {
                 let av = self.r(*a);
                 let bv = self.r(*b);
-                let result = self.exec_binop(*binop, av, bv);
+                let result = self.exec_binop(*binop, av, bv)?;
                 self.w(*dst, result);
             }
 
@@ -944,7 +985,7 @@ impl Vm {
 
             Op::Adt(dst, tag, fields, _) => {
                 let vals = self.read_regs(fields);
-                let val = self.alloc(Obj::Adt(*tag, vals));
+                let val = self.make_adt(*tag, vals);
                 self.w(*dst, val);
             }
 
@@ -978,9 +1019,15 @@ impl Vm {
 
             Op::Tag(dst, obj, _) => {
                 let oval = self.r(*obj);
-                let tag = match self.get_obj(oval) {
-                    Some(Obj::Adt(t, _)) => *t as i64,
-                    _ => -1,
+                let tag = if oval.is_none() {
+                    // The None singleton carries no heap header; its tag is
+                    // the module's registered `None` constructor tag.
+                    self.none_tag.map(|t| t as i64).unwrap_or(-1)
+                } else {
+                    match self.get_obj(oval) {
+                        Some(Obj::Adt(t, _)) => *t as i64,
+                        _ => -1,
+                    }
                 };
                 self.w(*dst, Val::int(tag));
             }
@@ -1149,8 +1196,8 @@ impl Vm {
         }
     }
 
-    fn exec_binop(&mut self, op: BinOp, a: Val, b: Val) -> Val {
-        match op {
+    fn exec_binop(&mut self, op: BinOp, a: Val, b: Val) -> Result<Val, VmError> {
+        Ok(match op {
             BinOp::Add => {
                 if a.is_int() && b.is_int() {
                     self.safe_int(a.as_int().wrapping_add(b.as_int()))
@@ -1208,10 +1255,10 @@ impl Vm {
                 if a.is_int() && b.is_int() {
                     let bv = b.as_int();
                     if bv == 0 {
-                        Val::UNIT
-                    } else {
-                        Val::int(a.as_int() / bv)
+                        return Err(VmError::new(VmErrorKind::DivideByZero("division"))
+                            .with_span(self.current_span));
                     }
+                    Val::int(a.as_int() / bv)
                 } else {
                     let af = if a.is_float() {
                         a.as_float()
@@ -1230,10 +1277,10 @@ impl Vm {
                 if a.is_int() && b.is_int() {
                     let bv = b.as_int();
                     if bv == 0 {
-                        Val::UNIT
-                    } else {
-                        Val::int(a.as_int() % bv)
+                        return Err(VmError::new(VmErrorKind::DivideByZero("modulo"))
+                            .with_span(self.current_span));
                     }
+                    Val::int(a.as_int() % bv)
                 } else {
                     Val::UNIT
                 }
@@ -1327,7 +1374,7 @@ impl Vm {
                 let sb = self.val_to_string(b);
                 self.alloc_str_owned(format!("{sa}{sb}"))
             }
-        }
+        })
     }
 
     // ── Builtins ───────────────────────────────────────────────────────
@@ -1701,6 +1748,18 @@ impl Vm {
             Built::Not => {
                 let v = args.first().copied().unwrap_or(Val::UNIT);
                 Ok(Val::bool(!v.is_truthy()))
+            }
+            Built::SomeP => {
+                // [some? v] → false for the "says nothing" values (None and
+                // unit), true otherwise — matches the interpreter's some?.
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                Ok(Val::bool(!(v.is_none() || v.is_unit())))
+            }
+            Built::NoneP => {
+                // [none? v] → exact complement of some?: true for None and
+                // unit (same set as the interpreter's nil?).
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                Ok(Val::bool(v.is_none() || v.is_unit()))
             }
             Built::Keys => {
                 let m = args.first().copied().unwrap_or(Val::UNIT);
@@ -2309,20 +2368,31 @@ impl Vm {
         }
         let idx = cursor.idx;
         if idx >= cursor.entries.len() {
-            return Err(VmError::new(VmErrorKind::ReplayDivergence(format!(
-                "trace exhausted at step {idx}: the program performed {effect}.{op} \
-                 but the trace has no more recorded operations"
-            )))
-            .with_span(self.current_span));
+            return Err(
+                VmError::new(VmErrorKind::ReplayDivergence(ReplayDivergence {
+                    step: idx,
+                    exhausted: true,
+                    message: format!(
+                        "trace exhausted at step {idx}: the program performed {effect}.{op} \
+                     but the trace has no more recorded operations"
+                    ),
+                }))
+                .with_span(self.current_span),
+            );
         }
         let entry = cursor.entries[idx].clone();
-        cursor.idx += 1;
         if entry.effect != effect || entry.op != op {
-            return Err(VmError::new(VmErrorKind::ReplayDivergence(format!(
-                "at step {idx}: trace recorded {}.{} but the program performed {effect}.{op}",
-                entry.effect, entry.op
-            )))
-            .with_span(self.current_span));
+            return Err(
+                VmError::new(VmErrorKind::ReplayDivergence(ReplayDivergence {
+                    step: idx,
+                    exhausted: false,
+                    message: format!(
+                    "at step {idx}: trace recorded {}.{} but the program performed {effect}.{op}",
+                    entry.effect, entry.op
+                ),
+                }))
+                .with_span(self.current_span),
+            );
         }
         // Same op but different arguments (say, a changed file path) means
         // the program no longer matches the trace: feeding the stale result
@@ -2332,12 +2402,21 @@ impl Vm {
         if entry.args != live_args {
             let recorded = crate::eir::replay::TraceVal::Vec(entry.args.clone()).to_loon();
             let live = crate::eir::replay::TraceVal::Vec(live_args).to_loon();
-            return Err(VmError::new(VmErrorKind::ReplayDivergence(format!(
-                "at step {idx}: {effect}.{op} was recorded with args {recorded} \
-                 but the program passed {live}"
-            )))
-            .with_span(self.current_span));
+            return Err(
+                VmError::new(VmErrorKind::ReplayDivergence(ReplayDivergence {
+                    step: idx,
+                    exhausted: false,
+                    message: format!(
+                        "at step {idx}: {effect}.{op} was recorded with args {recorded} \
+                     but the program passed {live}"
+                    ),
+                }))
+                .with_span(self.current_span),
+            );
         }
+        // Only a matched entry counts as consumed (a mismatch aborts the run,
+        // and `replay_consumed` must report the length of the good prefix).
+        self.replay.as_mut().expect("replay cursor").idx = idx + 1;
         // Return the recorded result without touching the outside world.
         Ok(self.trace_to_val(&entry.result))
     }
@@ -2472,6 +2551,10 @@ impl Vm {
         }
         if v.is_unit() {
             return J::Null;
+        }
+        if v.is_none() {
+            // Nullary ADTs serialize as their ctor name (see Obj::Adt below).
+            return J::String("None".to_string());
         }
         if v.is_sym() {
             return J::String(self.sym_name(v.as_sym() as usize).unwrap_or("").to_string());
@@ -2763,9 +2846,9 @@ impl Vm {
                 ) {
                     (Ok(v), Some(some_tag), _) => {
                         let s = self.alloc_str(v);
-                        self.alloc(Obj::Adt(some_tag, vec![s]))
+                        self.make_adt(some_tag, vec![s])
                     }
-                    (Err(_), _, Some(none_tag)) => self.alloc(Obj::Adt(none_tag, Vec::new())),
+                    (Err(_), _, Some(none_tag)) => self.make_adt(none_tag, Vec::new()),
                     // No Option ctors registered (shouldn't happen): raw string.
                     (Ok(v), None, _) => self.alloc_str(v),
                     (Err(_), _, None) => self.alloc_str(String::new()),
@@ -2852,6 +2935,8 @@ impl Vm {
             }
         } else if val.is_unit() {
             "()".to_string()
+        } else if val.is_none() {
+            "None".to_string()
         } else if val.is_sym() {
             let idx = val.as_sym() as usize;
             match self.sym_name(idx) {
@@ -2952,7 +3037,7 @@ pub enum VmErrorKind {
     AssertFailed(String, String),
     /// A replayed program requested a different effect op than the trace
     /// recorded (or ran past the end of the trace).
-    ReplayDivergence(String),
+    ReplayDivergence(ReplayDivergence),
     /// An effect reached the top of the handler stack with no handler and no
     /// builtin implementation. Silently returning `()` here would let programs
     /// believe the effect happened. Notably covers an uncaught `Fail.fail` —
@@ -2960,6 +3045,41 @@ pub enum VmErrorKind {
     /// inside a handler clause (whose body runs at its `handle`'s prompt,
     /// outside the dynamic extent of any `try` in the handled body).
     UnhandledEffect(String),
+    /// Integer division or modulo by a zero divisor. Silently returning `()`
+    /// here would let programs believe they got a valid quotient. The `&str`
+    /// names the operation ("division" or "modulo") for the diagnostic.
+    DivideByZero(&'static str),
+}
+
+/// Structured detail for a replay divergence, so `loon verify` can classify
+/// without re-parsing the diagnostic text.
+#[derive(Debug)]
+pub struct ReplayDivergence {
+    /// Trace entry index (including log entries) where the divergence hit.
+    pub step: usize,
+    /// True when the program requested an op past the end of the trace —
+    /// which is a *consistent* continuation past the recording, not a
+    /// mismatch within it.
+    pub exhausted: bool,
+    /// Human-readable description (expected vs requested op / args).
+    pub message: String,
+}
+
+impl VmErrorKind {
+    /// Stable machine-readable class name, recorded in trace outcomes and
+    /// compared by `loon verify` to decide whether a crash is the *same*
+    /// crash the recording died of.
+    pub fn class(&self) -> &'static str {
+        match self {
+            VmErrorKind::NotCallable => "not-callable",
+            VmErrorKind::Trap => "trap",
+            VmErrorKind::StackOverflow => "stack-overflow",
+            VmErrorKind::AssertFailed(..) => "assert-failed",
+            VmErrorKind::ReplayDivergence(_) => "replay-divergence",
+            VmErrorKind::UnhandledEffect(_) => "unhandled-effect",
+            VmErrorKind::DivideByZero(_) => "divide-by-zero",
+        }
+    }
 }
 
 impl VmError {
@@ -2988,8 +3108,8 @@ impl std::fmt::Display for VmError {
             VmErrorKind::AssertFailed(actual, expected) => {
                 write!(f, "assertion failed: {actual} != {expected}")
             }
-            VmErrorKind::ReplayDivergence(msg) => {
-                write!(f, "replay diverged {msg}")
+            VmErrorKind::ReplayDivergence(d) => {
+                write!(f, "replay diverged {}", d.message)
             }
             VmErrorKind::UnhandledEffect(name) => {
                 // Same wording as the interpreter's unhandled-effect error, so
@@ -2998,6 +3118,11 @@ impl std::fmt::Display for VmError {
                     f,
                     "unhandled effect: {name} — add a [handle ...] block to handle this effect"
                 )
+            }
+            VmErrorKind::DivideByZero(kind) => {
+                // Wording matches the interpreter's "division by zero" /
+                // "modulo by zero" so both backends fail the same way.
+                write!(f, "{kind} by zero")
             }
         }
     }
@@ -3068,6 +3193,38 @@ pub fn eval_eir_replayed(
     vm.set_replay(entries);
     let result = vm.run()?;
     Ok((result, vm.replay_remaining()))
+}
+
+/// Like `eval_eir_replayed`, but also reports how many nondeterministic trace
+/// entries were consumed *even when the run errors* — the information `loon
+/// verify` needs to classify an outcome against the recorded one. The second
+/// element is the count of non-log entries successfully fed back.
+pub fn eval_eir_verified(
+    src: &str,
+    base_dir: &std::path::Path,
+    entries: Vec<crate::eir::replay::TraceEntry>,
+) -> (Result<VmResult, VmError>, usize) {
+    let mut checker = crate::check::Checker::with_base_dir(base_dir);
+    let exprs = match crate::parser::parse(src) {
+        Ok(e) => e,
+        Err(e) => {
+            return (
+                Err(VmError {
+                    kind: VmErrorKind::Trap,
+                    span: Some(e.span),
+                    context: Some(format!("parse error: {}", e.message)),
+                }),
+                0,
+            )
+        }
+    };
+    let _errors = checker.check_program(&exprs);
+    let module = crate::eir::lower::lower(&checker);
+    let mut vm = Vm::new(module);
+    vm.set_replay(entries);
+    let result = vm.run();
+    let consumed = vm.replay_consumed();
+    (result, consumed)
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
@@ -3415,6 +3572,35 @@ mod tests {
              [fn main [] [println [handle [Zap.zap] [Zap.zap] [resume 7]]]]",
         );
         assert_eq!(out, vec!["7".to_string()]);
+    }
+
+    #[test]
+    fn vm_int_divide_by_zero_raises() {
+        // Integer / and % by zero must ERROR, not silently return () — the
+        // same silent-failure class as unhandled effects. Matches the
+        // interpreter's "division by zero" / "modulo by zero" wording.
+        let derr = eval_eir("[fn main [] [println [/ 5 0]]]")
+            .expect_err("[/ 5 0] should error, not return ()");
+        assert!(
+            matches!(derr.kind, VmErrorKind::DivideByZero("division")),
+            "got: {derr}"
+        );
+        assert!(derr.to_string().contains("division by zero"), "got: {derr}");
+
+        let merr = eval_eir("[fn main [] [println [% 5 0]]]")
+            .expect_err("[% 5 0] should error, not return ()");
+        assert!(
+            matches!(merr.kind, VmErrorKind::DivideByZero("modulo")),
+            "got: {merr}"
+        );
+        assert!(merr.to_string().contains("modulo by zero"), "got: {merr}");
+
+        // Non-zero divisors still work.
+        assert_eq!(run("[/ 17 5]").as_int(), 3);
+        assert_eq!(run("[% 17 5]").as_int(), 2);
+
+        // Float division by zero is IEEE infinity, NOT an error.
+        assert!(run("[/ 1.0 0.0]").as_float().is_infinite());
     }
 
     #[test]
