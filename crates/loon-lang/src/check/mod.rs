@@ -3789,10 +3789,12 @@ impl Checker {
         if args.len() < 2 {
             return Type::Unit;
         }
+        // A condition may be ANY type — truthiness is a runtime property (the
+        // falsy set is {false, (), None}), so we do NOT unify with Bool. But
+        // if the inferred type can NEVER be falsy, one branch is dead: warn
+        // and teach the rule (E0209).
         let cond_ty = self.infer(&args[0]);
-        if let Err(e) = unify(&mut self.subst, &cond_ty, &Type::Bool) {
-            self.push_unify_error(e, args[0].span);
-        }
+        self.warn_if_never_falsy(&cond_ty, args[0].span);
         let then_ty = self.infer(&args[1]);
         if args.len() > 2 {
             let else_ty = self.infer(&args[2]);
@@ -3801,6 +3803,50 @@ impl Checker {
             }
         }
         then_ty
+    }
+
+    /// E0209: warn when an `if` condition's inferred type can NEVER be
+    /// falsy, so one branch is dead. Fires only on concrete types that cannot
+    /// produce `false`, `()`, or `None`: Int, Float, String, Keyword,
+    /// functions, tuples, records, dimensions, and non-Option constructors.
+    /// It must NOT fire on Bool, Unit, Option, type variables (could resolve
+    /// to anything), or anything still unknown.
+    fn warn_if_never_falsy(&mut self, cond_ty: &Type, span: Span) {
+        let resolved = self.subst.resolve(cond_ty);
+        let type_name = match &resolved {
+            Type::Int => "Int",
+            Type::Float => "Float",
+            Type::Str => "String",
+            Type::Keyword => "Keyword",
+            Type::Fn(..) => "a function",
+            Type::Tuple(_) => "a tuple",
+            Type::Record(_) | Type::Row(..) => "a record",
+            Type::Dim(_) => "a dimensional value",
+            // Option can be None (falsy). The builtin containers and Result
+            // are heap values — always truthy — so they warn. User ADTs are
+            // skipped conservatively: a user type could (re)define a `None`
+            // constructor, and we don't track ctor names here.
+            Type::Con(name, _) => match name.as_str() {
+                "Option" => return,
+                "Vec" | "Map" | "Set" | "String" | "Result" => name.as_str(),
+                _ => return, // user ADT: conservative, no warning
+            },
+            // Bool/Unit can be falsy; vars and effect rows are unknown.
+            Type::Bool | Type::Unit | Type::Var(_) | Type::Effects(_) => return,
+        };
+        self.errors.push(
+            LoonDiagnostic::new(
+                ErrorCode::E0209,
+                format!("this condition is always truthy: its type is {type_name}, which can never be falsy"),
+            )
+            .with_why(format!(
+                "the falsy set is exactly {{false, (), None}}; {type_name} can produce none of them, so the else branch (or the non-run arm) is dead — 0, \"\", and empty collections are truthy in Loon"
+            ))
+            .with_fix(
+                "a value is truthy unless it says no (false) or says nothing ((), None) — test the property you mean explicitly, e.g. [> n 0], [empty? v], or [some? x]".to_string(),
+            )
+            .with_label(span, "always-truthy condition", true),
+        );
     }
 
     fn infer_do(&mut self, args: &[Expr]) -> Type {
@@ -5944,6 +5990,46 @@ mod tests {
     }
 
     // ── Transparent wildcard warnings (W0100) ─────────────────
+
+    // ── Always-truthy condition warnings (E0209) ─────────────
+    fn e0209_count(src: &str) -> usize {
+        check_errors(src)
+            .iter()
+            .filter(|e| e.code == ErrorCode::E0209)
+            .count()
+    }
+
+    #[test]
+    fn never_falsy_condition_warns() {
+        // Int, Float, String, Keyword: can never be falsy — one warning each.
+        assert_eq!(e0209_count("[if 0 1 2]"), 1);
+        assert_eq!(e0209_count("[if 1.5 1 2]"), 1);
+        assert_eq!(e0209_count("[if \"\" 1 2]"), 1);
+        assert_eq!(e0209_count("[if :kw 1 2]"), 1);
+    }
+
+    #[test]
+    fn never_falsy_fix_states_the_rule() {
+        let errors = check_errors("[if 0 1 2]");
+        let w = errors
+            .iter()
+            .find(|e| e.code == ErrorCode::E0209)
+            .expect("E0209 should fire on an Int condition");
+        assert!(w.code.is_warning(), "E0209 must be warning severity");
+        assert!(
+            w.fix.contains("a value is truthy unless it says no (false) or says nothing ((), None)"),
+            "fix text must state the one-sentence rule verbatim: {}", w.fix
+        );
+    }
+
+    #[test]
+    fn never_falsy_does_not_warn_on_falsifiable_types() {
+        // Bool, Option, and type variables can all be falsy — no warning.
+        assert_eq!(e0209_count("[if true 1 2]"), 0);
+        assert_eq!(e0209_count("[if [Some 1] 1 2]"), 0);
+        assert_eq!(e0209_count("[if None 1 2]"), 0);
+        assert_eq!(e0209_count("[fn f [x] [if x 1 2]]"), 0);
+    }
 
     #[test]
     fn wildcard_warning_lists_caught_constructors() {

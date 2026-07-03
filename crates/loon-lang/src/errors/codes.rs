@@ -23,6 +23,7 @@ pub enum ErrorCode {
     E0206, // non-exhaustive match
     E0207, // field mismatch
     E0208, // dimension mismatch
+    E0209, // condition can never be falsy (warning)
 
     // Ownership errors
     E0300, // use after move
@@ -61,6 +62,7 @@ impl ErrorCode {
             ErrorCode::E0206 => "E0206",
             ErrorCode::E0207 => "E0207",
             ErrorCode::E0208 => "E0208",
+            ErrorCode::E0209 => "E0209",
             ErrorCode::E0300 => "E0300",
             ErrorCode::E0301 => "E0301",
             ErrorCode::E0302 => "E0302",
@@ -77,7 +79,7 @@ impl ErrorCode {
     }
 
     pub fn is_warning(&self) -> bool {
-        matches!(self, ErrorCode::W0100)
+        matches!(self, ErrorCode::W0100 | ErrorCode::E0209)
     }
 
     pub fn category(&self) -> &'static str {
@@ -91,7 +93,8 @@ impl ErrorCode {
             | ErrorCode::E0205
             | ErrorCode::E0206
             | ErrorCode::E0207
-            | ErrorCode::E0208 => "type",
+            | ErrorCode::E0208
+            | ErrorCode::E0209 => "type",
             ErrorCode::E0300 | ErrorCode::E0301 | ErrorCode::E0302 => "ownership",
             ErrorCode::E0400
             | ErrorCode::E0401
@@ -118,6 +121,7 @@ impl ErrorCode {
             ErrorCode::E0206 => "non-exhaustive match",
             ErrorCode::E0207 => "field mismatch",
             ErrorCode::E0208 => "dimension mismatch",
+            ErrorCode::E0209 => "condition is always truthy",
             ErrorCode::E0300 => "use after move",
             ErrorCode::E0301 => "mutate immutable binding",
             ErrorCode::E0302 => "double mutable borrow",
