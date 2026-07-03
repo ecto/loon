@@ -535,11 +535,7 @@ impl Subst {
     /// labels into that shared chain. Scrubbing removes them in place so
     /// every row that resolves through the chain (the function's own row,
     /// its parameters' rows) is cleaned consistently.
-    pub fn scrub_effect_labels(
-        &mut self,
-        tail: Option<TypeVar>,
-        remove: &BTreeSet<String>,
-    ) {
+    pub fn scrub_effect_labels(&mut self, tail: Option<TypeVar>, remove: &BTreeSet<String>) {
         let mut cur = tail;
         let mut seen: std::collections::HashSet<TypeVar> = std::collections::HashSet::new();
         while let Some(v) = cur {

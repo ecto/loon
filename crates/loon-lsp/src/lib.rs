@@ -480,7 +480,11 @@ mod tests {
     #[test]
     fn classify_fn_vs_variable() {
         assert_eq!(
-            classify_completion_kind(&Type::Fn(vec![Type::Int], Box::new(Type::Int), loon_lang::types::EffectRow::pure())),
+            classify_completion_kind(&Type::Fn(
+                vec![Type::Int],
+                Box::new(Type::Int),
+                loon_lang::types::EffectRow::pure()
+            )),
             CompletionItemKind::FUNCTION
         );
         assert_eq!(

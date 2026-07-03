@@ -639,7 +639,6 @@ impl MacroExpander {
 
     // ── Procedural Expansion ─────────────────────────────────────────
 
-
     fn expand_procedural(
         &mut self,
         mac: &MacroDef,
@@ -780,8 +779,10 @@ fn collect_template_binders(
                     }
                     "fn" => {
                         // [fn [params] body...] or [fn name [params] body...]
-                        let pi = if matches!(&items.get(1).map(|e| &e.kind), Some(ExprKind::Symbol(_)))
-                        {
+                        let pi = if matches!(
+                            &items.get(1).map(|e| &e.kind),
+                            Some(ExprKind::Symbol(_))
+                        ) {
                             2
                         } else {
                             1
@@ -1006,10 +1007,7 @@ fn ast_value_to_expr(val: &interp::Value, span: Span) -> Result<Expr, String> {
 
 // Helper functions for extracting fields from Value::Map
 
-fn get_str_field(
-    m: &interp::OrdMap,
-    field: &str,
-) -> Result<String, String> {
+fn get_str_field(m: &interp::OrdMap, field: &str) -> Result<String, String> {
     m.get(&interp::Value::Keyword(field.into()))
         .and_then(|v| match v {
             interp::Value::Str(s) => Some(s.to_string()),
@@ -1018,10 +1016,7 @@ fn get_str_field(
         .ok_or_else(|| format!("AST node missing string field :{field}"))
 }
 
-fn get_int_field(
-    m: &interp::OrdMap,
-    field: &str,
-) -> Result<i64, String> {
+fn get_int_field(m: &interp::OrdMap, field: &str) -> Result<i64, String> {
     m.get(&interp::Value::Keyword(field.into()))
         .and_then(|v| match v {
             interp::Value::Int(n) => Some(*n),
@@ -1030,10 +1025,7 @@ fn get_int_field(
         .ok_or_else(|| format!("AST node missing int field :{field}"))
 }
 
-fn get_bool_field(
-    m: &interp::OrdMap,
-    field: &str,
-) -> Result<bool, String> {
+fn get_bool_field(m: &interp::OrdMap, field: &str) -> Result<bool, String> {
     m.get(&interp::Value::Keyword(field.into()))
         .and_then(|v| match v {
             interp::Value::Bool(b) => Some(*b),
@@ -1042,10 +1034,7 @@ fn get_bool_field(
         .ok_or_else(|| format!("AST node missing bool field :{field}"))
 }
 
-fn get_keyword_field(
-    m: &interp::OrdMap,
-    field: &str,
-) -> Result<String, String> {
+fn get_keyword_field(m: &interp::OrdMap, field: &str) -> Result<String, String> {
     m.get(&interp::Value::Keyword(field.into()))
         .and_then(|v| match v {
             interp::Value::Keyword(k) => Some(k.to_string()),
@@ -1054,10 +1043,7 @@ fn get_keyword_field(
         .ok_or_else(|| format!("AST node missing keyword field :{field}"))
 }
 
-fn get_vec_field(
-    m: &interp::OrdMap,
-    field: &str,
-) -> Result<imbl::Vector<interp::Value>, String> {
+fn get_vec_field(m: &interp::OrdMap, field: &str) -> Result<imbl::Vector<interp::Value>, String> {
     m.get(&interp::Value::Keyword(field.into()))
         .and_then(|v| match v {
             interp::Value::Vec(items) => Some(items.clone()),
