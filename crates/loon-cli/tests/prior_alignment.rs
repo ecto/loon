@@ -25,7 +25,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn corpus_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("prior-alignment")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("prior-alignment")
 }
 
 struct Expectations {
@@ -119,9 +121,7 @@ fn prior_alignment_corpus() {
             }
         }
         if ex.check_codes.is_empty() && check_out.contains("warning: [") {
-            failures.push(format!(
-                "{name}: an undeclared warning fired:\n{check_out}"
-            ));
+            failures.push(format!("{name}: an undeclared warning fired:\n{check_out}"));
         }
     }
     assert!(

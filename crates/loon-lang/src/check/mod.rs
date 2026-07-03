@@ -6028,8 +6028,10 @@ mod tests {
             .expect("E0209 should fire on an Int condition");
         assert!(w.code.is_warning(), "E0209 must be warning severity");
         assert!(
-            w.fix.contains("a value is truthy unless it says no (false) or says nothing ((), None)"),
-            "fix text must state the one-sentence rule verbatim: {}", w.fix
+            w.fix
+                .contains("a value is truthy unless it says no (false) or says nothing ((), None)"),
+            "fix text must state the one-sentence rule verbatim: {}",
+            w.fix
         );
     }
 

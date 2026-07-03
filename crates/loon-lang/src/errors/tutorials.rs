@@ -55,7 +55,6 @@ pub fn get_tutorial(code: ErrorCode) -> Option<Tutorial> {
     }
 }
 
-
 fn tutorial_always_truthy() -> Tutorial {
     Tutorial {
         code: ErrorCode::E0209,
@@ -88,8 +87,7 @@ fn tutorial_always_truthy() -> Tutorial {
             TutorialStep::Try {
                 prompt: "Write a condition over an Option instead: [if-let [x [find f v]] ...]"
                     .to_string(),
-                hint: "Option, Bool, and Unit conditions are fine — they can be falsy."
-                    .to_string(),
+                hint: "Option, Bool, and Unit conditions are fine — they can be falsy.".to_string(),
                 expected_output: None,
             },
         ],

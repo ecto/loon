@@ -294,7 +294,12 @@ pub struct VmResult {
 
 impl Vm {
     pub fn new(module: Module) -> Self {
-        let none_tag = module.ctors.iter().rev().find(|c| c.name == "None").map(|c| c.tag);
+        let none_tag = module
+            .ctors
+            .iter()
+            .rev()
+            .find(|c| c.name == "None")
+            .map(|c| c.tag);
         Self {
             module: Rc::new(module),
             heap: Vec::new(),

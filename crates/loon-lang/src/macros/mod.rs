@@ -303,7 +303,12 @@ impl MacroExpander {
     ///       [if g
     ///           [do [let x [match g [Some v] v _ g]] then]
     ///           else]]
-    fn desugar_if_let(&mut self, is_if_let: bool, args: &[Expr], span: Span) -> Result<Expr, String> {
+    fn desugar_if_let(
+        &mut self,
+        is_if_let: bool,
+        args: &[Expr],
+        span: Span,
+    ) -> Result<Expr, String> {
         let form = if is_if_let { "if-let" } else { "when-let" };
         let binding = match args.first().map(|b| &b.kind) {
             Some(ExprKind::List(pair)) if pair.len() == 2 => pair,
@@ -318,11 +323,9 @@ impl MacroExpander {
             ExprKind::Symbol(s) if !s.starts_with(char::is_uppercase) && !s.starts_with(':') => {
                 s.clone()
             }
-            _ => {
-                return Err(format!(
-                    "{form} binding must start with a lowercase variable name: [{form} [x expr] ...]"
-                ))
-            }
+            _ => return Err(format!(
+                "{form} binding must start with a lowercase variable name: [{form} [x expr] ...]"
+            )),
         };
         if is_if_let && !(2..=3).contains(&args.len()) {
             return Err("if-let expects [if-let [x expr] then else?]".to_string());
@@ -342,7 +345,11 @@ impl MacroExpander {
             }
             Expr::new(ExprKind::List(body), span)
         };
-        let else_e = if is_if_let { args.get(2).cloned() } else { None };
+        let else_e = if is_if_let {
+            args.get(2).cloned()
+        } else {
+            None
+        };
         let else_e = match else_e {
             Some(e) => Some(self.expand_expr(&e)?),
             None => None,
