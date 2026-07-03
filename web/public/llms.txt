@@ -36,10 +36,10 @@ files use `.oo`.
 [test adds [] [assert-eq [+ 1 1] 2]]  ; test form (run with loon test)
 ```
 
-Gotchas: `and`/`or` are eager functions (use nested `if` to guard); `if`
-short-circuits correctly. `fn` bodies allow multiple exprs; `if` branches do
-not — wrap in `[do ...]`. There is no `nil`/`null` and no `def`. `str`
-converts to string (no `to-string`). There is no `if-let`.
+Gotchas: `and`/`or` and `if` all short-circuit. `fn` bodies allow multiple
+exprs; `if` branches do not — wrap in `[do ...]`. There is no `nil`/`null`
+and no `def`. `str` converts to string (no `to-string`). There is no
+`if-let`.
 
 ## Option / Result
 
