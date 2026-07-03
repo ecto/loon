@@ -42,6 +42,7 @@ const TAG_IMM: u64 = 0x0007_0000_0000_0000; // immediate
 const IMM_UNIT: u64 = 0;
 const IMM_TRUE: u64 = 1;
 const IMM_FALSE: u64 = 2;
+const IMM_NONE: u64 = 3;
 
 impl Val {
     // ── Constants ──────────────────────────────────────────────────────
@@ -49,6 +50,11 @@ impl Val {
     pub const UNIT: Val = Val(BASE | TAG_IMM | IMM_UNIT);
     pub const TRUE: Val = Val(BASE | TAG_IMM | IMM_TRUE);
     pub const FALSE: Val = Val(BASE | TAG_IMM | IMM_FALSE);
+    /// The Option `None` constructor as an immediate singleton. `None` never
+    /// allocates: every construction path (ctor lowering, builtins, replay)
+    /// normalizes a nullary `None` ADT to this constant, so bit equality IS
+    /// `None` equality and `is_truthy` stays a pure bit test.
+    pub const NONE: Val = Val(BASE | TAG_IMM | IMM_NONE);
 
     // ── Constructors ──────────────────────────────────────────────────
 
@@ -123,9 +129,15 @@ impl Val {
     }
 
     #[inline(always)]
+    pub fn is_none(self) -> bool {
+        self.0 == Self::NONE.0
+    }
+
+    #[inline(always)]
     pub fn is_truthy(self) -> bool {
-        // Everything is truthy except false and unit
-        self.0 != Self::FALSE.0 && self.0 != Self::UNIT.0
+        // The falsy set is exactly {false, (), None}: a value is truthy
+        // unless it says no (false) or says nothing ((), None).
+        self.0 != Self::FALSE.0 && self.0 != Self::UNIT.0 && self.0 != Self::NONE.0
     }
 
     // ── Extractors ────────────────────────────────────────────────────
@@ -199,6 +211,8 @@ impl fmt::Debug for Val {
             write!(f, "Val::bool({})", self.as_bool())
         } else if self.is_unit() {
             write!(f, "Val::UNIT")
+        } else if self.is_none() {
+            write!(f, "Val::NONE")
         } else if self.is_ptr() {
             write!(f, "Val::ptr(0x{:x})", self.as_ptr())
         } else if self.is_sym() {
@@ -266,12 +280,26 @@ mod tests {
 
     #[test]
     fn truthiness() {
+        // The falsy set is exactly {false, (), None}.
         assert!(Val::TRUE.is_truthy());
         assert!(!Val::FALSE.is_truthy());
         assert!(!Val::UNIT.is_truthy());
+        assert!(!Val::NONE.is_truthy());
         assert!(Val::int(0).is_truthy()); // 0 is truthy in Loon
         assert!(Val::int(42).is_truthy());
         assert!(Val::float(0.0).is_truthy());
+        assert!(Val::ptr(0).is_truthy()); // heap values (incl. Some(...)) are truthy
+    }
+
+    #[test]
+    fn none_is_a_distinct_immediate() {
+        assert!(Val::NONE.is_none());
+        assert!(!Val::NONE.is_unit());
+        assert!(!Val::NONE.is_bool());
+        assert!(!Val::NONE.is_ptr());
+        assert!(!Val::NONE.is_float());
+        assert_ne!(Val::NONE, Val::UNIT);
+        assert_ne!(Val::NONE, Val::FALSE);
     }
 
     #[test]
@@ -309,6 +337,7 @@ mod tests {
             Val::UNIT,
             Val::TRUE,
             Val::FALSE,
+            Val::NONE,
             Val::int(0),
             Val::int(1),
             Val::float(0.0),

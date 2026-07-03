@@ -258,12 +258,12 @@ const CORPUS: &[(&str, &str)] = &[
         "try-three-arg-uses-second",
         r#"[fn main [] [println [try [Fail.fail "x"] [fn [m] 99] 7]]]"#,
     ),
-    // Canonical truthiness: ONLY `false` and unit are falsy. Integer 0, float
-    // 0.0, empty string, and empty collections are all TRUTHY and drive the
-    // THEN branch; only `false` drives the ELSE branch. The EIR VM is the
-    // reference; the legacy interpreter used to treat Int(0) as falsy and now
-    // agrees. (None is a heap Option ctor and is likewise truthy — see the
-    // dedicated entry below.)
+    // Canonical truthiness: the falsy set is exactly {false, (), None} — a
+    // value is truthy unless it says no (false) or says nothing ((), None).
+    // Integer 0, float 0.0, empty string, and empty collections are all
+    // TRUTHY and drive the THEN branch. The EIR VM is the reference; the
+    // legacy interpreter used to treat Int(0) as falsy and now agrees.
+    // (None's falsiness has its own entry below.)
     (
         "truthiness-falsy-set",
         r#"[fn main []
@@ -274,11 +274,30 @@ const CORPUS: &[(&str, &str)] = &[
              [println [if {} "T" "F"]]
              [println [if false "T" "F"]]]"#,
     ),
-    // None (an Option constructor, distinct from unit) is TRUTHY on both
-    // backends — it is a heap value, not `false`/unit.
+    // None is FALSY on both backends: it "says nothing", like (). Some(x) is
+    // truthy for ANY payload — including Some(false) and Some(0) — because
+    // the wrapper says something regardless of what's inside. (This flips the
+    // pre-#66-stopgap "None is truthy" pin; the falsy set is now closed at
+    // {false, (), None}.)
     (
-        "truthiness-none-truthy",
-        r#"[fn main [] [println [if None "T" "F"]]]"#,
+        "truthiness-none-falsy",
+        r#"[fn main []
+             [println [if None "T" "F"]]
+             [println [if [Some false] "T" "F"]]
+             [println [if [Some 0] "T" "F"]]
+             [println [= None None]]
+             [println [= None [do]]]
+             [println [= None [Some 1]]]]"#,
+    ),
+    // `[or maybe-x default]` is the blessed default-value idiom: None is
+    // falsy, so `or` skips it and yields the default; a present Some passes
+    // through as the Some itself (unwrap separately).
+    (
+        "or-none-default-idiom",
+        r#"[fn main []
+             [println [or None "fallback"]]
+             [println [or [Some 5] "fallback"]]
+             [println [or false None "last"]]]"#,
     ),
     // and/or thread truthiness through the same test: `[and 0 "x"]` keeps going
     // past 0 (truthy) and yields "x"; `[or false #[]]` skips false and yields

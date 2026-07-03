@@ -306,9 +306,15 @@ impl Hash for Value {
 impl Value {
     pub fn is_truthy(&self) -> bool {
         // Canonical truthiness (matches the EIR VM, the semantic reference):
-        // ONLY `false` and unit are falsy. Everything else is truthy —
-        // including integer 0, 0.0, "" (empty string), and empty collections.
-        !matches!(self, Value::Bool(false) | Value::Unit)
+        // the falsy set is exactly {false, (), None} — a value is truthy
+        // unless it says no (false) or says nothing ((), None). Everything
+        // else is truthy — including integer 0, 0.0, "" (empty string),
+        // empty collections, and Some(x) for ANY x (even Some(false)).
+        match self {
+            Value::Bool(false) | Value::Unit => false,
+            Value::Adt(tag, fields) => !(tag == "None" && fields.is_empty()),
+            _ => true,
+        }
     }
 
     pub fn is_callable(&self) -> bool {
