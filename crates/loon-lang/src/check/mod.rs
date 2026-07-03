@@ -1923,6 +1923,28 @@ impl Checker {
             );
         }
 
+        // none?: ∀a. a → Bool (complement of some?)
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
+            self.env.set_global(
+                "none?".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tva],
+                    ty: Type::Fn(
+                        vec![Type::Var(tva)],
+                        Box::new(Type::Bool),
+                        EffectRow::pure(),
+                    ),
+                },
+            );
+        }
+
         // nil?: ∀a. a → Bool
         {
             let a = self.subst.fresh();

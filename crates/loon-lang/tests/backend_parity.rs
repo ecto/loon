@@ -289,6 +289,17 @@ const CORPUS: &[(&str, &str)] = &[
              [println [= None [do]]]
              [println [= None [Some 1]]]]"#,
     ),
+    // some?/none? exist as exact complements on both backends: none? is true
+    // for the "says nothing" values (None and unit), some? for everything
+    // else — including Some(false).
+    (
+        "some-none-predicates",
+        r#"[fn main []
+             [println [some? None]] [println [none? None]]
+             [println [some? [Some false]]] [println [none? [Some false]]]
+             [println [some? [do]]] [println [none? [do]]]
+             [println [some? 0]] [println [none? 0]]]"#,
+    ),
     // `[or maybe-x default]` is the blessed default-value idiom: None is
     // falsy, so `or` skips it and yields the default; a present Some passes
     // through as the Some itself (unwrap separately).

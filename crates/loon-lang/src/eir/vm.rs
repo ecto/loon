@@ -1729,6 +1729,18 @@ impl Vm {
                 let v = args.first().copied().unwrap_or(Val::UNIT);
                 Ok(Val::bool(!v.is_truthy()))
             }
+            Built::SomeP => {
+                // [some? v] → false for the "says nothing" values (None and
+                // unit), true otherwise — matches the interpreter's some?.
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                Ok(Val::bool(!(v.is_none() || v.is_unit())))
+            }
+            Built::NoneP => {
+                // [none? v] → exact complement of some?: true for None and
+                // unit (same set as the interpreter's nil?).
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                Ok(Val::bool(v.is_none() || v.is_unit()))
+            }
             Built::Keys => {
                 let m = args.first().copied().unwrap_or(Val::UNIT);
                 match self.get_obj(m).cloned() {
