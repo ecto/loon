@@ -162,12 +162,18 @@ fn agent_demo_contains_untrusted_code() {
     );
     // both hostile ops neutralized: sentinels in the agent's own result...
     // (nested strings render quoted now that the EIR VM matches the interp)
-    assert!(out.contains(r#":stole "EACCES: /etc/credentials""#), "{out}");
+    assert!(
+        out.contains(r#":stole "EACCES: /etc/credentials""#),
+        "{out}"
+    );
     assert!(out.contains(":exfil-result :denied"), "{out}");
     // ...and the exfil file was never written to the (virtual) filesystem
     assert!(out.contains("exfil file:  '<never written>'"), "{out}");
     // the flight recorder captured every attempt, including the denied ones
-    assert!(out.contains(r#"{:op :read :path "/etc/credentials" :got "EACCES"#), "{out}");
+    assert!(
+        out.contains(r#"{:op :read :path "/etc/credentials" :got "EACCES"#),
+        "{out}"
+    );
     assert!(out.contains(r#"{:op :write :path "/evil/exfil""#), "{out}");
     // whole run is seed-deterministic
     assert!(out.contains("AGENT RUN REPRODUCED EXACTLY"), "{out}");

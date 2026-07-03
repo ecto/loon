@@ -345,6 +345,21 @@ impl Vm {
         self.replay.as_ref().map(|r| r.remaining()).unwrap_or(0)
     }
 
+    /// Nondeterministic (non-log) trace entries successfully fed back so far.
+    /// This is the step unit `loon verify` compares against a recorded
+    /// outcome's `:steps` — meaningful even after the run errors out.
+    pub fn replay_consumed(&self) -> usize {
+        self.replay
+            .as_ref()
+            .map(|r| {
+                r.entries[..r.idx.min(r.entries.len())]
+                    .iter()
+                    .filter(|e| !crate::eir::replay::is_log_op(&e.effect, &e.op))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
     /// Run the module's entry function.
     pub fn run(&mut self) -> Result<VmResult, VmError> {
         // Pre-create the identity function for `resume` in effect handlers.
@@ -2348,20 +2363,31 @@ impl Vm {
         }
         let idx = cursor.idx;
         if idx >= cursor.entries.len() {
-            return Err(VmError::new(VmErrorKind::ReplayDivergence(format!(
-                "trace exhausted at step {idx}: the program performed {effect}.{op} \
-                 but the trace has no more recorded operations"
-            )))
-            .with_span(self.current_span));
+            return Err(
+                VmError::new(VmErrorKind::ReplayDivergence(ReplayDivergence {
+                    step: idx,
+                    exhausted: true,
+                    message: format!(
+                        "trace exhausted at step {idx}: the program performed {effect}.{op} \
+                     but the trace has no more recorded operations"
+                    ),
+                }))
+                .with_span(self.current_span),
+            );
         }
         let entry = cursor.entries[idx].clone();
-        cursor.idx += 1;
         if entry.effect != effect || entry.op != op {
-            return Err(VmError::new(VmErrorKind::ReplayDivergence(format!(
-                "at step {idx}: trace recorded {}.{} but the program performed {effect}.{op}",
-                entry.effect, entry.op
-            )))
-            .with_span(self.current_span));
+            return Err(
+                VmError::new(VmErrorKind::ReplayDivergence(ReplayDivergence {
+                    step: idx,
+                    exhausted: false,
+                    message: format!(
+                    "at step {idx}: trace recorded {}.{} but the program performed {effect}.{op}",
+                    entry.effect, entry.op
+                ),
+                }))
+                .with_span(self.current_span),
+            );
         }
         // Same op but different arguments (say, a changed file path) means
         // the program no longer matches the trace: feeding the stale result
@@ -2371,12 +2397,21 @@ impl Vm {
         if entry.args != live_args {
             let recorded = crate::eir::replay::TraceVal::Vec(entry.args.clone()).to_loon();
             let live = crate::eir::replay::TraceVal::Vec(live_args).to_loon();
-            return Err(VmError::new(VmErrorKind::ReplayDivergence(format!(
-                "at step {idx}: {effect}.{op} was recorded with args {recorded} \
-                 but the program passed {live}"
-            )))
-            .with_span(self.current_span));
+            return Err(
+                VmError::new(VmErrorKind::ReplayDivergence(ReplayDivergence {
+                    step: idx,
+                    exhausted: false,
+                    message: format!(
+                        "at step {idx}: {effect}.{op} was recorded with args {recorded} \
+                     but the program passed {live}"
+                    ),
+                }))
+                .with_span(self.current_span),
+            );
         }
+        // Only a matched entry counts as consumed (a mismatch aborts the run,
+        // and `replay_consumed` must report the length of the good prefix).
+        self.replay.as_mut().expect("replay cursor").idx = idx + 1;
         // Return the recorded result without touching the outside world.
         Ok(self.trace_to_val(&entry.result))
     }
@@ -2427,7 +2462,12 @@ impl Vm {
     /// same override rule the lowerer applies to `ctor_map`). The prelude's
     /// Option/Result are always registered, so `Some`/`None` resolve here.
     fn ctor_tag(&self, name: &str) -> Option<u16> {
-        self.module.ctors.iter().rev().find(|c| c.name == name).map(|c| c.tag)
+        self.module
+            .ctors
+            .iter()
+            .rev()
+            .find(|c| c.name == name)
+            .map(|c| c.tag)
     }
 
     /// The textual name of a symbol/keyword id: compile-time ids index the
@@ -2592,7 +2632,10 @@ impl Vm {
                 Val::UNIT
             }
             ("IO", "file-exists?") => {
-                let p = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let p = args
+                    .first()
+                    .map(|v| self.val_to_string(*v))
+                    .unwrap_or_default();
                 Val::bool(std::path::Path::new(&p).exists())
             }
             ("IO", "delete-file") => {
@@ -2618,7 +2661,10 @@ impl Vm {
                 Val::UNIT
             }
             ("IO", "list-dir") => {
-                let p = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let p = args
+                    .first()
+                    .map(|v| self.val_to_string(*v))
+                    .unwrap_or_default();
                 let names: Vec<String> = match std::fs::read_dir(&p) {
                     Ok(entries) => entries
                         .filter_map(|e| e.ok())
@@ -2631,7 +2677,10 @@ impl Vm {
                 self.alloc(Obj::Vec(vals))
             }
             ("IO", "mtime") => {
-                let p = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let p = args
+                    .first()
+                    .map(|v| self.val_to_string(*v))
+                    .unwrap_or_default();
                 let millis = std::fs::metadata(&p)
                     .and_then(|m| m.modified())
                     .ok()
@@ -2644,7 +2693,7 @@ impl Vm {
                 if let Some(ms) = args.first() {
                     if ms.is_int() {
                         std::thread::sleep(std::time::Duration::from_millis(
-                            ms.as_int().max(0) as u64,
+                            ms.as_int().max(0) as u64
                         ));
                     }
                 }
@@ -2679,7 +2728,10 @@ impl Vm {
             }
             ("IO", "uuid") => self.alloc_str(gen_uuid_v4()),
             ("IO", "parse-json") => {
-                let text = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let text = args
+                    .first()
+                    .map(|v| self.val_to_string(*v))
+                    .unwrap_or_default();
                 match serde_json::from_str::<serde_json::Value>(&text) {
                     Ok(json) => self.json_to_val(json),
                     // The interpreter performs Fail.fail here; unhandled, that
@@ -2704,11 +2756,17 @@ impl Vm {
             }
             #[cfg(feature = "pkg-fetch")]
             ("IO", "blake3") => {
-                let text = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let text = args
+                    .first()
+                    .map(|v| self.val_to_string(*v))
+                    .unwrap_or_default();
                 self.alloc_str(blake3::hash(text.as_bytes()).to_hex().to_string())
             }
             ("Process", "exec") => {
-                let cmd_str = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
+                let cmd_str = args
+                    .first()
+                    .map(|v| self.val_to_string(*v))
+                    .unwrap_or_default();
                 let input = args.get(1).map(|v| self.val_to_string(*v));
                 let parts: Vec<&str> = cmd_str.split_whitespace().collect();
                 if parts.is_empty() {
@@ -2736,8 +2794,7 @@ impl Vm {
                 match output {
                     Ok(out) => {
                         // {:exit-code Int :stdout Str :stderr Str}, as interp.
-                        let code =
-                            self.safe_int(out.status.code().unwrap_or(-1) as i64);
+                        let code = self.safe_int(out.status.code().unwrap_or(-1) as i64);
                         let stdout =
                             self.alloc_str(String::from_utf8_lossy(&out.stdout).into_owned());
                         let stderr =
@@ -2763,7 +2820,7 @@ impl Vm {
                 if let Some(ms) = args.first() {
                     if ms.is_int() {
                         std::thread::sleep(std::time::Duration::from_millis(
-                            ms.as_int().max(0) as u64,
+                            ms.as_int().max(0) as u64
                         ));
                     }
                 }
@@ -2773,8 +2830,15 @@ impl Vm {
             // None when unset (the prelude Option ctors are always
             // registered by the lowerer).
             ("Process", "env") => {
-                let k = args.first().map(|v| self.val_to_string(*v)).unwrap_or_default();
-                match (std::env::var(&k), self.ctor_tag("Some"), self.ctor_tag("None")) {
+                let k = args
+                    .first()
+                    .map(|v| self.val_to_string(*v))
+                    .unwrap_or_default();
+                match (
+                    std::env::var(&k),
+                    self.ctor_tag("Some"),
+                    self.ctor_tag("None"),
+                ) {
                     (Ok(v), Some(some_tag), _) => {
                         let s = self.alloc_str(v);
                         self.make_adt(some_tag, vec![s])
@@ -2790,7 +2854,11 @@ impl Vm {
                 self.alloc(Obj::Vec(vals))
             }
             ("Process", "exit") => {
-                let code = args.first().filter(|v| v.is_int()).map(|v| v.as_int()).unwrap_or(0);
+                let code = args
+                    .first()
+                    .filter(|v| v.is_int())
+                    .map(|v| v.as_int())
+                    .unwrap_or(0);
                 std::process::exit(code as i32);
             }
             // NOTE: `Env.lookup`/`Env.get` used to be a VM-only convenience
@@ -2827,10 +2895,10 @@ impl Vm {
             ("Physics", "yield-strength") => Val::float(250.0),
             ("Physics", "gravity") => Val::float(9.80665),
             _ => {
-                return Err(VmError::new(VmErrorKind::UnhandledEffect(format!(
-                    "{effect}.{op}"
-                )))
-                .with_span(self.current_span));
+                return Err(
+                    VmError::new(VmErrorKind::UnhandledEffect(format!("{effect}.{op}")))
+                        .with_span(self.current_span),
+                );
             }
         })
     }
@@ -2880,8 +2948,10 @@ impl Vm {
                     }
                 }
                 Some(Obj::Vec(items)) => {
-                    let inner: Vec<String> =
-                        items.iter().map(|v| self.val_to_string_inner(*v, true)).collect();
+                    let inner: Vec<String> = items
+                        .iter()
+                        .map(|v| self.val_to_string_inner(*v, true))
+                        .collect();
                     format!("#[{}]", inner.join(" "))
                 }
                 Some(Obj::Map(map)) => {
@@ -2962,7 +3032,7 @@ pub enum VmErrorKind {
     AssertFailed(String, String),
     /// A replayed program requested a different effect op than the trace
     /// recorded (or ran past the end of the trace).
-    ReplayDivergence(String),
+    ReplayDivergence(ReplayDivergence),
     /// An effect reached the top of the handler stack with no handler and no
     /// builtin implementation. Silently returning `()` here would let programs
     /// believe the effect happened. Notably covers an uncaught `Fail.fail` —
@@ -2974,6 +3044,37 @@ pub enum VmErrorKind {
     /// here would let programs believe they got a valid quotient. The `&str`
     /// names the operation ("division" or "modulo") for the diagnostic.
     DivideByZero(&'static str),
+}
+
+/// Structured detail for a replay divergence, so `loon verify` can classify
+/// without re-parsing the diagnostic text.
+#[derive(Debug)]
+pub struct ReplayDivergence {
+    /// Trace entry index (including log entries) where the divergence hit.
+    pub step: usize,
+    /// True when the program requested an op past the end of the trace —
+    /// which is a *consistent* continuation past the recording, not a
+    /// mismatch within it.
+    pub exhausted: bool,
+    /// Human-readable description (expected vs requested op / args).
+    pub message: String,
+}
+
+impl VmErrorKind {
+    /// Stable machine-readable class name, recorded in trace outcomes and
+    /// compared by `loon verify` to decide whether a crash is the *same*
+    /// crash the recording died of.
+    pub fn class(&self) -> &'static str {
+        match self {
+            VmErrorKind::NotCallable => "not-callable",
+            VmErrorKind::Trap => "trap",
+            VmErrorKind::StackOverflow => "stack-overflow",
+            VmErrorKind::AssertFailed(..) => "assert-failed",
+            VmErrorKind::ReplayDivergence(_) => "replay-divergence",
+            VmErrorKind::UnhandledEffect(_) => "unhandled-effect",
+            VmErrorKind::DivideByZero(_) => "divide-by-zero",
+        }
+    }
 }
 
 impl VmError {
@@ -3002,8 +3103,8 @@ impl std::fmt::Display for VmError {
             VmErrorKind::AssertFailed(actual, expected) => {
                 write!(f, "assertion failed: {actual} != {expected}")
             }
-            VmErrorKind::ReplayDivergence(msg) => {
-                write!(f, "replay diverged {msg}")
+            VmErrorKind::ReplayDivergence(d) => {
+                write!(f, "replay diverged {}", d.message)
             }
             VmErrorKind::UnhandledEffect(name) => {
                 // Same wording as the interpreter's unhandled-effect error, so
@@ -3087,6 +3188,38 @@ pub fn eval_eir_replayed(
     vm.set_replay(entries);
     let result = vm.run()?;
     Ok((result, vm.replay_remaining()))
+}
+
+/// Like `eval_eir_replayed`, but also reports how many nondeterministic trace
+/// entries were consumed *even when the run errors* — the information `loon
+/// verify` needs to classify an outcome against the recorded one. The second
+/// element is the count of non-log entries successfully fed back.
+pub fn eval_eir_verified(
+    src: &str,
+    base_dir: &std::path::Path,
+    entries: Vec<crate::eir::replay::TraceEntry>,
+) -> (Result<VmResult, VmError>, usize) {
+    let mut checker = crate::check::Checker::with_base_dir(base_dir);
+    let exprs = match crate::parser::parse(src) {
+        Ok(e) => e,
+        Err(e) => {
+            return (
+                Err(VmError {
+                    kind: VmErrorKind::Trap,
+                    span: Some(e.span),
+                    context: Some(format!("parse error: {}", e.message)),
+                }),
+                0,
+            )
+        }
+    };
+    let _errors = checker.check_program(&exprs);
+    let module = crate::eir::lower::lower(&checker);
+    let mut vm = Vm::new(module);
+    vm.set_replay(entries);
+    let result = vm.run();
+    let consumed = vm.replay_consumed();
+    (result, consumed)
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────

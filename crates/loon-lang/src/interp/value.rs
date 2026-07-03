@@ -96,7 +96,9 @@ impl OrdMap {
         self.order.iter().map(move |k| self.map.get(k).unwrap())
     }
     pub fn iter(&self) -> impl Iterator<Item = (&Value, &Value)> + '_ {
-        self.order.iter().map(move |k| (k, self.map.get(k).unwrap()))
+        self.order
+            .iter()
+            .map(move |k| (k, self.map.get(k).unwrap()))
     }
 }
 

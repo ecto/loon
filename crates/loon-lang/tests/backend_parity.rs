@@ -371,7 +371,10 @@ fn int_divide_by_zero_raises_on_both_backends() {
         let eir = eir_output(src);
         let interp = interp_output(src);
         assert!(eir.is_err(), "EIR VM must error on {src:?}, got {eir:?}");
-        assert!(interp.is_err(), "interp must error on {src:?}, got {interp:?}");
+        assert!(
+            interp.is_err(),
+            "interp must error on {src:?}, got {interp:?}"
+        );
         assert!(
             eir.as_ref().unwrap_err().contains(needle),
             "EIR VM error for {src:?} should mention {needle:?}, got {:?}",
@@ -382,7 +385,10 @@ fn int_divide_by_zero_raises_on_both_backends() {
     // Float division by zero stays IEEE (infinity), not an error, on both.
     let finf = "[fn main [] [println [/ 1.0 0.0]]]";
     assert!(eir_output(finf).is_ok(), "float /0.0 must not error on EIR");
-    assert!(interp_output(finf).is_ok(), "float /0.0 must not error on interp");
+    assert!(
+        interp_output(finf).is_ok(),
+        "float /0.0 must not error on interp"
+    );
 }
 
 /// Known divergences between the backends, PINNED so any change is noticed.
