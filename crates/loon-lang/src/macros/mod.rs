@@ -323,9 +323,11 @@ impl MacroExpander {
             ExprKind::Symbol(s) if !s.starts_with(char::is_uppercase) && !s.starts_with(':') => {
                 s.clone()
             }
-            _ => return Err(format!(
+            _ => {
+                return Err(format!(
                 "{form} binding must start with a lowercase variable name: [{form} [x expr] ...]"
-            )),
+            ))
+            }
         };
         if is_if_let && !(2..=3).contains(&args.len()) {
             return Err("if-let expects [if-let [x expr] then else?]".to_string());
