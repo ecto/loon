@@ -19,3 +19,6 @@ wasmtime = "29"
 wasmtime-wasi = "29"
 loon-lsp = { path = "../loon-lsp" }
 tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+serde_json = "1"

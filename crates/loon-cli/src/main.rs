@@ -104,8 +104,19 @@ enum Command {
         #[arg(long)]
         capabilities: bool,
     },
-    /// Verify cache integrity against lockfile hashes
-    Verify,
+    /// Verify a crash fix against a recorded trace (the fix oracle): replay
+    /// the trace and report FIXED (exit 0), REPRODUCED (exit 10), or
+    /// DIVERGED (exit 11). With no arguments, verifies package cache
+    /// integrity against lockfile hashes.
+    Verify {
+        /// Trace file written by `loon run --record`
+        trace: Option<PathBuf>,
+        /// The (fixed) program to check against the trace
+        file: Option<PathBuf>,
+        /// Emit a single JSON object instead of human-readable output
+        #[arg(long)]
+        json: bool,
+    },
     /// Package for publishing (create tarball + hash)
     Publish,
     /// Manage the package cache
@@ -185,7 +196,22 @@ fn main() {
         Command::Update { ref source } => pkg_update(source.as_deref()),
         Command::Why { ref source } => pkg_why(source),
         Command::Audit { capabilities } => pkg_audit(capabilities),
-        Command::Verify => pkg_verify(),
+        Command::Verify {
+            ref trace,
+            ref file,
+            json,
+        } => match (trace, file) {
+            (Some(trace), Some(file)) => verify_fix(trace, file, json),
+            (None, None) if !json => pkg_verify(),
+            _ => {
+                eprintln!(
+                    "{}: usage: loon verify <trace.oo> <program.oo> [--json] \
+                     (or `loon verify` with no arguments for cache integrity)",
+                    "error".red().bold()
+                );
+                std::process::exit(1);
+            }
+        },
         Command::Publish => pkg_publish(),
         Command::Cache { ref action } => match action {
             CacheAction::Clean => pkg_cache_clean(),
@@ -238,9 +264,8 @@ fn run_file(path: &PathBuf, record: Option<&std::path::Path>) {
             match std::fs::read_to_string(trace_path) {
                 Ok(existing) => {
                     let head = existing.trim_start();
-                    let looks_like_trace = head.is_empty()
-                        || head.starts_with("#[")
-                        || head.starts_with("{:effect");
+                    let looks_like_trace =
+                        head.is_empty() || head.starts_with("#[") || head.starts_with("{:effect");
                     if !looks_like_trace {
                         eprintln!(
                             "{}: --record would overwrite {} which does not look like a \
@@ -276,6 +301,35 @@ fn run_file(path: &PathBuf, record: Option<&std::path::Path>) {
                 }
             };
             let r = loon_lang::eir::vm::eval_eir_recorded(&source, base_dir, recorder);
+            // Record the run's outcome (crash class + step count) at the end
+            // of the trace so `loon verify` has ground truth to compare a
+            // fixed program against. Best-effort: a failure here degrades
+            // verify, it does not fail the run.
+            let steps = std::fs::read_to_string(trace_path)
+                .ok()
+                .and_then(|src| loon_lang::eir::replay::parse_trace(&src).ok())
+                .map(|entries| loon_lang::eir::replay::nondet_count(&entries));
+            let outcome = match &r {
+                Ok(_) => loon_lang::eir::replay::TraceOutcome {
+                    status: "ok".to_string(),
+                    error_class: None,
+                    error: None,
+                    steps,
+                },
+                Err(e) => loon_lang::eir::replay::TraceOutcome {
+                    status: "crash".to_string(),
+                    error_class: Some(e.kind.class().to_string()),
+                    error: Some(e.to_string()),
+                    steps,
+                },
+            };
+            if let Err(e) = loon_lang::eir::replay::append_outcome(trace_path, &outcome) {
+                eprintln!(
+                    "{} recording outcome in trace {}: {e}",
+                    "warning".yellow().bold(),
+                    trace_path.display()
+                );
+            }
             // Entries were flushed line-by-line during the run (so a crash
             // still leaves a loadable trace); fold them into a single Loon
             // vector now that the run is over — whether it succeeded or not.
@@ -301,9 +355,13 @@ fn run_file(path: &PathBuf, record: Option<&std::path::Path>) {
             }
             if let Some(trace_path) = record {
                 eprintln!(
-                    "{} crash trace saved to {} — reproduce it with: loon replay {} {}",
+                    "{} crash trace saved to {} — reproduce it with: loon replay {} {}\n\
+                     {} after fixing, prove the crash is gone with: loon verify {} {}",
                     "note:".bold(),
                     trace_path.display(),
+                    trace_path.display(),
+                    path.display(),
+                    "note:".bold(),
                     trace_path.display(),
                     path.display()
                 );
@@ -362,10 +420,7 @@ fn replay_file(trace_path: &PathBuf, path: &PathBuf) {
         }
         Err(e) => {
             let filename = path.display().to_string();
-            let diverged = matches!(
-                e.kind,
-                loon_lang::eir::vm::VmErrorKind::ReplayDivergence(_)
-            );
+            let diverged = matches!(e.kind, loon_lang::eir::vm::VmErrorKind::ReplayDivergence(_));
             if let Some(span) = e.span {
                 loon_lang::errors::report_error(&filename, &source, &e.to_string(), span);
             } else {
@@ -383,6 +438,251 @@ fn replay_file(trace_path: &PathBuf, path: &PathBuf) {
             std::process::exit(1);
         }
     }
+}
+
+/// `loon verify <trace> <program>` — the fix oracle. Replays the trace
+/// against the program and classifies the outcome:
+///
+/// - FIXED (exit 0): the program consumed the trace compatibly and the
+///   recorded crash did not reproduce.
+/// - REPRODUCED (exit 10): same error class at the same step as the
+///   recording — the bug still exists.
+/// - DIVERGED (exit 11): the program requested a different op (or args)
+///   than the trace before reaching the crash point — the change altered
+///   behavior beyond the bug.
+///
+/// Traces recorded by older versions carry no `{:outcome …}` ground truth;
+/// verify then degrades to COMPLETED (exit 0) / CRASHED (exit 10) /
+/// DIVERGED (exit 11) and says which guarantee it cannot make.
+fn verify_fix(trace_path: &PathBuf, path: &PathBuf, json: bool) {
+    use loon_lang::eir::replay::{nondet_count, parse_trace_full, TraceOutcome};
+    use loon_lang::eir::vm::VmErrorKind;
+
+    let trace_src = match std::fs::read_to_string(trace_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "{} reading trace {}: {e}",
+                "error".red().bold(),
+                trace_path.display()
+            );
+            std::process::exit(1);
+        }
+    };
+    let (entries, recorded): (_, Option<TraceOutcome>) = match parse_trace_full(&trace_src) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            eprintln!(
+                "{} in trace {}: {e}",
+                "error".red().bold(),
+                trace_path.display()
+            );
+            std::process::exit(1);
+        }
+    };
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{} reading {}: {e}", "error".red().bold(), path.display());
+            std::process::exit(1);
+        }
+    };
+
+    let total = nondet_count(&entries);
+    let base_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let (result, consumed) = loon_lang::eir::vm::eval_eir_verified(&source, base_dir, entries);
+
+    // A program that does not even parse is a bad input, not a verdict.
+    if let Err(e) = &result {
+        if e.context
+            .as_deref()
+            .is_some_and(|c| c.starts_with("parse error"))
+        {
+            eprintln!(
+                "{} in {}: {}",
+                "error".red().bold(),
+                path.display(),
+                e.context.as_deref().unwrap_or("parse error")
+            );
+            std::process::exit(1);
+        }
+    }
+
+    // Classify. `step` is the nondeterministic-op index most relevant to the
+    // verdict (crash step or divergence trace index).
+    let rec_crash = recorded.as_ref().filter(|o| o.is_crash());
+    let rec_ok = recorded.as_ref().filter(|o| !o.is_crash());
+    let rec_class = rec_crash.and_then(|o| o.error_class.as_deref());
+    let rec_steps = recorded.as_ref().and_then(|o| o.steps);
+    let (verdict, exit_code, step, detail): (&str, i32, Option<usize>, String) = match &result {
+        Ok(_) => {
+            if let Some(o) = rec_crash {
+                (
+                    "fixed",
+                    0,
+                    o.steps,
+                    format!(
+                        "program completed without the recorded crash ({} at step {}); \
+                         consumed {consumed}/{total} recorded ops",
+                        o.error_class.as_deref().unwrap_or("unknown"),
+                        o.steps.map_or("?".to_string(), |s| s.to_string()),
+                    ),
+                )
+            } else if rec_ok.is_some() {
+                (
+                    "fixed",
+                    0,
+                    None,
+                    format!(
+                        "program completed; the recorded run also completed \
+                         (consumed {consumed}/{total} recorded ops)"
+                    ),
+                )
+            } else {
+                (
+                    "completed",
+                    0,
+                    None,
+                    format!(
+                        "program completed, consuming {consumed}/{total} recorded ops \
+                         compatibly; the trace has no recorded outcome, so verify cannot \
+                         confirm the recording crashed — re-record with a current loon \
+                         for a FIXED/REPRODUCED verdict"
+                    ),
+                )
+            }
+        }
+        Err(e) => match &e.kind {
+            VmErrorKind::ReplayDivergence(d) if d.exhausted => {
+                if rec_crash.is_some() {
+                    (
+                        "fixed",
+                        0,
+                        Some(consumed),
+                        format!(
+                            "program consumed the entire trace ({consumed}/{total} ops) \
+                             without reproducing the recorded crash, then continued past \
+                             the end of the recording ({}); behavior beyond the recorded \
+                             history is not verified",
+                            d.message
+                        ),
+                    )
+                } else if rec_ok.is_some() {
+                    (
+                        "diverged",
+                        11,
+                        Some(d.step),
+                        format!(
+                            "the recorded run completed after {total} ops but the program \
+                             requested more: {}",
+                            d.message
+                        ),
+                    )
+                } else {
+                    (
+                        "diverged",
+                        11,
+                        Some(d.step),
+                        format!(
+                            "{}; the trace has no recorded outcome, so verify cannot tell \
+                             a fix continuing past the crash point from a behavior change — \
+                             re-record with a current loon",
+                            d.message
+                        ),
+                    )
+                }
+            }
+            VmErrorKind::ReplayDivergence(d) => (
+                "diverged",
+                11,
+                Some(d.step),
+                format!(
+                    "the program diverged from the trace before the crash point: {}",
+                    d.message
+                ),
+            ),
+            kind => {
+                let class = kind.class();
+                if recorded.is_none() {
+                    (
+                        "crashed",
+                        10,
+                        Some(consumed),
+                        format!(
+                            "program crashed at step {consumed} ({class}: {e}); the trace \
+                             has no recorded outcome, so verify cannot confirm this is the \
+                             same crash the recording died of — re-record with a current loon"
+                        ),
+                    )
+                } else if rec_ok.is_some() {
+                    (
+                        "diverged",
+                        11,
+                        Some(consumed),
+                        format!(
+                            "the recorded run completed but the program crashed at step \
+                             {consumed} ({class}: {e})"
+                        ),
+                    )
+                } else if rec_class == Some(class) && rec_steps == Some(consumed) {
+                    (
+                        "reproduced",
+                        10,
+                        Some(consumed),
+                        format!(
+                            "the recorded crash still happens: {class} at step {consumed} \
+                             ({e}); recorded error was: {}",
+                            rec_crash
+                                .and_then(|o| o.error.as_deref())
+                                .unwrap_or("<unrecorded>")
+                        ),
+                    )
+                } else {
+                    (
+                        "diverged",
+                        11,
+                        Some(consumed),
+                        format!(
+                            "the program crashed differently: {class} at step {consumed} \
+                             ({e}); the recording crashed with {} at step {}",
+                            rec_class.unwrap_or("unknown"),
+                            rec_steps.map_or("?".to_string(), |s| s.to_string()),
+                        ),
+                    )
+                }
+            }
+        },
+    };
+
+    if json {
+        let recorded_json = recorded.as_ref().map(|o| {
+            serde_json::json!({
+                "status": o.status,
+                "error_class": o.error_class,
+                "error": o.error,
+                "steps": o.steps,
+            })
+        });
+        let obj = serde_json::json!({
+            "verdict": verdict,
+            "exit_code": exit_code,
+            "step": step,
+            "detail": detail,
+            "trace_ops_consumed": consumed,
+            "trace_ops_total": total,
+            "recorded_outcome": recorded_json,
+        });
+        println!("{obj}");
+    } else {
+        let label = verdict.to_uppercase();
+        let label = match verdict {
+            "fixed" | "completed" => label.green().bold().to_string(),
+            "reproduced" | "crashed" => label.red().bold().to_string(),
+            _ => label.yellow().bold().to_string(),
+        };
+        println!("{label} — {detail}");
+    }
+    std::process::exit(exit_code);
 }
 
 fn run_file_native(path: &PathBuf) {

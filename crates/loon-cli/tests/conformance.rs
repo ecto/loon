@@ -38,7 +38,12 @@ fn corpus_dir() -> PathBuf {
 }
 
 fn workspace_root() -> PathBuf {
-    manifest_dir().parent().unwrap().parent().unwrap().to_path_buf()
+    manifest_dir()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 #[derive(Debug, PartialEq)]
@@ -59,7 +64,9 @@ fn run_in_scratch(file: &Path, flag: Option<&str>) -> Outcome {
     if let Some(f) = flag {
         cmd.arg(f);
     }
-    let out = cmd.output().unwrap_or_else(|e| panic!("spawn loon for {file:?}: {e}"));
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("spawn loon for {file:?}: {e}"));
     let _ = std::fs::remove_dir_all(&cwd);
     Outcome {
         ok: out.status.success(),
@@ -75,7 +82,9 @@ fn run_from_root(file: &Path, flag: Option<&str>) -> Outcome {
     if let Some(f) = flag {
         cmd.arg(f);
     }
-    let out = cmd.output().unwrap_or_else(|e| panic!("spawn loon for {file:?}: {e}"));
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("spawn loon for {file:?}: {e}"));
     Outcome {
         ok: out.status.success(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -191,8 +200,14 @@ const SAMPLE_EXPECT_FAIL_LEGACY: &[(&str, &str)] = &[
     // hash-ordered while the VM's was key-ordered. Both backends now use an
     // insertion-ordered map (interp: value::OrdMap, VM: vm::OrdMap), so the
     // samples agree and are enforced above rather than pinned here.
-    ("state.oo", "interp cannot run the CPS State handler ([[handle ...] init])"),
-    ("multishot.oo", "multi-shot resume totals diverge (VM 198, interp 66)"),
+    (
+        "state.oo",
+        "interp cannot run the CPS State handler ([[handle ...] init])",
+    ),
+    (
+        "multishot.oo",
+        "multi-shot resume totals diverge (VM 198, interp 66)",
+    ),
 ];
 
 #[test]
