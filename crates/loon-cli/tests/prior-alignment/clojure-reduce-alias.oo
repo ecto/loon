@@ -1,0 +1,10 @@
+; prior: Clojure/Python — agents reach for `reduce`, not `fold`, when
+; accumulating over a collection.
+; expectation: reduce is a first-class alias of fold with identical
+; init + fn + coll semantics on every backend.
+; principle: meet the agent's prior instead of teaching a synonym.
+; expect-stdout: 10
+; expect-stdout: 10
+[fn main []
+  [println [reduce 0 [fn [acc x] [+ acc x]] #[1 2 3 4]]]
+  [println [fold 0 [fn [acc x] [+ acc x]] #[1 2 3 4]]]]

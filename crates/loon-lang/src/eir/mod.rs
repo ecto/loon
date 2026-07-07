@@ -316,7 +316,6 @@ pub enum Built {
     Range,
     Map,
     Filter,
-    Reduce,
     Each,
     FlatMap,
     Keys,
@@ -373,4 +372,38 @@ pub enum Built {
     SomeP,
     /// `none?` — true for None/unit (complement of `some?`).
     NoneP,
+    /// `map?` — true for maps.
+    MapP,
+    /// `vec?` — true for vectors.
+    VecP,
+    /// `name` — keyword to string.
+    Name,
+    /// `type-of` — runtime type name as a string.
+    TypeOf,
+    /// `remove` — drop a key from a map / element from a set.
+    Remove,
+    // Math (issue #19)
+    Sqrt,
+    Pow,
+    Floor,
+    Ceil,
+    Round,
+    Sin,
+    Cos,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Atan2,
+    Log,
+    Log10,
+    Exp,
+    // String → number parsing (issue #18)
+    ParseInt,
+    ParseFloat,
+    // String helpers (issue #23)
+    Capitalize,
+    PadLeft,
+    PadRight,
+    Repeat,
 }

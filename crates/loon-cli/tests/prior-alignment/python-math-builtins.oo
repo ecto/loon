@@ -1,0 +1,16 @@
+; prior: Python/JS — `sqrt(4)`, `pow(2, 10)`, `floor(-1.5)` are table stakes;
+; agents assume core math exists and works on integer arguments.
+; expectation: sqrt/pow accept Int or Float (no "cannot unify Float with
+; Int"); floor/ceil/round return integers.
+; principle: numeric builtins are polymorphic over Int/Float.
+; expect-stdout: 2
+; expect-stdout: 1024
+; expect-stdout: -2
+; expect-stdout: 2
+; expect-stdout: 3
+[fn main []
+  [println [sqrt 4]]
+  [println [pow 2 10]]
+  [println [floor -1.5]]
+  [println [ceil 1.2]]
+  [println [round 2.5]]]

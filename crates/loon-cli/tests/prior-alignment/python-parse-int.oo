@@ -1,0 +1,14 @@
+; prior: Python `int("42")` / JS `parseInt` — string→number conversion is
+; assumed; agents also expect a safe form that signals failure.
+; expectation: parse-int / parse-float return Option — Some on success,
+; None on garbage — so failure is a value, not a crash.
+; principle: fallible conversions return Option (agent-first, no exceptions).
+; expect-stdout: 43
+; expect-stdout: no-parse
+[fn main []
+  [match [parse-int "42"]
+    [Some n] [println [+ n 1]]
+    None [println "no-parse"]]
+  [match [parse-int "not a number"]
+    [Some n] [println n]
+    None [println "no-parse"]]]

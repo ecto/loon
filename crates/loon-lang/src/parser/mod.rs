@@ -124,6 +124,29 @@ impl<'a> Parser<'a> {
 
         match tok {
             Token::Int(s) => {
+                // Radix literals: 0xFF / 0o17 / 0b1010 (underscores allowed)
+                let (sign, body) = match s.strip_prefix('-') {
+                    Some(rest) => (-1i64, rest),
+                    None => (1i64, s.as_str()),
+                };
+                let radix = match body.as_bytes().get(1) {
+                    Some(b'x') | Some(b'X') if body.starts_with('0') => Some(16),
+                    Some(b'o') | Some(b'O') if body.starts_with('0') => Some(8),
+                    Some(b'b') | Some(b'B') if body.starts_with('0') => Some(2),
+                    _ => None,
+                };
+                if let Some(radix) = radix {
+                    let digits: String = body[2..].chars().filter(|c| *c != '_').collect();
+                    // A bare "0x"/"0b" (no digits) is a unit-suffix literal
+                    // like [unit 0 :b], not a radix literal — fall through.
+                    if !digits.is_empty() {
+                        let n = i64::from_str_radix(&digits, radix).map_err(|e| ParseError {
+                            message: format!("invalid integer literal '{s}': {e}"),
+                            span,
+                        })?;
+                        return Ok(Expr::new(ExprKind::Int(sign * n), span));
+                    }
+                }
                 let suffix = extract_suffix(&s);
                 let num_str = &s[..s.len() - suffix.len()];
                 let n: i64 = num_str.parse().map_err(|e| ParseError {

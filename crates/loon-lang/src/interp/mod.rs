@@ -103,6 +103,11 @@ pub fn err_at(msg: impl Into<String>, span: Span) -> InterpError {
     e
 }
 
+thread_local! {
+    /// SplitMix64 state for the `Rand` builtin effect (None = unseeded).
+    static RAND_STATE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
 /// Try to handle an effect with a built-in handler (for IO at the top level).
 pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
     // Compile-time sandbox: deny effectful ops a procedural macro did not
@@ -417,6 +422,39 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
                 Some(Err(err("IO.delete-file requires a string path")))
             }
         }
+        // Rand: SplitMix64 shared with the EIR VM (see effects::splitmix_next),
+        // so seeded runs produce identical values on both backends.
+        ("Rand", "seed") => {
+            let state = match performed.args.first() {
+                Some(Value::Int(n)) => *n as u64,
+                Some(Value::Float(f)) => f.to_bits(),
+                _ => 0,
+            };
+            RAND_STATE.with(|s| s.set(Some(state)));
+            Some(Ok(Value::Unit))
+        }
+        ("Rand", "rand") => {
+            let x = RAND_STATE.with(|s| {
+                let mut state = s.get().unwrap_or_else(crate::effects::entropy_seed);
+                let x = crate::effects::splitmix_f64(&mut state);
+                s.set(Some(state));
+                x
+            });
+            Some(Ok(Value::Float(x)))
+        }
+        ("Rand", "rand-int") => match (performed.args.first(), performed.args.get(1)) {
+            (Some(Value::Int(lo)), Some(Value::Int(hi))) => {
+                let (lo, hi) = (*lo, *hi);
+                let n = RAND_STATE.with(|s| {
+                    let mut state = s.get().unwrap_or_else(crate::effects::entropy_seed);
+                    let n = crate::effects::splitmix_range(&mut state, lo, hi);
+                    s.set(Some(state));
+                    n
+                });
+                Some(Ok(Value::Int(n)))
+            }
+            _ => Some(Err(err("Rand.rand-int requires integer lo and hi"))),
+        },
         ("IO", "now") => {
             let secs = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
