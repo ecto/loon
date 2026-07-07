@@ -998,6 +998,9 @@ impl Vm {
                     (Some(Obj::Tuple(fields)), Selector::Index(i)) => {
                         fields.get(*i as usize).copied().unwrap_or(Val::UNIT)
                     }
+                    (Some(Obj::Vec(items)), Selector::Index(i)) => {
+                        items.get(*i as usize).copied().unwrap_or(Val::UNIT)
+                    }
                     (Some(Obj::Map(map)), Selector::Name(sid)) => {
                         // Try symbol key first, then string key
                         let sym_key = Val::sym(sid.0);
@@ -1415,6 +1418,41 @@ impl Vm {
                     _ => 0,
                 };
                 Ok(Val::int(len))
+            }
+            Built::SeqLen => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                let len = match self.get_obj(v) {
+                    Some(Obj::Vec(items)) => items.len() as i64,
+                    Some(Obj::Tuple(items)) => items.len() as i64,
+                    _ => -1,
+                };
+                Ok(Val::int(len))
+            }
+            Built::DestructureCheck => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                let expected = args
+                    .get(1)
+                    .copied()
+                    .filter(|e| e.is_int())
+                    .map(|e| e.as_int())
+                    .unwrap_or(0);
+                let len = match self.get_obj(v) {
+                    Some(Obj::Vec(items)) => items.len() as i64,
+                    Some(Obj::Tuple(items)) => items.len() as i64,
+                    _ => {
+                        return Err(VmError::new(VmErrorKind::DestructureMismatch(
+                            "destructuring requires a vector or tuple".to_string(),
+                        ))
+                        .with_span(self.current_span));
+                    }
+                };
+                if len < expected {
+                    return Err(VmError::new(VmErrorKind::DestructureMismatch(format!(
+                        "destructuring expected at least {expected} elements, got {len}"
+                    )))
+                    .with_span(self.current_span));
+                }
+                Ok(Val::UNIT)
             }
             Built::Get => {
                 let coll = args.first().copied().unwrap_or(Val::UNIT);
@@ -3049,6 +3087,10 @@ pub enum VmErrorKind {
     /// here would let programs believe they got a valid quotient. The `&str`
     /// names the operation ("division" or "modulo") for the diagnostic.
     DivideByZero(&'static str),
+    /// A destructuring `let` (or handler binding) was given a value that is
+    /// not a vector/tuple or has too few elements. Silently binding `()`
+    /// here would let programs proceed with wrong data.
+    DestructureMismatch(String),
 }
 
 /// Structured detail for a replay divergence, so `loon verify` can classify
@@ -3078,6 +3120,7 @@ impl VmErrorKind {
             VmErrorKind::ReplayDivergence(_) => "replay-divergence",
             VmErrorKind::UnhandledEffect(_) => "unhandled-effect",
             VmErrorKind::DivideByZero(_) => "divide-by-zero",
+            VmErrorKind::DestructureMismatch(_) => "destructure-mismatch",
         }
     }
 }
@@ -3123,6 +3166,11 @@ impl std::fmt::Display for VmError {
                 // Wording matches the interpreter's "division by zero" /
                 // "modulo by zero" so both backends fail the same way.
                 write!(f, "{kind} by zero")
+            }
+            VmErrorKind::DestructureMismatch(msg) => {
+                // Wording matches the interpreter's destructuring errors so
+                // both backends fail the same way.
+                write!(f, "{msg}")
             }
         }
     }
