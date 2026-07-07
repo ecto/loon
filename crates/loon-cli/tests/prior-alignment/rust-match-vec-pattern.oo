@@ -1,0 +1,15 @@
+; prior: Rust — slice patterns: `match v[..] { [a, b] => a + b, _ => 0 }`
+; matches on exact length and binds the elements.
+; expectation: `#[a b]` in match matches a vector of exactly length 2 and
+; binds a and b; a wrong-length vector falls through to the next arm.
+; principle: patterns that look like they bind must bind (issue #17 — they
+; used to silently produce () on the default backend).
+; expect-stdout: 3
+; expect-stdout: fallthrough
+[fn main []
+  [println [match #[1 2]
+    #[a b] [str [+ a b]]
+    _ "no match"]]
+  [println [match #[1 2 3]
+    #[a b] [str [+ a b]]
+    _ "fallthrough"]]]

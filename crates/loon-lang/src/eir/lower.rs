@@ -346,21 +346,20 @@ impl<'a> Lower<'a> {
             let Some(modpath) = items[1].as_dotted_path() else {
                 continue;
             };
-            // Alias: `[use a/b as c]` → c, else the last path segment.
-            let alias = if items.len() >= 4 {
-                if let (ExprKind::Symbol(kw), ExprKind::Symbol(a)) =
-                    (&items[2].kind, &items[3].kind)
-                {
-                    if kw == "as" {
-                        a.clone()
-                    } else {
-                        modpath.rsplit('/').next().unwrap_or(&modpath).to_string()
-                    }
-                } else {
-                    modpath.rsplit('/').next().unwrap_or(&modpath).to_string()
+            // Alias: `[use a.b :as c]` → c, else the full dotted path (the
+            // interpreter qualifies as `a.b.name`, so we match that).
+            let alias = if items.len() >= 3 {
+                match (&items[2].kind, items.get(3).map(|e| &e.kind)) {
+                    (ExprKind::Keyword(kw), Some(ExprKind::Symbol(a))) if kw == "as" => a.clone(),
+                    // Lenient fallback: accept a bare-symbol `as` too. The
+                    // canonical syntax is the keyword `:as` (what the
+                    // interpreter matches); a bare `as` would otherwise be
+                    // silently ignored here and fail later as NotCallable.
+                    (ExprKind::Symbol(kw), Some(ExprKind::Symbol(a))) if kw == "as" => a.clone(),
+                    _ => modpath.clone(),
                 }
             } else {
-                modpath.rsplit('/').next().unwrap_or(&modpath).to_string()
+                modpath.clone()
             };
 
             let file = crate::module::ModuleCache::resolve_path(&modpath, base);
@@ -384,28 +383,45 @@ impl<'a> Lower<'a> {
             let module_forms = sub.expanded_program.clone();
             // Recurse first so transitive imports land before this module.
             self.collect_imports(&module_forms, &dir, visited, imported, qualified);
+            // Export rule matches the interpreter (module.rs): `pub fn` names
+            // if any are declared, otherwise every top-level fn. `every_fn`
+            // intentionally includes pub fns too — it is the complete set,
+            // used only as the fallback when the module declares no `pub`.
+            let mut pub_fns: Vec<String> = Vec::new();
+            let mut every_fn: Vec<String> = Vec::new();
             for mf in &module_forms {
                 if let ExprKind::List(mitems) = &mf.kind {
                     match mitems.first().map(|e| &e.kind) {
                         // Skip the module's own `use` lines (handled by recursion).
                         Some(ExprKind::Symbol(s)) if s == "use" => continue,
-                        _ => {}
-                    }
-                    // Record qualified names for `pub fn` exports.
-                    if let Some(ExprKind::Symbol(s)) = mitems.first().map(|e| &e.kind) {
-                        if s == "pub" && mitems.len() >= 3 {
+                        Some(ExprKind::Symbol(s)) if s == "fn" && mitems.len() >= 3 => {
+                            if let ExprKind::Symbol(name) = &mitems[1].kind {
+                                every_fn.push(name.clone());
+                            }
+                        }
+                        Some(ExprKind::Symbol(s)) if s == "pub" && mitems.len() >= 4 => {
                             if let (Some(ExprKind::Symbol(inner)), Some(ExprKind::Symbol(name))) = (
                                 mitems.get(1).map(|e| &e.kind),
                                 mitems.get(2).map(|e| &e.kind),
                             ) {
                                 if inner == "fn" {
-                                    qualified.push((alias.clone(), name.clone()));
+                                    pub_fns.push(name.clone());
+                                    every_fn.push(name.clone());
                                 }
                             }
                         }
+                        _ => {}
                     }
                 }
                 imported.push(mf.clone());
+            }
+            let exported = if pub_fns.is_empty() {
+                every_fn
+            } else {
+                pub_fns
+            };
+            for name in exported {
+                qualified.push((alias.clone(), name));
             }
         }
     }
@@ -1180,12 +1196,42 @@ impl<'a> Lower<'a> {
 
         let val = self.lower_expr(val_expr);
 
-        // Bind the name
-        if let ExprKind::Symbol(name) = &binding.kind {
-            self.bind(name, val);
-        }
-        // TODO: destructuring patterns
+        self.lower_let_binding(binding, val);
         val
+    }
+
+    /// Bind a `let` binding form to an already-lowered value: a plain name,
+    /// or a positional vector/tuple destructure (`[let [x y] v]`,
+    /// `[let #[x y] v]`). Destructuring emits a runtime guard that errors
+    /// loudly when the value is not a vector/tuple with at least as many
+    /// elements as binders (extra elements are allowed, Clojure-style) —
+    /// never a silent `()` bind. Map destructuring is still TODO here.
+    fn lower_let_binding(&mut self, binding: &Expr, val: Reg) {
+        match &binding.kind {
+            ExprKind::Symbol(name) => {
+                if name != "_" {
+                    self.bind(name, val);
+                }
+            }
+            ExprKind::List(items) | ExprKind::Vec(items) | ExprKind::Tuple(items) => {
+                let span = binding.span;
+                let expected = self.reg();
+                self.emit(Op::Lit(expected, Lit::Int(items.len() as i64), span));
+                let guard = self.reg();
+                self.emit(Op::Builtin(
+                    guard,
+                    Built::DestructureCheck,
+                    vec![val, expected],
+                    span,
+                ));
+                for (i, item) in items.iter().enumerate() {
+                    let r = self.reg();
+                    self.emit(Op::Field(r, val, Selector::Index(i as u16), item.span));
+                    self.lower_let_binding(item, r);
+                }
+            }
+            _ => {} // TODO: map destructuring patterns
+        }
     }
 
     fn lower_if(&mut self, args: &[Expr], span: Span) -> Reg {
@@ -1507,6 +1553,32 @@ impl<'a> Lower<'a> {
                 None
             }
 
+            // Vector/tuple pattern: #[a b] or (a, b) — matches a vector or
+            // tuple of exactly that length (Rust slice-pattern prior), with
+            // element subpatterns matched recursively.
+            ExprKind::Vec(items) | ExprKind::Tuple(items) => {
+                let len_r = self.reg();
+                self.emit(Op::Builtin(len_r, Built::SeqLen, vec![scrutinee], span));
+                let expected = self.reg();
+                self.emit(Op::Lit(expected, Lit::Int(items.len() as i64), span));
+                let mut cond = self.reg();
+                self.emit(Op::Bin(cond, BinOp::Eq, len_r, expected, span));
+                // Element subtests are side-effect free and safe to evaluate
+                // eagerly even when the length test fails (out-of-range Field
+                // yields unit, which simply fails the comparison), so a flat
+                // non-short-circuit And chain is correct.
+                for (i, item) in items.iter().enumerate() {
+                    let elem = self.reg();
+                    self.emit(Op::Field(elem, scrutinee, Selector::Index(i as u16), span));
+                    if let Some(sub) = self.compile_pattern_test(item, elem, span) {
+                        let both = self.reg();
+                        self.emit(Op::Bin(both, BinOp::And, cond, sub, span));
+                        cond = both;
+                    }
+                }
+                Some(cond)
+            }
+
             _ => None,
         }
     }
@@ -1536,6 +1608,19 @@ impl<'a> Lower<'a> {
                         }
                     }
                     let _ = ctor; // used for tag check in full implementation
+                }
+            }
+            ExprKind::Vec(items) | ExprKind::Tuple(items) => {
+                // Vector/tuple pattern: bind each element subpattern.
+                for (i, item) in items.iter().enumerate() {
+                    let r = self.reg();
+                    self.emit(Op::Field(
+                        r,
+                        scrutinee,
+                        Selector::Index(i as u16),
+                        item.span,
+                    ));
+                    self.bind_pattern(item, r);
                 }
             }
             _ => {

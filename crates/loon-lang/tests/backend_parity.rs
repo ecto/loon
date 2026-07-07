@@ -62,6 +62,42 @@ const CORPUS: &[(&str, &str)] = &[
          [fn main [] [println [area [Rect 3.0 4.0]]]]",
     ),
     (
+        "match-vec-pattern",
+        "[fn main [] [println [match #[1 2] #[a b] [+ a b] _ 0]]]",
+    ),
+    (
+        "match-vec-pattern-exact-length",
+        "[fn main [] [println [match #[1 2 3] #[a b] 0 #[a b c] [+ a [+ b c]] _ -1]]]",
+    ),
+    (
+        "match-vec-pattern-nested-literal",
+        "[fn main [] [println [match #[1 #[2 3]] #[1 #[b c]] [+ b c] _ 0]]]",
+    ),
+    (
+        "match-vec-pattern-non-sequence-falls-through",
+        r#"[fn main [] [println [match "xy" #[a b] "seq" _ "not-seq"]]]"#,
+    ),
+    (
+        "match-empty-vec-pattern",
+        r#"[fn main [] [println [match #[] #[] "empty" _ "no"]]]"#,
+    ),
+    (
+        "let-destructure-vec",
+        "[fn main [] [let [x y] #[7 8]] [println [+ x y]]]",
+    ),
+    (
+        "let-destructure-nested",
+        "[fn main [] [let [a [b c]] #[1 #[2 3]]] [println [+ a [+ b c]]]]",
+    ),
+    (
+        "let-destructure-extra-elements-allowed",
+        "[fn main [] [let [x y] #[1 2 3 4]] [println [+ x y]]]",
+    ),
+    (
+        "let-destructure-tuple-from-zip",
+        "[fn main [] [let [a b] [first [zip #[1 2] #[10 20]]]] [println [+ a b]]]",
+    ),
+    (
         "adt-generic-option",
         "[type Option T [Some T] None] \
          [fn unwrap-or [o d] [match o [Some x] x None d]] \
@@ -389,6 +425,42 @@ fn int_divide_by_zero_raises_on_both_backends() {
         interp_output(finf).is_ok(),
         "float /0.0 must not error on interp"
     );
+}
+
+/// Destructuring `let` with too few elements (or a non-sequence value) must
+/// RAISE on BOTH backends — never silently bind `()` (issue #17: vector
+/// patterns used to no-op entirely on the EIR VM). Extra elements are allowed
+/// (Clojure prior); the ruling is documented in DESIGN.md §6.
+#[test]
+fn destructure_mismatch_raises_on_both_backends() {
+    for (src, needle) in [
+        (
+            "[fn main [] [let [x y z] #[1 2]] [println x]]",
+            "destructuring expected at least 3 elements, got 2",
+        ),
+        (
+            "[fn main [] [let [x y] 5] [println x]]",
+            "destructuring requires a vector or tuple",
+        ),
+    ] {
+        let eir = eir_output(src);
+        let interp = interp_output(src);
+        assert!(eir.is_err(), "EIR VM must error on {src:?}, got {eir:?}");
+        assert!(
+            interp.is_err(),
+            "interp must error on {src:?}, got {interp:?}"
+        );
+        assert!(
+            eir.as_ref().unwrap_err().contains(needle),
+            "EIR VM error for {src:?} should mention {needle:?}, got {:?}",
+            eir.unwrap_err()
+        );
+        assert!(
+            interp.as_ref().unwrap_err().contains(needle),
+            "interp error for {src:?} should mention {needle:?}, got {:?}",
+            interp.unwrap_err()
+        );
+    }
 }
 
 /// Known divergences between the backends, PINNED so any change is noticed.

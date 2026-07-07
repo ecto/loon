@@ -15,12 +15,8 @@
       [code-block {:label "SHELL"} "export PATH=\"$HOME/.loon/bin:$PATH\""]]
 
     [doc-section "Editor Setup"
-      [doc-subsection "VS Code"
-        [doc-text "Install the Loon extension from the VS Code marketplace."]
-        [code-block {:label "SHELL"} "code --install-extension loon-lang.loon-vscode"]
-        [doc-text "The extension provides syntax highlighting, diagnostics, hover types, go-to-definition, and completions."]]
-      [doc-subsection "Other Editors"
-        [doc-text "Loon ships with a built-in language server. Point your editor's LSP client at the " [doc-code "loon lsp"] " command."]
+      [doc-subsection "Language Server"
+        [doc-text "Loon ships with a built-in language server. Point your editor's LSP client at the " [doc-code "loon lsp"] " command to get diagnostics, hover types, go-to-definition, and completions. See the " [a-el {:href "/ref/lsp"} "LSP reference"] " for editor-specific setup."]
         [code-block {:label "SHELL"} "loon lsp"]
         [doc-note "tip" "For Neovim, add a lspconfig entry with cmd = \{ \"loon\", \"lsp\" \} and filetypes = \{ \"loon\" \}."]]]
 

@@ -1,0 +1,13 @@
+; prior: Clojure — `(let [[x y] [7 8]] (+ x y))` binds positionally; extra
+; elements are ignored: `(let [[a b] [1 2 3]] ...)` is fine.
+; expectation: positional let destructuring binds elements; extra elements
+; are allowed. (Divergence: Clojure binds nil for MISSING elements; Loon has
+; no nil and errors loudly instead — DESIGN.md §6 sequence-pattern ruling.)
+; principle: silent () binds are the worst failure mode (agent-first.md).
+; expect-stdout: 15
+; expect-stdout: 3
+[fn main []
+  [let [x y] #[7 8]]
+  [println [+ x y]]
+  [let [a b] #[1 2 3 4]]
+  [println [+ a b]]]
