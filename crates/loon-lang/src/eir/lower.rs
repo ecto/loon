@@ -1207,11 +1207,12 @@ impl<'a> Lower<'a> {
     }
 
     /// Bind a `let` binding form to an already-lowered value: a plain name,
-    /// or a positional vector/tuple destructure (`[let [x y] v]`,
-    /// `[let #[x y] v]`). Destructuring emits a runtime guard that errors
-    /// loudly when the value is not a vector/tuple with at least as many
-    /// elements as binders (extra elements are allowed, Clojure-style) —
-    /// never a silent `()` bind. Map destructuring is still TODO here.
+    /// a positional vector/tuple destructure (`[let [x y] v]`, `[let #[x y]
+    /// v]`), or a map destructure (`[let {name age} m]`). Positional
+    /// destructuring emits a runtime guard that errors loudly when the value
+    /// is not a vector/tuple with at least as many elements as binders (extra
+    /// elements are allowed, Clojure-style) — never a silent `()` bind. Map
+    /// destructuring binds each key from the map (see `lower_map_destructure`).
     fn lower_let_binding(&mut self, binding: &Expr, val: Reg) {
         match &binding.kind {
             ExprKind::Symbol(name) => {
@@ -1236,7 +1237,81 @@ impl<'a> Lower<'a> {
                     self.lower_let_binding(item, r);
                 }
             }
-            _ => {} // TODO: map destructuring patterns
+            // Map destructuring: `[let {name age} m]` binds each key from the
+            // map. A shorthand entry `{name name}` binds `name` to `m[:name]`;
+            // an entry with a distinct value `{name default}` uses `default`
+            // as the fallback when the key is absent. Matches the legacy
+            // interpreter's `Param::MapDestructure` in `bind_param`: present
+            // key → its value, missing key → the default expr (or unit).
+            ExprKind::Map(pairs) => {
+                self.lower_map_destructure(pairs, val, binding.span);
+            }
+            _ => {}
+        }
+    }
+
+    /// Lower `[let {k default ...} map]` map-destructuring bindings.
+    ///
+    /// For each `(key, val)` pair the key symbol is bound to `map[:key]`. When
+    /// the pair's value is a symbol identical to the key it is treated as a
+    /// shorthand with no default; otherwise the value is a default expression
+    /// evaluated (lazily, only on the miss path) when the key is absent. A
+    /// missing key with no default binds unit — mirroring the interpreter.
+    fn lower_map_destructure(&mut self, pairs: &[(Expr, Expr)], map_reg: Reg, span: Span) {
+        for (k, v) in pairs {
+            let name = match &k.kind {
+                ExprKind::Symbol(s) => s.clone(),
+                _ => continue,
+            };
+            let has_default = !matches!(&v.kind, ExprKind::Symbol(vs) if *vs == name);
+            let fid = self.intern(&name);
+
+            if !has_default {
+                // No default: `Op::Field` yields the value, or unit if absent
+                // (the VM returns unit for a missing map key), matching the
+                // interpreter's `None => Value::Unit` fallthrough.
+                let r = self.reg();
+                self.emit(Op::Field(r, map_reg, Selector::Name(fid), span));
+                self.bind(&name, r);
+                continue;
+            }
+
+            // Default present: branch on key presence so the default is only
+            // evaluated (and its side effects only run) when the key is
+            // missing — `Op::Field` alone cannot distinguish an absent key
+            // from a present unit value.
+            let key_reg = self.reg();
+            self.emit(Op::Lit(key_reg, Lit::Keyword(fid), span));
+            let cond = self.reg();
+            self.emit(Op::Builtin(
+                cond,
+                Built::Contains,
+                vec![map_reg, key_reg],
+                span,
+            ));
+
+            let then_b = self.new_block();
+            let else_b = self.new_block();
+            let merge_b = self.new_block();
+            self.seal(End::Br(cond, then_b, else_b));
+
+            // Present: read the field.
+            self.switch_to(then_b);
+            let field_r = self.reg();
+            self.emit(Op::Field(field_r, map_reg, Selector::Name(fid), span));
+            self.seal(End::Jmp(merge_b, vec![field_r]));
+
+            // Absent: evaluate the default expression.
+            self.switch_to(else_b);
+            let default_r = self.lower_expr(v);
+            self.seal(End::Jmp(merge_b, vec![default_r]));
+
+            // Merge: the bound value is the block parameter.
+            self.switch_to(merge_b);
+            let result = self.reg();
+            let func = &mut self.module.funcs[self.cur_func.unwrap()];
+            func.blocks[merge_b.0 as usize].params.push(result);
+            self.bind(&name, result);
         }
     }
 

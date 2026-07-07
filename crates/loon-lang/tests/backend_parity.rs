@@ -216,6 +216,31 @@ const CORPUS: &[(&str, &str)] = &[
         "map-eq-order-independent",
         "[fn main [] [println [= {:a 1 :b 2} {:b 2 :a 1}]]]",
     ),
+    // map destructuring in let: `{name name}` shorthand binds a key to its
+    // value; both backends must bind the names (the EIR VM used to drop the
+    // pattern silently and bind nothing). Present keys read through.
+    (
+        "let-map-destructure-shorthand",
+        "[fn main [] [let m {:name 42 :age 7}] \
+         [let {name name age age} m] \
+         [println name] [println age]]",
+    ),
+    // a per-key default expression is used only when the key is ABSENT; a
+    // present key keeps its value and the default is not evaluated.
+    (
+        "let-map-destructure-default",
+        "[fn main [] [let m {:name 42}] \
+         [let {name name missing 99} m] \
+         [println name] [println missing]]",
+    ),
+    // a missing key with NO default binds unit on both backends (matching the
+    // interpreter's `None => Value::Unit` fallthrough) — printed as ().
+    (
+        "let-map-destructure-missing-no-default",
+        "[fn main [] [let m {:a 1}] \
+         [let {gone gone} m] \
+         [println gone]]",
+    ),
     // control / pattern
     ("when", "[fn main [] [when [> 3 2] [println \"yes\"]]]"),
     ("nested-let", "[fn main [] [let a 2] [let b [* a 3]] [let c [+ a b]] [println c]]"),

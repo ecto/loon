@@ -4018,15 +4018,13 @@ impl Checker {
             ExprKind::List(_) | ExprKind::Vec(_) | ExprKind::Tuple(_) => {
                 self.bind_destructure_vars(binding, &val_ty);
             }
-            // Map destructuring: [let {a b} m] — bind the names (value
-            // types are not derived from the map type yet).
+            // Map destructuring: `[let {name age} m]` binds each key name to
+            // the map's value type (`Map Keyword v` → each binding has type
+            // `v`), not a bare fresh var — so uses of the bound names type-check
+            // against real element types and any per-key default expression is
+            // unified against the same type.
             ExprKind::Map(pairs) => {
-                for (k, _) in pairs {
-                    if let ExprKind::Symbol(name) = &k.kind {
-                        let t = self.subst.fresh();
-                        self.env.set(name.clone(), Scheme::mono(t));
-                    }
-                }
+                self.bind_map_destructure(pairs, &val_ty);
             }
             _ => {}
         }
@@ -4060,6 +4058,46 @@ impl Checker {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Bind the names introduced by a `[let {k default ...} m]` map
+    /// destructuring pattern. Each key symbol is bound to the map's value
+    /// type; a distinct default expression is inferred and unified against it.
+    fn bind_map_destructure(&mut self, pairs: &[(Expr, Expr)], val_ty: &Type) {
+        // Recover the element type from `Map Keyword v`; otherwise fall back to
+        // a fresh var and constrain the source to be a keyword-keyed map.
+        let elem_ty = match self.subst.resolve(val_ty) {
+            Type::Con(ref name, ref targs) if name == "Map" && targs.len() == 2 => targs[1].clone(),
+            _ => {
+                let elem = self.subst.fresh();
+                let map_ty = Type::Con("Map".to_string(), vec![Type::Keyword, elem.clone()]);
+                let _ = unify(&mut self.subst, val_ty, &map_ty);
+                elem
+            }
+        };
+
+        for (k, v) in pairs {
+            let name = match &k.kind {
+                ExprKind::Symbol(s) => s,
+                _ => continue,
+            };
+            // A value symbol identical to the key is shorthand (no default);
+            // anything else is a default expression, whose type must match the
+            // element type.
+            let has_default = !matches!(&v.kind, ExprKind::Symbol(vs) if vs == name);
+            if has_default {
+                let default_ty = self.infer(v);
+                if let Err(e) = unify(&mut self.subst, &elem_ty, &default_ty) {
+                    self.push_unify_error(e, v.span);
+                }
+            }
+            if name != "_" {
+                let scheme = generalize(&self.env, &self.subst, &elem_ty);
+                self.env.set(name.clone(), scheme);
+                self.type_of.insert(k.id, elem_ty.clone());
+                self.add_definition(name, k.span, k.span);
+            }
         }
     }
 
