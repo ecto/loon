@@ -495,6 +495,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn observed_type_classification() {
         assert_eq!(ObservedType::from_val(Val::int(42)), ObservedType::Int);
         assert_eq!(
