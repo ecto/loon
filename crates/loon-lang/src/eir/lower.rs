@@ -351,6 +351,10 @@ impl<'a> Lower<'a> {
             let alias = if items.len() >= 3 {
                 match (&items[2].kind, items.get(3).map(|e| &e.kind)) {
                     (ExprKind::Keyword(kw), Some(ExprKind::Symbol(a))) if kw == "as" => a.clone(),
+                    // Lenient fallback: accept a bare-symbol `as` too. The
+                    // canonical syntax is the keyword `:as` (what the
+                    // interpreter matches); a bare `as` would otherwise be
+                    // silently ignored here and fail later as NotCallable.
                     (ExprKind::Symbol(kw), Some(ExprKind::Symbol(a))) if kw == "as" => a.clone(),
                     _ => modpath.clone(),
                 }
@@ -380,9 +384,11 @@ impl<'a> Lower<'a> {
             // Recurse first so transitive imports land before this module.
             self.collect_imports(&module_forms, &dir, visited, imported, qualified);
             // Export rule matches the interpreter (module.rs): `pub fn` names
-            // if any are declared, otherwise every top-level fn.
+            // if any are declared, otherwise every top-level fn. `every_fn`
+            // intentionally includes pub fns too — it is the complete set,
+            // used only as the fallback when the module declares no `pub`.
             let mut pub_fns: Vec<String> = Vec::new();
-            let mut all_fns: Vec<String> = Vec::new();
+            let mut every_fn: Vec<String> = Vec::new();
             for mf in &module_forms {
                 if let ExprKind::List(mitems) = &mf.kind {
                     match mitems.first().map(|e| &e.kind) {
@@ -390,7 +396,7 @@ impl<'a> Lower<'a> {
                         Some(ExprKind::Symbol(s)) if s == "use" => continue,
                         Some(ExprKind::Symbol(s)) if s == "fn" && mitems.len() >= 3 => {
                             if let ExprKind::Symbol(name) = &mitems[1].kind {
-                                all_fns.push(name.clone());
+                                every_fn.push(name.clone());
                             }
                         }
                         Some(ExprKind::Symbol(s)) if s == "pub" && mitems.len() >= 4 => {
@@ -400,7 +406,7 @@ impl<'a> Lower<'a> {
                             ) {
                                 if inner == "fn" {
                                     pub_fns.push(name.clone());
-                                    all_fns.push(name.clone());
+                                    every_fn.push(name.clone());
                                 }
                             }
                         }
@@ -409,7 +415,11 @@ impl<'a> Lower<'a> {
                 }
                 imported.push(mf.clone());
             }
-            let exported = if pub_fns.is_empty() { all_fns } else { pub_fns };
+            let exported = if pub_fns.is_empty() {
+                every_fn
+            } else {
+                pub_fns
+            };
             for name in exported {
                 qualified.push((alias.clone(), name));
             }
