@@ -373,4 +373,13 @@ pub enum Built {
     SomeP,
     /// `none?` — true for None/unit (complement of `some?`).
     NoneP,
+    /// Internal (not name-resolvable): length of a vector or tuple, or -1
+    /// for any other value. Emitted by pattern compilation so `#[a b]` can
+    /// test "is a sequence of length 2" in one comparison.
+    SeqLen,
+    /// Internal (not name-resolvable): destructuring guard. Args are
+    /// (value, expected-binder-count). Errors loudly unless the value is a
+    /// vector/tuple with at least that many elements — a silent `()` bind
+    /// here is the worst failure mode for an agent-first language.
+    DestructureCheck,
 }

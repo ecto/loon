@@ -1103,12 +1103,42 @@ impl<'a> Lower<'a> {
 
         let val = self.lower_expr(val_expr);
 
-        // Bind the name
-        if let ExprKind::Symbol(name) = &binding.kind {
-            self.bind(name, val);
-        }
-        // TODO: destructuring patterns
+        self.lower_let_binding(binding, val);
         val
+    }
+
+    /// Bind a `let` binding form to an already-lowered value: a plain name,
+    /// or a positional vector/tuple destructure (`[let [x y] v]`,
+    /// `[let #[x y] v]`). Destructuring emits a runtime guard that errors
+    /// loudly when the value is not a vector/tuple with at least as many
+    /// elements as binders (extra elements are allowed, Clojure-style) —
+    /// never a silent `()` bind. Map destructuring is still TODO here.
+    fn lower_let_binding(&mut self, binding: &Expr, val: Reg) {
+        match &binding.kind {
+            ExprKind::Symbol(name) => {
+                if name != "_" {
+                    self.bind(name, val);
+                }
+            }
+            ExprKind::List(items) | ExprKind::Vec(items) | ExprKind::Tuple(items) => {
+                let span = binding.span;
+                let expected = self.reg();
+                self.emit(Op::Lit(expected, Lit::Int(items.len() as i64), span));
+                let guard = self.reg();
+                self.emit(Op::Builtin(
+                    guard,
+                    Built::DestructureCheck,
+                    vec![val, expected],
+                    span,
+                ));
+                for (i, item) in items.iter().enumerate() {
+                    let r = self.reg();
+                    self.emit(Op::Field(r, val, Selector::Index(i as u16), item.span));
+                    self.lower_let_binding(item, r);
+                }
+            }
+            _ => {} // TODO: map destructuring patterns
+        }
     }
 
     fn lower_if(&mut self, args: &[Expr], span: Span) -> Reg {
@@ -1427,6 +1457,32 @@ impl<'a> Lower<'a> {
                 None
             }
 
+            // Vector/tuple pattern: #[a b] or (a, b) — matches a vector or
+            // tuple of exactly that length (Rust slice-pattern prior), with
+            // element subpatterns matched recursively.
+            ExprKind::Vec(items) | ExprKind::Tuple(items) => {
+                let len_r = self.reg();
+                self.emit(Op::Builtin(len_r, Built::SeqLen, vec![scrutinee], span));
+                let expected = self.reg();
+                self.emit(Op::Lit(expected, Lit::Int(items.len() as i64), span));
+                let mut cond = self.reg();
+                self.emit(Op::Bin(cond, BinOp::Eq, len_r, expected, span));
+                // Element subtests are side-effect free and safe to evaluate
+                // eagerly even when the length test fails (out-of-range Field
+                // yields unit, which simply fails the comparison), so a flat
+                // non-short-circuit And chain is correct.
+                for (i, item) in items.iter().enumerate() {
+                    let elem = self.reg();
+                    self.emit(Op::Field(elem, scrutinee, Selector::Index(i as u16), span));
+                    if let Some(sub) = self.compile_pattern_test(item, elem, span) {
+                        let both = self.reg();
+                        self.emit(Op::Bin(both, BinOp::And, cond, sub, span));
+                        cond = both;
+                    }
+                }
+                Some(cond)
+            }
+
             _ => None,
         }
     }
@@ -1456,6 +1512,19 @@ impl<'a> Lower<'a> {
                         }
                     }
                     let _ = ctor; // used for tag check in full implementation
+                }
+            }
+            ExprKind::Vec(items) | ExprKind::Tuple(items) => {
+                // Vector/tuple pattern: bind each element subpattern.
+                for (i, item) in items.iter().enumerate() {
+                    let r = self.reg();
+                    self.emit(Op::Field(
+                        r,
+                        scrutinee,
+                        Selector::Index(i as u16),
+                        item.span,
+                    ));
+                    self.bind_pattern(item, r);
                 }
             }
             _ => {

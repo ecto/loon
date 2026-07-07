@@ -1725,3 +1725,126 @@ fn eir_parity() {
     "#,
     );
 }
+
+// ── Vector/tuple patterns (issue #17) ───────────────────────────────
+// Sequence patterns: `#[a b]` in match matches a vector/tuple of EXACTLY
+// that length (Rust slice-pattern prior) and binds elements; destructuring
+// `let` requires at least as many elements as binders and errors LOUDLY on
+// mismatch — never a silent `()` bind. Ruling documented in DESIGN.md §6.
+
+#[test]
+fn match_vec_pattern_binds_elements() {
+    let result = run(r#"
+        [let v #[1 2]]
+        [match v
+          #[a b] [+ a b]
+          _ 0]
+    "#);
+    assert_eq!(result, Value::Int(3));
+}
+
+#[test]
+fn match_vec_pattern_exact_length() {
+    // #[a b] must NOT match a 3-element vector; #[a b c] must.
+    let result = run(r#"
+        [match #[1 2 3]
+          #[a b] 0
+          #[a b c] [+ a [+ b c]]
+          _ -1]
+    "#);
+    assert_eq!(result, Value::Int(6));
+}
+
+#[test]
+fn match_vec_pattern_nested_and_literals() {
+    let result = run(r#"
+        [match #[1 #[2 3]]
+          #[1 #[b c]] [+ b c]
+          _ 0]
+    "#);
+    assert_eq!(result, Value::Int(5));
+}
+
+#[test]
+fn match_vec_pattern_non_sequence_falls_through() {
+    // Strings and scalars are not sequences for pattern purposes.
+    let result = run(r#"
+        [match "xy"
+          #[a b] 1
+          _ 2]
+    "#);
+    assert_eq!(result, Value::Int(2));
+}
+
+#[test]
+fn match_empty_vec_pattern() {
+    let result = run(r#"
+        [match #[]
+          #[] "empty"
+          _ "no"]
+    "#);
+    assert_eq!(result, Value::Str("empty".into()));
+}
+
+#[test]
+fn match_vec_pattern_on_tuple_value() {
+    // Tuples (from zip) match sequence patterns too.
+    let result = run(r#"
+        [match [first [zip #[1 2] #[10 20]]]
+          #[a b] [+ a b]
+          _ 0]
+    "#);
+    assert_eq!(result, Value::Int(11));
+}
+
+#[test]
+fn let_destructure_vector() {
+    let result = run(r#"
+        [let [x y] #[7 8]]
+        [+ x y]
+    "#);
+    assert_eq!(result, Value::Int(15));
+}
+
+#[test]
+fn let_destructure_nested() {
+    let result = run(r#"
+        [let [a [b c]] #[1 #[2 3]]]
+        [+ a [+ b c]]
+    "#);
+    assert_eq!(result, Value::Int(6));
+}
+
+#[test]
+fn let_destructure_extra_elements_allowed() {
+    // Clojure prior: fewer binders than elements is fine.
+    let result = run(r#"
+        [let [x y] #[1 2 3 4]]
+        [+ x y]
+    "#);
+    assert_eq!(result, Value::Int(3));
+}
+
+#[test]
+fn let_destructure_too_short_errors_loudly() {
+    let exprs = parse("[let [x y z] #[1 2]]").expect("parse failed");
+    let result = eval_program(&exprs);
+    assert!(result.is_err(), "short destructure must error, not bind ()");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("destructuring expected at least 3 elements, got 2"),
+        "error should name the mismatch, got: {msg}"
+    );
+}
+
+#[test]
+fn let_destructure_non_sequence_errors_loudly() {
+    let exprs = parse("[let [x y] 5]").expect("parse failed");
+    let result = eval_program(&exprs);
+    assert!(result.is_err(), "non-sequence destructure must error");
+    let msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        msg.contains("destructuring requires a vector or tuple"),
+        "error should name the requirement, got: {msg}"
+    );
+}

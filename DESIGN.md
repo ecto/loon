@@ -404,7 +404,26 @@ UTF-8 by default. Same owned/borrowed distinction as Rust, but inferred:
 ; Destructuring:
 [let [x y] [get-point]]
 [let {name age} user]
+
+; Vector/tuple patterns in match:
+[match v
+  #[a b]   => [+ a b]      ; matches a vector/tuple of EXACTLY length 2
+  #[a b c] => [+ a [+ b c]]
+  _        => "other"]
 ```
+
+**Sequence-pattern ruling (2026-07).** A `#[p1 … pn]` (or `(p1, …, pn)`)
+pattern in `match` matches when the scrutinee is a vector or tuple of
+*exactly* length n (Rust slice-pattern prior); element subpatterns match
+recursively, and a non-match falls through to the next arm. A destructuring
+`let` (`[let [x y] v]`, `[let #[x y] v]`) requires a vector or tuple with *at
+least* as many elements as binders — extra elements are allowed (Clojure
+prior) — and anything shorter, or a non-sequence value, is a **loud runtime
+error** on every backend ("destructuring expected at least N elements, got
+M" / "destructuring requires a vector or tuple"). Clojure would bind `nil`
+for missing elements; Loon has no nil, and silently binding `()` is the
+worst failure mode for an agent-first language, so the divergence is
+deliberate and loud.
 
 ### Closures
 

@@ -3779,10 +3779,54 @@ impl Checker {
                 let form_span = Span::new(binding.span.start, args[val_idx].span.end);
                 self.add_definition(name, binding.span, form_span);
             }
+            // Positional destructuring: [let [x y] v] / [let #[x y] v] /
+            // [let (x, y) v] — bind each element with its inferred type.
+            ExprKind::List(_) | ExprKind::Vec(_) | ExprKind::Tuple(_) => {
+                self.bind_destructure_vars(binding, &val_ty);
+            }
+            // Map destructuring: [let {a b} m] — bind the names (value
+            // types are not derived from the map type yet).
+            ExprKind::Map(pairs) => {
+                for (k, _) in pairs {
+                    if let ExprKind::Symbol(name) = &k.kind {
+                        let t = self.subst.fresh();
+                        self.env.set(name.clone(), Scheme::mono(t));
+                    }
+                }
+            }
             _ => {}
         }
 
         val_ty
+    }
+
+    /// Bind the variables of a positional `let` destructure (`[x y]`,
+    /// `#[x y]`, `(x, y)`, possibly nested) against the bound value's type:
+    /// vector elements get the element type, tuple elements their positional
+    /// type, anything else a fresh var.
+    fn bind_destructure_vars(&mut self, binding: &Expr, val_ty: &Type) {
+        match &binding.kind {
+            ExprKind::Symbol(name) if name != "_" => {
+                let t = self.subst.resolve(val_ty);
+                self.env.set(name.clone(), Scheme::mono(t.clone()));
+                self.type_of.insert(binding.id, t);
+                self.add_definition(name, binding.span, binding.span);
+            }
+            ExprKind::List(items) | ExprKind::Vec(items) | ExprKind::Tuple(items) => {
+                let resolved = self.subst.resolve(val_ty);
+                for (i, item) in items.iter().enumerate() {
+                    let elem_ty = match &resolved {
+                        Type::Con(name, params) if name == "Vec" && params.len() == 1 => {
+                            params[0].clone()
+                        }
+                        Type::Tuple(ts) if i < ts.len() => ts[i].clone(),
+                        _ => self.subst.fresh(),
+                    };
+                    self.bind_destructure_vars(item, &elem_ty);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn infer_if(&mut self, args: &[Expr], span: Span) -> Type {
@@ -4565,21 +4609,43 @@ impl Checker {
         }
     }
 
-    /// Bind variables from a match pattern into the current scope.
-    fn bind_pattern_vars(&mut self, pattern: &Expr, _scrutinee_ty: &Type) {
+    /// Bind variables from a match pattern into the current scope, with the
+    /// type the pattern is matched against.
+    fn bind_pattern_vars(&mut self, pattern: &Expr, scrutinee_ty: &Type) {
         match &pattern.kind {
-            ExprKind::Symbol(s) if s != "_" && !s.starts_with(char::is_uppercase) => {
-                let t = self.subst.fresh();
-                self.env.set(s.clone(), Scheme::mono(t));
+            ExprKind::Symbol(s)
+                if s != "_" && !s.starts_with(char::is_uppercase) && !s.starts_with(':') =>
+            {
+                let t = self.subst.resolve(scrutinee_ty);
+                self.env.set(s.clone(), Scheme::mono(t.clone()));
+                self.type_of.insert(pattern.id, t);
             }
             ExprKind::List(items) if !items.is_empty() => {
-                // Constructor pattern: [Ok x] — bind the field vars
+                // Constructor pattern: [Ok x] — bind the field vars. Field
+                // types are not derived from the constructor signature yet,
+                // so each gets a fresh var.
                 if let ExprKind::Symbol(ctor) = &items[0].kind {
                     if ctor.starts_with(char::is_uppercase) {
                         for field in &items[1..] {
-                            self.bind_pattern_vars(field, _scrutinee_ty);
+                            let t = self.subst.fresh();
+                            self.bind_pattern_vars(field, &t);
                         }
                     }
+                }
+            }
+            // Vector/tuple pattern: #[a b] or (a, b) — bind each element
+            // subpattern with its inferred element type.
+            ExprKind::Vec(items) | ExprKind::Tuple(items) => {
+                let resolved = self.subst.resolve(scrutinee_ty);
+                for (i, item) in items.iter().enumerate() {
+                    let elem_ty = match &resolved {
+                        Type::Con(name, params) if name == "Vec" && params.len() == 1 => {
+                            params[0].clone()
+                        }
+                        Type::Tuple(ts) if i < ts.len() => ts[i].clone(),
+                        _ => self.subst.fresh(),
+                    };
+                    self.bind_pattern_vars(item, &elem_ty);
                 }
             }
             _ => {}
