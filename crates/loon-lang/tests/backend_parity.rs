@@ -610,10 +610,7 @@ fn silent_unit_traps_error_loudly() {
             "[fn main [] [println [reduce f 0 #[1 2 3]]]]",
             "unbound symbol 'f'",
         ),
-        (
-            "[fn main [] [println [sqrt 4]]]",
-            "unbound symbol 'sqrt'", // interp has sqrt; EIR names the gap
-        ),
+        // (sqrt is now implemented on both backends — see the ok_cases below.)
         ("[fn main [] [println [min 1 2]]]", "min requires a vector"),
         ("[fn main [] [println [max 5 3]]]", "max requires a vector"),
         ("[fn main [] [println [min #[]]]]", "min: empty vector"),
@@ -640,10 +637,9 @@ fn silent_unit_traps_error_loudly() {
             msg.contains(want),
             "EIR error for {src:?} was {msg:?}, expected to contain {want:?}"
         );
-        // The interp errors on all of these too — except sqrt, which it
-        // implements (the EIR error names the unported builtin instead),
-        // and string min, which its generic value_cmp orders.
-        if !src.contains("sqrt") && !src.contains(r#"#["b" "a"]"#) {
+        // The interp errors on all of these too — except string min, which
+        // its generic value_cmp orders instead of rejecting.
+        if !src.contains(r#"#["b" "a"]"#) {
             assert!(interp_output(src).is_err(), "interp must also error: {src}");
         }
     }
@@ -652,6 +648,8 @@ fn silent_unit_traps_error_loudly() {
     let ok_cases: &[(&str, &str)] = &[
         ("[fn main [] [println [min #[3 1 2]]]]", "1"),
         ("[fn main [] [println [max #[3 1 2]]]]", "3"),
+        // sqrt is now implemented on both backends (was an EIR gap).
+        ("[fn main [] [println [sqrt 4]]]", "2"),
         (
             r#"[fn main [] [println [get [assoc {:a 1} :b 2] :b]]]"#,
             "2",

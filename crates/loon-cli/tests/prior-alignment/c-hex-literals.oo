@@ -1,0 +1,14 @@
+; prior: C/Rust/Python/JS — `0xFF`, `0o17`, `0b1010` radix literals are
+; universal; agents write them for masks and flags without thinking.
+; expectation: hex/octal/binary integer literals parse (with `_`
+; separators), including negative forms.
+; principle: numeric literal syntax matches mainstream priors.
+; expect-stdout: 255
+; expect-stdout: 15
+; expect-stdout: 10
+; expect-stdout: -16
+[fn main []
+  [println 0xFF]
+  [println 0o17]
+  [println 0b1010]
+  [println -0x10]]

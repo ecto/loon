@@ -667,6 +667,12 @@ impl<'a> Lower<'a> {
             self.emit(Op::Close(r, func_id, Vec::new(), span));
             return r;
         }
+        // Registry constants (pi, e) lower to float literals when not shadowed
+        if let Some(val) = builtin_const(name) {
+            let r = self.reg();
+            self.emit(Op::Lit(r, Lit::Float(val), span));
+            return r;
+        }
         // Check if it's a builtin — wrap as a closure for first-class use
         if let Some(built) = self.resolve_builtin(name) {
             // Create a wrapper function: [fn [x] [builtin x]]
@@ -2287,6 +2293,24 @@ impl<'a> Lower<'a> {
 
 impl Lower<'_> {
     fn resolve_builtin(&self, name: &str) -> Option<Built> {
+        resolve_builtin_name(name)
+    }
+}
+
+/// Registry constants lowered to literals (`pi`, `e`). Public so the
+/// registry conformance test can assert VM coverage.
+pub fn builtin_const(name: &str) -> Option<f64> {
+    match name {
+        "pi" => Some(std::f64::consts::PI),
+        "e" => Some(std::f64::consts::E),
+        _ => None,
+    }
+}
+
+/// Map a builtin name to its EIR intrinsic tag. Public so the registry
+/// conformance test can assert VM coverage of every registry entry.
+pub fn resolve_builtin_name(name: &str) -> Option<Built> {
+    {
         match name {
             "println" => Some(Built::Println),
             "print" => Some(Built::Print),
@@ -2300,11 +2324,13 @@ impl Lower<'_> {
             "range" => Some(Built::Range),
             "map" => Some(Built::Map),
             "filter" => Some(Built::Filter),
-            "reduce" => Some(Built::Reduce),
+            // reduce is an alias of fold (same init+fn+coll semantics)
+            "reduce" => Some(Built::Fold),
             "each" => Some(Built::Each),
             "flat-map" => Some(Built::FlatMap),
             "keys" => Some(Built::Keys),
             "vals" => Some(Built::Vals),
+            "values" => Some(Built::Vals),
             "nth" => Some(Built::Nth),
             "take" => Some(Built::Take),
             "drop" => Some(Built::Drop),
@@ -2356,6 +2382,32 @@ impl Lower<'_> {
             "some?" => Some(Built::SomeP),
             "none?" => Some(Built::NoneP),
             "nil?" => Some(Built::NoneP),
+            "map?" => Some(Built::MapP),
+            "vec?" => Some(Built::VecP),
+            "name" => Some(Built::Name),
+            "type-of" => Some(Built::TypeOf),
+            "remove" => Some(Built::Remove),
+            "sqrt" => Some(Built::Sqrt),
+            "pow" => Some(Built::Pow),
+            "floor" => Some(Built::Floor),
+            "ceil" => Some(Built::Ceil),
+            "round" => Some(Built::Round),
+            "sin" => Some(Built::Sin),
+            "cos" => Some(Built::Cos),
+            "tan" => Some(Built::Tan),
+            "asin" => Some(Built::Asin),
+            "acos" => Some(Built::Acos),
+            "atan" => Some(Built::Atan),
+            "atan2" => Some(Built::Atan2),
+            "log" => Some(Built::Log),
+            "log10" => Some(Built::Log10),
+            "exp" => Some(Built::Exp),
+            "parse-int" => Some(Built::ParseInt),
+            "parse-float" => Some(Built::ParseFloat),
+            "capitalize" => Some(Built::Capitalize),
+            "pad-left" => Some(Built::PadLeft),
+            "pad-right" => Some(Built::PadRight),
+            "repeat" => Some(Built::Repeat),
             _ => None,
         }
     }

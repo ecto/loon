@@ -1001,7 +1001,14 @@ fn check_file(path: &PathBuf, json: bool) {
 fn print_card(json: bool) {
     const CARD: &str = include_str!("card.md");
     let version = env!("GIT_VERSION");
-    let card = CARD.replace("{{VERSION}}", version);
+    let mut card = CARD.replace("{{VERSION}}", version);
+
+    // Builtins section is generated from the shared registry so the card
+    // can never drift from what the checker/interp/VM actually implement.
+    card.push_str("\n## Builtins\n\n");
+    for b in loon_lang::builtins::BUILTINS {
+        card.push_str(&format!("`{}` : {} — {}\n", b.name, b.sig, b.doc));
+    }
     if json {
         // Split on `## ` headings into structured sections.
         let mut sections = Vec::new();

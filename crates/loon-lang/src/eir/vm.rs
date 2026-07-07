@@ -62,6 +62,16 @@ impl OrdMap {
             .iter()
             .map(move |k| (k, self.map.get(k).unwrap()))
     }
+    /// Remove a key (and its slot in the insertion order), if present.
+    fn remove(&mut self, k: &Val) -> Option<Val> {
+        let prev = self.map.remove(k);
+        if prev.is_some() {
+            if let Some(pos) = self.order.iter().position(|x| x == k) {
+                self.order.remove(pos);
+            }
+        }
+        prev
+    }
     /// Left-biased union (values already in `self` win), preserving `self`'s
     /// order and appending `other`'s new keys in their order.
     fn union(&self, other: Self) -> Self {
@@ -261,6 +271,9 @@ pub struct Vm {
     /// keys, `[keyword s]`) that are not in the module's compile-time string
     /// table. A runtime symbol's id is `module.strings.len() + index`.
     runtime_syms: Vec<String>,
+    /// SplitMix64 state for the `Rand` builtin effect; seeded lazily from
+    /// the clock, or explicitly via `Rand.seed`.
+    rand_state: Option<u64>,
     /// The ADT tag of the `None` constructor (latest definition wins, same
     /// rule as `ctor_tag`). Nullary ADTs with this tag are normalized to the
     /// immediate singleton `Val::NONE` at every construction site, so `None`
@@ -319,6 +332,7 @@ impl Vm {
             recorder: None,
             replay: None,
             runtime_syms: Vec::new(),
+            rand_state: None,
             none_tag,
         }
     }
@@ -1533,7 +1547,7 @@ impl Vm {
                     Ok(self.alloc(Obj::Vec(ImVec::new())))
                 }
             }
-            Built::Map | Built::Filter | Built::Each | Built::Reduce => {
+            Built::Map | Built::Filter | Built::Each => {
                 // Higher-order builtins: call the function for each element.
                 // Detect collection vs function by TYPE, not position, so both
                 // the direct form `[map coll fn]` and the pipe/thread-last form
@@ -1825,6 +1839,240 @@ impl Vm {
                 // unit (same set as the interpreter's nil?).
                 let v = args.first().copied().unwrap_or(Val::UNIT);
                 Ok(Val::bool(v.is_none() || v.is_unit()))
+            }
+            Built::MapP => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                Ok(Val::bool(matches!(self.get_obj(v), Some(Obj::Map(_)))))
+            }
+            Built::VecP => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                Ok(Val::bool(matches!(self.get_obj(v), Some(Obj::Vec(_)))))
+            }
+            Built::Name => {
+                // [name :kw] → "kw"; strings pass through (mirrors interp).
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                if v.is_sym() {
+                    match self.sym_name(v.as_sym() as usize).map(|s| s.to_string()) {
+                        Some(s) => Ok(self.alloc_str(s)),
+                        None => Ok(Val::UNIT),
+                    }
+                } else if matches!(self.get_obj(v), Some(Obj::Str(_))) {
+                    Ok(v)
+                } else {
+                    Ok(Val::UNIT)
+                }
+            }
+            Built::TypeOf => {
+                // Runtime type name; matches the interpreter's type-of.
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                let t: String = if v.is_int() {
+                    "Int".to_string()
+                } else if v.is_float() {
+                    "Float".to_string()
+                } else if v.is_bool() {
+                    "Bool".to_string()
+                } else if v.is_sym() {
+                    "Keyword".to_string()
+                } else if v.is_none() {
+                    "None".to_string()
+                } else if v.is_unit() {
+                    "Unit".to_string()
+                } else {
+                    match self.get_obj(v) {
+                        Some(Obj::Str(_)) => "String".to_string(),
+                        Some(Obj::Vec(_)) => "Vec".to_string(),
+                        Some(Obj::Set(_)) => "Set".to_string(),
+                        Some(Obj::Map(_)) => "Map".to_string(),
+                        Some(Obj::Tuple(_)) => "Tuple".to_string(),
+                        Some(Obj::Closure(_, _)) | Some(Obj::Continuation { .. }) => {
+                            "Fn".to_string()
+                        }
+                        Some(Obj::Adt(tag, _)) => {
+                            let tag = *tag;
+                            self.module
+                                .ctors
+                                .iter()
+                                .rev()
+                                .find(|c| c.tag == tag)
+                                .map(|c| c.name.clone())
+                                .unwrap_or_else(|| "Adt".to_string())
+                        }
+                        _ => "Unknown".to_string(),
+                    }
+                };
+                Ok(self.alloc_str(t))
+            }
+            Built::Remove => {
+                // [remove map key] / [remove set elem]
+                let coll = args.first().copied().unwrap_or(Val::UNIT);
+                let key = args.get(1).copied().unwrap_or(Val::UNIT);
+                match self.get_obj(coll).cloned() {
+                    Some(Obj::Map(map)) => {
+                        let mut map = map;
+                        map.remove(&key);
+                        Ok(self.alloc(Obj::Map(map)))
+                    }
+                    Some(Obj::Set(set)) => {
+                        let mut set = set;
+                        set.remove(&key);
+                        Ok(self.alloc(Obj::Set(set)))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            // ── Math (issue #19) ───────────────────────────────────
+            Built::Sqrt
+            | Built::Sin
+            | Built::Cos
+            | Built::Tan
+            | Built::Asin
+            | Built::Acos
+            | Built::Atan
+            | Built::Log
+            | Built::Log10
+            | Built::Exp => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                let x = if v.is_int() {
+                    v.as_int() as f64
+                } else if v.is_float() {
+                    v.as_float()
+                } else {
+                    return Ok(Val::UNIT);
+                };
+                let y = match built {
+                    Built::Sqrt => x.sqrt(),
+                    Built::Sin => x.sin(),
+                    Built::Cos => x.cos(),
+                    Built::Tan => x.tan(),
+                    Built::Asin => x.asin(),
+                    Built::Acos => x.acos(),
+                    Built::Atan => x.atan(),
+                    Built::Log => x.ln(),
+                    Built::Log10 => x.log10(),
+                    Built::Exp => x.exp(),
+                    _ => unreachable!(),
+                };
+                Ok(Val::float(y))
+            }
+            Built::Floor | Built::Ceil | Built::Round => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                if v.is_int() {
+                    return Ok(v);
+                }
+                if !v.is_float() {
+                    return Ok(Val::UNIT);
+                }
+                let x = v.as_float();
+                let y = match built {
+                    Built::Floor => x.floor(),
+                    Built::Ceil => x.ceil(),
+                    Built::Round => x.round(),
+                    _ => unreachable!(),
+                };
+                Ok(self.safe_int(y as i64))
+            }
+            Built::Pow => {
+                let num = |v: Val| -> Option<f64> {
+                    if v.is_int() {
+                        Some(v.as_int() as f64)
+                    } else if v.is_float() {
+                        Some(v.as_float())
+                    } else {
+                        None
+                    }
+                };
+                let base = args.first().copied().and_then(num);
+                let exp = args.get(1).copied().and_then(num);
+                match (base, exp) {
+                    (Some(b), Some(e)) => Ok(Val::float(b.powf(e))),
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::Atan2 => {
+                let num = |v: Val| -> Option<f64> {
+                    if v.is_int() {
+                        Some(v.as_int() as f64)
+                    } else if v.is_float() {
+                        Some(v.as_float())
+                    } else {
+                        None
+                    }
+                };
+                let y = args.first().copied().and_then(num);
+                let x = args.get(1).copied().and_then(num);
+                match (y, x) {
+                    (Some(y), Some(x)) => Ok(Val::float(y.atan2(x))),
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            // ── String → number parsing (issue #18) ────────────────
+            Built::ParseInt | Built::ParseFloat => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                let parsed: Option<Val> = match self.get_str(v) {
+                    Some(s) => match built {
+                        Built::ParseInt => s.trim().parse::<i64>().ok().map(|n| self.safe_int(n)),
+                        _ => s.trim().parse::<f64>().ok().map(Val::float),
+                    },
+                    None => None,
+                };
+                match (parsed, self.ctor_tag("Some"), self.ctor_tag("None")) {
+                    (Some(val), Some(some_tag), _) => Ok(self.make_adt(some_tag, vec![val])),
+                    (None, _, Some(none_tag)) => Ok(self.make_adt(none_tag, Vec::new())),
+                    // Option ctors unavailable (shouldn't happen): raw/unit.
+                    (Some(val), None, _) => Ok(val),
+                    (None, _, None) => Ok(Val::UNIT),
+                }
+            }
+            // ── String helpers (issue #23) ─────────────────────────
+            Built::Capitalize => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_str(v) {
+                    Some(s) => {
+                        let mut chars = s.chars();
+                        let out = match chars.next() {
+                            Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                            None => String::new(),
+                        };
+                        Ok(self.alloc_str(out))
+                    }
+                    None => Ok(Val::UNIT),
+                }
+            }
+            Built::Repeat => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                let n = args.get(1).copied().unwrap_or(Val::int(0));
+                match self.get_str(v) {
+                    Some(s) if n.is_int() => {
+                        let out = s.repeat(n.as_int().max(0) as usize);
+                        Ok(self.alloc_str(out))
+                    }
+                    _ => Ok(Val::UNIT),
+                }
+            }
+            Built::PadLeft | Built::PadRight => {
+                let s = args.first().copied().unwrap_or(Val::UNIT);
+                let w = args.get(1).copied().unwrap_or(Val::int(0));
+                let p = args.get(2).copied().unwrap_or(Val::UNIT);
+                let (s, pad) = match (
+                    self.get_str(s).map(|x| x.to_string()),
+                    self.get_str(p).map(|x| x.to_string()),
+                ) {
+                    (Some(s), Some(p)) if w.is_int() => (s, p),
+                    _ => return Ok(Val::UNIT),
+                };
+                let len = s.chars().count();
+                let want = w.as_int().max(0) as usize;
+                let out = if len >= want || pad.is_empty() {
+                    s
+                } else {
+                    let fill: String = pad.chars().cycle().take(want - len).collect();
+                    if built == Built::PadLeft {
+                        fill + &s
+                    } else {
+                        s + &fill
+                    }
+                };
+                Ok(self.alloc_str(out))
             }
             Built::MatchFail => {
                 let scrutinee = args.first().copied().unwrap_or(Val::UNIT);
@@ -2202,9 +2450,17 @@ impl Vm {
                 }
             }
             Built::IndexOf => {
-                // [index-of str substr] → first index or -1
+                // [index-of str substr] / [index-of vec elem] → first index or -1
                 let s = args.first().copied().unwrap_or(Val::UNIT);
                 let sub = args.get(1).copied().unwrap_or(Val::UNIT);
+                if let Some(Obj::Vec(items)) = self.get_obj(s) {
+                    let idx = items
+                        .iter()
+                        .position(|x| self.val_eq(*x, sub))
+                        .map(|i| i as i64)
+                        .unwrap_or(-1);
+                    return Ok(Val::int(idx));
+                }
                 match (
                     self.get_str(s).map(|s| s.to_string()),
                     self.get_str(sub).map(|s| s.to_string()),
@@ -2810,6 +3066,39 @@ impl Vm {
                 self.safe_int(ms)
             }
             ("IO", "uuid") => self.alloc_str(gen_uuid_v4()),
+            ("Rand", "seed") => {
+                let n = args.first().copied().unwrap_or(Val::int(0));
+                self.rand_state = Some(if n.is_int() {
+                    n.as_int() as u64
+                } else if n.is_float() {
+                    n.as_float().to_bits()
+                } else {
+                    0
+                });
+                Val::UNIT
+            }
+            ("Rand", "rand") => {
+                let mut state = self.rand_state.unwrap_or_else(crate::effects::entropy_seed);
+                let x = crate::effects::splitmix_f64(&mut state);
+                self.rand_state = Some(state);
+                Val::float(x)
+            }
+            ("Rand", "rand-int") => {
+                let lo = args
+                    .first()
+                    .copied()
+                    .filter(|v| v.is_int())
+                    .map(Val::as_int);
+                let hi = args.get(1).copied().filter(|v| v.is_int()).map(Val::as_int);
+                let (lo, hi) = match (lo, hi) {
+                    (Some(lo), Some(hi)) => (lo, hi),
+                    _ => return Ok(Val::UNIT),
+                };
+                let mut state = self.rand_state.unwrap_or_else(crate::effects::entropy_seed);
+                let n = crate::effects::splitmix_range(&mut state, lo, hi);
+                self.rand_state = Some(state);
+                self.safe_int(n)
+            }
             ("IO", "parse-json") => {
                 let text = args
                     .first()

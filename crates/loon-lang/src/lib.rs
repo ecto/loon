@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod builtins;
 pub mod check;
 pub mod codegen;
 pub mod effects;

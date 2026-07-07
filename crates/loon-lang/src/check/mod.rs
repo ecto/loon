@@ -162,6 +162,7 @@ impl Checker {
         checker.register_dom_builtins();
         checker.register_prelude();
         checker.register_physics_builtins();
+        checker.register_registry_builtins();
         checker.effect_polymorphize_builtins();
         // The top-level "ambient" effect row: open so any effect can be
         // performed (and absorbed) at the top level of a program.
@@ -719,26 +720,27 @@ impl Checker {
             } else {
                 unreachable!()
             };
-            self.env.set_global(
-                "fold".to_string(),
-                Scheme {
-                    bounds: vec![],
-                    vars: vec![tva, tvb],
-                    ty: Type::Fn(
-                        vec![
-                            Type::Var(tvb),
-                            Type::Fn(
-                                vec![Type::Var(tvb), Type::Var(tva)],
-                                Box::new(Type::Var(tvb)),
-                                EffectRow::pure(),
-                            ),
-                            Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
-                        ],
-                        Box::new(Type::Var(tvb)),
-                        EffectRow::pure(),
-                    ),
-                },
-            );
+            let fold_scheme = Scheme {
+                bounds: vec![],
+                vars: vec![tva, tvb],
+                ty: Type::Fn(
+                    vec![
+                        Type::Var(tvb),
+                        Type::Fn(
+                            vec![Type::Var(tvb), Type::Var(tva)],
+                            Box::new(Type::Var(tvb)),
+                            EffectRow::pure(),
+                        ),
+                        Type::Con("Vec".to_string(), vec![Type::Var(tva)]),
+                    ],
+                    Box::new(Type::Var(tvb)),
+                    EffectRow::pure(),
+                ),
+            };
+            // reduce is an alias of fold (Clojure/Python priors)
+            for name in ["fold", "reduce"] {
+                self.env.set_global(name.to_string(), fold_scheme.clone());
+            }
         }
 
         // each: ∀a. (a → ()) → Vec a → ()
@@ -1288,21 +1290,22 @@ impl Checker {
             } else {
                 unreachable!()
             };
-            self.env.set_global(
-                "values".to_string(),
-                Scheme {
-                    bounds: vec![],
-                    vars: vec![tvk, tvv],
-                    ty: Type::Fn(
-                        vec![Type::Con(
-                            "Map".to_string(),
-                            vec![Type::Var(tvk), Type::Var(tvv)],
-                        )],
-                        Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvv)])),
-                        EffectRow::pure(),
-                    ),
-                },
-            );
+            let values_scheme = Scheme {
+                bounds: vec![],
+                vars: vec![tvk, tvv],
+                ty: Type::Fn(
+                    vec![Type::Con(
+                        "Map".to_string(),
+                        vec![Type::Var(tvk), Type::Var(tvv)],
+                    )],
+                    Box::new(Type::Con("Vec".to_string(), vec![Type::Var(tvv)])),
+                    EffectRow::pure(),
+                ),
+            };
+            // vals is the EIR-native name; values kept as the legacy alias
+            for name in ["values", "vals"] {
+                self.env.set_global(name.to_string(), values_scheme.clone());
+            }
         }
 
         // merge: ∀v. Map Keyword v → Map Keyword v → Map Keyword v
@@ -1861,35 +1864,84 @@ impl Checker {
             );
         }
 
-        // sqrt: Float → Float
-        self.env.set_global(
-            "sqrt".to_string(),
-            Scheme::mono(Type::Fn(
-                vec![Type::Float],
-                Box::new(Type::Float),
-                EffectRow::pure(),
-            )),
-        );
+        // sqrt/pow: registered from the builtin registry (Num-bounded).
 
-        // pow: Float → Float → Float
-        self.env.set_global(
-            "pow".to_string(),
-            Scheme::mono(Type::Fn(
-                vec![Type::Float, Type::Float],
-                Box::new(Type::Float),
-                EffectRow::pure(),
-            )),
-        );
+        // abs: ∀a. Num a => a → a
+        {
+            let a = self.subst.fresh();
+            let tv = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
+            self.subst.add_constraint(
+                tv,
+                TraitBound {
+                    trait_name: "Num".to_string(),
+                },
+            );
+            self.env.set_global(
+                "abs".to_string(),
+                Scheme {
+                    bounds: vec![(
+                        tv,
+                        vec![TraitBound {
+                            trait_name: "Num".to_string(),
+                        }],
+                    )],
+                    vars: vec![tv],
+                    ty: Type::Fn(
+                        vec![Type::Var(tv)],
+                        Box::new(Type::Var(tv)),
+                        EffectRow::pure(),
+                    ),
+                },
+            );
+        }
 
-        // abs: Float → Float
-        self.env.set_global(
-            "abs".to_string(),
-            Scheme::mono(Type::Fn(
-                vec![Type::Float],
-                Box::new(Type::Float),
-                EffectRow::pure(),
-            )),
-        );
+        // slice: ∀a. a → Int → Int → a  (Vec or Str; approximate)
+        {
+            let a = self.subst.fresh();
+            let tv = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
+            self.env.set_global(
+                "slice".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tv],
+                    ty: Type::Fn(
+                        vec![Type::Var(tv), Type::Int, Type::Int],
+                        Box::new(Type::Var(tv)),
+                        EffectRow::pure(),
+                    ),
+                },
+            );
+        }
+
+        // concat: ∀a. a → a → a  (Vec or Str; approximate)
+        {
+            let a = self.subst.fresh();
+            let tv = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
+            self.env.set_global(
+                "concat".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tv],
+                    ty: Type::Fn(
+                        vec![Type::Var(tv), Type::Var(tv)],
+                        Box::new(Type::Var(tv)),
+                        EffectRow::pure(),
+                    ),
+                },
+            );
+        }
 
         // first: ∀a. Vec a → a
         {
@@ -2274,6 +2326,69 @@ impl Checker {
         }
     }
 
+    /// Register builtins whose signatures are derived from the shared
+    /// builtin registry (`crate::builtins::BUILTINS`). `Typing::Special`
+    /// entries keep bespoke polymorphic schemes in `register_builtins`;
+    /// the conformance test asserts those names are present too.
+    fn register_registry_builtins(&mut self) {
+        use crate::builtins::{Ty as RTy, Typing, BUILTINS};
+
+        fn conv(
+            checker: &mut Checker,
+            t: RTy,
+            bounds: &mut Vec<(TypeVar, Vec<TraitBound>)>,
+        ) -> Type {
+            match t {
+                RTy::Int => Type::Int,
+                RTy::Float => Type::Float,
+                RTy::Bool => Type::Bool,
+                RTy::Str => Type::Str,
+                RTy::OptionInt => Type::Con("Option".to_string(), vec![Type::Int]),
+                RTy::OptionFloat => Type::Con("Option".to_string(), vec![Type::Float]),
+                RTy::Num => {
+                    let v = checker.subst.fresh();
+                    let tv = if let Type::Var(v) = v {
+                        v
+                    } else {
+                        unreachable!()
+                    };
+                    let bound = TraitBound {
+                        trait_name: "Num".to_string(),
+                    };
+                    checker.subst.add_constraint(tv, bound.clone());
+                    bounds.push((tv, vec![bound]));
+                    Type::Var(tv)
+                }
+            }
+        }
+
+        for spec in BUILTINS {
+            match spec.typing {
+                Typing::Special => {}
+                Typing::Const(ty) => {
+                    let mut bounds = Vec::new();
+                    let t = conv(self, ty, &mut bounds);
+                    self.env.set_global(spec.name.to_string(), Scheme::mono(t));
+                }
+                Typing::Mono(params, ret) => {
+                    let mut bounds = Vec::new();
+                    let param_tys: Vec<Type> =
+                        params.iter().map(|t| conv(self, *t, &mut bounds)).collect();
+                    let ret_ty = conv(self, ret, &mut bounds);
+                    let vars = bounds.iter().map(|(v, _)| *v).collect();
+                    self.env.set_global(
+                        spec.name.to_string(),
+                        Scheme {
+                            bounds,
+                            vars,
+                            ty: Type::Fn(param_tys, Box::new(ret_ty), EffectRow::pure()),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
     fn register_prelude(&mut self) {
         // Parse and check the prelude to register Option/Result types
         if let Ok(exprs) = crate::parser::parse(crate::prelude::PRELUDE) {
@@ -2341,6 +2456,15 @@ impl Checker {
             },
         );
 
+        self.traits.insert(
+            "Num".to_string(),
+            TraitDecl {
+                name: "Num".to_string(),
+                type_params: vec![],
+                methods: vec![],
+            },
+        );
+
         // Register primitive trait impls
         let empty = std::collections::HashMap::new();
         for ty in ["Int", "Float"] {
@@ -2348,6 +2472,8 @@ impl Checker {
                 .insert(("Add".to_string(), ty.to_string()), empty.clone());
             self.trait_impls
                 .insert(("Ord".to_string(), ty.to_string()), empty.clone());
+            self.trait_impls
+                .insert(("Num".to_string(), ty.to_string()), empty.clone());
         }
         // Containers compare structurally at runtime (Value's PartialEq),
         // so they satisfy Eq too.

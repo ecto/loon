@@ -1,0 +1,10 @@
+; prior: JS `[10,20,30].indexOf(20)` / Python `list.index` — finding an
+; element's position in a list is assumed everywhere.
+; expectation: index-of works on vectors (first equal element, -1 when
+; absent), not just strings.
+; principle: one lookup builtin across strings and vectors.
+; expect-stdout: 1
+; expect-stdout: -1
+[fn main []
+  [println [index-of #[10 20 30] 20]]
+  [println [index-of #[1 2] 9]]]

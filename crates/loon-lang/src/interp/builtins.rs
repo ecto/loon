@@ -1186,7 +1186,14 @@ pub fn register_builtins(env: &mut Env) {
                 Some(pos) => Ok(Value::Int(pos as i64)),
                 None => Ok(Value::Int(-1)),
             },
-            _ => Err(err("index-of requires two strings")),
+            // Vectors: index of the first equal element, -1 if absent (#25)
+            (Value::Vec(v), needle) => Ok(Value::Int(
+                v.iter()
+                    .position(|x| x == needle)
+                    .map(|p| p as i64)
+                    .unwrap_or(-1),
+            )),
+            _ => Err(err("index-of requires a string or vector haystack")),
         }
     });
 
@@ -1348,6 +1355,167 @@ pub fn register_builtins(env: &mut Env) {
             _ => return Err(err("pow requires numeric exponent")),
         };
         Ok(Value::Float(base.powf(exp)))
+    });
+
+    // Core math (issue #19).
+    macro_rules! math_to_float {
+        ($name:expr, $f:expr) => {
+            builtin!(env, $name, |_, args: &[Value]| {
+                let x = match &args[0] {
+                    Value::Float(f) => *f,
+                    Value::Int(n) => *n as f64,
+                    _ => return Err(err(concat!($name, " requires a number"))),
+                };
+                let g: fn(f64) -> f64 = $f;
+                Ok(Value::Float(g(x)))
+            });
+        };
+    }
+    math_to_float!("sin", f64::sin);
+    math_to_float!("cos", f64::cos);
+    math_to_float!("tan", f64::tan);
+    math_to_float!("asin", f64::asin);
+    math_to_float!("acos", f64::acos);
+    math_to_float!("atan", f64::atan);
+    math_to_float!("log", f64::ln);
+    math_to_float!("log10", f64::log10);
+    math_to_float!("exp", f64::exp);
+
+    macro_rules! math_to_int {
+        ($name:expr, $f:expr) => {
+            builtin!(env, $name, |_, args: &[Value]| {
+                match &args[0] {
+                    Value::Int(n) => Ok(Value::Int(*n)),
+                    Value::Float(x) => {
+                        let g: fn(f64) -> f64 = $f;
+                        Ok(Value::Int(g(*x) as i64))
+                    }
+                    _ => Err(err(concat!($name, " requires a number"))),
+                }
+            });
+        };
+    }
+    math_to_int!("floor", f64::floor);
+    math_to_int!("ceil", f64::ceil);
+    math_to_int!("round", f64::round);
+
+    builtin!(env, "atan2", |_, args: &[Value]| {
+        let num = |v: &Value| match v {
+            Value::Float(f) => Ok(*f),
+            Value::Int(n) => Ok(*n as f64),
+            _ => Err(err("atan2 requires numbers")),
+        };
+        Ok(Value::Float(num(&args[0])?.atan2(num(&args[1])?)))
+    });
+
+    env.set("pi".to_string(), Value::Float(std::f64::consts::PI));
+    env.set("e".to_string(), Value::Float(std::f64::consts::E));
+
+    // String → number parsing (issue #18): Option-returning, unlike int/float.
+    builtin!(env, "parse-int", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Str(s) => Ok(match s.trim().parse::<i64>() {
+                Ok(n) => Value::Adt("Some".to_string(), vec![Value::Int(n)]),
+                Err(_) => Value::Adt("None".to_string(), vec![]),
+            }),
+            _ => Err(err("parse-int requires a string")),
+        }
+    });
+    builtin!(env, "parse-float", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Str(s) => Ok(match s.trim().parse::<f64>() {
+                Ok(n) => Value::Adt("Some".to_string(), vec![Value::Float(n)]),
+                Err(_) => Value::Adt("None".to_string(), vec![]),
+            }),
+            _ => Err(err("parse-float requires a string")),
+        }
+    });
+
+    // String helpers (issue #23).
+    builtin!(env, "capitalize", |_, args: &[Value]| {
+        match &args[0] {
+            Value::Str(s) => {
+                let mut chars = s.chars();
+                let out = match chars.next() {
+                    Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                };
+                Ok(Value::Str(out.into()))
+            }
+            _ => Err(err("capitalize requires a string")),
+        }
+    });
+    builtin!(env, "repeat", |_, args: &[Value]| {
+        match (&args[0], &args[1]) {
+            (Value::Str(s), Value::Int(n)) => Ok(Value::Str(s.repeat((*n).max(0) as usize).into())),
+            _ => Err(err("repeat requires a string and a count")),
+        }
+    });
+    fn pad(s: &str, width: i64, padding: &str, left: bool) -> String {
+        let len = s.chars().count();
+        let want = width.max(0) as usize;
+        if len >= want || padding.is_empty() {
+            return s.to_string();
+        }
+        let fill: String = padding.chars().cycle().take(want - len).collect();
+        if left {
+            fill + s
+        } else {
+            s.to_string() + &fill
+        }
+    }
+    builtin!(env, "pad-left", |_, args: &[Value]| {
+        match (&args[0], &args[1], &args[2]) {
+            (Value::Str(s), Value::Int(w), Value::Str(p)) => {
+                Ok(Value::Str(pad(s, *w, p, true).into()))
+            }
+            _ => Err(err("pad-left requires a string, width, and pad string")),
+        }
+    });
+    builtin!(env, "pad-right", |_, args: &[Value]| {
+        match (&args[0], &args[1], &args[2]) {
+            (Value::Str(s), Value::Int(w), Value::Str(p)) => {
+                Ok(Value::Str(pad(s, *w, p, false).into()))
+            }
+            _ => Err(err("pad-right requires a string, width, and pad string")),
+        }
+    });
+
+    // slice: [slice coll start end) on vectors and strings.
+    builtin!(env, "slice", |_, args: &[Value]| {
+        let (start, end) = match (&args[1], &args[2]) {
+            (Value::Int(s), Value::Int(e)) => (*s, *e),
+            _ => return Err(err("slice requires integer start and end")),
+        };
+        match &args[0] {
+            Value::Vec(v) => {
+                let len = v.len() as i64;
+                let s = start.clamp(0, len) as usize;
+                let e = end.clamp(start.clamp(0, len), len) as usize;
+                Ok(Value::Vec(v.clone().slice(s..e)))
+            }
+            Value::Str(st) => {
+                let chars: Vec<char> = st.chars().collect();
+                let len = chars.len() as i64;
+                let s = start.clamp(0, len) as usize;
+                let e = end.clamp(start.clamp(0, len), len) as usize;
+                Ok(Value::Str(chars[s..e].iter().collect::<String>().into()))
+            }
+            _ => Err(err("slice requires a vector or string")),
+        }
+    });
+
+    // concat: concatenate two vectors or strings.
+    builtin!(env, "concat", |_, args: &[Value]| {
+        match (&args[0], &args[1]) {
+            (Value::Vec(a), Value::Vec(b)) => {
+                let mut out = a.clone();
+                out.append(b.clone());
+                Ok(Value::Vec(out))
+            }
+            (Value::Str(a), Value::Str(b)) => Ok(Value::Str(format!("{a}{b}").into())),
+            _ => Err(err("concat requires two vectors or two strings")),
+        }
     });
 
     builtin!(env, "abs", |_, args: &[Value]| {
@@ -1602,6 +1770,13 @@ pub fn register_builtins(env: &mut Env) {
         "Const.e-charge".to_string(),
         Value::Float(1.602_176_634e-19),
     );
+
+    // Aliases (kept in lockstep with the builtin registry).
+    for (alias, canonical) in [("reduce", "fold"), ("vals", "values")] {
+        if let Some(v) = env.get(canonical) {
+            env.set(alias.to_string(), v);
+        }
+    }
 }
 
 pub fn apply_value(func: &Value, args: &[Value]) -> IResult {

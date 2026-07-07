@@ -130,6 +130,12 @@ pub enum Token {
     // Literals — higher priority than Symbol
     #[regex(r"-?[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?(f32|f64|[a-zA-Z]+)?", priority = 10, callback = |lex| lex.slice().to_string())]
     Float(String),
+    // Radix literals (issue #24): hex 0xFF, octal 0o17, binary 0b1010.
+    // Higher priority than the decimal rule, which would otherwise split
+    // e.g. "0b1010" into Int("0b") + Int("1010") via the unit-suffix group.
+    #[regex(r"-?0[xX][0-9a-fA-F_]+", priority = 12, callback = |lex| lex.slice().to_string())]
+    #[regex(r"-?0[oO][0-7_]+", priority = 12, callback = |lex| lex.slice().to_string())]
+    #[regex(r"-?0[bB][01_]+", priority = 12, callback = |lex| lex.slice().to_string())]
     #[regex(r"-?[0-9]+(i32|i64|u32|u64|[a-zA-Z]+)?", priority = 10, callback = |lex| lex.slice().to_string())]
     Int(String),
     #[token("true")]

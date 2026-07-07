@@ -1,0 +1,14 @@
+; prior: JS `"ab".repeat(3)`, `padStart`, Python `str.capitalize()` — string
+; utility helpers agents type without checking the docs.
+; expectation: capitalize / pad-left / pad-right / repeat exist and behave
+; like their JS/Python counterparts (pad takes an explicit pad string).
+; principle: meet string-helper priors from mainstream languages.
+; expect-stdout: Loon
+; expect-stdout: 005
+; expect-stdout: ab--
+; expect-stdout: ababab
+[fn main []
+  [println [capitalize "loon"]]
+  [println [pad-left "5" 3 "0"]]
+  [println [pad-right "ab" 4 "-"]]
+  [println [repeat "ab" 3]]]

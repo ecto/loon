@@ -113,6 +113,17 @@ impl EffectRegistry {
                 op("sse-broadcast", &["event", "data"]),
             ],
         });
+        // Rand effect — all randomness flows through an effect (never a pure
+        // builtin) so record/replay stays deterministic and tests can handle
+        // it with canned values.
+        reg.register(EffectDecl {
+            name: "Rand".to_string(),
+            operations: vec![
+                typed_op("rand", &[], "Float"),
+                typed_op("rand-int", &["lo", "hi"], "Int"),
+                op("seed", &["n"]),
+            ],
+        });
         reg.register(EffectDecl {
             name: "Embed".to_string(),
             operations: vec![op("encode", &["text"])],
@@ -176,6 +187,42 @@ impl EffectRegistry {
     pub fn has_effect(&self, name: &str) -> bool {
         self.effects.contains_key(name)
     }
+}
+
+/// SplitMix64 step — the shared PRNG behind the `Rand` builtin effect.
+/// Both backends use this exact generator so a seeded program produces
+/// identical values under the interpreter and the EIR VM.
+pub fn splitmix_next(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Uniform f64 in [0, 1) from a SplitMix64 state.
+pub fn splitmix_f64(state: &mut u64) -> f64 {
+    (splitmix_next(state) >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// Uniform i64 in [lo, hi) from a SplitMix64 state (lo when the range is
+/// empty, matching a "no throw" builtin-effect contract).
+pub fn splitmix_range(state: &mut u64, lo: i64, hi: i64) -> i64 {
+    if hi <= lo {
+        return lo;
+    }
+    let span = (hi - lo) as u64;
+    lo + (splitmix_next(state) % span) as i64
+}
+
+/// A time-derived seed for unseeded `Rand` use.
+pub fn entropy_seed() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x5EED)
+        | 1
 }
 
 /// Represents a performed effect that needs handling

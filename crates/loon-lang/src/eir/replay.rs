@@ -181,7 +181,7 @@ impl TraceEntry {
 /// handled by an in-language `handle` never reach this path at all.
 pub fn is_recorded_op(effect: &str, op: &str) -> bool {
     match effect {
-        "Net" | "Env" | "Process" => true,
+        "Net" | "Env" | "Process" | "Rand" => true,
         "IO" => !matches!(op, "parse-json" | "to-json" | "blake3"),
         _ => false,
     }
