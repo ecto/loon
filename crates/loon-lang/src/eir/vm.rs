@@ -3073,6 +3073,9 @@ pub enum VmErrorKind {
     StackOverflow,
     /// `assert-eq` failed with mismatched values.
     AssertFailed(String, String),
+    /// A `[use ...]` failed at compile time: unresolved module, private
+    /// symbol, or circular dependency (checker E05xx diagnostics).
+    ModuleError(String),
     /// A replayed program requested a different effect op than the trace
     /// recorded (or ran past the end of the trace).
     ReplayDivergence(ReplayDivergence),
@@ -3117,6 +3120,7 @@ impl VmErrorKind {
             VmErrorKind::Trap => "trap",
             VmErrorKind::StackOverflow => "stack-overflow",
             VmErrorKind::AssertFailed(..) => "assert-failed",
+            VmErrorKind::ModuleError(_) => "module-error",
             VmErrorKind::ReplayDivergence(_) => "replay-divergence",
             VmErrorKind::UnhandledEffect(_) => "unhandled-effect",
             VmErrorKind::DivideByZero(_) => "divide-by-zero",
@@ -3151,6 +3155,7 @@ impl std::fmt::Display for VmError {
             VmErrorKind::AssertFailed(actual, expected) => {
                 write!(f, "assertion failed: {actual} != {expected}")
             }
+            VmErrorKind::ModuleError(msg) => write!(f, "{msg}"),
             VmErrorKind::ReplayDivergence(d) => {
                 write!(f, "replay diverged {}", d.message)
             }
@@ -3176,6 +3181,22 @@ impl std::fmt::Display for VmError {
     }
 }
 
+/// Surface the first module diagnostic (E05xx: unresolved module, private
+/// symbol, circular dependency) from a check pass as a `VmError`. Other
+/// checker diagnostics stay non-fatal on the EIR path for now, but a broken
+/// `[use ...]` must not fall through to a confusing "value is not callable"
+/// at the first qualified call site.
+fn module_error(errors: &[crate::errors::LoonDiagnostic]) -> Option<VmError> {
+    errors
+        .iter()
+        .find(|d| d.code.category() == "module")
+        .map(|d| VmError {
+            kind: VmErrorKind::ModuleError(d.what.clone()),
+            span: d.labels.first().map(|l| l.span),
+            context: None,
+        })
+}
+
 // ─── Public API ────────────────────────────────────────────────────────────
 
 /// Run a Loon program through the EIR pipeline: parse → check → lower → VM.
@@ -3194,7 +3215,10 @@ fn eval_eir_impl(src: &str, mut checker: crate::check::Checker) -> Result<VmResu
         span: Some(e.span),
         context: Some(format!("parse error: {}", e.message)),
     })?;
-    let _errors = checker.check_program(&exprs);
+    let errors = checker.check_program(&exprs);
+    if let Some(e) = module_error(&errors) {
+        return Err(e);
+    }
     let module = crate::eir::lower::lower(&checker);
     let mut vm = Vm::new(module);
     vm.run()
@@ -3213,7 +3237,10 @@ pub fn eval_eir_recorded(
         span: Some(e.span),
         context: Some(format!("parse error: {}", e.message)),
     })?;
-    let _errors = checker.check_program(&exprs);
+    let errors = checker.check_program(&exprs);
+    if let Some(e) = module_error(&errors) {
+        return Err(e);
+    }
     let module = crate::eir::lower::lower(&checker);
     let mut vm = Vm::new(module);
     vm.set_recorder(recorder);
@@ -3235,7 +3262,10 @@ pub fn eval_eir_replayed(
         span: Some(e.span),
         context: Some(format!("parse error: {}", e.message)),
     })?;
-    let _errors = checker.check_program(&exprs);
+    let errors = checker.check_program(&exprs);
+    if let Some(e) = module_error(&errors) {
+        return Err(e);
+    }
     let module = crate::eir::lower::lower(&checker);
     let mut vm = Vm::new(module);
     vm.set_replay(entries);
@@ -3266,7 +3296,10 @@ pub fn eval_eir_verified(
             )
         }
     };
-    let _errors = checker.check_program(&exprs);
+    let errors = checker.check_program(&exprs);
+    if let Some(e) = module_error(&errors) {
+        return (Err(e), 0);
+    }
     let module = crate::eir::lower::lower(&checker);
     let mut vm = Vm::new(module);
     vm.set_replay(entries);
@@ -3535,6 +3568,81 @@ mod tests {
             eval_eir_with_base_dir("[use mymath [add]] [fn main [] [println [add 1 2]]]", &dir)
                 .expect("vm error");
         assert_eq!(r2.output, vec!["3".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vm_use_non_pub_exports_all() {
+        // A module with no `pub` declarations exports every top-level fn,
+        // matching the interpreter's export rule (module.rs).
+        let dir = std::env::temp_dir().join(format!("loon_use_nopub_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("lib.oo"), "[fn triple [x] [* x 3]]\n").unwrap();
+        let r =
+            eval_eir_with_base_dir("[use lib] [println [lib.triple 5]]", &dir).expect("vm error");
+        assert_eq!(r.output, vec!["15".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vm_use_alias() {
+        // `[use mod :as m]` binds exports under the alias, like the interpreter.
+        let dir = std::env::temp_dir().join(format!("loon_use_alias_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("mymath.oo"), "[pub fn add [a b] [+ a b]]\n").unwrap();
+        let r = eval_eir_with_base_dir("[use mymath :as m] [println [m.add 40 2]]", &dir)
+            .expect("vm error");
+        assert_eq!(r.output, vec!["42".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vm_use_nested_modules() {
+        // A module that itself uses another module: transitive imports are
+        // inlined first, so both bare and qualified references resolve.
+        let dir = std::env::temp_dir().join(format!("loon_use_nested_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("inner.oo"), "[pub fn double [x] [* x 2]]\n").unwrap();
+        std::fs::write(
+            dir.join("outer.oo"),
+            "[use inner]\n[pub fn quad [x] [inner.double [inner.double x]]]\n",
+        )
+        .unwrap();
+        let r =
+            eval_eir_with_base_dir("[use outer] [println [outer.quad 3]]", &dir).expect("vm error");
+        assert_eq!(r.output, vec!["12".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vm_use_missing_module_errors() {
+        // A `use` of a nonexistent module fails with the checker's E0500
+        // diagnostic instead of a confusing NotCallable at the call site.
+        let dir = std::env::temp_dir().join(format!("loon_use_missing_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let err = eval_eir_with_base_dir("[use nosuch] [println 1]", &dir)
+            .expect_err("missing module should error");
+        assert!(
+            matches!(err.kind, VmErrorKind::ModuleError(ref m) if m.contains("cannot read module 'nosuch'")),
+            "got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vm_use_circular_import_errors() {
+        // Mutually-recursive modules surface the checker's E0502 circular
+        // dependency diagnostic on the EIR path.
+        let dir = std::env::temp_dir().join(format!("loon_use_cycle_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("ca.oo"), "[use cb]\n[fn afn [x] [+ x 1]]\n").unwrap();
+        std::fs::write(dir.join("cb.oo"), "[use ca]\n[fn bfn [x] [afn x]]\n").unwrap();
+        let err = eval_eir_with_base_dir("[use ca] [println [ca.afn 1]]", &dir)
+            .expect_err("circular import should error");
+        assert!(
+            matches!(err.kind, VmErrorKind::ModuleError(ref m) if m.contains("circular")),
+            "got: {err}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
