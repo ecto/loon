@@ -346,21 +346,16 @@ impl<'a> Lower<'a> {
             let Some(modpath) = items[1].as_dotted_path() else {
                 continue;
             };
-            // Alias: `[use a/b as c]` → c, else the last path segment.
-            let alias = if items.len() >= 4 {
-                if let (ExprKind::Symbol(kw), ExprKind::Symbol(a)) =
-                    (&items[2].kind, &items[3].kind)
-                {
-                    if kw == "as" {
-                        a.clone()
-                    } else {
-                        modpath.rsplit('/').next().unwrap_or(&modpath).to_string()
-                    }
-                } else {
-                    modpath.rsplit('/').next().unwrap_or(&modpath).to_string()
+            // Alias: `[use a.b :as c]` → c, else the full dotted path (the
+            // interpreter qualifies as `a.b.name`, so we match that).
+            let alias = if items.len() >= 3 {
+                match (&items[2].kind, items.get(3).map(|e| &e.kind)) {
+                    (ExprKind::Keyword(kw), Some(ExprKind::Symbol(a))) if kw == "as" => a.clone(),
+                    (ExprKind::Symbol(kw), Some(ExprKind::Symbol(a))) if kw == "as" => a.clone(),
+                    _ => modpath.clone(),
                 }
             } else {
-                modpath.rsplit('/').next().unwrap_or(&modpath).to_string()
+                modpath.clone()
             };
 
             let file = crate::module::ModuleCache::resolve_path(&modpath, base);
@@ -384,28 +379,39 @@ impl<'a> Lower<'a> {
             let module_forms = sub.expanded_program.clone();
             // Recurse first so transitive imports land before this module.
             self.collect_imports(&module_forms, &dir, visited, imported, qualified);
+            // Export rule matches the interpreter (module.rs): `pub fn` names
+            // if any are declared, otherwise every top-level fn.
+            let mut pub_fns: Vec<String> = Vec::new();
+            let mut all_fns: Vec<String> = Vec::new();
             for mf in &module_forms {
                 if let ExprKind::List(mitems) = &mf.kind {
                     match mitems.first().map(|e| &e.kind) {
                         // Skip the module's own `use` lines (handled by recursion).
                         Some(ExprKind::Symbol(s)) if s == "use" => continue,
-                        _ => {}
-                    }
-                    // Record qualified names for `pub fn` exports.
-                    if let Some(ExprKind::Symbol(s)) = mitems.first().map(|e| &e.kind) {
-                        if s == "pub" && mitems.len() >= 3 {
+                        Some(ExprKind::Symbol(s)) if s == "fn" && mitems.len() >= 3 => {
+                            if let ExprKind::Symbol(name) = &mitems[1].kind {
+                                all_fns.push(name.clone());
+                            }
+                        }
+                        Some(ExprKind::Symbol(s)) if s == "pub" && mitems.len() >= 4 => {
                             if let (Some(ExprKind::Symbol(inner)), Some(ExprKind::Symbol(name))) = (
                                 mitems.get(1).map(|e| &e.kind),
                                 mitems.get(2).map(|e| &e.kind),
                             ) {
                                 if inner == "fn" {
-                                    qualified.push((alias.clone(), name.clone()));
+                                    pub_fns.push(name.clone());
+                                    all_fns.push(name.clone());
                                 }
                             }
                         }
+                        _ => {}
                     }
                 }
                 imported.push(mf.clone());
+            }
+            let exported = if pub_fns.is_empty() { all_fns } else { pub_fns };
+            for name in exported {
+                qualified.push((alias.clone(), name));
             }
         }
     }
