@@ -704,7 +704,11 @@ impl Compiler {
                 Some(ExprKind::Symbol(s)) => {
                     // `test` registers a test; like other definitions it is not
                     // run by `loon run`, so it never becomes a `main` statement.
-                    !matches!(s.as_str(), "fn" | "type" | "use" | "effect" | "test")
+                    // `sig` is a compile-time type declaration with no runtime.
+                    !matches!(
+                        s.as_str(),
+                        "fn" | "type" | "use" | "effect" | "test" | "sig"
+                    )
                 }
                 _ => true,
             },

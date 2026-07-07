@@ -89,6 +89,31 @@ impl<'a> OwnershipChecker<'a> {
             "not",
             "and",
             "or",
+            // Persistent-collection builtins: they return NEW collections
+            // (structural sharing) and never consume the original, so the
+            // argument stays usable afterwards on every backend.
+            "map",
+            "filter",
+            "each",
+            "fold",
+            "reduce",
+            "sum",
+            "sort",
+            "sort-by",
+            "reverse",
+            "conj",
+            "cons",
+            "keys",
+            "values",
+            "vals",
+            "entries",
+            "merge",
+            "assoc",
+            "update",
+            "remove",
+            "join",
+            "split",
+            "range",
             // `resume` continues a captured continuation with a value. A
             // multi-shot continuation may be resumed more than once, so resume
             // must NOT consume (move) its argument — treat it as a borrow. This
@@ -132,7 +157,8 @@ impl<'a> OwnershipChecker<'a> {
     /// Check if a type is a Copy type.
     fn is_copy_type(&self, ty: &Type) -> bool {
         match ty {
-            Type::Int | Type::Float | Type::Bool | Type::Keyword => true,
+            // Dim values are plain floats at runtime — scalar, hence Copy.
+            Type::Int | Type::Float | Type::Bool | Type::Keyword | Type::Dim(_) => true,
             Type::Con(name, _) => self.copy_types.contains(name.as_str()),
             _ => false,
         }

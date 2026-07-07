@@ -7,7 +7,7 @@
 [effect C [pick [] Int]]
 [fn body [] [+ 100 [E.op 5]]]
 [fn choose [] [* [C.pick] 2]]
-[fn run-with [n] [handle [E.op] [E.op] [resume n]]]
+[fn run-with [n] [handle [E.op 0] [E.op] [resume n]]]
 [fn main []
   [println [handle [body] [E.op v] [resume v]]]
   [println [run-with 42]]

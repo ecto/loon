@@ -241,6 +241,33 @@ fn start_lsp() {
     rt.block_on(loon_lsp::run_stdio());
 }
 
+/// Run the checker before executing, rendering diagnostics exactly like
+/// `loon check`. Hard errors abort with a non-zero exit; warnings print to
+/// stderr but do not block execution. Parse errors are left for the backend,
+/// which reports them with its own span handling.
+fn precheck_source(path: &std::path::Path, source: &str) {
+    let exprs = match loon_lang::parser::parse(source) {
+        Ok(exprs) => exprs,
+        Err(_) => return,
+    };
+    let filename = path.to_string_lossy().to_string();
+    let base_dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let mut checker = loon_lang::check::Checker::with_base_dir(base_dir);
+    let mut errors = checker.check_program(&exprs);
+    if errors.is_empty() {
+        use loon_lang::check::ownership::OwnershipChecker;
+        let mut own = OwnershipChecker::with_type_info(&checker.type_of, &checker.subst)
+            .with_derived_copy_types(&checker.derived_copy_types);
+        errors = own.check_program(&checker.expanded_program);
+    }
+    for err in &errors {
+        loon_lang::errors::report_diagnostic(&filename, source, err);
+    }
+    if errors.iter().any(|e| !e.code.is_warning()) {
+        std::process::exit(1);
+    }
+}
+
 fn run_file(path: &PathBuf, record: Option<&std::path::Path>) {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -250,6 +277,7 @@ fn run_file(path: &PathBuf, record: Option<&std::path::Path>) {
         }
     };
 
+    precheck_source(path, &source);
     let base_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let result = match record {
         Some(trace_path) => {
@@ -708,6 +736,7 @@ fn run_file_native(path: &PathBuf) {
         }
     };
 
+    precheck_source(path, &source);
     match loon_lang::eir::native::eval_native(&source) {
         Ok(_result) => {}
         Err(e) => {
@@ -758,6 +787,7 @@ fn run_file_wasm(path: &PathBuf) {
         }
     };
 
+    precheck_source(path, &source);
     let filename = path.to_string_lossy().to_string();
     let exprs = match loon_lang::parser::parse(&source) {
         Ok(exprs) => exprs,

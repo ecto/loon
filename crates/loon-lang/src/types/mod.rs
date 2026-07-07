@@ -717,6 +717,28 @@ pub fn unify(subst: &mut Subst, a: &Type, b: &Type) -> Result<(), TypeError> {
         (Type::Row(fields_a, rest_a), Type::Row(fields_b, rest_b)) => {
             unify_rows(subst, fields_a, *rest_a, fields_b, *rest_b)
         }
+        // A record literal is a keyword-keyed map at runtime, so records
+        // unify with Map: each field's type unifies with the value type, and
+        // (when fields exist) the key type unifies with Keyword. This lets
+        // map builtins (merge/update/assoc) accept record literals.
+        (Type::Record(row), Type::Con(n, cargs)) | (Type::Con(n, cargs), Type::Record(row))
+            if n == "Map" && cargs.len() == 2 =>
+        {
+            if let Type::Row(fields, rest) = subst.resolve(row) {
+                if !fields.is_empty() {
+                    unify(subst, &cargs[0], &Type::Keyword)?;
+                }
+                for (_, fty) in &fields {
+                    unify(subst, &cargs[1], fty)?;
+                }
+                if let Some(r) = rest {
+                    subst.bind(r, Type::Row(vec![], None));
+                }
+                Ok(())
+            } else {
+                Err(TypeError::bare(format!("cannot unify {a} with {b}")))
+            }
+        }
         (Type::Dim(d1), Type::Dim(d2)) => {
             if d1 == d2 {
                 Ok(())

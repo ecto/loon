@@ -112,6 +112,12 @@ pub struct Checker {
     /// Named functions with a `& rest` param: name → number of fixed params.
     /// Call sites with >= fixed args collect the extras into the rest Vec.
     pub variadic_fns: HashMap<String, usize>,
+    /// Multi-arity functions: name → one scheme per clause. Call sites
+    /// dispatch on argument count, mirroring the VM's runtime dispatch.
+    pub multi_arity_schemes: HashMap<String, Vec<Scheme>>,
+    /// Parameter types of the enclosing `loop` binding or function, for
+    /// typing `recur` call sites (innermost target last).
+    recur_params: Vec<Vec<Type>>,
     /// Expanded program after macro expansion (available after check_program)
     pub expanded_program: Vec<Expr>,
 }
@@ -156,6 +162,8 @@ impl Checker {
             references: Vec::new(),
             derived_copy_types: HashSet::new(),
             variadic_fns: HashMap::new(),
+            multi_arity_schemes: HashMap::new(),
+            recur_params: Vec::new(),
             expanded_program: Vec::new(),
         };
         checker.register_builtins();
@@ -594,23 +602,22 @@ impl Checker {
             );
         }
 
-        // get: ∀v. Map Keyword v → Keyword → v
+        // get: ∀k v. Map k v → k → v
         {
+            let k = self.subst.fresh();
             let v = self.subst.fresh();
-            let tv = if let Type::Var(vv) = v {
-                vv
-            } else {
+            let (Type::Var(tk), Type::Var(tv)) = (k, v) else {
                 unreachable!()
             };
             self.env.set_global(
                 "get".to_string(),
                 Scheme {
                     bounds: vec![],
-                    vars: vec![tv],
+                    vars: vec![tk, tv],
                     ty: Type::Fn(
                         vec![
-                            Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)]),
-                            Type::Keyword,
+                            Type::Con("Map".to_string(), vec![Type::Var(tk), Type::Var(tv)]),
+                            Type::Var(tk),
                         ],
                         Box::new(Type::Var(tv)),
                         EffectRow::pure(),
@@ -619,22 +626,21 @@ impl Checker {
             );
         }
 
-        // assoc: ∀v. Map Keyword v → Keyword → v → Map Keyword v
+        // assoc: ∀k v. Map k v → k → v → Map k v
         {
+            let k = self.subst.fresh();
             let v = self.subst.fresh();
-            let tv = if let Type::Var(vv) = v {
-                vv
-            } else {
+            let (Type::Var(tk), Type::Var(tv)) = (k, v) else {
                 unreachable!()
             };
-            let map_t = Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)]);
+            let map_t = Type::Con("Map".to_string(), vec![Type::Var(tk), Type::Var(tv)]);
             self.env.set_global(
                 "assoc".to_string(),
                 Scheme {
                     bounds: vec![],
-                    vars: vec![tv],
+                    vars: vec![tk, tv],
                     ty: Type::Fn(
-                        vec![map_t.clone(), Type::Keyword, Type::Var(tv)],
+                        vec![map_t.clone(), Type::Var(tk), Type::Var(tv)],
                         Box::new(map_t),
                         EffectRow::pure(),
                     ),
@@ -1180,24 +1186,23 @@ impl Checker {
             );
         }
 
-        // update: ∀v. Map Keyword v → Keyword → (v → v) → Map Keyword v
+        // update: ∀k v. Map k v → k → (v → v) → Map k v
         {
+            let k = self.subst.fresh();
             let v = self.subst.fresh();
-            let tv = if let Type::Var(vv) = v {
-                vv
-            } else {
+            let (Type::Var(tk), Type::Var(tv)) = (k, v) else {
                 unreachable!()
             };
-            let map_t = Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)]);
+            let map_t = Type::Con("Map".to_string(), vec![Type::Var(tk), Type::Var(tv)]);
             self.env.set_global(
                 "update".to_string(),
                 Scheme {
                     bounds: vec![],
-                    vars: vec![tv],
+                    vars: vec![tk, tv],
                     ty: Type::Fn(
                         vec![
                             map_t.clone(),
-                            Type::Keyword,
+                            Type::Var(tk),
                             Type::Fn(
                                 vec![Type::Var(tv)],
                                 Box::new(Type::Var(tv)),
@@ -1308,20 +1313,19 @@ impl Checker {
             }
         }
 
-        // merge: ∀v. Map Keyword v → Map Keyword v → Map Keyword v
+        // merge: ∀k v. Map k v → Map k v → Map k v
         {
+            let k = self.subst.fresh();
             let v = self.subst.fresh();
-            let tv = if let Type::Var(vv) = v {
-                vv
-            } else {
+            let (Type::Var(tk), Type::Var(tv)) = (k, v) else {
                 unreachable!()
             };
-            let map_t = Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)]);
+            let map_t = Type::Con("Map".to_string(), vec![Type::Var(tk), Type::Var(tv)]);
             self.env.set_global(
                 "merge".to_string(),
                 Scheme {
                     bounds: vec![],
-                    vars: vec![tv],
+                    vars: vec![tk, tv],
                     ty: Type::Fn(
                         vec![map_t.clone(), map_t.clone()],
                         Box::new(map_t),
@@ -1331,22 +1335,21 @@ impl Checker {
             );
         }
 
-        // remove: ∀v. Map Keyword v → Keyword → Map Keyword v
+        // remove: ∀k v. Map k v → k → Map k v
         {
+            let k = self.subst.fresh();
             let v = self.subst.fresh();
-            let tv = if let Type::Var(vv) = v {
-                vv
-            } else {
+            let (Type::Var(tk), Type::Var(tv)) = (k, v) else {
                 unreachable!()
             };
-            let map_t = Type::Con("Map".to_string(), vec![Type::Keyword, Type::Var(tv)]);
+            let map_t = Type::Con("Map".to_string(), vec![Type::Var(tk), Type::Var(tv)]);
             self.env.set_global(
                 "remove".to_string(),
                 Scheme {
                     bounds: vec![],
-                    vars: vec![tv],
+                    vars: vec![tk, tv],
                     ty: Type::Fn(
-                        vec![map_t.clone(), Type::Keyword],
+                        vec![map_t.clone(), Type::Var(tk)],
                         Box::new(map_t),
                         EffectRow::pure(),
                     ),
@@ -1437,15 +1440,27 @@ impl Checker {
             );
         }
 
-        // index-of: Str → Str → Int
-        self.env.set_global(
-            "index-of".to_string(),
-            Scheme::mono(Type::Fn(
-                vec![Type::Str, Type::Str],
-                Box::new(Type::Int),
-                EffectRow::pure(),
-            )),
-        );
+        // index-of: ∀a b. a → b → Int — works on strings (substring index)
+        // AND vectors (element index); -1 when absent.
+        {
+            let a = self.subst.fresh();
+            let b = self.subst.fresh();
+            let (Type::Var(ta), Type::Var(tb)) = (a, b) else {
+                unreachable!()
+            };
+            self.env.set_global(
+                "index-of".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![ta, tb],
+                    ty: Type::Fn(
+                        vec![Type::Var(ta), Type::Var(tb)],
+                        Box::new(Type::Int),
+                        EffectRow::pure(),
+                    ),
+                },
+            );
+        }
 
         // group-by: ∀a k. (a → k) → Vec a → Map k (Vec a)
         {
@@ -2979,6 +2994,20 @@ impl Checker {
         self.subst.resolve(&field_ty)
     }
 
+    /// Like `infer_record_get`, but for the `get` builtin, which is TOTAL:
+    /// an absent key yields () (falsy) rather than an error, so a missing
+    /// field is not a type error — the result just stays unconstrained.
+    fn infer_record_get_lenient(&mut self, rec_ty: &Type, field_name: &str) -> Type {
+        let field_ty = self.subst.fresh();
+        let rest = self.subst.fresh_var();
+        let expected_row = Type::Row(vec![(field_name.to_string(), field_ty.clone())], Some(rest));
+        let expected_record = Type::Record(Box::new(expected_row));
+        if unify(&mut self.subst, rec_ty, &expected_record).is_err() {
+            return self.subst.fresh();
+        }
+        self.subst.resolve(&field_ty)
+    }
+
     fn infer_list(&mut self, items: &[Expr], span: Span) -> Type {
         let head = &items[0];
         if let ExprKind::Symbol(s) = &head.kind {
@@ -3001,6 +3030,14 @@ impl Checker {
                         let body_ty = self.infer(&items[1]);
                         self.infer(&items[2]); // on-fail handler
                         return body_ty;
+                    }
+                    return Type::Unit;
+                }
+                // println/print are variadic: args are stringified and
+                // space-joined at runtime.
+                "println" | "print" => {
+                    for a in &items[1..] {
+                        self.infer(a);
                     }
                     return Type::Unit;
                 }
@@ -3028,11 +3065,51 @@ impl Checker {
                     }
                     return Type::Unit;
                 }
+                // [test name [params] body...] — the name DECLARES the test,
+                // it is not a reference. Check the body like a fn clause.
+                "test"
+                    if items.len() >= 3
+                        && matches!(items[1].kind, ExprKind::Symbol(_))
+                        && matches!(items[2].kind, ExprKind::List(_)) =>
+                {
+                    self.infer_fn_clause(&items[2], &items[3..]);
+                    return Type::Unit;
+                }
                 "test" | "mut" => {
                     if items.len() > 1 {
                         return self.infer_list(&items[1..], span);
                     }
                     return Type::Unit;
+                }
+                // [when cond body...] — cond is truthiness-checked at runtime
+                // (any type); returns the body value when true, () otherwise.
+                "when" => {
+                    if items.len() > 1 {
+                        self.infer(&items[1]);
+                    }
+                    let mut body_ty = Type::Unit;
+                    for e in &items[2..] {
+                        body_ty = self.infer(e);
+                    }
+                    return body_ty;
+                }
+                "loop" => return self.infer_loop(&items[1..]),
+                // [recur args...] — re-enters the innermost loop or fn with
+                // new binding values; it never returns to its own site.
+                "recur" => {
+                    let arg_tys: Vec<Type> = items[1..].iter().map(|a| self.infer(a)).collect();
+                    if let Some(target) = self.recur_params.last().cloned() {
+                        if target.len() == arg_tys.len() {
+                            for (t, (a, e)) in
+                                target.iter().zip(arg_tys.iter().zip(items[1..].iter()))
+                            {
+                                if let Err(err) = unify(&mut self.subst, t, a) {
+                                    self.push_unify_error(err, e.span);
+                                }
+                            }
+                        }
+                    }
+                    return self.subst.fresh();
                 }
                 "derive" => return self.infer_derive(&items[1..], span),
                 "macro" | "macro+" | "macroexpand" => return Type::Unit,
@@ -3054,7 +3131,7 @@ impl Checker {
                         let resolved = self.subst.resolve(&rec_ty);
                         // Use row-based get for Record types or unresolved type vars
                         if matches!(resolved, Type::Record(_) | Type::Var(_)) {
-                            return self.infer_record_get(&rec_ty, field_name, span);
+                            return self.infer_record_get_lenient(&rec_ty, field_name);
                         }
                     } else {
                         // Dynamic key on a record: the field type can't be
@@ -3366,6 +3443,47 @@ impl Checker {
             }
         }
 
+        // Multi-arity call: pick the clause whose arity matches the call.
+        if let ExprKind::Symbol(s) = &head.kind {
+            if let Some(schemes) = self.multi_arity_schemes.get(s).cloned() {
+                let argc = items.len() - 1;
+                if let Some(scheme) = schemes
+                    .iter()
+                    .find(|sch| matches!(&sch.ty, Type::Fn(p, _, _) if p.len() == argc))
+                {
+                    let func_ty = instantiate(&mut self.subst, scheme);
+                    let arg_types: Vec<Type> = items[1..].iter().map(|a| self.infer(a)).collect();
+                    let ret = self.subst.fresh();
+                    let app_row = EffectRow::open(self.subst.fresh_var());
+                    let expected_fn = Type::Fn(arg_types, Box::new(ret.clone()), app_row.clone());
+                    if let Err(e) = unify(&mut self.subst, &func_ty, &expected_fn) {
+                        self.push_unify_error(e, span);
+                    }
+                    self.absorb_effect_row(&app_row);
+                    if let Some(callee_effects) = self.fn_effects.get(s) {
+                        let labels = callee_effects.labels.clone();
+                        if !labels.is_empty() {
+                            self.absorb_effect_row(&EffectRow::closed(labels));
+                        }
+                    }
+                    return ret;
+                }
+            }
+        }
+
+        // Collection builtins accept both argument orders at runtime (the VM
+        // detects the collection by type, so `[map coll fn]` and the
+        // pipe/thread-last `[map fn coll]` both work); mirror that here.
+        if let ExprKind::Symbol(s) = &head.kind {
+            let argc = items.len() - 1;
+            match (s.as_str(), argc) {
+                ("map" | "filter" | "each" | "join", 2) | ("fold" | "reduce", 3) => {
+                    return self.infer_flexible_builtin(s, &items[1..], span);
+                }
+                _ => {}
+            }
+        }
+
         // Function application
         let func_ty = self.infer(head);
         let arg_types: Vec<Type> = items[1..].iter().map(|a| self.infer(a)).collect();
@@ -3426,10 +3544,12 @@ impl Checker {
                 param_types.push(rest_ty);
             }
 
+            self.recur_params.push(param_types.clone());
             let mut body_ty = Type::Unit;
             for expr in &args[1..] {
                 body_ty = self.infer(expr);
             }
+            self.recur_params.pop();
             self.pop_scope();
 
             let row = std::mem::replace(&mut self.current_fn_effects, saved_effects);
@@ -3453,21 +3573,26 @@ impl Checker {
         let saved_effects =
             std::mem::replace(&mut self.current_fn_effects, EffectRow::open(fn_tail));
 
-        // Multi-arity check
+        // Multi-arity: infer each clause as its own function type and record
+        // one scheme per clause; call sites dispatch on argument count the
+        // way the VM does at runtime.
         if matches!(args[0].kind, ExprKind::Tuple(_)) {
-            let ret = self.subst.fresh();
+            let mut clause_schemes = Vec::new();
             for clause_expr in &args[0..] {
                 if let ExprKind::Tuple(clause_items) = &clause_expr.kind {
                     if clause_items.len() >= 2 {
-                        let clause_ret = self.infer_fn_clause(&clause_items[0], &clause_items[1..]);
-                        if let Err(e) = unify(&mut self.subst, &ret, &clause_ret) {
-                            self.push_unify_error(e, span);
-                        }
+                        let clause_ty = self.infer_fn_clause(&clause_items[0], &clause_items[1..]);
+                        clause_schemes.push(generalize(&self.env, &self.subst, &clause_ty));
                     }
                 }
             }
-            let scheme = generalize(&self.env, &self.subst, &ret);
-            self.env.set_global(name.clone(), scheme);
+            // Bind the bare name to the first clause so non-call references
+            // still resolve; calls go through multi_arity_schemes.
+            if let Some(first) = clause_schemes.first().cloned() {
+                self.env.set_global(name.clone(), first);
+            }
+            self.multi_arity_schemes
+                .insert(name.clone(), clause_schemes);
             // Store inferred effects and restore
             let inferred = std::mem::replace(&mut self.current_fn_effects, saved_effects);
             let inferred = self.subst.resolve_effect_row(&inferred);
@@ -3498,6 +3623,22 @@ impl Checker {
                 self.variadic_fns.insert(name.clone(), fixed_params.len());
             }
 
+            // Pre-apply a declared sig's DIMENSION param types so the body is
+            // inferred with them: `[* load span]` only dimension-checks when
+            // the params are already Dim, not vars. Non-dim sig params are
+            // left to the post-body E0204 check, which has a better message.
+            if let Some((sig_ty, _)) = self.pending_sigs.get(&name).cloned() {
+                if let Type::Fn(sig_params, _, _) = &sig_ty {
+                    if sig_params.len() == param_types.len() {
+                        for (pt, st) in param_types.iter().zip(sig_params.iter()) {
+                            if matches!(st, Type::Dim(_)) {
+                                let _ = unify(&mut self.subst, pt, st);
+                            }
+                        }
+                    }
+                }
+            }
+
             let temp_ret = self.subst.fresh();
             // The self-reference for recursion carries the ambient row, so
             // recursive calls unify the row with itself (a no-op). It also
@@ -3510,10 +3651,12 @@ impl Checker {
             );
             self.env.set(name.clone(), Scheme::mono(temp_fn_ty));
 
+            self.recur_params.push(param_types.clone());
             let mut body_ty = Type::Unit;
             for body_expr in &args[body_start..] {
                 body_ty = self.infer(body_expr);
             }
+            self.recur_params.pop();
 
             if let Err(e) = unify(&mut self.subst, &temp_ret, &body_ty) {
                 self.push_unify_error(e, span);
@@ -3842,17 +3985,12 @@ impl Checker {
     }
 
     /// Resolve a type name string to a Type (for effect declarations and annotations).
-    fn resolve_type_name(&mut self, name: &str) -> Type {
+    /// Named physical quantities → Dim types, shared by every place a type
+    /// name can appear (effect declarations, sigs, annotations).
+    fn dim_type_for_name(name: &str) -> Option<Type> {
         use crate::types::Dimension;
         const D: Dimension = Dimension::SCALAR;
-        match name {
-            "Int" => Type::Int,
-            "Float" => Type::Float,
-            "Bool" => Type::Bool,
-            "String" | "Str" => Type::Str,
-            "Keyword" => Type::Keyword,
-            "Unit" => Type::Unit,
-            // Named physical quantities → Dim types
+        Some(match name {
             "Length" => Type::Dim(Dimension::length()),
             "Time" => Type::Dim(Dimension::time()),
             "Mass" => Type::Dim(Dimension::mass()),
@@ -3933,6 +4071,19 @@ impl Checker {
                 temperature: -1,
                 ..D
             }),
+            _ => return None,
+        })
+    }
+
+    fn resolve_type_name(&mut self, name: &str) -> Type {
+        match name {
+            "Int" => Type::Int,
+            "Float" => Type::Float,
+            "Bool" => Type::Bool,
+            "String" | "Str" => Type::Str,
+            "Keyword" => Type::Keyword,
+            "Unit" => Type::Unit,
+            _ if Self::dim_type_for_name(name).is_some() => Self::dim_type_for_name(name).unwrap(),
             _ => {
                 // Check if it's a known type constructor
                 if let Some(scheme) = self.env.get(name) {
@@ -3974,18 +4125,132 @@ impl Checker {
     fn infer_fn_clause(&mut self, params_expr: &Expr, body: &[Expr]) -> Type {
         if let ExprKind::List(params) = &params_expr.kind {
             self.push_scope();
-            let _param_types = self.infer_params(params);
+            let param_types = self.infer_params(params);
 
+            self.recur_params.push(param_types.clone());
             let mut body_ty = Type::Unit;
             for expr in body {
                 body_ty = self.infer(expr);
             }
+            self.recur_params.pop();
 
             self.pop_scope();
-            body_ty
+            Type::Fn(
+                param_types,
+                Box::new(body_ty),
+                self.current_fn_effects.clone(),
+            )
         } else {
             self.subst.fresh()
         }
+    }
+
+    /// Collection builtins whose runtime detects the collection argument by
+    /// TYPE, not position: map/filter/each/fold/reduce/join. Infer the args,
+    /// spot the collection by its resolved type, and unify against the
+    /// canonical signature in whichever order the call used.
+    fn infer_flexible_builtin(&mut self, name: &str, args: &[Expr], span: Span) -> Type {
+        let arg_tys: Vec<Type> = args.iter().map(|a| self.infer(a)).collect();
+        let is_vec = |me: &mut Self, t: &Type| matches!(me.subst.resolve(t), Type::Con(ref n, _) if n == "Vec");
+        let unify_at = |me: &mut Self, expected: &Type, actual: &Type| {
+            if let Err(e) = unify(&mut me.subst, expected, actual) {
+                me.push_unify_error(e, span);
+            }
+        };
+        match name {
+            "map" | "filter" | "each" => {
+                let coll_first = is_vec(self, &arg_tys[0]);
+                let (f, coll) = if coll_first {
+                    (&arg_tys[1], &arg_tys[0])
+                } else {
+                    (&arg_tys[0], &arg_tys[1])
+                };
+                let elem = self.subst.fresh();
+                let out = self.subst.fresh();
+                let row = EffectRow::open(self.subst.fresh_var());
+                let ret = match name {
+                    "map" => out.clone(),
+                    "filter" => Type::Bool,
+                    _ => Type::Unit,
+                };
+                let fn_ty = Type::Fn(vec![elem.clone()], Box::new(ret), row.clone());
+                unify_at(self, &fn_ty, f);
+                unify_at(
+                    self,
+                    &Type::Con("Vec".to_string(), vec![elem.clone()]),
+                    coll,
+                );
+                self.absorb_effect_row(&row);
+                match name {
+                    "map" => Type::Con("Vec".to_string(), vec![out]),
+                    "filter" => Type::Con("Vec".to_string(), vec![elem]),
+                    _ => Type::Unit,
+                }
+            }
+            "fold" | "reduce" => {
+                let coll_first = is_vec(self, &arg_tys[0]);
+                let (init, f, coll) = if coll_first {
+                    (&arg_tys[1], &arg_tys[2], &arg_tys[0])
+                } else {
+                    (&arg_tys[0], &arg_tys[1], &arg_tys[2])
+                };
+                let elem = self.subst.fresh();
+                let acc = self.subst.fresh();
+                let row = EffectRow::open(self.subst.fresh_var());
+                let fn_ty = Type::Fn(
+                    vec![acc.clone(), elem.clone()],
+                    Box::new(acc.clone()),
+                    row.clone(),
+                );
+                unify_at(self, &acc, init);
+                unify_at(self, &fn_ty, f);
+                unify_at(self, &Type::Con("Vec".to_string(), vec![elem]), coll);
+                self.absorb_effect_row(&row);
+                self.subst.resolve(&acc)
+            }
+            "join" => {
+                // Elements and separator are stringified at runtime, so only
+                // the collection side is constrained.
+                let coll = if is_vec(self, &arg_tys[0]) {
+                    &arg_tys[0]
+                } else {
+                    &arg_tys[1]
+                };
+                let elem = self.subst.fresh();
+                unify_at(self, &Type::Con("Vec".to_string(), vec![elem]), coll);
+                Type::Str
+            }
+            _ => self.subst.fresh(),
+        }
+    }
+
+    /// [loop [name init ...] body...] — let-like bindings that `recur`
+    /// re-enters; the loop's value is its body's value.
+    fn infer_loop(&mut self, args: &[Expr]) -> Type {
+        if args.is_empty() {
+            return Type::Unit;
+        }
+        self.push_scope();
+        let mut binding_tys = Vec::new();
+        if let ExprKind::List(bindings) = &args[0].kind {
+            for pair in bindings.chunks(2) {
+                if pair.len() == 2 {
+                    let vt = self.infer(&pair[1]);
+                    if let ExprKind::Symbol(name) = &pair[0].kind {
+                        self.env.set(name.clone(), Scheme::mono(vt.clone()));
+                    }
+                    binding_tys.push(vt);
+                }
+            }
+        }
+        self.recur_params.push(binding_tys);
+        let mut body_ty = Type::Unit;
+        for e in &args[1..] {
+            body_ty = self.infer(e);
+        }
+        self.recur_params.pop();
+        self.pop_scope();
+        body_ty
     }
 
     fn infer_let(&mut self, args: &[Expr]) -> Type {
@@ -4121,6 +4386,13 @@ impl Checker {
         let then_ty = self.infer(&args[1]);
         if args.len() > 2 {
             let else_ty = self.infer(&args[2]);
+            // Compiler-generated ifs (the and/or and if-let desugars) are
+            // value-semantics unions: [or 7 x] returns 7 OR x, so tying the
+            // branch types together would wrongly constrain x (often a
+            // lambda param in pipe steps). Leave the result free.
+            if is_gensym_cond {
+                return self.subst.fresh();
+            }
             // Runtime-dispatch code (e.g. `[if [map? x] x y]`) uses `if` as
             // a union of two types. Don't tie two still-unknown branch types
             // together (that would wrongly equate unrelated params), and if
@@ -4335,6 +4607,36 @@ impl Checker {
         for step in &args[1..] {
             match &step.kind {
                 ExprKind::List(items) if !items.is_empty() => {
+                    if let ExprKind::Symbol(op) = &items[0].kind {
+                        match op.as_str() {
+                            // Operator partials: the piped value joins the
+                            // operand list ([pipe 5 [+ 1 2]] ≡ [+ 1 2 5]), so
+                            // all operands share one numeric type.
+                            "+" | "-" | "*" | "/" => {
+                                let mut t = current;
+                                for a in &items[1..] {
+                                    let at = self.infer(a);
+                                    if let Err(e) = unify(&mut self.subst, &t, &at) {
+                                        self.push_unify_error(e, step.span);
+                                    }
+                                    t = at;
+                                }
+                                current = self.subst.resolve(&t);
+                                continue;
+                            }
+                            // and/or steps are value-semantics short-circuits
+                            // ([pipe v [or a]] ≡ [or a v]); operands may be
+                            // heterogeneous and the result is either side.
+                            "and" | "or" => {
+                                for a in &items[1..] {
+                                    self.infer(a);
+                                }
+                                current = self.subst.fresh();
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
                     let func_ty = self.infer(&items[0]);
                     let explicit_args: Vec<Type> =
                         items[1..].iter().map(|a| self.infer(a)).collect();
@@ -4977,7 +5279,9 @@ impl Checker {
             "Bool" => Type::Bool,
             "String" | "Str" => Type::Str,
             "Keyword" => Type::Keyword,
-            _ => Type::Con(name.to_string(), vec![]),
+            _ => {
+                Self::dim_type_for_name(name).unwrap_or_else(|| Type::Con(name.to_string(), vec![]))
+            }
         }
     }
 
