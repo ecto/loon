@@ -12,8 +12,7 @@
       [doc-def "Inlay Hints" "Inline type annotations displayed next to let bindings and function parameters."]]
 
     [doc-section "VS Code Setup"
-      [doc-text "The easiest path. Install the Loon extension from the VS Code marketplace and you are done. The extension handles starting the language server automatically, so there is nothing else to configure."]
-      [code-block {:label "SHELL"} "code --install-extension loon-lang.loon-vscode"]]
+      [doc-text "There is no official Loon extension on the marketplace yet. In the meantime you can use a generic LSP client extension and point it at " [doc-code "loon lsp"] " (see Generic LSP Setup below). Syntax highlighting is available via the tree-sitter grammar in the repository's tree-sitter-loon directory."]]
 
     [doc-section "Neovim Setup"
       [doc-text "Neovim has excellent LSP support built in. Add this to your config and Loon files will get full language server features as soon as you open them."]
