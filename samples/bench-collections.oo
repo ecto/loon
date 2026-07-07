@@ -37,7 +37,11 @@
 [let sum [bench-map-lookup m1 1000]]
 [IO.println [str "map-lookup(1000): sum=" sum]]
 
-; --- 5. Vec clone + mutate ---
+; --- 5. Filter large vec (before clone-mutate moves v1 away) ---
+[let filtered [filter [fn [x] [> x 50000]] v1]]
+[IO.println [str "filter(100K): len=" [len filtered]]]
+
+; --- 6. Vec clone + mutate ---
 [fn bench-clone-mutate [v n]
   [loop [i 0]
     [if [>= i n] :done
@@ -47,10 +51,6 @@
 
 [bench-clone-mutate v1 1000]
 [IO.println "clone-mutate(1000): done"]
-
-; --- 6. Filter large vec ---
-[let filtered [filter [fn [x] [> x 50000]] v1]]
-[IO.println [str "filter(100K): len=" [len filtered]]]
 
 ; --- 7. Map merge: merge two 1000-entry maps ---
 [fn bench-map-merge [n]

@@ -20,10 +20,12 @@
 [let v2 [/ d2 t2]]             ; → Velocity
 
 ; === 4. Physics Effect ===
+[sig design-beam Force -> Length -> Bool]
 [fn design-beam [load span]
   [let sigma_y [Physics.yield-strength]]
   [let moment [/ [* load span] 8.0]]
-  [< [/ moment [* span span]] sigma_y]]
+  ; bending stress = M / S, section modulus S ~ length³ → stress in Pa
+  [< [/ moment [* span [* span span]]] sigma_y]]
 
 ; Earth, steel
 [handle [design-beam [unit 10.0 :kN] 5.0m]
