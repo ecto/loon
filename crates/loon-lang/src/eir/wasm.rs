@@ -1705,6 +1705,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn lit_to_i64_roundtrip() {
         let module = super::super::Module {
             funcs: vec![],

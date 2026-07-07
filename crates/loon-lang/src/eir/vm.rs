@@ -1012,6 +1012,9 @@ impl Vm {
                     (Some(Obj::Tuple(fields)), Selector::Index(i)) => {
                         fields.get(*i as usize).copied().unwrap_or(Val::UNIT)
                     }
+                    (Some(Obj::Vec(items)), Selector::Index(i)) => {
+                        items.get(*i as usize).copied().unwrap_or(Val::UNIT)
+                    }
                     (Some(Obj::Map(map)), Selector::Name(sid)) => {
                         // Try symbol key first, then string key
                         let sym_key = Val::sym(sid.0);
@@ -1162,9 +1165,15 @@ impl Vm {
                 }
             }
 
-            Op::Builtin(dst, built, args, _) => {
+            Op::Builtin(dst, built, args, span) => {
                 let vals = self.read_regs(args);
-                let result = self.exec_builtin(*built, &vals)?;
+                let result = self.exec_builtin(*built, &vals).map_err(|e| {
+                    if e.span.is_none() {
+                        e.with_span(*span)
+                    } else {
+                        e
+                    }
+                })?;
                 self.w(*dst, result);
             }
 
@@ -1430,6 +1439,41 @@ impl Vm {
                 };
                 Ok(Val::int(len))
             }
+            Built::SeqLen => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                let len = match self.get_obj(v) {
+                    Some(Obj::Vec(items)) => items.len() as i64,
+                    Some(Obj::Tuple(items)) => items.len() as i64,
+                    _ => -1,
+                };
+                Ok(Val::int(len))
+            }
+            Built::DestructureCheck => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                let expected = args
+                    .get(1)
+                    .copied()
+                    .filter(|e| e.is_int())
+                    .map(|e| e.as_int())
+                    .unwrap_or(0);
+                let len = match self.get_obj(v) {
+                    Some(Obj::Vec(items)) => items.len() as i64,
+                    Some(Obj::Tuple(items)) => items.len() as i64,
+                    _ => {
+                        return Err(VmError::new(VmErrorKind::DestructureMismatch(
+                            "destructuring requires a vector or tuple".to_string(),
+                        ))
+                        .with_span(self.current_span));
+                    }
+                };
+                if len < expected {
+                    return Err(VmError::new(VmErrorKind::DestructureMismatch(format!(
+                        "destructuring expected at least {expected} elements, got {len}"
+                    )))
+                    .with_span(self.current_span));
+                }
+                Ok(Val::UNIT)
+            }
             Built::Get => {
                 let coll = args.first().copied().unwrap_or(Val::UNIT);
                 let key = args.get(1).copied().unwrap_or(Val::UNIT);
@@ -1486,7 +1530,11 @@ impl Vm {
                         map.insert(key, val); // O(log₃₂ n) with structural sharing
                         Ok(self.alloc(Obj::Map(map)))
                     }
-                    _ => Ok(Val::UNIT),
+                    // Same wording as the interpreter — never a silent `()`
+                    // (issue #21: assoc on a vector used to return unit).
+                    _ => Err(VmError::new(VmErrorKind::BuiltinType(
+                        "assoc requires a map".to_string(),
+                    ))),
                 }
             }
             Built::Range => {
@@ -1615,33 +1663,50 @@ impl Vm {
                     _ => Ok(Val::int(0)),
                 }
             }
-            Built::Min => {
+            Built::Min | Built::Max => {
+                // Vector-only, like the interpreter: binary `[min 1 2]` and
+                // an empty vector are hard errors, never a silent `()`.
+                let name = if built == Built::Min { "min" } else { "max" };
                 let coll = args.first().copied().unwrap_or(Val::UNIT);
-                match self.get_obj(coll) {
-                    Some(Obj::Vec(items)) => {
-                        let min = items
-                            .iter()
-                            .filter(|v| v.is_int())
-                            .map(|v| v.as_int())
-                            .min();
-                        Ok(min.map(Val::int).unwrap_or(Val::UNIT))
-                    }
-                    _ => Ok(Val::UNIT),
+                let Some(Obj::Vec(items)) = self.get_obj(coll) else {
+                    return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "{name} requires a vector"
+                    ))));
+                };
+                if items.is_empty() {
+                    return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "{name}: empty vector"
+                    ))));
                 }
-            }
-            Built::Max => {
-                let coll = args.first().copied().unwrap_or(Val::UNIT);
-                match self.get_obj(coll) {
-                    Some(Obj::Vec(items)) => {
-                        let max = items
-                            .iter()
-                            .filter(|v| v.is_int())
-                            .map(|v| v.as_int())
-                            .max();
-                        Ok(max.map(Val::int).unwrap_or(Val::UNIT))
+                // Numeric comparison over ints and floats (mixed allowed).
+                // Anything else is a hard error — a NaN-style silent skip
+                // would return the wrong element for mixed vectors.
+                let key = |v: Val| -> Result<f64, VmError> {
+                    if v.is_int() {
+                        Ok(v.as_int() as f64)
+                    } else if v.is_float() {
+                        Ok(v.as_float())
+                    } else {
+                        Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                            "{name}: non-numeric element"
+                        ))))
                     }
-                    _ => Ok(Val::UNIT),
+                };
+                let mut best = *items.front().unwrap();
+                let mut best_key = key(best)?;
+                for &item in items.iter().skip(1) {
+                    let item_key = key(item)?;
+                    let better = if built == Built::Min {
+                        item_key < best_key
+                    } else {
+                        item_key > best_key
+                    };
+                    if better {
+                        best = item;
+                        best_key = item_key;
+                    }
                 }
+                Ok(best)
             }
             Built::Cons => {
                 let val = args.first().copied().unwrap_or(Val::UNIT);
@@ -2008,6 +2073,19 @@ impl Vm {
                     }
                 };
                 Ok(self.alloc_str(out))
+            }
+            Built::MatchFail => {
+                let scrutinee = args.first().copied().unwrap_or(Val::UNIT);
+                let rendered = self.val_to_string_inner(scrutinee, true);
+                Err(VmError::new(VmErrorKind::NoMatch(rendered)))
+            }
+            Built::UnboundSym => {
+                let name = args
+                    .first()
+                    .and_then(|v| self.get_str(*v))
+                    .unwrap_or_default()
+                    .to_string();
+                Err(VmError::new(VmErrorKind::UnboundSymbol(name)))
             }
             Built::Keys => {
                 let m = args.first().copied().unwrap_or(Val::UNIT);
@@ -3324,6 +3402,9 @@ pub enum VmErrorKind {
     StackOverflow,
     /// `assert-eq` failed with mismatched values.
     AssertFailed(String, String),
+    /// A `[use ...]` failed at compile time: unresolved module, private
+    /// symbol, or circular dependency (checker E05xx diagnostics).
+    ModuleError(String),
     /// A replayed program requested a different effect op than the trace
     /// recorded (or ran past the end of the trace).
     ReplayDivergence(ReplayDivergence),
@@ -3338,6 +3419,23 @@ pub enum VmErrorKind {
     /// here would let programs believe they got a valid quotient. The `&str`
     /// names the operation ("division" or "modulo") for the diagnostic.
     DivideByZero(&'static str),
+    /// Evaluated a symbol that resolved to nothing at lowering time.
+    /// Silently treating it as a string value would let programs run with
+    /// misspelled or missing names. Wording matches the interpreter's
+    /// "unbound symbol '<name>'" so both backends fail the same way.
+    UnboundSymbol(String),
+    /// A `match` fell through every arm. Silently returning `()` would hide
+    /// non-exhaustive matches. The `String` is the rendered scrutinee.
+    /// Wording matches the interpreter's "no match arm matched value: <v>".
+    NoMatch(String),
+    /// A builtin was given an argument type/shape it does not support (e.g.
+    /// binary `[min 1 2]`, `assoc` on a vector). The `String` is the full
+    /// message, matching the interpreter's wording ("min requires a vector").
+    BuiltinType(String),
+    /// A destructuring `let` (or handler binding) was given a value that is
+    /// not a vector/tuple or has too few elements. Silently binding `()`
+    /// here would let programs proceed with wrong data.
+    DestructureMismatch(String),
 }
 
 /// Structured detail for a replay divergence, so `loon verify` can classify
@@ -3364,9 +3462,14 @@ impl VmErrorKind {
             VmErrorKind::Trap => "trap",
             VmErrorKind::StackOverflow => "stack-overflow",
             VmErrorKind::AssertFailed(..) => "assert-failed",
+            VmErrorKind::ModuleError(_) => "module-error",
             VmErrorKind::ReplayDivergence(_) => "replay-divergence",
             VmErrorKind::UnhandledEffect(_) => "unhandled-effect",
             VmErrorKind::DivideByZero(_) => "divide-by-zero",
+            VmErrorKind::UnboundSymbol(_) => "unbound-symbol",
+            VmErrorKind::NoMatch(_) => "no-match",
+            VmErrorKind::BuiltinType(_) => "builtin-type-error",
+            VmErrorKind::DestructureMismatch(_) => "destructure-mismatch",
         }
     }
 }
@@ -3397,6 +3500,7 @@ impl std::fmt::Display for VmError {
             VmErrorKind::AssertFailed(actual, expected) => {
                 write!(f, "assertion failed: {actual} != {expected}")
             }
+            VmErrorKind::ModuleError(msg) => write!(f, "{msg}"),
             VmErrorKind::ReplayDivergence(d) => {
                 write!(f, "replay diverged {}", d.message)
             }
@@ -3413,8 +3517,38 @@ impl std::fmt::Display for VmError {
                 // "modulo by zero" so both backends fail the same way.
                 write!(f, "{kind} by zero")
             }
+            VmErrorKind::UnboundSymbol(name) => {
+                // Same wording as the interpreter, so both backends fail
+                // the same way.
+                write!(f, "unbound symbol '{name}'")
+            }
+            VmErrorKind::NoMatch(scrutinee) => {
+                write!(f, "no match arm matched value: {scrutinee}")
+            }
+            VmErrorKind::BuiltinType(msg) => write!(f, "{msg}"),
+            VmErrorKind::DestructureMismatch(msg) => {
+                // Wording matches the interpreter's destructuring errors so
+                // both backends fail the same way.
+                write!(f, "{msg}")
+            }
         }
     }
+}
+
+/// Surface the first module diagnostic (E05xx: unresolved module, private
+/// symbol, circular dependency) from a check pass as a `VmError`. Other
+/// checker diagnostics stay non-fatal on the EIR path for now, but a broken
+/// `[use ...]` must not fall through to a confusing "value is not callable"
+/// at the first qualified call site.
+fn module_error(errors: &[crate::errors::LoonDiagnostic]) -> Option<VmError> {
+    errors
+        .iter()
+        .find(|d| d.code.category() == "module")
+        .map(|d| VmError {
+            kind: VmErrorKind::ModuleError(d.what.clone()),
+            span: d.labels.first().map(|l| l.span),
+            context: None,
+        })
 }
 
 // ─── Public API ────────────────────────────────────────────────────────────
@@ -3435,7 +3569,10 @@ fn eval_eir_impl(src: &str, mut checker: crate::check::Checker) -> Result<VmResu
         span: Some(e.span),
         context: Some(format!("parse error: {}", e.message)),
     })?;
-    let _errors = checker.check_program(&exprs);
+    let errors = checker.check_program(&exprs);
+    if let Some(e) = module_error(&errors) {
+        return Err(e);
+    }
     let module = crate::eir::lower::lower(&checker);
     let mut vm = Vm::new(module);
     vm.run()
@@ -3454,7 +3591,10 @@ pub fn eval_eir_recorded(
         span: Some(e.span),
         context: Some(format!("parse error: {}", e.message)),
     })?;
-    let _errors = checker.check_program(&exprs);
+    let errors = checker.check_program(&exprs);
+    if let Some(e) = module_error(&errors) {
+        return Err(e);
+    }
     let module = crate::eir::lower::lower(&checker);
     let mut vm = Vm::new(module);
     vm.set_recorder(recorder);
@@ -3476,7 +3616,10 @@ pub fn eval_eir_replayed(
         span: Some(e.span),
         context: Some(format!("parse error: {}", e.message)),
     })?;
-    let _errors = checker.check_program(&exprs);
+    let errors = checker.check_program(&exprs);
+    if let Some(e) = module_error(&errors) {
+        return Err(e);
+    }
     let module = crate::eir::lower::lower(&checker);
     let mut vm = Vm::new(module);
     vm.set_replay(entries);
@@ -3507,7 +3650,10 @@ pub fn eval_eir_verified(
             )
         }
     };
-    let _errors = checker.check_program(&exprs);
+    let errors = checker.check_program(&exprs);
+    if let Some(e) = module_error(&errors) {
+        return (Err(e), 0);
+    }
     let module = crate::eir::lower::lower(&checker);
     let mut vm = Vm::new(module);
     vm.set_replay(entries);
@@ -3687,6 +3833,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn vm_int_float_parse() {
         // int/float parse strings (their declared type is Str -> Int/Float).
         assert_eq!(run(r#"[int "42"]"#).as_int(), 42);
@@ -3775,6 +3922,81 @@ mod tests {
             eval_eir_with_base_dir("[use mymath [add]] [fn main [] [println [add 1 2]]]", &dir)
                 .expect("vm error");
         assert_eq!(r2.output, vec!["3".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vm_use_non_pub_exports_all() {
+        // A module with no `pub` declarations exports every top-level fn,
+        // matching the interpreter's export rule (module.rs).
+        let dir = std::env::temp_dir().join(format!("loon_use_nopub_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("lib.oo"), "[fn triple [x] [* x 3]]\n").unwrap();
+        let r =
+            eval_eir_with_base_dir("[use lib] [println [lib.triple 5]]", &dir).expect("vm error");
+        assert_eq!(r.output, vec!["15".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vm_use_alias() {
+        // `[use mod :as m]` binds exports under the alias, like the interpreter.
+        let dir = std::env::temp_dir().join(format!("loon_use_alias_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("mymath.oo"), "[pub fn add [a b] [+ a b]]\n").unwrap();
+        let r = eval_eir_with_base_dir("[use mymath :as m] [println [m.add 40 2]]", &dir)
+            .expect("vm error");
+        assert_eq!(r.output, vec!["42".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vm_use_nested_modules() {
+        // A module that itself uses another module: transitive imports are
+        // inlined first, so both bare and qualified references resolve.
+        let dir = std::env::temp_dir().join(format!("loon_use_nested_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("inner.oo"), "[pub fn double [x] [* x 2]]\n").unwrap();
+        std::fs::write(
+            dir.join("outer.oo"),
+            "[use inner]\n[pub fn quad [x] [inner.double [inner.double x]]]\n",
+        )
+        .unwrap();
+        let r =
+            eval_eir_with_base_dir("[use outer] [println [outer.quad 3]]", &dir).expect("vm error");
+        assert_eq!(r.output, vec!["12".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vm_use_missing_module_errors() {
+        // A `use` of a nonexistent module fails with the checker's E0500
+        // diagnostic instead of a confusing NotCallable at the call site.
+        let dir = std::env::temp_dir().join(format!("loon_use_missing_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let err = eval_eir_with_base_dir("[use nosuch] [println 1]", &dir)
+            .expect_err("missing module should error");
+        assert!(
+            matches!(err.kind, VmErrorKind::ModuleError(ref m) if m.contains("cannot read module 'nosuch'")),
+            "got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vm_use_circular_import_errors() {
+        // Mutually-recursive modules surface the checker's E0502 circular
+        // dependency diagnostic on the EIR path.
+        let dir = std::env::temp_dir().join(format!("loon_use_cycle_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("ca.oo"), "[use cb]\n[fn afn [x] [+ x 1]]\n").unwrap();
+        std::fs::write(dir.join("cb.oo"), "[use ca]\n[fn bfn [x] [afn x]]\n").unwrap();
+        let err = eval_eir_with_base_dir("[use ca] [println [ca.afn 1]]", &dir)
+            .expect_err("circular import should error");
+        assert!(
+            matches!(err.kind, VmErrorKind::ModuleError(ref m) if m.contains("circular")),
+            "got: {err}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

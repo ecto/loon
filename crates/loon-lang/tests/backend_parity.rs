@@ -62,6 +62,42 @@ const CORPUS: &[(&str, &str)] = &[
          [fn main [] [println [area [Rect 3.0 4.0]]]]",
     ),
     (
+        "match-vec-pattern",
+        "[fn main [] [println [match #[1 2] #[a b] [+ a b] _ 0]]]",
+    ),
+    (
+        "match-vec-pattern-exact-length",
+        "[fn main [] [println [match #[1 2 3] #[a b] 0 #[a b c] [+ a [+ b c]] _ -1]]]",
+    ),
+    (
+        "match-vec-pattern-nested-literal",
+        "[fn main [] [println [match #[1 #[2 3]] #[1 #[b c]] [+ b c] _ 0]]]",
+    ),
+    (
+        "match-vec-pattern-non-sequence-falls-through",
+        r#"[fn main [] [println [match "xy" #[a b] "seq" _ "not-seq"]]]"#,
+    ),
+    (
+        "match-empty-vec-pattern",
+        r#"[fn main [] [println [match #[] #[] "empty" _ "no"]]]"#,
+    ),
+    (
+        "let-destructure-vec",
+        "[fn main [] [let [x y] #[7 8]] [println [+ x y]]]",
+    ),
+    (
+        "let-destructure-nested",
+        "[fn main [] [let [a [b c]] #[1 #[2 3]]] [println [+ a [+ b c]]]]",
+    ),
+    (
+        "let-destructure-extra-elements-allowed",
+        "[fn main [] [let [x y] #[1 2 3 4]] [println [+ x y]]]",
+    ),
+    (
+        "let-destructure-tuple-from-zip",
+        "[fn main [] [let [a b] [first [zip #[1 2] #[10 20]]]] [println [+ a b]]]",
+    ),
+    (
         "adt-generic-option",
         "[type Option T [Some T] None] \
          [fn unwrap-or [o d] [match o [Some x] x None d]] \
@@ -391,6 +427,42 @@ fn int_divide_by_zero_raises_on_both_backends() {
     );
 }
 
+/// Destructuring `let` with too few elements (or a non-sequence value) must
+/// RAISE on BOTH backends — never silently bind `()` (issue #17: vector
+/// patterns used to no-op entirely on the EIR VM). Extra elements are allowed
+/// (Clojure prior); the ruling is documented in DESIGN.md §6.
+#[test]
+fn destructure_mismatch_raises_on_both_backends() {
+    for (src, needle) in [
+        (
+            "[fn main [] [let [x y z] #[1 2]] [println x]]",
+            "destructuring expected at least 3 elements, got 2",
+        ),
+        (
+            "[fn main [] [let [x y] 5] [println x]]",
+            "destructuring requires a vector or tuple",
+        ),
+    ] {
+        let eir = eir_output(src);
+        let interp = interp_output(src);
+        assert!(eir.is_err(), "EIR VM must error on {src:?}, got {eir:?}");
+        assert!(
+            interp.is_err(),
+            "interp must error on {src:?}, got {interp:?}"
+        );
+        assert!(
+            eir.as_ref().unwrap_err().contains(needle),
+            "EIR VM error for {src:?} should mention {needle:?}, got {:?}",
+            eir.unwrap_err()
+        );
+        assert!(
+            interp.as_ref().unwrap_err().contains(needle),
+            "interp error for {src:?} should mention {needle:?}, got {:?}",
+            interp.unwrap_err()
+        );
+    }
+}
+
 /// Known divergences between the backends, PINNED so any change is noticed.
 /// Each records the program and the (eir, interp) outputs observed today, with
 /// a note on which backend is correct — a worklist for unification.
@@ -399,9 +471,9 @@ fn int_divide_by_zero_raises_on_both_backends() {
 /// discards the continuation like the EIR VM, so it lives in CORPUS as
 /// `effect-abort-discards-continuation` and is enforced for agreement.)
 ///
-/// - fold-builtin-arg: a binary builtin (`+`) passed as a HOF function. The EIR
-///   VM wraps a builtin used as a value in an arity-1 closure, so binary use via
-///   fold misfires (0); the interp dispatches variadically (10). interp correct.
+/// (The fold-builtin-arg divergence has been RETIRED: the EIR VM now wraps a
+/// first-class binary operator in an arity-2 closure, so `[fold xs 0 +]`
+/// agrees with the interp's variadic dispatch. Asserted below as CONVERGED.)
 #[test]
 fn known_divergences_are_pinned() {
     // CONVERGED (2026-07-01, phase-2): an uncaught Fail raised in a handler
@@ -422,16 +494,20 @@ fn known_divergences_are_pinned() {
         "interp uncaught clause-Fail errors"
     );
 
+    // CONVERGED (2026-07-07): a binary operator (`+`) passed as a HOF
+    // function. The EIR VM used to wrap it in an arity-1 closure (misfiring
+    // to 0); lower_symbol now wraps first-class operators in an arity-2
+    // closure, matching the interp's variadic dispatch for the binary case.
     let fold_builtin = "[fn main [] [println [fold #[1 2 3 4] 0 +]]]";
     assert_eq!(
         eir_output(fold_builtin).as_deref(),
-        Ok("0"),
-        "EIR builtin-as-fold-fn (gap)"
+        Ok("10"),
+        "EIR operator-as-fold-fn"
     );
     assert_eq!(
         interp_output(fold_builtin).as_deref(),
         Ok("10"),
-        "interp builtin-as-fold-fn"
+        "interp operator-as-fold-fn"
     );
 
     // nested-handlers: two effects handled by two stacked handlers. The EIR VM
@@ -520,4 +596,68 @@ fn known_divergences_are_pinned() {
         Ok("ok"),
         "interp try-retry captures (broken)"
     );
+}
+
+/// The EIR VM used to silently produce `()` in several places the interp
+/// errors loudly (unbound symbols, binary min/max, assoc on a vector,
+/// non-exhaustive match). All are now hard errors on BOTH backends, with the
+/// EIR message matching the interp's wording.
+#[test]
+fn silent_unit_traps_error_loudly() {
+    // (program, expected substring in the EIR error)
+    let cases: &[(&str, &str)] = &[
+        (
+            "[fn main [] [println [reduce f 0 #[1 2 3]]]]",
+            "unbound symbol 'f'",
+        ),
+        // (sqrt is now implemented on both backends — see the ok_cases below.)
+        ("[fn main [] [println [min 1 2]]]", "min requires a vector"),
+        ("[fn main [] [println [max 5 3]]]", "max requires a vector"),
+        ("[fn main [] [println [min #[]]]]", "min: empty vector"),
+        (
+            // Non-numeric elements error rather than being silently skipped
+            // (a NaN-keyed skip would return the wrong element). The interp
+            // diverges here: its generic value_cmp orders strings.
+            r#"[fn main [] [println [min #["b" "a"]]]]"#,
+            "min: non-numeric element",
+        ),
+        (
+            "[fn main [] [println [assoc #[1 2 3] 0 9]]]",
+            "assoc requires a map",
+        ),
+        (
+            r#"[fn main [] [println [match 5 1 "one" 2 "two"]]]"#,
+            "no match arm matched value: 5",
+        ),
+    ];
+    for (src, want) in cases {
+        let eir = eir_output(src);
+        let msg = eir.expect_err(&format!("EIR must error: {src}"));
+        assert!(
+            msg.contains(want),
+            "EIR error for {src:?} was {msg:?}, expected to contain {want:?}"
+        );
+        // The interp errors on all of these too — except string min, which
+        // its generic value_cmp orders instead of rejecting.
+        if !src.contains(r#"#["b" "a"]"#) {
+            assert!(interp_output(src).is_err(), "interp must also error: {src}");
+        }
+    }
+
+    // Loud-but-correct counterparts: the supported forms still work and agree.
+    let ok_cases: &[(&str, &str)] = &[
+        ("[fn main [] [println [min #[3 1 2]]]]", "1"),
+        ("[fn main [] [println [max #[3 1 2]]]]", "3"),
+        // sqrt is now implemented on both backends (was an EIR gap).
+        ("[fn main [] [println [sqrt 4]]]", "2"),
+        (
+            r#"[fn main [] [println [get [assoc {:a 1} :b 2] :b]]]"#,
+            "2",
+        ),
+        (r#"[fn main [] [println [match 2 1 "one" 2 "two"]]]"#, "two"),
+    ];
+    for (src, want) in ok_cases {
+        assert_eq!(eir_output(src).as_deref(), Ok(*want), "EIR: {src}");
+        assert_eq!(interp_output(src).as_deref(), Ok(*want), "interp: {src}");
+    }
 }

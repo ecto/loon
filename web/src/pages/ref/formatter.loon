@@ -31,16 +31,6 @@
 
     [doc-section "Editor Integration"
       [doc-text "The nicest workflow is format-on-save. Configure your editor to run " [doc-code "loon fmt"] " every time you save a file and you will never have to think about formatting again."]
-      [doc-subsection "VS Code"
-        [doc-text "The Loon VS Code extension supports format-on-save out of the box. "
-          "Enable it in settings:"]
-        [code-block {:label "JSON"} [str
-          "\{\n"
-          "  \"editor.formatOnSave\": true,\n"
-          "  \"[loon]\": \{\n"
-          "    \"editor.defaultFormatter\": \"loon-lang.loon-vscode\"\n"
-          "  \}\n"
-          "\}"]]]
       [doc-subsection "Neovim"
         [doc-text "Use an autocommand to format on save:"]
         [code-block {:label "LUA"} [str

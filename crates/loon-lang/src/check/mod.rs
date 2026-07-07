@@ -109,8 +109,28 @@ pub struct Checker {
     pub references: Vec<RefInfo>,
     /// Types with `[derive Copy]` — automatically copy instead of move
     pub derived_copy_types: HashSet<String>,
+    /// Named functions with a `& rest` param: name → number of fixed params.
+    /// Call sites with >= fixed args collect the extras into the rest Vec.
+    pub variadic_fns: HashMap<String, usize>,
     /// Expanded program after macro expansion (available after check_program)
     pub expanded_program: Vec<Expr>,
+}
+
+/// Split a param list at a `&` marker: returns the fixed params and the
+/// name of the rest param (bound to a Vec of the remaining args), if any.
+fn split_variadic_params(params: &[Expr]) -> (&[Expr], Option<String>) {
+    for (i, p) in params.iter().enumerate() {
+        if let ExprKind::Symbol(s) = &p.kind {
+            if s == "&" {
+                let rest_name = params.get(i + 1).and_then(|r| match &r.kind {
+                    ExprKind::Symbol(name) => Some(name.clone()),
+                    _ => None,
+                });
+                return (&params[..i], rest_name);
+            }
+        }
+    }
+    (params, None)
 }
 
 impl Checker {
@@ -135,6 +155,7 @@ impl Checker {
             definitions: vec![HashMap::new()],
             references: Vec::new(),
             derived_copy_types: HashSet::new(),
+            variadic_fns: HashMap::new(),
             expanded_program: Vec::new(),
         };
         checker.register_builtins();
@@ -458,14 +479,12 @@ impl Checker {
             };
             self.env.set_global(
                 "len".to_string(),
+                // len works on any collection (Vec/Map/Set) and strings —
+                // keep the argument polymorphic.
                 Scheme {
                     bounds: vec![],
                     vars: vec![tv],
-                    ty: Type::Fn(
-                        vec![Type::Con("Vec".to_string(), vec![Type::Var(tv)])],
-                        Box::new(Type::Int),
-                        EffectRow::pure(),
-                    ),
+                    ty: Type::Fn(vec![Type::Var(tv)], Box::new(Type::Int), EffectRow::pure()),
                 },
             );
         }
@@ -480,14 +499,19 @@ impl Checker {
             };
             self.env.set_global(
                 "nth".to_string(),
-                Scheme {
-                    bounds: vec![],
-                    vars: vec![tv],
-                    ty: Type::Fn(
-                        vec![Type::Con("Vec".to_string(), vec![Type::Var(tv)]), Type::Int],
-                        Box::new(Type::Var(tv)),
-                        EffectRow::pure(),
-                    ),
+                // nth also indexes tuples, whose element types differ by
+                // position — keep the collection and result independent.
+                {
+                    let r = self.subst.fresh_var();
+                    Scheme {
+                        bounds: vec![],
+                        vars: vec![tv, r],
+                        ty: Type::Fn(
+                            vec![Type::Var(tv), Type::Int],
+                            Box::new(Type::Var(r)),
+                            EffectRow::pure(),
+                        ),
+                    }
                 },
             );
         }
@@ -1393,15 +1417,25 @@ impl Checker {
             )),
         );
 
-        // contains?: Str → Str → Bool
-        self.env.set_global(
-            "contains?".to_string(),
-            Scheme::mono(Type::Fn(
-                vec![Type::Str, Type::Str],
-                Box::new(Type::Bool),
-                EffectRow::pure(),
-            )),
-        );
+        // contains?: works on strings AND collections (Set/Vec/Map) — keep
+        // both arguments polymorphic. (This registration wins over the
+        // Set-specific one above.)
+        {
+            let a = self.subst.fresh_var();
+            let b = self.subst.fresh_var();
+            self.env.set_global(
+                "contains?".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![a, b],
+                    ty: Type::Fn(
+                        vec![Type::Var(a), Type::Var(b)],
+                        Box::new(Type::Bool),
+                        EffectRow::pure(),
+                    ),
+                },
+            );
+        }
 
         // index-of: Str → Str → Int
         self.env.set_global(
@@ -2441,7 +2475,11 @@ impl Checker {
             self.trait_impls
                 .insert(("Num".to_string(), ty.to_string()), empty.clone());
         }
-        for ty in ["Int", "Float", "Bool", "String", "Keyword"] {
+        // Containers compare structurally at runtime (Value's PartialEq),
+        // so they satisfy Eq too.
+        for ty in [
+            "Int", "Float", "Bool", "String", "Keyword", "Vec", "Map", "Set",
+        ] {
             self.trait_impls
                 .insert(("Eq".to_string(), ty.to_string()), empty.clone());
         }
@@ -2819,11 +2857,16 @@ impl Checker {
             }
 
             ExprKind::Vec(items) => {
-                let elem = self.subst.fresh();
+                let mut elem = self.subst.fresh();
+                let mut homogeneous = true;
                 for item in items {
                     let t = self.infer(item);
-                    if let Err(e) = unify(&mut self.subst, &elem, &t) {
-                        self.push_unify_error(e, expr.span);
+                    // Heterogeneous literals (e.g. #["/" home-page]) are
+                    // vectors of a runtime union — degrade the element type
+                    // to unconstrained instead of erroring.
+                    if homogeneous && unify(&mut self.subst, &elem, &t).is_err() {
+                        elem = self.subst.fresh();
+                        homogeneous = false;
                     }
                 }
                 Type::Con("Vec".to_string(), vec![elem])
@@ -2846,7 +2889,11 @@ impl Checker {
                     && pairs
                         .iter()
                         .all(|(k, _)| matches!(&k.kind, ExprKind::Keyword(_)));
-                if all_keywords {
+                if pairs.is_empty() {
+                    // `{}` is used both as an empty map and as empty props/
+                    // record — stay polymorphic and let the context decide.
+                    self.subst.fresh()
+                } else if all_keywords {
                     self.infer_record_literal(pairs, expr.span)
                 } else {
                     let key_t = self.subst.fresh();
@@ -3009,7 +3056,22 @@ impl Checker {
                         if matches!(resolved, Type::Record(_) | Type::Var(_)) {
                             return self.infer_record_get(&rec_ty, field_name, span);
                         }
+                    } else {
+                        // Dynamic key on a record: the field type can't be
+                        // known statically, so stay unconstrained.
+                        let rec_ty = self.infer(&items[1]);
+                        if matches!(self.subst.resolve(&rec_ty), Type::Record(_)) {
+                            self.infer(&items[2]);
+                            return self.subst.fresh();
+                        }
                     }
+                }
+                // [get coll key default] — absent keys fall back to the
+                // default, so no field-presence constraint applies.
+                "get" if items.len() == 4 => {
+                    self.infer(&items[1]);
+                    self.infer(&items[2]);
+                    return self.infer(&items[3]);
                 }
                 _ => {}
             }
@@ -3273,6 +3335,37 @@ impl Checker {
             }
         }
 
+        // Variadic call: extra args flow into the callee's rest Vec. The
+        // rest elements stay unconstrained (children are heterogeneous).
+        if let ExprKind::Symbol(s) = &head.kind {
+            if let Some(&fixed) = self.variadic_fns.get(s) {
+                if items.len() - 1 >= fixed {
+                    let func_ty = self.infer(head);
+                    let mut arg_types: Vec<Type> =
+                        items[1..=fixed].iter().map(|a| self.infer(a)).collect();
+                    for a in &items[1 + fixed..] {
+                        self.infer(a);
+                    }
+                    let elem = self.subst.fresh();
+                    arg_types.push(Type::Con("Vec".to_string(), vec![elem]));
+                    let ret = self.subst.fresh();
+                    let app_row = EffectRow::open(self.subst.fresh_var());
+                    let expected_fn = Type::Fn(arg_types, Box::new(ret.clone()), app_row.clone());
+                    if let Err(e) = unify(&mut self.subst, &func_ty, &expected_fn) {
+                        self.push_unify_error(e, span);
+                    }
+                    self.absorb_effect_row(&app_row);
+                    if let Some(callee_effects) = self.fn_effects.get(s) {
+                        let labels = callee_effects.labels.clone();
+                        if !labels.is_empty() {
+                            self.absorb_effect_row(&EffectRow::closed(labels));
+                        }
+                    }
+                    return ret;
+                }
+            }
+        }
+
         // Function application
         let func_ty = self.infer(head);
         let arg_types: Vec<Type> = items[1..].iter().map(|a| self.infer(a)).collect();
@@ -3324,7 +3417,14 @@ impl Checker {
                 std::mem::replace(&mut self.current_fn_effects, EffectRow::open(lam_tail));
 
             self.push_scope();
-            let param_types = self.infer_params(params);
+            let (fixed_params, rest_param) = split_variadic_params(params);
+            let mut param_types = self.infer_params(fixed_params);
+            if let Some(rest_name) = rest_param {
+                let elem = self.subst.fresh();
+                let rest_ty = Type::Con("Vec".to_string(), vec![elem]);
+                self.env.set(rest_name, Scheme::mono(rest_ty.clone()));
+                param_types.push(rest_ty);
+            }
 
             let mut body_ty = Type::Unit;
             for expr in &args[1..] {
@@ -3388,7 +3488,15 @@ impl Checker {
             }
 
             self.push_scope();
-            let param_types = self.infer_params(params);
+            let (fixed_params, rest_param) = split_variadic_params(params);
+            let mut param_types = self.infer_params(fixed_params);
+            if let Some(rest_name) = rest_param {
+                let elem = self.subst.fresh();
+                let rest_ty = Type::Con("Vec".to_string(), vec![elem]);
+                self.env.set(rest_name, Scheme::mono(rest_ty.clone()));
+                param_types.push(rest_ty);
+                self.variadic_fns.insert(name.clone(), fixed_params.len());
+            }
 
             let temp_ret = self.subst.fresh();
             // The self-reference for recursion carries the ambient row, so
@@ -3905,10 +4013,54 @@ impl Checker {
                 let form_span = Span::new(binding.span.start, args[val_idx].span.end);
                 self.add_definition(name, binding.span, form_span);
             }
+            // Positional destructuring: [let [x y] v] / [let #[x y] v] /
+            // [let (x, y) v] — bind each element with its inferred type.
+            ExprKind::List(_) | ExprKind::Vec(_) | ExprKind::Tuple(_) => {
+                self.bind_destructure_vars(binding, &val_ty);
+            }
+            // Map destructuring: [let {a b} m] — bind the names (value
+            // types are not derived from the map type yet).
+            ExprKind::Map(pairs) => {
+                for (k, _) in pairs {
+                    if let ExprKind::Symbol(name) = &k.kind {
+                        let t = self.subst.fresh();
+                        self.env.set(name.clone(), Scheme::mono(t));
+                    }
+                }
+            }
             _ => {}
         }
 
         val_ty
+    }
+
+    /// Bind the variables of a positional `let` destructure (`[x y]`,
+    /// `#[x y]`, `(x, y)`, possibly nested) against the bound value's type:
+    /// vector elements get the element type, tuple elements their positional
+    /// type, anything else a fresh var.
+    fn bind_destructure_vars(&mut self, binding: &Expr, val_ty: &Type) {
+        match &binding.kind {
+            ExprKind::Symbol(name) if name != "_" => {
+                let t = self.subst.resolve(val_ty);
+                self.env.set(name.clone(), Scheme::mono(t.clone()));
+                self.type_of.insert(binding.id, t);
+                self.add_definition(name, binding.span, binding.span);
+            }
+            ExprKind::List(items) | ExprKind::Vec(items) | ExprKind::Tuple(items) => {
+                let resolved = self.subst.resolve(val_ty);
+                for (i, item) in items.iter().enumerate() {
+                    let elem_ty = match &resolved {
+                        Type::Con(name, params) if name == "Vec" && params.len() == 1 => {
+                            params[0].clone()
+                        }
+                        Type::Tuple(ts) if i < ts.len() => ts[i].clone(),
+                        _ => self.subst.fresh(),
+                    };
+                    self.bind_destructure_vars(item, &elem_ty);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn infer_if(&mut self, args: &[Expr], span: Span) -> Type {
@@ -3931,8 +4083,18 @@ impl Checker {
         let then_ty = self.infer(&args[1]);
         if args.len() > 2 {
             let else_ty = self.infer(&args[2]);
-            if let Err(e) = unify(&mut self.subst, &then_ty, &else_ty) {
-                self.push_unify_error(e, span);
+            // Runtime-dispatch code (e.g. `[if [map? x] x y]`) uses `if` as
+            // a union of two types. Don't tie two still-unknown branch types
+            // together (that would wrongly equate unrelated params), and if
+            // the branches have distinct concrete types, back off to an
+            // unconstrained result instead of erroring.
+            let then_res = self.subst.resolve(&then_ty);
+            let else_res = self.subst.resolve(&else_ty);
+            if matches!(then_res, Type::Var(_)) && matches!(else_res, Type::Var(_)) {
+                return self.subst.fresh();
+            }
+            if unify(&mut self.subst, &then_ty, &else_ty).is_err() {
+                return self.subst.fresh();
             }
         }
         then_ty
@@ -4243,6 +4405,11 @@ impl Checker {
             )
         };
 
+        // Field-type symbols that name no declared type (e.g. `Props` in
+        // `[El String Props ...]`) act as implicit type parameters: the
+        // field stays polymorphic instead of becoming a rigid nominal type.
+        let mut implicit_params: HashMap<String, TypeVar> = HashMap::new();
+
         for arg in &args[ctor_start..] {
             match &arg.kind {
                 ExprKind::List(items) if !items.is_empty() => {
@@ -4254,8 +4421,16 @@ impl Checker {
                                     if let Some((_, tv)) = type_params.iter().find(|(n, _)| n == s)
                                     {
                                         Type::Var(*tv)
-                                    } else {
+                                    } else if self.is_known_type_name(s, &type_name) {
                                         self.name_to_type(s)
+                                    } else if let Some(tv) = implicit_params.get(s) {
+                                        Type::Var(*tv)
+                                    } else {
+                                        let fresh = self.subst.fresh();
+                                        if let Type::Var(v) = fresh {
+                                            implicit_params.insert(s.clone(), v);
+                                        }
+                                        fresh
                                     }
                                 } else {
                                     self.subst.fresh()
@@ -4275,6 +4450,7 @@ impl Checker {
                             EffectRow::open(effect_tail),
                         );
                         let mut vars: Vec<TypeVar> = type_params.iter().map(|(_, v)| *v).collect();
+                        vars.extend(implicit_params.values().copied());
                         vars.push(effect_tail);
                         let scheme = Scheme {
                             bounds: vec![],
@@ -4691,25 +4867,69 @@ impl Checker {
         }
     }
 
-    /// Bind variables from a match pattern into the current scope.
-    fn bind_pattern_vars(&mut self, pattern: &Expr, _scrutinee_ty: &Type) {
+    /// Bind variables from a match pattern into the current scope, with the
+    /// type the pattern is matched against.
+    fn bind_pattern_vars(&mut self, pattern: &Expr, scrutinee_ty: &Type) {
         match &pattern.kind {
-            ExprKind::Symbol(s) if s != "_" && !s.starts_with(char::is_uppercase) => {
-                let t = self.subst.fresh();
-                self.env.set(s.clone(), Scheme::mono(t));
+            ExprKind::Symbol(s)
+                if s != "_" && !s.starts_with(char::is_uppercase) && !s.starts_with(':') =>
+            {
+                let t = self.subst.resolve(scrutinee_ty);
+                self.env.set(s.clone(), Scheme::mono(t.clone()));
+                self.type_of.insert(pattern.id, t);
             }
             ExprKind::List(items) if !items.is_empty() => {
-                // Constructor pattern: [Ok x] — bind the field vars
+                // Constructor pattern: [Ok x] — bind the field vars. Field
+                // types are not derived from the constructor signature yet,
+                // so each gets a fresh var.
                 if let ExprKind::Symbol(ctor) = &items[0].kind {
                     if ctor.starts_with(char::is_uppercase) {
                         for field in &items[1..] {
-                            self.bind_pattern_vars(field, _scrutinee_ty);
+                            let t = self.subst.fresh();
+                            self.bind_pattern_vars(field, &t);
                         }
                     }
                 }
             }
+            // Vector/tuple pattern: #[a b] or (a, b) — bind each element
+            // subpattern with its inferred element type.
+            ExprKind::Vec(items) | ExprKind::Tuple(items) => {
+                let resolved = self.subst.resolve(scrutinee_ty);
+                for (i, item) in items.iter().enumerate() {
+                    let elem_ty = match &resolved {
+                        Type::Con(name, params) if name == "Vec" && params.len() == 1 => {
+                            params[0].clone()
+                        }
+                        Type::Tuple(ts) if i < ts.len() => ts[i].clone(),
+                        _ => self.subst.fresh(),
+                    };
+                    self.bind_pattern_vars(item, &elem_ty);
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Is `name` a type the checker knows about (builtin scalar, container,
+    /// declared ADT, or the type currently being defined)?
+    fn is_known_type_name(&self, name: &str, defining: &str) -> bool {
+        matches!(
+            name,
+            "i64"
+                | "Int"
+                | "f64"
+                | "Float"
+                | "Bool"
+                | "String"
+                | "Str"
+                | "Keyword"
+                | "Vec"
+                | "Map"
+                | "Set"
+                | "Tuple"
+                | "Unit"
+        ) || name == defining
+            || self.type_constructors.contains_key(name)
     }
 
     fn name_to_type(&self, name: &str) -> Type {
@@ -5086,6 +5306,35 @@ impl Checker {
                 return std::mem::take(&mut self.errors);
             }
         };
+
+        // Phase 2a: Pre-declare top-level functions so forward references
+        // (including mutual recursion across definitions) resolve. Each name
+        // gets a placeholder type; its real scheme replaces it at the
+        // definition site.
+        for expr in &expanded {
+            if let ExprKind::List(items) = &expr.kind {
+                if items.len() >= 2 {
+                    if let (ExprKind::Symbol(head), ExprKind::Symbol(name)) =
+                        (&items[0].kind, &items[1].kind)
+                    {
+                        if head == "fn" && self.env.get(name).is_none() {
+                            // ∀a. a — each forward use instantiates fresh, so
+                            // uses stay unchecked (and uncoupled) until the
+                            // definition installs the real scheme.
+                            let v = self.subst.fresh_var();
+                            self.env.set_global(
+                                name.clone(),
+                                Scheme {
+                                    bounds: vec![],
+                                    vars: vec![v],
+                                    ty: Type::Var(v),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         // Phase 2: Type check
         for expr in &expanded {

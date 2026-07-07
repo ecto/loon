@@ -346,21 +346,20 @@ impl<'a> Lower<'a> {
             let Some(modpath) = items[1].as_dotted_path() else {
                 continue;
             };
-            // Alias: `[use a/b as c]` → c, else the last path segment.
-            let alias = if items.len() >= 4 {
-                if let (ExprKind::Symbol(kw), ExprKind::Symbol(a)) =
-                    (&items[2].kind, &items[3].kind)
-                {
-                    if kw == "as" {
-                        a.clone()
-                    } else {
-                        modpath.rsplit('/').next().unwrap_or(&modpath).to_string()
-                    }
-                } else {
-                    modpath.rsplit('/').next().unwrap_or(&modpath).to_string()
+            // Alias: `[use a.b :as c]` → c, else the full dotted path (the
+            // interpreter qualifies as `a.b.name`, so we match that).
+            let alias = if items.len() >= 3 {
+                match (&items[2].kind, items.get(3).map(|e| &e.kind)) {
+                    (ExprKind::Keyword(kw), Some(ExprKind::Symbol(a))) if kw == "as" => a.clone(),
+                    // Lenient fallback: accept a bare-symbol `as` too. The
+                    // canonical syntax is the keyword `:as` (what the
+                    // interpreter matches); a bare `as` would otherwise be
+                    // silently ignored here and fail later as NotCallable.
+                    (ExprKind::Symbol(kw), Some(ExprKind::Symbol(a))) if kw == "as" => a.clone(),
+                    _ => modpath.clone(),
                 }
             } else {
-                modpath.rsplit('/').next().unwrap_or(&modpath).to_string()
+                modpath.clone()
             };
 
             let file = crate::module::ModuleCache::resolve_path(&modpath, base);
@@ -384,28 +383,45 @@ impl<'a> Lower<'a> {
             let module_forms = sub.expanded_program.clone();
             // Recurse first so transitive imports land before this module.
             self.collect_imports(&module_forms, &dir, visited, imported, qualified);
+            // Export rule matches the interpreter (module.rs): `pub fn` names
+            // if any are declared, otherwise every top-level fn. `every_fn`
+            // intentionally includes pub fns too — it is the complete set,
+            // used only as the fallback when the module declares no `pub`.
+            let mut pub_fns: Vec<String> = Vec::new();
+            let mut every_fn: Vec<String> = Vec::new();
             for mf in &module_forms {
                 if let ExprKind::List(mitems) = &mf.kind {
                     match mitems.first().map(|e| &e.kind) {
                         // Skip the module's own `use` lines (handled by recursion).
                         Some(ExprKind::Symbol(s)) if s == "use" => continue,
-                        _ => {}
-                    }
-                    // Record qualified names for `pub fn` exports.
-                    if let Some(ExprKind::Symbol(s)) = mitems.first().map(|e| &e.kind) {
-                        if s == "pub" && mitems.len() >= 3 {
+                        Some(ExprKind::Symbol(s)) if s == "fn" && mitems.len() >= 3 => {
+                            if let ExprKind::Symbol(name) = &mitems[1].kind {
+                                every_fn.push(name.clone());
+                            }
+                        }
+                        Some(ExprKind::Symbol(s)) if s == "pub" && mitems.len() >= 4 => {
                             if let (Some(ExprKind::Symbol(inner)), Some(ExprKind::Symbol(name))) = (
                                 mitems.get(1).map(|e| &e.kind),
                                 mitems.get(2).map(|e| &e.kind),
                             ) {
                                 if inner == "fn" {
-                                    qualified.push((alias.clone(), name.clone()));
+                                    pub_fns.push(name.clone());
+                                    every_fn.push(name.clone());
                                 }
                             }
                         }
+                        _ => {}
                     }
                 }
                 imported.push(mf.clone());
+            }
+            let exported = if pub_fns.is_empty() {
+                every_fn
+            } else {
+                pub_fns
+            };
+            for name in exported {
+                qualified.push((alias.clone(), name));
             }
         }
     }
@@ -571,6 +587,12 @@ impl<'a> Lower<'a> {
                         self.emit(Op::Close(r, fid, Vec::new(), expr.span));
                         return r;
                     }
+                    // Physics constants (same set the interpreter registers).
+                    if let Some(v) = Self::physics_const_value(&path) {
+                        let r = self.reg();
+                        self.emit(Op::Lit(r, Lit::Float(v), expr.span));
+                        return r;
+                    }
                 }
                 // Field access
                 let obj = self.lower_expr(inner);
@@ -585,6 +607,19 @@ impl<'a> Lower<'a> {
                 self.emit(Op::Lit(r, Lit::Unit, expr.span));
                 r
             }
+        }
+    }
+
+    /// Namespaced physics constants, mirroring the interpreter's
+    /// `Const.*` registrations in `interp/builtins.rs`.
+    fn physics_const_value(path: &str) -> Option<f64> {
+        match path {
+            "Const.c" => Some(299_792_458.0),
+            "Const.G" => Some(6.674_30e-11),
+            "Const.h" => Some(6.626_070_15e-34),
+            "Const.k-B" => Some(1.380_649e-23),
+            "Const.e-charge" => Some(1.602_176_634e-19),
+            _ => None,
         }
     }
 
@@ -606,6 +641,31 @@ impl<'a> Lower<'a> {
                 self.emit(Op::Adt(r, tag, Vec::new(), span));
                 return r;
             }
+            // First-class use of an arity-N constructor (e.g. `[map Some xs]`)
+            // — wrap it as a closure, like builtins below.
+            let saved_func = self.cur_func;
+            let saved_block = self.cur_block;
+            let saved_next_reg = self.next_reg;
+            let saved_scopes = std::mem::take(&mut self.scopes);
+
+            let func_id = self.begin_func(None, span);
+            self.scopes = vec![HashMap::new()];
+            let params: Vec<Reg> = (0..arity).map(|i| Reg(i as u32)).collect();
+            self.next_reg = arity as u32;
+            self.module.funcs[func_id.0 as usize].params = vec![Ty::Any; arity as usize];
+
+            let result = self.reg();
+            self.emit(Op::Adt(result, tag, params, span));
+            self.seal(End::Ret(result));
+
+            self.cur_func = saved_func;
+            self.cur_block = saved_block;
+            self.next_reg = saved_next_reg;
+            self.scopes = saved_scopes;
+
+            let r = self.reg();
+            self.emit(Op::Close(r, func_id, Vec::new(), span));
+            return r;
         }
         // Registry constants (pi, e) lower to float literals when not shadowed
         if let Some(val) = builtin_const(name) {
@@ -643,10 +703,43 @@ impl<'a> Lower<'a> {
             return r;
         }
 
-        // Fallback: emit as a string literal (will be resolved by the VM)
-        let r = self.reg();
+        // First-class use of a binary operator (e.g. `[fold xs 0 +]`) —
+        // wrap it as an arity-2 closure, mirroring the interpreter's
+        // variadic operator dispatch for the binary case.
+        if let Some(binop) = binop_for(name) {
+            let saved_func = self.cur_func;
+            let saved_block = self.cur_block;
+            let saved_next_reg = self.next_reg;
+            let saved_scopes = std::mem::take(&mut self.scopes);
+
+            let func_id = self.begin_func(None, span);
+            self.scopes = vec![HashMap::new()];
+            self.next_reg = 2;
+            self.module.funcs[func_id.0 as usize].params = vec![Ty::Any, Ty::Any];
+
+            let result = self.reg();
+            self.emit(Op::Bin(result, binop, Reg(0), Reg(1), span));
+            self.seal(End::Ret(result));
+
+            self.cur_func = saved_func;
+            self.cur_block = saved_block;
+            self.next_reg = saved_next_reg;
+            self.scopes = saved_scopes;
+
+            let r = self.reg();
+            self.emit(Op::Close(r, func_id, Vec::new(), span));
+            return r;
+        }
+
+        // Unbound: nothing in scope, no function, ctor, or builtin by this
+        // name. Emit a runtime trap carrying the name so evaluating the
+        // symbol errors loudly ("unbound symbol '<name>'") instead of
+        // silently producing a string value the program never asked for.
+        let name_reg = self.reg();
         let sid = self.intern(name);
-        self.emit(Op::Lit(r, Lit::Str(sid), span));
+        self.emit(Op::Lit(name_reg, Lit::Str(sid), span));
+        let r = self.reg();
+        self.emit(Op::Builtin(r, Built::UnboundSym, vec![name_reg], span));
         r
     }
 
@@ -1109,12 +1202,42 @@ impl<'a> Lower<'a> {
 
         let val = self.lower_expr(val_expr);
 
-        // Bind the name
-        if let ExprKind::Symbol(name) = &binding.kind {
-            self.bind(name, val);
-        }
-        // TODO: destructuring patterns
+        self.lower_let_binding(binding, val);
         val
+    }
+
+    /// Bind a `let` binding form to an already-lowered value: a plain name,
+    /// or a positional vector/tuple destructure (`[let [x y] v]`,
+    /// `[let #[x y] v]`). Destructuring emits a runtime guard that errors
+    /// loudly when the value is not a vector/tuple with at least as many
+    /// elements as binders (extra elements are allowed, Clojure-style) —
+    /// never a silent `()` bind. Map destructuring is still TODO here.
+    fn lower_let_binding(&mut self, binding: &Expr, val: Reg) {
+        match &binding.kind {
+            ExprKind::Symbol(name) => {
+                if name != "_" {
+                    self.bind(name, val);
+                }
+            }
+            ExprKind::List(items) | ExprKind::Vec(items) | ExprKind::Tuple(items) => {
+                let span = binding.span;
+                let expected = self.reg();
+                self.emit(Op::Lit(expected, Lit::Int(items.len() as i64), span));
+                let guard = self.reg();
+                self.emit(Op::Builtin(
+                    guard,
+                    Built::DestructureCheck,
+                    vec![val, expected],
+                    span,
+                ));
+                for (i, item) in items.iter().enumerate() {
+                    let r = self.reg();
+                    self.emit(Op::Field(r, val, Selector::Index(i as u16), item.span));
+                    self.lower_let_binding(item, r);
+                }
+            }
+            _ => {} // TODO: map destructuring patterns
+        }
     }
 
     fn lower_if(&mut self, args: &[Expr], span: Span) -> Reg {
@@ -1318,11 +1441,14 @@ impl<'a> Lower<'a> {
             self.seal(End::Jmp(merge_block, vec![val]));
         }
 
-        // Default block
+        // Default block: no arm matched. On the VM this raises a hard
+        // "no match arm matched value" error (MatchFail carries the
+        // scrutinee for the diagnostic); wasm/native compile MatchFail to
+        // unit via their builtin fallback, preserving prior behavior there.
         self.switch_to(default_block);
-        let unit = self.reg();
-        self.emit(Op::Lit(unit, Lit::Unit, span));
-        self.seal(End::Jmp(merge_block, vec![unit]));
+        let fail = self.reg();
+        self.emit(Op::Builtin(fail, Built::MatchFail, vec![scrutinee], span));
+        self.seal(End::Jmp(merge_block, vec![fail]));
 
         // Merge block
         self.switch_to(merge_block);
@@ -1433,6 +1559,32 @@ impl<'a> Lower<'a> {
                 None
             }
 
+            // Vector/tuple pattern: #[a b] or (a, b) — matches a vector or
+            // tuple of exactly that length (Rust slice-pattern prior), with
+            // element subpatterns matched recursively.
+            ExprKind::Vec(items) | ExprKind::Tuple(items) => {
+                let len_r = self.reg();
+                self.emit(Op::Builtin(len_r, Built::SeqLen, vec![scrutinee], span));
+                let expected = self.reg();
+                self.emit(Op::Lit(expected, Lit::Int(items.len() as i64), span));
+                let mut cond = self.reg();
+                self.emit(Op::Bin(cond, BinOp::Eq, len_r, expected, span));
+                // Element subtests are side-effect free and safe to evaluate
+                // eagerly even when the length test fails (out-of-range Field
+                // yields unit, which simply fails the comparison), so a flat
+                // non-short-circuit And chain is correct.
+                for (i, item) in items.iter().enumerate() {
+                    let elem = self.reg();
+                    self.emit(Op::Field(elem, scrutinee, Selector::Index(i as u16), span));
+                    if let Some(sub) = self.compile_pattern_test(item, elem, span) {
+                        let both = self.reg();
+                        self.emit(Op::Bin(both, BinOp::And, cond, sub, span));
+                        cond = both;
+                    }
+                }
+                Some(cond)
+            }
+
             _ => None,
         }
     }
@@ -1462,6 +1614,19 @@ impl<'a> Lower<'a> {
                         }
                     }
                     let _ = ctor; // used for tag check in full implementation
+                }
+            }
+            ExprKind::Vec(items) | ExprKind::Tuple(items) => {
+                // Vector/tuple pattern: bind each element subpattern.
+                for (i, item) in items.iter().enumerate() {
+                    let r = self.reg();
+                    self.emit(Op::Field(
+                        r,
+                        scrutinee,
+                        Selector::Index(i as u16),
+                        item.span,
+                    ));
+                    self.bind_pattern(item, r);
                 }
             }
             _ => {
@@ -2036,25 +2201,10 @@ impl<'a> Lower<'a> {
                 return r;
             }
 
-            // Check for binary operators
+            // Check for binary operators ("str" is handled as Built::Str
+            // (variadic), not BinOp)
             if arg_exprs.len() == 2 {
-                if let Some(binop) = match name.as_str() {
-                    "+" => Some(BinOp::Add),
-                    "-" => Some(BinOp::Sub),
-                    "*" => Some(BinOp::Mul),
-                    "/" => Some(BinOp::Div),
-                    "%" => Some(BinOp::Rem),
-                    "=" => Some(BinOp::Eq),
-                    "!=" => Some(BinOp::Ne),
-                    "<" => Some(BinOp::Lt),
-                    ">" => Some(BinOp::Gt),
-                    "<=" => Some(BinOp::Le),
-                    ">=" => Some(BinOp::Ge),
-                    "and" => Some(BinOp::And),
-                    "or" => Some(BinOp::Or),
-                    // "str" is handled as Built::Str (variadic), not BinOp
-                    _ => None,
-                } {
+                if let Some(binop) = binop_for(name.as_str()) {
                     let a = self.lower_expr(&arg_exprs[0]);
                     let b = self.lower_expr(&arg_exprs[1]);
                     let r = self.reg();
@@ -2516,6 +2666,27 @@ pub(crate) fn is_special_form(name: &str) -> bool {
             | "catch-errors"
             | "use"
     )
+}
+
+/// Binary operator tag for a symbol, shared by call-position lowering and
+/// first-class operator wrappers in `lower_symbol`.
+fn binop_for(name: &str) -> Option<BinOp> {
+    match name {
+        "+" => Some(BinOp::Add),
+        "-" => Some(BinOp::Sub),
+        "*" => Some(BinOp::Mul),
+        "/" => Some(BinOp::Div),
+        "%" => Some(BinOp::Rem),
+        "=" => Some(BinOp::Eq),
+        "!=" => Some(BinOp::Ne),
+        "<" => Some(BinOp::Lt),
+        ">" => Some(BinOp::Gt),
+        "<=" => Some(BinOp::Le),
+        ">=" => Some(BinOp::Ge),
+        "and" => Some(BinOp::And),
+        "or" => Some(BinOp::Or),
+        _ => None,
+    }
 }
 
 pub(crate) fn is_operator(name: &str) -> bool {

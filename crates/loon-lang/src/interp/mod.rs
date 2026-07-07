@@ -1464,6 +1464,33 @@ pub(crate) fn pattern_matches(
             }
             Ok(false)
         }
+        // Vector/tuple pattern: #[a b] or (a, b) — matches a vector or tuple
+        // of exactly that length (Rust slice-pattern prior), with element
+        // subpatterns matched recursively.
+        ExprKind::Vec(pats) | ExprKind::Tuple(pats) => {
+            let matches_elems = |elems: &[Value],
+                                 bindings: &mut HashMap<String, Value>,
+                                 env: &mut Env|
+             -> Result<bool, InterpError> {
+                if elems.len() != pats.len() {
+                    return Ok(false);
+                }
+                for (pat, val) in pats.iter().zip(elems.iter()) {
+                    if !pattern_matches(pat, val, bindings, env)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            };
+            match value {
+                Value::Vec(v) => {
+                    let elems: Vec<Value> = v.iter().cloned().collect();
+                    matches_elems(&elems, bindings, env)
+                }
+                Value::Tuple(t) => matches_elems(t, bindings, env),
+                _ => Ok(false),
+            }
+        }
         _ => Ok(false),
     }
 }
@@ -2370,7 +2397,7 @@ pub(crate) fn extract_params(expr: &Expr) -> Result<Vec<value::Param>, InterpErr
 pub(crate) fn extract_param(expr: &Expr) -> Result<value::Param, InterpError> {
     match &expr.kind {
         ExprKind::Symbol(s) => Ok(value::Param::Simple(s.clone())),
-        ExprKind::List(items) => {
+        ExprKind::List(items) | ExprKind::Vec(items) | ExprKind::Tuple(items) => {
             let mut inner = Vec::new();
             for item in items {
                 inner.push(extract_param(item)?);
@@ -2409,16 +2436,25 @@ pub(crate) fn bind_param(
             Ok(())
         }
         value::Param::VecDestructure(inner) => {
+            // Too few elements is a loud error, never a silent `()` bind
+            // (extra elements are allowed, Clojure-style).
+            let too_short = |len: usize| {
+                err(&format!(
+                    "destructuring expected at least {} elements, got {}",
+                    inner.len(),
+                    len
+                ))
+            };
             match val {
                 Value::Vec(v) => {
                     for (i, p) in inner.iter().enumerate() {
-                        let v = v.get(i).cloned().unwrap_or(Value::Unit);
+                        let v = v.get(i).cloned().ok_or_else(|| too_short(v.len()))?;
                         bind_param(p, &v, env)?;
                     }
                 }
                 Value::Tuple(v) => {
                     for (i, p) in inner.iter().enumerate() {
-                        let v = v.get(i).cloned().unwrap_or(Value::Unit);
+                        let v = v.get(i).cloned().ok_or_else(|| too_short(v.len()))?;
                         bind_param(p, &v, env)?;
                     }
                 }
