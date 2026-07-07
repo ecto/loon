@@ -546,6 +546,13 @@ fn silent_unit_traps_error_loudly() {
         ("[fn main [] [println [max 5 3]]]", "max requires a vector"),
         ("[fn main [] [println [min #[]]]]", "min: empty vector"),
         (
+            // Non-numeric elements error rather than being silently skipped
+            // (a NaN-keyed skip would return the wrong element). The interp
+            // diverges here: its generic value_cmp orders strings.
+            r#"[fn main [] [println [min #["b" "a"]]]]"#,
+            "min: non-numeric element",
+        ),
+        (
             "[fn main [] [println [assoc #[1 2 3] 0 9]]]",
             "assoc requires a map",
         ),
@@ -562,8 +569,9 @@ fn silent_unit_traps_error_loudly() {
             "EIR error for {src:?} was {msg:?}, expected to contain {want:?}"
         );
         // The interp errors on all of these too — except sqrt, which it
-        // implements (the EIR error names the unported builtin instead).
-        if !src.contains("sqrt") {
+        // implements (the EIR error names the unported builtin instead),
+        // and string min, which its generic value_cmp orders.
+        if !src.contains("sqrt") && !src.contains(r#"#["b" "a"]"#) {
             assert!(interp_output(src).is_err(), "interp must also error: {src}");
         }
     }

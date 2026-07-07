@@ -1626,27 +1626,32 @@ impl Vm {
                         "{name}: empty vector"
                     ))));
                 }
-                // Numeric comparison over ints and floats (mixed allowed);
-                // non-numeric elements compare equal, mirroring Sort above.
-                let key = |v: Val| -> f64 {
+                // Numeric comparison over ints and floats (mixed allowed).
+                // Anything else is a hard error — a NaN-style silent skip
+                // would return the wrong element for mixed vectors.
+                let key = |v: Val| -> Result<f64, VmError> {
                     if v.is_int() {
-                        v.as_int() as f64
+                        Ok(v.as_int() as f64)
                     } else if v.is_float() {
-                        v.as_float()
+                        Ok(v.as_float())
                     } else {
-                        f64::NAN
+                        Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                            "{name}: non-numeric element"
+                        ))))
                     }
                 };
                 let mut best = *items.front().unwrap();
+                let mut best_key = key(best)?;
                 for &item in items.iter().skip(1) {
-                    let ord = key(item).partial_cmp(&key(best));
+                    let item_key = key(item)?;
                     let better = if built == Built::Min {
-                        ord == Some(std::cmp::Ordering::Less)
+                        item_key < best_key
                     } else {
-                        ord == Some(std::cmp::Ordering::Greater)
+                        item_key > best_key
                     };
                     if better {
                         best = item;
+                        best_key = item_key;
                     }
                 }
                 Ok(best)
