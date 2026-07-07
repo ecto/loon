@@ -648,6 +648,7 @@ fn try_failure() {
 }
 
 #[test]
+#[allow(clippy::approx_constant)]
 fn stdlib_number_parsing() {
     assert_eq!(run(r#"[int "42"]"#), Value::Int(42));
     assert_eq!(run(r#"[float "3.14"]"#), Value::Float(3.14));

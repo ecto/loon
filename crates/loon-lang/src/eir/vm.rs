@@ -3398,6 +3398,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn vm_int_float_parse() {
         // int/float parse strings (their declared type is Str -> Int/Float).
         assert_eq!(run(r#"[int "42"]"#).as_int(), 42);

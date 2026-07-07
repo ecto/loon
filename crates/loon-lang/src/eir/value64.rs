@@ -230,6 +230,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn roundtrip_float() {
         for f in [0.0, 1.0, -1.0, 3.14159, f64::INFINITY, f64::NEG_INFINITY] {
             let v = Val::float(f);
