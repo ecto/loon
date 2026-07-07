@@ -373,6 +373,14 @@ pub enum Built {
     SomeP,
     /// `none?` — true for None/unit (complement of `some?`).
     NoneP,
+    /// Non-exhaustive `match` fell through every arm. Takes the scrutinee;
+    /// the VM raises a "no match arm matched value" error. Wasm/native fall
+    /// back to unit (their builtin fallback), preserving prior behavior there.
+    MatchFail,
+    /// A symbol that resolved to nothing at lowering time. Takes the interned
+    /// name as a string; the VM raises "unbound symbol '<name>'" the moment
+    /// the symbol is evaluated, instead of silently producing a string value.
+    UnboundSym,
     /// Internal (not name-resolvable): length of a vector or tuple, or -1
     /// for any other value. Emitted by pattern compilation so `#[a b]` can
     /// test "is a sequence of length 2" in one comparison.

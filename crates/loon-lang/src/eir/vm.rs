@@ -1151,9 +1151,15 @@ impl Vm {
                 }
             }
 
-            Op::Builtin(dst, built, args, _) => {
+            Op::Builtin(dst, built, args, span) => {
                 let vals = self.read_regs(args);
-                let result = self.exec_builtin(*built, &vals)?;
+                let result = self.exec_builtin(*built, &vals).map_err(|e| {
+                    if e.span.is_none() {
+                        e.with_span(*span)
+                    } else {
+                        e
+                    }
+                })?;
                 self.w(*dst, result);
             }
 
@@ -1510,7 +1516,11 @@ impl Vm {
                         map.insert(key, val); // O(log₃₂ n) with structural sharing
                         Ok(self.alloc(Obj::Map(map)))
                     }
-                    _ => Ok(Val::UNIT),
+                    // Same wording as the interpreter — never a silent `()`
+                    // (issue #21: assoc on a vector used to return unit).
+                    _ => Err(VmError::new(VmErrorKind::BuiltinType(
+                        "assoc requires a map".to_string(),
+                    ))),
                 }
             }
             Built::Range => {
@@ -1639,33 +1649,50 @@ impl Vm {
                     _ => Ok(Val::int(0)),
                 }
             }
-            Built::Min => {
+            Built::Min | Built::Max => {
+                // Vector-only, like the interpreter: binary `[min 1 2]` and
+                // an empty vector are hard errors, never a silent `()`.
+                let name = if built == Built::Min { "min" } else { "max" };
                 let coll = args.first().copied().unwrap_or(Val::UNIT);
-                match self.get_obj(coll) {
-                    Some(Obj::Vec(items)) => {
-                        let min = items
-                            .iter()
-                            .filter(|v| v.is_int())
-                            .map(|v| v.as_int())
-                            .min();
-                        Ok(min.map(Val::int).unwrap_or(Val::UNIT))
-                    }
-                    _ => Ok(Val::UNIT),
+                let Some(Obj::Vec(items)) = self.get_obj(coll) else {
+                    return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "{name} requires a vector"
+                    ))));
+                };
+                if items.is_empty() {
+                    return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "{name}: empty vector"
+                    ))));
                 }
-            }
-            Built::Max => {
-                let coll = args.first().copied().unwrap_or(Val::UNIT);
-                match self.get_obj(coll) {
-                    Some(Obj::Vec(items)) => {
-                        let max = items
-                            .iter()
-                            .filter(|v| v.is_int())
-                            .map(|v| v.as_int())
-                            .max();
-                        Ok(max.map(Val::int).unwrap_or(Val::UNIT))
+                // Numeric comparison over ints and floats (mixed allowed).
+                // Anything else is a hard error — a NaN-style silent skip
+                // would return the wrong element for mixed vectors.
+                let key = |v: Val| -> Result<f64, VmError> {
+                    if v.is_int() {
+                        Ok(v.as_int() as f64)
+                    } else if v.is_float() {
+                        Ok(v.as_float())
+                    } else {
+                        Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                            "{name}: non-numeric element"
+                        ))))
                     }
-                    _ => Ok(Val::UNIT),
+                };
+                let mut best = *items.front().unwrap();
+                let mut best_key = key(best)?;
+                for &item in items.iter().skip(1) {
+                    let item_key = key(item)?;
+                    let better = if built == Built::Min {
+                        item_key < best_key
+                    } else {
+                        item_key > best_key
+                    };
+                    if better {
+                        best = item;
+                        best_key = item_key;
+                    }
                 }
+                Ok(best)
             }
             Built::Cons => {
                 let val = args.first().copied().unwrap_or(Val::UNIT);
@@ -1798,6 +1825,19 @@ impl Vm {
                 // unit (same set as the interpreter's nil?).
                 let v = args.first().copied().unwrap_or(Val::UNIT);
                 Ok(Val::bool(v.is_none() || v.is_unit()))
+            }
+            Built::MatchFail => {
+                let scrutinee = args.first().copied().unwrap_or(Val::UNIT);
+                let rendered = self.val_to_string_inner(scrutinee, true);
+                Err(VmError::new(VmErrorKind::NoMatch(rendered)))
+            }
+            Built::UnboundSym => {
+                let name = args
+                    .first()
+                    .and_then(|v| self.get_str(*v))
+                    .unwrap_or_default()
+                    .to_string();
+                Err(VmError::new(VmErrorKind::UnboundSymbol(name)))
             }
             Built::Keys => {
                 let m = args.first().copied().unwrap_or(Val::UNIT);
@@ -3090,6 +3130,19 @@ pub enum VmErrorKind {
     /// here would let programs believe they got a valid quotient. The `&str`
     /// names the operation ("division" or "modulo") for the diagnostic.
     DivideByZero(&'static str),
+    /// Evaluated a symbol that resolved to nothing at lowering time.
+    /// Silently treating it as a string value would let programs run with
+    /// misspelled or missing names. Wording matches the interpreter's
+    /// "unbound symbol '<name>'" so both backends fail the same way.
+    UnboundSymbol(String),
+    /// A `match` fell through every arm. Silently returning `()` would hide
+    /// non-exhaustive matches. The `String` is the rendered scrutinee.
+    /// Wording matches the interpreter's "no match arm matched value: <v>".
+    NoMatch(String),
+    /// A builtin was given an argument type/shape it does not support (e.g.
+    /// binary `[min 1 2]`, `assoc` on a vector). The `String` is the full
+    /// message, matching the interpreter's wording ("min requires a vector").
+    BuiltinType(String),
     /// A destructuring `let` (or handler binding) was given a value that is
     /// not a vector/tuple or has too few elements. Silently binding `()`
     /// here would let programs proceed with wrong data.
@@ -3124,6 +3177,9 @@ impl VmErrorKind {
             VmErrorKind::ReplayDivergence(_) => "replay-divergence",
             VmErrorKind::UnhandledEffect(_) => "unhandled-effect",
             VmErrorKind::DivideByZero(_) => "divide-by-zero",
+            VmErrorKind::UnboundSymbol(_) => "unbound-symbol",
+            VmErrorKind::NoMatch(_) => "no-match",
+            VmErrorKind::BuiltinType(_) => "builtin-type-error",
             VmErrorKind::DestructureMismatch(_) => "destructure-mismatch",
         }
     }
@@ -3172,6 +3228,15 @@ impl std::fmt::Display for VmError {
                 // "modulo by zero" so both backends fail the same way.
                 write!(f, "{kind} by zero")
             }
+            VmErrorKind::UnboundSymbol(name) => {
+                // Same wording as the interpreter, so both backends fail
+                // the same way.
+                write!(f, "unbound symbol '{name}'")
+            }
+            VmErrorKind::NoMatch(scrutinee) => {
+                write!(f, "no match arm matched value: {scrutinee}")
+            }
+            VmErrorKind::BuiltinType(msg) => write!(f, "{msg}"),
             VmErrorKind::DestructureMismatch(msg) => {
                 // Wording matches the interpreter's destructuring errors so
                 // both backends fail the same way.
