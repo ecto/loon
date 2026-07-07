@@ -399,9 +399,9 @@ fn int_divide_by_zero_raises_on_both_backends() {
 /// discards the continuation like the EIR VM, so it lives in CORPUS as
 /// `effect-abort-discards-continuation` and is enforced for agreement.)
 ///
-/// - fold-builtin-arg: a binary builtin (`+`) passed as a HOF function. The EIR
-///   VM wraps a builtin used as a value in an arity-1 closure, so binary use via
-///   fold misfires (0); the interp dispatches variadically (10). interp correct.
+/// (The fold-builtin-arg divergence has been RETIRED: the EIR VM now wraps a
+/// first-class binary operator in an arity-2 closure, so `[fold xs 0 +]`
+/// agrees with the interp's variadic dispatch. Asserted below as CONVERGED.)
 #[test]
 fn known_divergences_are_pinned() {
     // CONVERGED (2026-07-01, phase-2): an uncaught Fail raised in a handler
@@ -422,16 +422,20 @@ fn known_divergences_are_pinned() {
         "interp uncaught clause-Fail errors"
     );
 
+    // CONVERGED (2026-07-07): a binary operator (`+`) passed as a HOF
+    // function. The EIR VM used to wrap it in an arity-1 closure (misfiring
+    // to 0); lower_symbol now wraps first-class operators in an arity-2
+    // closure, matching the interp's variadic dispatch for the binary case.
     let fold_builtin = "[fn main [] [println [fold #[1 2 3 4] 0 +]]]";
     assert_eq!(
         eir_output(fold_builtin).as_deref(),
-        Ok("0"),
-        "EIR builtin-as-fold-fn (gap)"
+        Ok("10"),
+        "EIR operator-as-fold-fn"
     );
     assert_eq!(
         interp_output(fold_builtin).as_deref(),
         Ok("10"),
-        "interp builtin-as-fold-fn"
+        "interp operator-as-fold-fn"
     );
 
     // nested-handlers: two effects handled by two stacked handlers. The EIR VM
@@ -520,4 +524,62 @@ fn known_divergences_are_pinned() {
         Ok("ok"),
         "interp try-retry captures (broken)"
     );
+}
+
+/// The EIR VM used to silently produce `()` in several places the interp
+/// errors loudly (unbound symbols, binary min/max, assoc on a vector,
+/// non-exhaustive match). All are now hard errors on BOTH backends, with the
+/// EIR message matching the interp's wording.
+#[test]
+fn silent_unit_traps_error_loudly() {
+    // (program, expected substring in the EIR error)
+    let cases: &[(&str, &str)] = &[
+        (
+            "[fn main [] [println [reduce f 0 #[1 2 3]]]]",
+            "unbound symbol 'f'",
+        ),
+        (
+            "[fn main [] [println [sqrt 4]]]",
+            "unbound symbol 'sqrt'", // interp has sqrt; EIR names the gap
+        ),
+        ("[fn main [] [println [min 1 2]]]", "min requires a vector"),
+        ("[fn main [] [println [max 5 3]]]", "max requires a vector"),
+        ("[fn main [] [println [min #[]]]]", "min: empty vector"),
+        (
+            "[fn main [] [println [assoc #[1 2 3] 0 9]]]",
+            "assoc requires a map",
+        ),
+        (
+            r#"[fn main [] [println [match 5 1 "one" 2 "two"]]]"#,
+            "no match arm matched value: 5",
+        ),
+    ];
+    for (src, want) in cases {
+        let eir = eir_output(src);
+        let msg = eir.expect_err(&format!("EIR must error: {src}"));
+        assert!(
+            msg.contains(want),
+            "EIR error for {src:?} was {msg:?}, expected to contain {want:?}"
+        );
+        // The interp errors on all of these too — except sqrt, which it
+        // implements (the EIR error names the unported builtin instead).
+        if !src.contains("sqrt") {
+            assert!(interp_output(src).is_err(), "interp must also error: {src}");
+        }
+    }
+
+    // Loud-but-correct counterparts: the supported forms still work and agree.
+    let ok_cases: &[(&str, &str)] = &[
+        ("[fn main [] [println [min #[3 1 2]]]]", "1"),
+        ("[fn main [] [println [max #[3 1 2]]]]", "3"),
+        (
+            r#"[fn main [] [println [get [assoc {:a 1} :b 2] :b]]]"#,
+            "2",
+        ),
+        (r#"[fn main [] [println [match 2 1 "one" 2 "two"]]]"#, "two"),
+    ];
+    for (src, want) in ok_cases {
+        assert_eq!(eir_output(src).as_deref(), Ok(*want), "EIR: {src}");
+        assert_eq!(interp_output(src).as_deref(), Ok(*want), "interp: {src}");
+    }
 }

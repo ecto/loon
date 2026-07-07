@@ -571,6 +571,12 @@ impl<'a> Lower<'a> {
                         self.emit(Op::Close(r, fid, Vec::new(), expr.span));
                         return r;
                     }
+                    // Physics constants (same set the interpreter registers).
+                    if let Some(v) = Self::physics_const_value(&path) {
+                        let r = self.reg();
+                        self.emit(Op::Lit(r, Lit::Float(v), expr.span));
+                        return r;
+                    }
                 }
                 // Field access
                 let obj = self.lower_expr(inner);
@@ -585,6 +591,19 @@ impl<'a> Lower<'a> {
                 self.emit(Op::Lit(r, Lit::Unit, expr.span));
                 r
             }
+        }
+    }
+
+    /// Namespaced physics constants, mirroring the interpreter's
+    /// `Const.*` registrations in `interp/builtins.rs`.
+    fn physics_const_value(path: &str) -> Option<f64> {
+        match path {
+            "Const.c" => Some(299_792_458.0),
+            "Const.G" => Some(6.674_30e-11),
+            "Const.h" => Some(6.626_070_15e-34),
+            "Const.k-B" => Some(1.380_649e-23),
+            "Const.e-charge" => Some(1.602_176_634e-19),
+            _ => None,
         }
     }
 
@@ -606,6 +625,31 @@ impl<'a> Lower<'a> {
                 self.emit(Op::Adt(r, tag, Vec::new(), span));
                 return r;
             }
+            // First-class use of an arity-N constructor (e.g. `[map Some xs]`)
+            // — wrap it as a closure, like builtins below.
+            let saved_func = self.cur_func;
+            let saved_block = self.cur_block;
+            let saved_next_reg = self.next_reg;
+            let saved_scopes = std::mem::take(&mut self.scopes);
+
+            let func_id = self.begin_func(None, span);
+            self.scopes = vec![HashMap::new()];
+            let params: Vec<Reg> = (0..arity).map(|i| Reg(i as u32)).collect();
+            self.next_reg = arity as u32;
+            self.module.funcs[func_id.0 as usize].params = vec![Ty::Any; arity as usize];
+
+            let result = self.reg();
+            self.emit(Op::Adt(result, tag, params, span));
+            self.seal(End::Ret(result));
+
+            self.cur_func = saved_func;
+            self.cur_block = saved_block;
+            self.next_reg = saved_next_reg;
+            self.scopes = saved_scopes;
+
+            let r = self.reg();
+            self.emit(Op::Close(r, func_id, Vec::new(), span));
+            return r;
         }
         // Check if it's a builtin — wrap as a closure for first-class use
         if let Some(built) = self.resolve_builtin(name) {
@@ -637,10 +681,43 @@ impl<'a> Lower<'a> {
             return r;
         }
 
-        // Fallback: emit as a string literal (will be resolved by the VM)
-        let r = self.reg();
+        // First-class use of a binary operator (e.g. `[fold xs 0 +]`) —
+        // wrap it as an arity-2 closure, mirroring the interpreter's
+        // variadic operator dispatch for the binary case.
+        if let Some(binop) = binop_for(name) {
+            let saved_func = self.cur_func;
+            let saved_block = self.cur_block;
+            let saved_next_reg = self.next_reg;
+            let saved_scopes = std::mem::take(&mut self.scopes);
+
+            let func_id = self.begin_func(None, span);
+            self.scopes = vec![HashMap::new()];
+            self.next_reg = 2;
+            self.module.funcs[func_id.0 as usize].params = vec![Ty::Any, Ty::Any];
+
+            let result = self.reg();
+            self.emit(Op::Bin(result, binop, Reg(0), Reg(1), span));
+            self.seal(End::Ret(result));
+
+            self.cur_func = saved_func;
+            self.cur_block = saved_block;
+            self.next_reg = saved_next_reg;
+            self.scopes = saved_scopes;
+
+            let r = self.reg();
+            self.emit(Op::Close(r, func_id, Vec::new(), span));
+            return r;
+        }
+
+        // Unbound: nothing in scope, no function, ctor, or builtin by this
+        // name. Emit a runtime trap carrying the name so evaluating the
+        // symbol errors loudly ("unbound symbol '<name>'") instead of
+        // silently producing a string value the program never asked for.
+        let name_reg = self.reg();
         let sid = self.intern(name);
-        self.emit(Op::Lit(r, Lit::Str(sid), span));
+        self.emit(Op::Lit(name_reg, Lit::Str(sid), span));
+        let r = self.reg();
+        self.emit(Op::Builtin(r, Built::UnboundSym, vec![name_reg], span));
         r
     }
 
@@ -1312,11 +1389,14 @@ impl<'a> Lower<'a> {
             self.seal(End::Jmp(merge_block, vec![val]));
         }
 
-        // Default block
+        // Default block: no arm matched. On the VM this raises a hard
+        // "no match arm matched value" error (MatchFail carries the
+        // scrutinee for the diagnostic); wasm/native compile MatchFail to
+        // unit via their builtin fallback, preserving prior behavior there.
         self.switch_to(default_block);
-        let unit = self.reg();
-        self.emit(Op::Lit(unit, Lit::Unit, span));
-        self.seal(End::Jmp(merge_block, vec![unit]));
+        let fail = self.reg();
+        self.emit(Op::Builtin(fail, Built::MatchFail, vec![scrutinee], span));
+        self.seal(End::Jmp(merge_block, vec![fail]));
 
         // Merge block
         self.switch_to(merge_block);
@@ -2030,25 +2110,10 @@ impl<'a> Lower<'a> {
                 return r;
             }
 
-            // Check for binary operators
+            // Check for binary operators ("str" is handled as Built::Str
+            // (variadic), not BinOp)
             if arg_exprs.len() == 2 {
-                if let Some(binop) = match name.as_str() {
-                    "+" => Some(BinOp::Add),
-                    "-" => Some(BinOp::Sub),
-                    "*" => Some(BinOp::Mul),
-                    "/" => Some(BinOp::Div),
-                    "%" => Some(BinOp::Rem),
-                    "=" => Some(BinOp::Eq),
-                    "!=" => Some(BinOp::Ne),
-                    "<" => Some(BinOp::Lt),
-                    ">" => Some(BinOp::Gt),
-                    "<=" => Some(BinOp::Le),
-                    ">=" => Some(BinOp::Ge),
-                    "and" => Some(BinOp::And),
-                    "or" => Some(BinOp::Or),
-                    // "str" is handled as Built::Str (variadic), not BinOp
-                    _ => None,
-                } {
+                if let Some(binop) = binop_for(name.as_str()) {
                     let a = self.lower_expr(&arg_exprs[0]);
                     let b = self.lower_expr(&arg_exprs[1]);
                     let r = self.reg();
@@ -2464,6 +2529,27 @@ pub(crate) fn is_special_form(name: &str) -> bool {
             | "catch-errors"
             | "use"
     )
+}
+
+/// Binary operator tag for a symbol, shared by call-position lowering and
+/// first-class operator wrappers in `lower_symbol`.
+fn binop_for(name: &str) -> Option<BinOp> {
+    match name {
+        "+" => Some(BinOp::Add),
+        "-" => Some(BinOp::Sub),
+        "*" => Some(BinOp::Mul),
+        "/" => Some(BinOp::Div),
+        "%" => Some(BinOp::Rem),
+        "=" => Some(BinOp::Eq),
+        "!=" => Some(BinOp::Ne),
+        "<" => Some(BinOp::Lt),
+        ">" => Some(BinOp::Gt),
+        "<=" => Some(BinOp::Le),
+        ">=" => Some(BinOp::Ge),
+        "and" => Some(BinOp::And),
+        "or" => Some(BinOp::Or),
+        _ => None,
+    }
 }
 
 pub(crate) fn is_operator(name: &str) -> bool {
