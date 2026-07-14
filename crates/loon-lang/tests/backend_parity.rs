@@ -216,6 +216,13 @@ const CORPUS: &[(&str, &str)] = &[
         "map-eq-order-independent",
         "[fn main [] [println [= {:a 1 :b 2} {:b 2 :a 1}]]]",
     ),
+    (
+        // assert-eq must use the same structural equality as `=` — the EIR VM
+        // used to compare raw heap handles, so two separately-allocated but
+        // equal maps failed the assertion.
+        "assert-eq-structural",
+        "[fn main [] [assert-eq {:a 1 :b \"x\"} {:b \"x\" :a 1}] [println \"ok\"]]",
+    ),
     // map destructuring in let: `{name name}` shorthand binds a key to its
     // value; both backends must bind the names (the EIR VM used to drop the
     // pattern silently and bind nothing). Present keys read through.

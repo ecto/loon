@@ -2608,7 +2608,7 @@ impl Vm {
                 // [assert-eq actual expected] → Unit or panic
                 let actual = args.first().copied().unwrap_or(Val::UNIT);
                 let expected = args.get(1).copied().unwrap_or(Val::UNIT);
-                if actual == expected {
+                if self.val_eq(actual, expected) {
                     Ok(Val::UNIT)
                 } else {
                     let actual_s = self.val_to_string(actual);
