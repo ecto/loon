@@ -3610,6 +3610,10 @@ impl Checker {
                 // form `{IO Fail}` — all symbols, with a body following. A
                 // keyword-keyed map here is the function's body (a record
                 // literal), and the runtimes treat any trailing map as body.
+                // The body requirement is deliberate: a trailing map is always
+                // the body, so `[fn f [] {IO Fail}]` is a fn returning that
+                // map, not an annotated fn with an empty body. That matches the
+                // runtimes, which only ever skip a `Set` here.
                 let is_annotation = match &args[body_start].kind {
                     ExprKind::Set(_) => true,
                     ExprKind::Map(pairs) => {
