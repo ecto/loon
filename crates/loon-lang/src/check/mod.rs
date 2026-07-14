@@ -3606,7 +3606,26 @@ impl Checker {
             let mut body_start = 1;
             let mut declared_effects: Option<EffectSet> = None;
             if body_start < args.len() {
-                if matches!(&args[body_start].kind, ExprKind::Set(_) | ExprKind::Map(_)) {
+                // A Map only counts as an effect annotation in the parser-quirk
+                // form `{IO Fail}` — all symbols, with a body following. A
+                // keyword-keyed map here is the function's body (a record
+                // literal), and the runtimes treat any trailing map as body.
+                // The body requirement is deliberate: a trailing map is always
+                // the body, so `[fn f [] {IO Fail}]` is a fn returning that
+                // map, not an annotated fn with an empty body. That matches the
+                // runtimes, which only ever skip a `Set` here.
+                let is_annotation = match &args[body_start].kind {
+                    ExprKind::Set(_) => true,
+                    ExprKind::Map(pairs) => {
+                        body_start + 1 < args.len()
+                            && pairs.iter().all(|(k, v)| {
+                                matches!(k.kind, ExprKind::Symbol(_))
+                                    && matches!(v.kind, ExprKind::Symbol(_))
+                            })
+                    }
+                    _ => false,
+                };
+                if is_annotation {
                     declared_effects = Some(self.parse_effect_set(&args[body_start]));
                     body_start += 1;
                 }
@@ -4330,22 +4349,27 @@ impl Checker {
     /// destructuring pattern. Each key symbol is bound to the map's value
     /// type; a distinct default expression is inferred and unified against it.
     fn bind_map_destructure(&mut self, pairs: &[(Expr, Expr)], val_ty: &Type) {
-        // Recover the element type from `Map Keyword v`; otherwise fall back to
-        // a fresh var and constrain the source to be a keyword-keyed map.
-        let elem_ty = match self.subst.resolve(val_ty) {
-            Type::Con(ref name, ref targs) if name == "Map" && targs.len() == 2 => targs[1].clone(),
-            _ => {
-                let elem = self.subst.fresh();
-                let map_ty = Type::Con("Map".to_string(), vec![Type::Keyword, elem.clone()]);
-                let _ = unify(&mut self.subst, val_ty, &map_ty);
-                elem
+        // A `Map Keyword v` source gives every binding the shared element
+        // type `v`. Any other source (record literal, function param, …) is
+        // constrained per key with an open record row, so each field keeps
+        // its own type and extra fields on the source stay allowed.
+        let map_elem = match self.subst.resolve(val_ty) {
+            Type::Con(ref name, ref targs) if name == "Map" && targs.len() == 2 => {
+                Some(targs[1].clone())
             }
+            _ => None,
         };
 
         for (k, v) in pairs {
             let name = match &k.kind {
                 ExprKind::Symbol(s) => s,
                 _ => continue,
+            };
+            // Like the total `get` builtin, a missing key binds () at
+            // runtime, so the row constraint is lenient rather than an error.
+            let elem_ty = match &map_elem {
+                Some(e) => e.clone(),
+                None => self.infer_record_get_lenient(val_ty, name),
             };
             // A value symbol identical to the key is shorthand (no default);
             // anything else is a default expression, whose type must match the
@@ -6518,6 +6542,51 @@ mod tests {
         checker.push_unify_error(err, Span::ZERO);
         assert_eq!(checker.errors.len(), 1);
         assert_eq!(checker.errors[0].code, ErrorCode::E0403);
+    }
+
+    #[test]
+    fn record_body_is_not_effect_annotation() {
+        // Regression: a fn whose body is a map/record literal used to have
+        // that literal swallowed as a `{IO Fail}`-style effect annotation,
+        // typing the fn as returning () and breaking callers (E0200).
+        let errors = check_errors(
+            "[fn mk [] {:a 1}] \
+             [fn f [r] [get r :a]] \
+             [fn main [] [IO.println [str [f [mk]]]]]",
+        );
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        // The quirk form `{IO Fail}` (all symbols, body follows) still parses
+        // as a declared effect set.
+        let errors = check_errors("[fn f [] {IO Fail} [IO.println \"hi\"] 1] [fn main [] [f]]");
+        assert!(errors.is_empty(), "errors: {errors:?}");
+    }
+
+    #[test]
+    fn map_destructure_record_fields_keep_own_types() {
+        // Regression: `[let {log log val val} w]` on a fn param used to force
+        // `w : Map Keyword v` with ONE shared value type, rejecting record
+        // arguments with heterogeneous fields. Each key must get its own
+        // field type via an open record row.
+        let errors = check_errors(
+            "[fn act [mon m w] \
+               [let t [get mon :tensor]] \
+               [let {log log val val} w] \
+               {:log [t m log] :val val}] \
+             [fn pure [mon a] {:log [get mon :unit] :val a}] \
+             [fn mk [] {:unit \"\" :tensor [fn [m n] [str m n]]}] \
+             [fn main [] \
+               [let x [act [mk] \"s1;\" [act [mk] \"s2;\" [pure [mk] \"done\"]]]] \
+               [let {log log val val} x] \
+               [IO.println [str log val]]]",
+        );
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        // Heterogeneous fields in one destructure: log String, val Int.
+        let errors = check_errors(
+            "[fn main [] \
+               [let {log log val val} {:log \"x\" :val 41}] \
+               [IO.println [str log [+ val 1]]]]",
+        );
+        assert!(errors.is_empty(), "errors: {errors:?}");
     }
 
     // --- Row polymorphism / Record tests ---
