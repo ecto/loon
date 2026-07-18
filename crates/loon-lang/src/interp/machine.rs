@@ -1099,7 +1099,7 @@ impl Machine {
                 }
             }
 
-            other => Err(err_at(format!("not callable: {other}"), span)),
+            other => Err(err_at(super::not_callable_msg(&other), span)),
         }
     }
 
