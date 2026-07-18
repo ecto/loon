@@ -1858,7 +1858,11 @@ fn calling_a_number_names_the_vector_trap() {
     // say so and point at #[...] / separate args, with a span.
     let exprs = parse("[30 20 -1]").expect("parse failed");
     let e = eval_program(&exprs).unwrap_err();
-    assert!(e.message.contains("30 is a number, not a function"), "{}", e.message);
+    assert!(
+        e.message.contains("30 is a number, not a function"),
+        "{}",
+        e.message
+    );
     assert!(e.message.contains("#["), "{}", e.message);
     assert!(e.span.is_some(), "not-callable error must carry a span");
 }
@@ -1867,7 +1871,11 @@ fn calling_a_number_names_the_vector_trap() {
 fn calling_a_number_names_the_vector_trap_vm() {
     let exprs = parse("[30 20 -1]").expect("parse failed");
     let e = eval_program_vm(&exprs).unwrap_err();
-    assert!(e.message.contains("30 is a number, not a function"), "{}", e.message);
+    assert!(
+        e.message.contains("30 is a number, not a function"),
+        "{}",
+        e.message
+    );
 }
 
 #[test]
@@ -1909,5 +1917,9 @@ fn signature_of_builtin() {
 fn signature_of_non_fn_errors() {
     let exprs = parse("[signature 5]").expect("parse failed");
     let e = eval_program(&exprs).unwrap_err();
-    assert!(e.message.contains("signature requires a function"), "{}", e.message);
+    assert!(
+        e.message.contains("signature requires a function"),
+        "{}",
+        e.message
+    );
 }

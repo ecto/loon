@@ -472,11 +472,7 @@ impl Checker {
                 Scheme {
                     bounds: vec![],
                     vars: vec![tva],
-                    ty: Type::Fn(
-                        vec![Type::Var(tva)],
-                        Box::new(Type::Str),
-                        EffectRow::pure(),
-                    ),
+                    ty: Type::Fn(vec![Type::Var(tva)], Box::new(Type::Str), EffectRow::pure()),
                 },
             );
         }
