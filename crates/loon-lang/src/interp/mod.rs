@@ -103,6 +103,20 @@ pub fn err_at(msg: impl Into<String>, span: Span) -> InterpError {
     e
 }
 
+/// Message for applying a non-callable value. When the callee is a number
+/// the likely cause is a `[x y z]` vector-literal habit from other languages,
+/// so name it and show the two correct spellings.
+pub(crate) fn not_callable_msg(func: &Value) -> String {
+    match func {
+        Value::Int(_) | Value::Float(_) => format!(
+            "not callable: {func} — {func} is a number, not a function. \
+             loon has no [x y z] vector syntax; write #[{func} ...] for a vector, \
+             or pass components as separate arguments, e.g. [translate 30 20 -1 solid]"
+        ),
+        _ => format!("not callable: {func}"),
+    }
+}
+
 thread_local! {
     /// SplitMix64 state for the `Rand` builtin effect (None = unseeded).
     static RAND_STATE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
@@ -1124,7 +1138,7 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                     CALL_STACK.with(|s| s.borrow_mut().pop());
                     result
                 }
-                _ => Err(err_at(format!("not callable: {func}"), head.span)),
+                _ => Err(err_at(not_callable_msg(&func), head.span)),
             }
         }
     }
@@ -1311,7 +1325,7 @@ fn eval_pipe(args: &[Expr], env: &mut Env) -> IResult {
                 val = match func {
                     Value::Fn(lf) => call_fn(&lf, &call_args, env, step.span)?,
                     Value::Builtin(name, f) => f(&name, &call_args)?,
-                    _ => return Err(err(format!("not callable in pipe: {func}"))),
+                    _ => return Err(err(format!("in pipe: {}", not_callable_msg(&func)))),
                 };
             }
             ExprKind::Symbol(_) => {
@@ -1319,7 +1333,7 @@ fn eval_pipe(args: &[Expr], env: &mut Env) -> IResult {
                 val = match func {
                     Value::Fn(lf) => call_fn(&lf, &[val], env, step.span)?,
                     Value::Builtin(name, f) => f(&name, &[val])?,
-                    _ => return Err(err(format!("not callable in pipe: {func}"))),
+                    _ => return Err(err(format!("in pipe: {}", not_callable_msg(&func)))),
                 };
             }
             _ => return Err(err("pipe step must be a list or symbol")),

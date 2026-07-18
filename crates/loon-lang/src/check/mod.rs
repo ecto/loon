@@ -459,6 +459,28 @@ impl Checker {
             );
         }
 
+        // signature: ∀a. a → Str (accepts any fn value, returns its signature)
+        {
+            let a = self.subst.fresh();
+            let tva = if let Type::Var(v) = a {
+                v
+            } else {
+                unreachable!()
+            };
+            self.env.set_global(
+                "signature".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![tva],
+                    ty: Type::Fn(
+                        vec![Type::Var(tva)],
+                        Box::new(Type::Str),
+                        EffectRow::pure(),
+                    ),
+                },
+            );
+        }
+
         // println: ∀a. a → ()
         {
             let a = self.subst.fresh();

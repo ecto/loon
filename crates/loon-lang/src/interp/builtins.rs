@@ -107,6 +107,46 @@ pub fn register_builtins(env: &mut Env) {
         };
     }
 
+    builtin!(env, "signature", |_, args: &[Value]| {
+        if args.len() != 1 {
+            return Err(err("signature requires exactly 1 argument (a function)"));
+        }
+        fn param_str(p: &super::value::Param) -> String {
+            match p {
+                super::value::Param::Simple(n) => n.clone(),
+                super::value::Param::Rest(n) => format!("& {n}"),
+                super::value::Param::VecDestructure(ps) => {
+                    let inner: Vec<String> = ps.iter().map(param_str).collect();
+                    format!("#[{}]", inner.join(" "))
+                }
+                super::value::Param::MapDestructure(entries) => {
+                    let keys: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
+                    format!("{{{}}}", keys.join(" "))
+                }
+            }
+        }
+        match &args[0] {
+            Value::Fn(lf) => {
+                let name = lf.name.as_deref().unwrap_or("fn");
+                let clauses: Vec<String> = lf
+                    .clauses
+                    .iter()
+                    .map(|(params, _)| {
+                        let ps: Vec<String> = params.iter().map(param_str).collect();
+                        if ps.is_empty() {
+                            format!("[{name}]")
+                        } else {
+                            format!("[{name} {}]", ps.join(" "))
+                        }
+                    })
+                    .collect();
+                Ok(Value::Str(clauses.join(" | ").into()))
+            }
+            Value::Builtin(name, _) => Ok(Value::Str(format!("[{name} ...] (builtin)").into())),
+            other => Err(err(format!("signature requires a function, got {other}"))),
+        }
+    });
+
     builtin!(env, "+", |_, args: &[Value]| {
         if args.len() < 2 {
             return Err(err("+ requires at least 2 arguments"));
@@ -1792,7 +1832,7 @@ pub fn apply_value(func: &Value, args: &[Value]) -> IResult {
             call_fn(lf, args, &mut env, crate::syntax::Span::ZERO)
         }
         Value::Builtin(name, f) => f(name, args),
-        _ => Err(err(format!("not callable: {func}"))),
+        _ => Err(err(super::not_callable_msg(func))),
     }
 }
 
