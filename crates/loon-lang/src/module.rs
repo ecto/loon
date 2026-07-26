@@ -1,9 +1,56 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use crate::interp::{Env, Value};
 use crate::pkg::lockfile::Lockfile;
 use crate::pkg::manifest::Manifest;
+
+/// A source of module text for `[use ...]`.
+///
+/// The filesystem is one resolver among several: a host with no filesystem
+/// (WASM in a browser) can supply an in-memory map, and a host that fetches
+/// over the network can supply its own implementation. A provider that
+/// returns `Ok(None)` declines the module and resolution falls through to
+/// the ordinary filesystem/package lookup, so a provider is always additive.
+pub trait ModuleProvider {
+    /// Return the source for `module_path`, or `Ok(None)` to decline.
+    ///
+    /// `from_dir` is the directory of the importing module, as a string, for
+    /// providers that want relative resolution. In-memory providers normally
+    /// ignore it.
+    fn fetch(&self, module_path: &str, from_dir: Option<&str>) -> Result<Option<String>, String>;
+}
+
+/// A [`ModuleProvider`] backed by an in-memory `name -> source` map.
+///
+/// This is the resolver for hosts with no filesystem. Names are matched
+/// exactly as written in `[use ...]`, with a `<name>.loon` / `<name>.oo`
+/// spelling also accepted so a caller can key the map by filename.
+pub struct MapProvider {
+    modules: HashMap<String, String>,
+}
+
+impl MapProvider {
+    /// Build a provider over a `name -> source` map.
+    pub fn new(modules: HashMap<String, String>) -> Self {
+        Self { modules }
+    }
+}
+
+impl ModuleProvider for MapProvider {
+    fn fetch(&self, module_path: &str, _from_dir: Option<&str>) -> Result<Option<String>, String> {
+        if let Some(src) = self.modules.get(module_path) {
+            return Ok(Some(src.clone()));
+        }
+        for ext in [".loon", ".oo"] {
+            if let Some(src) = self.modules.get(&format!("{module_path}{ext}")) {
+                return Ok(Some(src.clone()));
+            }
+        }
+        Ok(None)
+    }
+}
 
 /// Module loading state for cycle detection
 #[derive(Debug, Clone)]
@@ -28,6 +75,12 @@ pub struct ModuleCache {
     /// The project root directory (where pkg.oo lives).
     #[allow(dead_code)]
     project_root: Option<PathBuf>,
+    /// Host-supplied module source, consulted before the filesystem.
+    provider: Option<Rc<dyn ModuleProvider>>,
+    /// Extra source evaluated into every module's env before its own body
+    /// (a host stdlib). Names it defines are not exported by the
+    /// "no `pub` declared" fallback.
+    prelude: Option<String>,
 }
 
 impl ModuleCache {
@@ -37,6 +90,8 @@ impl ModuleCache {
             manifest: None,
             lockfile: None,
             project_root: None,
+            provider: None,
+            prelude: None,
         }
     }
 
@@ -47,6 +102,8 @@ impl ModuleCache {
             manifest: Some(manifest),
             lockfile: None,
             project_root: None,
+            provider: None,
+            prelude: None,
         }
     }
 
@@ -61,7 +118,32 @@ impl ModuleCache {
             manifest: Some(manifest),
             lockfile,
             project_root: Some(project_root),
+            provider: None,
+            prelude: None,
         }
+    }
+
+    /// Create a module cache whose `[use ...]` resolves through `provider`
+    /// first, falling back to the filesystem when the provider declines.
+    pub fn with_provider(provider: Rc<dyn ModuleProvider>) -> Self {
+        let mut c = Self::new();
+        c.provider = Some(provider);
+        c
+    }
+
+    /// Consult `provider` before the filesystem for every module.
+    pub fn set_provider(&mut self, provider: Rc<dyn ModuleProvider>) {
+        self.provider = Some(provider);
+    }
+
+    /// Evaluate `source` into every module's environment before its own body.
+    ///
+    /// Use this to make a host stdlib (vcad's CAD vocabulary, say) visible
+    /// inside imported modules. Names it defines are excluded from the
+    /// implicit "export everything" fallback, so a module that declares no
+    /// `pub` names still exports only its own definitions.
+    pub fn set_prelude(&mut self, source: impl Into<String>) {
+        self.prelude = Some(source.into());
     }
 
     pub fn manifest(&self) -> Option<&Manifest> {
@@ -208,6 +290,17 @@ impl ModuleCache {
         module_path: &str,
         base_dir: &Path,
     ) -> Result<ModuleExports, String> {
+        // A host-supplied provider wins over the filesystem. It may decline
+        // (Ok(None)), in which case resolution proceeds as normal.
+        if let Some(provider) = self.provider.clone() {
+            let from_dir = base_dir.to_str();
+            if let Some(source) = provider.fetch(module_path, from_dir)? {
+                // Virtual key: never collides with a real canonical path.
+                let canonical = PathBuf::from(format!("<provider>/{module_path}"));
+                return self.eval_module(module_path, &source, canonical, base_dir);
+            }
+        }
+
         // Check if this is a package dependency first (path deps)
         let file_path = if let Some(dep_path) = self.resolve_dep_path(module_path) {
             dep_path
@@ -233,10 +326,7 @@ impl ModuleCache {
             };
         }
 
-        // Mark as loading for cycle detection
-        self.modules.insert(canonical.clone(), ModuleState::Loading);
-
-        // Read and parse
+        // Read
         let source = std::fs::read_to_string(&file_path).map_err(|e| {
             format!(
                 "cannot read module '{module_path}' at {}: {e}",
@@ -244,7 +334,34 @@ impl ModuleCache {
             )
         })?;
 
-        let exprs = crate::parser::parse(&source)
+        let module_dir = file_path.parent().unwrap_or(base_dir).to_path_buf();
+        self.eval_module(module_path, &source, canonical, &module_dir)
+    }
+
+    /// Evaluate a module's source into exports, whatever its origin.
+    ///
+    /// `canonical` is the cache key (a real canonical path for filesystem
+    /// modules, a `<provider>/…` sentinel for host-supplied ones), and
+    /// `module_dir` is the directory nested `[use ...]` resolves against.
+    fn eval_module(
+        &mut self,
+        module_path: &str,
+        source: &str,
+        canonical: PathBuf,
+        module_dir: &Path,
+    ) -> Result<ModuleExports, String> {
+        // Check cache
+        if let Some(state) = self.modules.get(&canonical) {
+            return match state {
+                ModuleState::Loading => Err(format!("circular dependency: {module_path}")),
+                ModuleState::Loaded(exports) => Ok(exports.clone()),
+            };
+        }
+
+        // Mark as loading for cycle detection
+        self.modules.insert(canonical.clone(), ModuleState::Loading);
+
+        let exprs = crate::parser::parse(source)
             .map_err(|e| format!("parse error in module '{module_path}': {}", e.message))?;
 
         // Eval in a fresh env
@@ -256,8 +373,19 @@ impl ModuleCache {
                 let _ = crate::interp::eval(expr, &mut env);
             }
         }
+        // Host stdlib, if the embedder supplied one.
+        if let Some(prelude) = self.prelude.clone() {
+            let host_exprs = crate::parser::parse(&prelude)
+                .map_err(|e| format!("parse error in host module prelude: {}", e.message))?;
+            for expr in &host_exprs {
+                crate::interp::eval(expr, &mut env)
+                    .map_err(|e| format!("host module prelude: {e}"))?;
+            }
+        }
+        // Everything defined so far is environment, not module content — the
+        // implicit "export everything" fallback below must not export it.
+        let baseline: std::collections::HashSet<String> = env.globals().into_keys().collect();
 
-        let module_dir = file_path.parent().unwrap_or(base_dir);
         // Set current module for grant enforcement (dep modules get restricted)
         crate::interp::set_current_module(Some(module_path.to_string()));
         let eval_result = (|| -> Result<(), String> {
@@ -299,13 +427,8 @@ impl ModuleCache {
         // If no pub names declared, export all global user-defined names
         // (excluding builtins) — this makes simple modules work without pub
         if values.is_empty() {
-            let builtin_env = {
-                let mut e = Env::new();
-                crate::interp::register_builtins_pub(&mut e);
-                e
-            };
             for (name, val) in env.globals() {
-                if builtin_env.get(&name).is_none() {
+                if !baseline.contains(&name) {
                     values.insert(name, val);
                 }
             }

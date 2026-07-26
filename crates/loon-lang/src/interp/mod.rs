@@ -710,6 +710,21 @@ pub fn eval_program(exprs: &[Expr]) -> IResult {
 }
 
 pub fn eval_program_with_base_dir(exprs: &[Expr], base_dir: Option<&Path>) -> IResult {
+    eval_program_with_modules(exprs, base_dir, None, None)
+}
+
+/// Like [`eval_program_with_base_dir`], but `[use ...]` first consults a
+/// host-supplied [`crate::module::ModuleProvider`] — the escape hatch for
+/// hosts with no filesystem (WASM) or with their own module store.
+///
+/// `module_prelude` is extra source evaluated into every imported module's
+/// environment (a host stdlib); names it defines are not re-exported.
+pub fn eval_program_with_modules(
+    exprs: &[Expr],
+    base_dir: Option<&Path>,
+    provider: Option<std::rc::Rc<dyn crate::module::ModuleProvider>>,
+    module_prelude: Option<&str>,
+) -> IResult {
     // Macro expansion phase
     let mut expander = crate::macros::MacroExpander::new();
     let exprs = expander.expand_program(exprs).map_err(err)?;
@@ -734,6 +749,12 @@ pub fn eval_program_with_base_dir(exprs: &[Expr], base_dir: Option<&Path>) -> IR
         }
         _ => ModuleCache::new(),
     };
+    if let Some(provider) = provider {
+        cache.set_provider(provider);
+    }
+    if let Some(prelude) = module_prelude {
+        cache.set_prelude(prelude);
+    }
     // Root module is unrestricted
     set_current_module(None);
     // Initial sync so spawned threads/callbacks can access the global env
