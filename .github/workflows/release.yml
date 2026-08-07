@@ -48,8 +48,9 @@ jobs:
           sudo apt-get install -y musl-tools
 
       - name: Install cross (aarch64-musl)
-        if: matrix.target == 'aarch64-unknown-linux-musl'
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross@0.2.5
 
       - name: Build
         if: matrix.target != 'aarch64-unknown-linux-musl'
