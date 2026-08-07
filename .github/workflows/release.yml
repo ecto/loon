@@ -26,7 +26,7 @@ jobs:
             os: macos-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0 # needed for git-describe version
 
@@ -73,7 +73,7 @@ jobs:
           tar czf "$ARCHIVE" loon
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.target }}
           path: ${{ env.ARCHIVE }}
@@ -82,7 +82,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           merge-multiple: true
 
