@@ -9,6 +9,7 @@ pub mod lower;
 pub mod native;
 pub mod net;
 pub mod replay;
+pub mod tailcall;
 pub mod trace;
 pub mod value64;
 pub mod vm;

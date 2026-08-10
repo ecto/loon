@@ -10,7 +10,7 @@
 //! - Arithmetic, comparison, and logic binary ops
 //! - Unary ops (neg, not)
 //! - Mov, branches, jumps, returns
-//! - Function calls (direct)
+//! - Function calls (direct), including tail calls (`return_call`)
 //! - Builtin println (via extern)
 //!
 //! Not yet implemented (fall back to VM):
@@ -18,12 +18,18 @@
 //! - Collection construction (Vec, Map, Set, Tuple, ADT)
 //! - Field access, tag extraction
 //! - Effect operations (perform, push/pop handler)
-//! - Tail calls (compiled as regular calls + return)
 //! - String operations
+//!
+//! Loon functions are compiled with Cranelift's `tail` calling convention so
+//! that `End::Tail` can lower to a real `return_call` (constant stack for
+//! mutual tail recursion). That convention is not the platform C ABI, so the
+//! entry point is reached through a small C-ABI trampoline — see
+//! `ENTRY_TRAMPOLINE`.
 
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::I64;
 use cranelift_codegen::ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName};
+use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -49,6 +55,9 @@ const VAL_UNIT: u64 = BASE | TAG_IMM;
 const VAL_TRUE: u64 = BASE | TAG_IMM | 1;
 const VAL_FALSE: u64 = BASE | TAG_IMM | 2;
 const VAL_NONE: u64 = BASE | TAG_IMM | 3;
+
+/// Symbol name of the C-ABI shim that calls the module's entry function.
+const ENTRY_TRAMPOLINE: &str = "loon_entry_trampoline";
 
 // ─── Runtime helper functions ───────────────────────────────────────────────
 
@@ -192,12 +201,16 @@ impl NativeModule {
 
         let mut jit = JITModule::new(builder);
 
-        // Create the default calling convention signature: all args and return are i64.
-        let call_conv = jit.isa().default_call_conv();
+        // The platform C ABI, used for the runtime helpers (plain Rust
+        // `extern "C"` functions) and for the entry trampoline.
+        let c_call_conv = jit.isa().default_call_conv();
+        // Loon functions use the `tail` convention instead: `return_call`
+        // requires caller and callee to share a tail-call-capable convention.
+        let call_conv = CallConv::Tail;
 
         // Declare runtime helper functions.
         let rt_println_sig = {
-            let mut sig = Signature::new(call_conv);
+            let mut sig = Signature::new(c_call_conv);
             sig.params.push(AbiParam::new(I64));
             sig.returns.push(AbiParam::new(I64));
             sig
@@ -302,15 +315,53 @@ impl NativeModule {
                 })?;
         }
 
+        // Entry trampoline: `execute()` calls the module through a plain C
+        // function pointer, but the entry itself uses the `tail` convention,
+        // which is not the C ABI. Bridge the two with a C-ABI shim that calls
+        // the entry and returns its result.
+        let entry_cl_id = func_map.funcs[&eir_module.entry.0];
+        let trampoline_id = {
+            let mut sig = Signature::new(c_call_conv);
+            sig.returns.push(AbiParam::new(I64));
+            let id = jit
+                .declare_function(ENTRY_TRAMPOLINE, Linkage::Local, &sig)
+                .map_err(|e| Error {
+                    message: format!("declare {ENTRY_TRAMPOLINE}: {e}"),
+                    phase: "native:declare",
+                })?;
+
+            let mut cl_func = Function::with_name_signature(
+                UserFuncName::user(0, eir_module.funcs.len() as u32),
+                sig,
+            );
+            {
+                let mut builder = FunctionBuilder::new(&mut cl_func, &mut fb_ctx);
+                let block = builder.create_block();
+                builder.switch_to_block(block);
+                builder.seal_block(block);
+                let entry_ref = jit.declare_func_in_func(entry_cl_id, builder.func);
+                let call = builder.ins().call(entry_ref, &[]);
+                let result = builder.inst_results(call)[0];
+                builder.ins().return_(&[result]);
+                builder.finalize();
+            }
+            let mut ctx = Context::for_function(cl_func);
+            jit.define_function(id, &mut ctx).map_err(|e| Error {
+                message: format!("define {ENTRY_TRAMPOLINE}: {e}"),
+                phase: "native:codegen",
+            })?;
+            id
+        };
+
         // Finalize all definitions.
         jit.finalize_definitions().map_err(|e| Error {
             message: format!("finalize: {e}"),
             phase: "native:finalize",
         })?;
 
-        // Get entry function pointer.
-        let entry_cl_id = func_map.funcs[&eir_module.entry.0];
-        let entry_fn = jit.get_finalized_function(entry_cl_id);
+        // Get entry function pointer (the C-ABI trampoline, not the entry
+        // itself — see above).
+        let entry_fn = jit.get_finalized_function(trampoline_id);
 
         Ok(NativeModule {
             _jit: jit,
@@ -922,8 +973,9 @@ fn compile_terminator(
         }
 
         End::Tail(func_id, args) => {
-            // Compile tail calls as regular calls + return (no TCO in Cranelift
-            // for our calling convention yet).
+            // A real tail call: `return_call` replaces the current frame, so
+            // mutual tail recursion runs in constant stack. This is why loon
+            // functions are compiled with `CallConv::Tail`.
             let cl_func_id = func_map.funcs.get(&func_id.0).ok_or_else(|| Error {
                 message: format!("unknown tail call target {}", func_id.0),
                 phase: "native:compile",
@@ -933,15 +985,19 @@ fn compile_terminator(
                 .iter()
                 .map(|r| builder.use_var(vars[r.0 as usize]))
                 .collect();
-            let call = builder.ins().call(func_ref, &arg_vals);
-            let result = builder.inst_results(call)[0];
-            builder.ins().return_(&[result]);
+            builder.ins().return_call(func_ref, &arg_vals);
         }
 
         End::TailInvoke(_callee, _args) => {
-            // Indirect tail calls need closure support.
-            let unit = builder.ins().iconst(I64, VAL_UNIT as i64);
-            builder.ins().return_(&[unit]);
+            // Indirect tail calls need closures, which this backend does not
+            // represent yet (`Op::Close`/`Op::Invoke` are still stubs). Fail
+            // loudly rather than returning Unit — a silent wrong answer is far
+            // worse than a missing feature.
+            return Err(Error {
+                message: "tail call to a closure is not supported by the native backend yet"
+                    .to_string(),
+                phase: "native:compile",
+            });
         }
 
         End::Recur(args) => {
@@ -1085,6 +1141,134 @@ mod tests {
         let result = eval_native(src).unwrap();
         assert!(result.is_int());
         assert_eq!(result.as_int(), 120);
+    }
+
+    /// Mutual tail recursion from source must run in constant stack. Compiled
+    /// as a plain call + return this recurses a million frames deep and
+    /// overflows, so reaching the assert is the evidence that `End::Tail` is
+    /// both emitted by the lowering and lowered to `return_call` here.
+    #[test]
+    fn tail_calls_run_in_constant_stack_from_source() {
+        let src = r#"
+            [fn even? [n] [if [= n 0] true [odd? [- n 1]]]]
+            [fn odd? [n] [if [= n 0] false [even? [- n 1]]]]
+            [even? 1000000]
+        "#;
+        assert_eq!(eval_native(src).unwrap(), Val::TRUE);
+    }
+
+    /// The same property stated directly against `End::Tail`, independent of
+    /// what the lowering happens to produce.
+    #[test]
+    fn tail_calls_run_in_constant_stack() {
+        use crate::eir::{Block, BlockId, Func, FuncId, Ty};
+        use crate::syntax::Span;
+
+        // `even(n) = n == 0 ? true : odd(n - 1)`, and vice versa.
+        let parity = |id: u32, other: u32, base: bool| Func {
+            id: FuncId(id),
+            name: Some(format!("parity{id}")),
+            params: vec![Ty::Int],
+            ret: Ty::Bool,
+            evidence: vec![],
+            captures: vec![],
+            blocks: vec![
+                Block {
+                    id: BlockId(0),
+                    params: vec![Reg(0)],
+                    ops: vec![
+                        Op::Lit(Reg(1), Lit::Int(0), Span::ZERO),
+                        Op::Bin(Reg(2), BinOp::Eq, Reg(0), Reg(1), Span::ZERO),
+                    ],
+                    end: End::Br(Reg(2), BlockId(1), BlockId(2)),
+                },
+                Block {
+                    id: BlockId(1),
+                    params: vec![],
+                    ops: vec![Op::Lit(Reg(3), Lit::Bool(base), Span::ZERO)],
+                    end: End::Ret(Reg(3)),
+                },
+                Block {
+                    id: BlockId(2),
+                    params: vec![],
+                    ops: vec![
+                        Op::Lit(Reg(4), Lit::Int(1), Span::ZERO),
+                        Op::Bin(Reg(5), BinOp::Sub, Reg(0), Reg(4), Span::ZERO),
+                    ],
+                    end: End::Tail(FuncId(other), vec![Reg(5)]),
+                },
+            ],
+            span: Span::ZERO,
+            is_closure: false,
+        };
+
+        let module = crate::eir::Module {
+            funcs: vec![
+                parity(0, 1, true),
+                parity(1, 0, false),
+                Func {
+                    id: FuncId(2),
+                    name: Some("__main".to_string()),
+                    params: vec![],
+                    ret: Ty::Bool,
+                    evidence: vec![],
+                    captures: vec![],
+                    blocks: vec![Block {
+                        id: BlockId(0),
+                        params: vec![],
+                        ops: vec![
+                            Op::Lit(Reg(0), Lit::Int(1_000_000), Span::ZERO),
+                            Op::Call(Reg(1), FuncId(0), vec![Reg(0)], Span::ZERO),
+                        ],
+                        end: End::Ret(Reg(1)),
+                    }],
+                    span: Span::ZERO,
+                    is_closure: false,
+                },
+            ],
+            strings: vec![],
+            ctors: vec![],
+            entry: FuncId(2),
+        };
+
+        let mut backend = NativeBackend;
+        let native = backend.compile(&module).expect("compilation failed");
+        assert_eq!(native.execute(), Val::TRUE);
+    }
+
+    /// A tail call to a closure has no lowering yet. It must fail loudly —
+    /// it used to return Unit without performing the call at all.
+    #[test]
+    fn tail_invoke_is_an_error_not_a_silent_unit() {
+        use crate::eir::{Block, BlockId, Func, FuncId, Ty};
+        use crate::syntax::Span;
+
+        let module = crate::eir::Module {
+            funcs: vec![Func {
+                id: FuncId(0),
+                name: Some("__main".to_string()),
+                params: vec![],
+                ret: Ty::Any,
+                evidence: vec![],
+                captures: vec![],
+                blocks: vec![Block {
+                    id: BlockId(0),
+                    params: vec![],
+                    ops: vec![Op::Lit(Reg(0), Lit::Int(1), Span::ZERO)],
+                    end: End::TailInvoke(Reg(0), vec![Reg(0)]),
+                }],
+                span: Span::ZERO,
+                is_closure: false,
+            }],
+            strings: vec![],
+            ctors: vec![],
+            entry: FuncId(0),
+        };
+
+        match NativeBackend.compile(&module) {
+            Ok(_) => panic!("tail invoke should not compile silently"),
+            Err(e) => assert!(e.message.contains("closure"), "unexpected error: {e}"),
+        }
     }
 
     #[test]
