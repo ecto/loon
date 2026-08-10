@@ -21,7 +21,11 @@ use std::path::PathBuf;
 pub fn lower(checker: &Checker) -> Module {
     let mut ctx = Lower::new(checker);
     ctx.lower_program();
-    ctx.finish()
+    let mut module = ctx.finish();
+    // Calls are emitted uniformly as `Op::Call` + a jump to a merge block;
+    // which of them are in tail position is recognized on the finished IR.
+    super::tailcall::mark_tail_calls(&mut module);
+    module
 }
 
 // ─── Lowering context ──────────────────────────────────────────────────────
@@ -2813,6 +2817,60 @@ mod tests {
         "#,
         );
         assert!(module.funcs.len() >= 2); // __main + add
+    }
+
+    /// `[recur ...]` is the one tail construct the lowering does emit: it
+    /// becomes `End::Recur`, a jump back to block 0, so it costs no frame.
+    #[test]
+    fn recur_lowers_to_end_recur() {
+        let module = lower_src(
+            r#"
+            [fn countdown [n] [if [= n 0] :done [recur [- n 1]]]]
+            [countdown 3]
+        "#,
+        );
+        let countdown = module
+            .funcs
+            .iter()
+            .find(|f| f.name.as_deref() == Some("countdown"))
+            .expect("countdown should be lowered");
+        assert!(
+            countdown
+                .blocks
+                .iter()
+                .any(|b| matches!(b.end, End::Recur(_))),
+            "recur should lower to End::Recur"
+        );
+    }
+
+    /// A call in tail position becomes `End::Tail`. The lowering itself still
+    /// emits every call the same way — `Op::Call` into a register plus a jump
+    /// to a merge block — and `eir::tailcall` recognizes the tail-position
+    /// shape afterwards. This test guards the end-to-end result.
+    #[test]
+    fn mutual_recursion_lowers_to_a_tail_call() {
+        let module = lower_src(
+            r#"
+            [fn even? [n] [if [= n 0] true [odd? [- n 1]]]]
+            [fn odd? [n] [if [= n 0] false [even? [- n 1]]]]
+            [even? 10]
+        "#,
+        );
+        for name in ["even?", "odd?"] {
+            let f = module
+                .funcs
+                .iter()
+                .find(|f| f.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("{name} should be lowered"));
+            assert_eq!(
+                f.blocks
+                    .iter()
+                    .filter(|b| matches!(b.end, End::Tail(..)))
+                    .count(),
+                1,
+                "{name} should end in a tail call"
+            );
+        }
     }
 
     #[test]

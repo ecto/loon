@@ -279,6 +279,27 @@ pub struct Vm {
     /// immediate singleton `Val::NONE` at every construction site, so `None`
     /// never allocates and `is_truthy` stays a pure bit test.
     none_tag: Option<u16>,
+    /// Register-file size per function, indexed by `FuncId`. Computed once at
+    /// VM construction (and extended for funcs appended later) because the
+    /// scan is O(function size) — doing it per call made every tail call cost
+    /// proportional to the *callee's code size* rather than O(1), which defeats
+    /// the point of having proper tail calls in the first place.
+    reg_counts: Vec<usize>,
+}
+
+/// Number of registers a function's frame needs: one past the highest register
+/// mentioned as an op destination or a block parameter.
+fn reg_count_of(func: &Func) -> usize {
+    func.blocks
+        .iter()
+        .flat_map(|b| {
+            b.ops
+                .iter()
+                .map(|op| op.dst().0 + 1)
+                .chain(b.params.iter().map(|r| r.0 + 1))
+        })
+        .max()
+        .unwrap_or(0) as usize
 }
 
 /// Heap allocation statistics collected during VM execution.
@@ -313,6 +334,7 @@ impl Vm {
             .rev()
             .find(|c| c.name == "None")
             .map(|c| c.tag);
+        let reg_counts = module.funcs.iter().map(reg_count_of).collect();
         Self {
             module: Rc::new(module),
             heap: Vec::new(),
@@ -334,7 +356,51 @@ impl Vm {
             runtime_syms: Vec::new(),
             rand_state: None,
             none_tag,
+            reg_counts,
         }
+    }
+
+    /// Register-file size for `func`, from the table built at construction.
+    /// Falls back to computing (and caching) it for functions appended to the
+    /// module after the VM was created, so the table can never go stale.
+    fn reg_count(&mut self, func: FuncId) -> usize {
+        let idx = func.0 as usize;
+        if idx >= self.reg_counts.len() {
+            let module = Rc::clone(&self.module);
+            while self.reg_counts.len() <= idx {
+                let f = &module.funcs[self.reg_counts.len()];
+                self.reg_counts.push(reg_count_of(f));
+            }
+        }
+        self.reg_counts[idx]
+    }
+
+    /// Resize the current register file for a frame that is being *replaced*
+    /// in place (a tail call), load `vals` into the argument registers, and
+    /// install the callee's captures.
+    ///
+    /// A tail call must be indistinguishable from the equivalent non-tail call
+    /// followed by a return, so the callee has to see exactly the frame that
+    /// `call_func_with_captures` would have built for it:
+    ///
+    /// - **A clean register file.** The non-tail path installs a fresh
+    ///   `vec![Val::UNIT; _]`; reusing the buffer with a bare `resize` would
+    ///   leave the caller's values in every register past the arguments, since
+    ///   `resize` only fills slots it *adds*. Clearing first reuses the
+    ///   allocation while still handing over a blank frame.
+    /// - **The callee's own captures**: empty for `End::Tail` (mirroring
+    ///   `Op::Call`), the closure's capture list for `End::TailInvoke`
+    ///   (mirroring `Op::Invoke`). Leaving the *caller's* captures in place
+    ///   would let the callee's `Op::Upval` read the wrong frame's upvalues.
+    fn enter_tail_frame(&mut self, func: FuncId, vals: &[Val], captures: Vec<Val>) {
+        let needed = self.reg_count(func).max(vals.len()) + 16;
+        self.regs.clear();
+        self.regs.resize(needed, Val::UNIT);
+        self.regs[..vals.len()].copy_from_slice(vals);
+        self.captures = captures;
+        self.func = func;
+        self.block = BlockId(0);
+        self.ip = 0;
     }
 
     /// Construct an ADT value, normalizing the nullary `None` constructor to
@@ -577,19 +643,7 @@ impl Vm {
         }
 
         // Set up new frame
-        let func = &self.module.funcs[func_id.0 as usize];
-        let reg_count = func
-            .blocks
-            .iter()
-            .flat_map(|b| {
-                b.ops
-                    .iter()
-                    .map(|op| op.dst().0 + 1)
-                    .chain(b.params.iter().map(|r| r.0 + 1))
-            })
-            .max()
-            .unwrap_or(0) as usize;
-        let reg_count = reg_count.max(args.len());
+        let reg_count = self.reg_count(func_id).max(args.len());
 
         self.regs = vec![Val::UNIT; reg_count + 16]; // padding for safety
         for (i, &val) in args.iter().enumerate() {
@@ -725,25 +779,29 @@ impl Vm {
         let module = Rc::clone(&self.module);
 
         loop {
-            // Fetch current instruction or terminator by index (no stale refs)
+            // Borrow the current block out of our own `Rc<Module>` clone rather
+            // than out of `self`, so ops and terminators can be read by
+            // reference while `self` is mutably borrowed. `module` keeps the
+            // code alive for the whole loop, so these borrows stay valid across
+            // `exec_op` — cloning each op just to satisfy the borrow checker
+            // cost a heap allocation per instruction with a `Vec` operand
+            // (every call, vector, map, ADT and builtin).
             let func_idx = self.func.0 as usize;
             let block_idx = self.block.0 as usize;
-            let ops_len = module.funcs[func_idx].blocks[block_idx].ops.len();
+            let block = &module.funcs[func_idx].blocks[block_idx];
 
-            if self.ip < ops_len {
-                // Clone the op to avoid borrowing module across exec_op
-                let op = module.funcs[func_idx].blocks[block_idx].ops[self.ip].clone();
+            if self.ip < block.ops.len() {
+                let op = &block.ops[self.ip];
                 self.current_span = op.span();
                 self.ip += 1;
-                self.exec_op(&op)?;
+                self.exec_op(op)?;
                 continue;
             }
 
             // Execute terminator
-            let end = module.funcs[func_idx].blocks[block_idx].end.clone();
-            match end {
+            match &block.end {
                 End::Ret(reg) => {
-                    let val = self.r(reg);
+                    let val = self.r(*reg);
                     if self.frames.is_empty() {
                         return Ok(val);
                     }
@@ -757,26 +815,24 @@ impl Vm {
                     }
                 }
 
-                End::Jmp(target, ref args) => {
+                End::Jmp(target, args) => {
                     let vals = self.read_regs(args);
-                    let params: Vec<Reg> = module.funcs[func_idx].blocks[target.0 as usize]
-                        .params
-                        .clone();
+                    let params = &module.funcs[func_idx].blocks[target.0 as usize].params;
                     for (param, val) in params.iter().zip(vals.iter()) {
                         self.w(*param, *val);
                     }
-                    self.block = target;
+                    self.block = *target;
                     self.ip = 0;
                 }
 
                 End::Br(cond, then_b, else_b) => {
-                    let v = self.r(cond);
-                    self.block = if v.is_truthy() { then_b } else { else_b };
+                    let v = self.r(*cond);
+                    self.block = if v.is_truthy() { *then_b } else { *else_b };
                     self.ip = 0;
                 }
 
-                End::Switch(scrutinee, ref cases, default) => {
-                    let v = self.r(scrutinee);
+                End::Switch(scrutinee, cases, default) => {
+                    let v = self.r(*scrutinee);
                     let tag = if v.is_none() {
                         self.none_tag.unwrap_or(0)
                     } else if let Some(Obj::Adt(t, _)) = self.get_obj(v) {
@@ -790,37 +846,18 @@ impl Vm {
                         .iter()
                         .find(|(t, _)| *t == tag)
                         .map(|(_, b)| *b)
-                        .unwrap_or(default);
+                        .unwrap_or(*default);
                     self.block = target;
                     self.ip = 0;
                 }
 
-                End::Tail(func_id, ref args) => {
+                End::Tail(func_id, args) => {
                     let vals = self.read_regs(args);
-                    let f = &module.funcs[func_id.0 as usize];
-                    let reg_count = f
-                        .blocks
-                        .iter()
-                        .flat_map(|b| {
-                            b.ops
-                                .iter()
-                                .map(|op| op.dst().0 + 1)
-                                .chain(b.params.iter().map(|r| r.0 + 1))
-                        })
-                        .max()
-                        .unwrap_or(0) as usize;
-                    let needed = reg_count.max(vals.len()) + 16;
-                    self.regs.resize(needed, Val::UNIT);
-                    for (i, &val) in vals.iter().enumerate() {
-                        self.regs[i] = val;
-                    }
-                    self.func = func_id;
-                    self.block = BlockId(0);
-                    self.ip = 0;
+                    self.enter_tail_frame(*func_id, &vals, Vec::new());
                 }
 
-                End::TailInvoke(callee, ref args) => {
-                    let func_val = self.r(callee);
+                End::TailInvoke(callee, args) => {
+                    let func_val = self.r(*callee);
                     let vals = self.read_regs(args);
                     if matches!(self.get_obj(func_val), Some(Obj::Continuation { .. })) {
                         // Tail resume (`[resume v]` as the handler's whole body):
@@ -830,27 +867,7 @@ impl Vm {
                         let v = vals.first().copied().unwrap_or(Val::UNIT);
                         self.resume_continuation(func_val, v, None)?;
                     } else if let Some(Obj::Closure(fid, caps)) = self.get_obj(func_val).cloned() {
-                        let f = &module.funcs[fid.0 as usize];
-                        let reg_count = f
-                            .blocks
-                            .iter()
-                            .flat_map(|b| {
-                                b.ops
-                                    .iter()
-                                    .map(|op| op.dst().0 + 1)
-                                    .chain(b.params.iter().map(|r| r.0 + 1))
-                            })
-                            .max()
-                            .unwrap_or(0) as usize;
-                        let needed = reg_count.max(vals.len()) + 16;
-                        self.regs.resize(needed, Val::UNIT);
-                        for (i, &val) in vals.iter().enumerate() {
-                            self.regs[i] = val;
-                        }
-                        self.captures = caps;
-                        self.func = fid;
-                        self.block = BlockId(0);
-                        self.ip = 0;
+                        self.enter_tail_frame(fid, &vals, caps);
                     } else {
                         return Err(
                             VmError::new(VmErrorKind::NotCallable).with_span(self.current_span)
@@ -858,9 +875,9 @@ impl Vm {
                     }
                 }
 
-                End::Recur(ref args) => {
+                End::Recur(args) => {
                     let vals = self.read_regs(args);
-                    let params: Vec<Reg> = module.funcs[func_idx].blocks[0].params.clone();
+                    let params = &module.funcs[func_idx].blocks[0].params;
                     for (param, val) in params.iter().zip(vals.iter()) {
                         self.w(*param, *val);
                     }
@@ -3674,6 +3691,176 @@ mod tests {
 
     fn run_output(src: &str) -> Vec<String> {
         eval_eir(src).expect("vm error").output
+    }
+
+    /// `End::Tail` must be exactly `Op::Call` + `End::Ret` with the frame
+    /// reused — including captures. `Op::Call` enters the callee with an empty
+    /// capture list; a tail call that left the *caller's* captures installed
+    /// would let the callee's `Op::Upval` read the caller's upvalues instead.
+    ///
+    /// Built by hand: the lowering only marks tail calls to named top-level
+    /// functions, which never carry captures, so source cannot express this.
+    #[test]
+    fn vm_tail_call_does_not_inherit_caller_captures() {
+        use crate::eir::{Block, Ty};
+        use crate::syntax::Span;
+
+        // callee() = upval 0 — it has no captures of its own, so this must
+        // read as Unit however it was entered.
+        let callee = |id: u32| Func {
+            id: FuncId(id),
+            name: Some("callee".to_string()),
+            params: vec![],
+            ret: Ty::Any,
+            evidence: vec![],
+            captures: vec![],
+            blocks: vec![Block {
+                id: BlockId(0),
+                params: vec![],
+                ops: vec![Op::Upval(Reg(0), 0, Span::ZERO)],
+                end: End::Ret(Reg(0)),
+            }],
+            span: Span::ZERO,
+            is_closure: false,
+        };
+
+        // A closure capturing 7 that reaches `callee` either way.
+        let caller = |tail: bool| Func {
+            id: FuncId(1),
+            name: Some("caller".to_string()),
+            params: vec![],
+            ret: Ty::Any,
+            evidence: vec![],
+            captures: vec![],
+            blocks: vec![Block {
+                id: BlockId(0),
+                params: vec![],
+                ops: if tail {
+                    vec![]
+                } else {
+                    vec![Op::Call(Reg(0), FuncId(0), vec![], Span::ZERO)]
+                },
+                end: if tail {
+                    End::Tail(FuncId(0), vec![])
+                } else {
+                    End::Ret(Reg(0))
+                },
+            }],
+            span: Span::ZERO,
+            is_closure: true,
+        };
+
+        let build = |tail: bool| Module {
+            funcs: vec![
+                callee(0),
+                caller(tail),
+                Func {
+                    id: FuncId(2),
+                    name: Some("__main".to_string()),
+                    params: vec![],
+                    ret: Ty::Any,
+                    evidence: vec![],
+                    captures: vec![],
+                    blocks: vec![Block {
+                        id: BlockId(0),
+                        params: vec![],
+                        ops: vec![
+                            Op::Lit(Reg(0), Lit::Int(7), Span::ZERO),
+                            Op::Close(Reg(1), FuncId(1), vec![Reg(0)], Span::ZERO),
+                            Op::Invoke(Reg(2), Reg(1), vec![], Span::ZERO),
+                        ],
+                        end: End::Ret(Reg(2)),
+                    }],
+                    span: Span::ZERO,
+                    is_closure: false,
+                },
+            ],
+            strings: vec![],
+            ctors: vec![],
+            entry: FuncId(2),
+        };
+
+        let via_call = Vm::new(build(false)).run().expect("vm error").value;
+        let via_tail = Vm::new(build(true)).run().expect("vm error").value;
+        assert_eq!(via_call, Val::UNIT);
+        assert_eq!(
+            via_tail, via_call,
+            "a tail call must not leak the caller's captures into the callee"
+        );
+    }
+
+    /// The register-file half of the same rule: `Op::Call` hands the callee a
+    /// freshly zeroed frame, so a tail call reusing the caller's buffer must
+    /// clear it. Otherwise a register the callee reads before writing sees the
+    /// caller's leftovers instead of Unit.
+    #[test]
+    fn vm_tail_call_does_not_leak_caller_registers() {
+        use crate::eir::{Block, Ty};
+        use crate::syntax::Span;
+
+        // callee() returns a register it never writes.
+        let callee = || Func {
+            id: FuncId(0),
+            name: Some("callee".to_string()),
+            params: vec![],
+            ret: Ty::Any,
+            evidence: vec![],
+            captures: vec![],
+            blocks: vec![Block {
+                id: BlockId(0),
+                params: vec![],
+                ops: vec![],
+                end: End::Ret(Reg(3)),
+            }],
+            span: Span::ZERO,
+            is_closure: false,
+        };
+
+        // __main stashes 7 in that same register, then reaches callee either
+        // way. The caller's frame is the larger one, so a bare `resize` would
+        // not overwrite Reg(3).
+        let build = |tail: bool| Module {
+            funcs: vec![
+                callee(),
+                Func {
+                    id: FuncId(1),
+                    name: Some("__main".to_string()),
+                    params: vec![],
+                    ret: Ty::Any,
+                    evidence: vec![],
+                    captures: vec![],
+                    blocks: vec![Block {
+                        id: BlockId(0),
+                        params: vec![],
+                        ops: {
+                            let mut ops = vec![Op::Lit(Reg(3), Lit::Int(7), Span::ZERO)];
+                            if !tail {
+                                ops.push(Op::Call(Reg(9), FuncId(0), vec![], Span::ZERO));
+                            }
+                            ops
+                        },
+                        end: if tail {
+                            End::Tail(FuncId(0), vec![])
+                        } else {
+                            End::Ret(Reg(9))
+                        },
+                    }],
+                    span: Span::ZERO,
+                    is_closure: false,
+                },
+            ],
+            strings: vec![],
+            ctors: vec![],
+            entry: FuncId(1),
+        };
+
+        let via_call = Vm::new(build(false)).run().expect("vm error").value;
+        let via_tail = Vm::new(build(true)).run().expect("vm error").value;
+        assert_eq!(via_call, Val::UNIT);
+        assert_eq!(
+            via_tail, via_call,
+            "a tail call must not leak the caller's registers into the callee"
+        );
     }
 
     #[test]

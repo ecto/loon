@@ -115,6 +115,12 @@ enum WasmInstr {
     GlobalSet(u32),
     Call(u32),
     CallIndirect(u32),
+    /// `return_call` — a proper tail call. Replaces the current frame instead
+    /// of stacking a new one, so tail recursion runs in constant stack.
+    ReturnCall(u32),
+    /// `return_call_indirect` — the closure/function-pointer form (arity keys
+    /// the shared `(i64…) -> i64` type, same as `CallIndirect`).
+    ReturnCallIndirect(u32),
     Return,
     Drop,
     Unreachable,
@@ -762,6 +768,11 @@ impl<'a> CompileCtx<'a> {
                 out.push(WasmInstr::LocalGet(reg.0));
                 out.push(WasmInstr::Return);
             }
+            // A single-block function can still end in a tail call — e.g.
+            // `[fn f [n] [g n]]`. Falling through to the catch-all below would
+            // return Unit and never call `g` at all.
+            End::Tail(fid, args) => emit_tail(*fid, args, out),
+            End::TailInvoke(callee, args) => emit_tail_invoke(*callee, args, out),
             End::Trap => {
                 out.push(WasmInstr::Unreachable);
             }
@@ -838,24 +849,9 @@ impl<'a> CompileCtx<'a> {
                 out.push(WasmInstr::Br(dispatch_depth));
             }
 
-            End::Tail(fid, args) => {
-                for arg in args {
-                    out.push(WasmInstr::LocalGet(arg.0));
-                }
-                out.push(WasmInstr::Call(HOST_IMPORT_COUNT + fid.0));
-                out.push(WasmInstr::Return);
-            }
+            End::Tail(fid, args) => emit_tail(*fid, args, out),
 
-            End::TailInvoke(callee, args) => {
-                for arg in args {
-                    out.push(WasmInstr::LocalGet(arg.0));
-                }
-                out.push(WasmInstr::LocalGet(callee.0));
-                emit_unbox_int(out);
-                out.push(WasmInstr::I32WrapI64);
-                out.push(WasmInstr::CallIndirect(args.len() as u32));
-                out.push(WasmInstr::Return);
-            }
+            End::TailInvoke(callee, args) => emit_tail_invoke(*callee, args, out),
 
             End::Recur(args) => {
                 let entry_block = &func.blocks[0];
@@ -907,7 +903,8 @@ impl<'a> CompileCtx<'a> {
         let mut indirect_arities: Vec<u32> = Vec::new();
         for func in &self.functions {
             for instr in &func.body {
-                if let WasmInstr::CallIndirect(arity) = instr {
+                if let WasmInstr::CallIndirect(arity) | WasmInstr::ReturnCallIndirect(arity) = instr
+                {
                     if !indirect_arities.contains(arity) {
                         indirect_arities.push(*arity);
                     }
@@ -1055,6 +1052,28 @@ impl<'a> CompileCtx<'a> {
 
 fn align4(n: u32) -> u32 {
     (n + 3) & !3
+}
+
+/// Emit `End::Tail` as a wasm `return_call`. Every EIR function has the same
+/// `(i64…) -> i64` shape, so the caller/callee result types always match and
+/// the tail call validates unconditionally.
+fn emit_tail(fid: FuncId, args: &[Reg], out: &mut Vec<WasmInstr>) {
+    for arg in args {
+        out.push(WasmInstr::LocalGet(arg.0));
+    }
+    out.push(WasmInstr::ReturnCall(HOST_IMPORT_COUNT + fid.0));
+}
+
+/// Emit `End::TailInvoke` as a `return_call_indirect` through the function
+/// table, unboxing the callee value into a table index.
+fn emit_tail_invoke(callee: Reg, args: &[Reg], out: &mut Vec<WasmInstr>) {
+    for arg in args {
+        out.push(WasmInstr::LocalGet(arg.0));
+    }
+    out.push(WasmInstr::LocalGet(callee.0));
+    emit_unbox_int(out);
+    out.push(WasmInstr::I32WrapI64);
+    out.push(WasmInstr::ReturnCallIndirect(args.len() as u32));
 }
 
 /// Unbox NaN-boxed int: extract 48-bit payload, sign-extend to i64.
@@ -1206,6 +1225,16 @@ fn emit_wasm_instr(
         WasmInstr::CallIndirect(arity) => {
             let type_idx = indirect_type_map.get(arity).copied().unwrap_or(0);
             f.instruction(&Instruction::CallIndirect {
+                type_index: type_idx,
+                table_index: 0,
+            });
+        }
+        WasmInstr::ReturnCall(i) => {
+            f.instruction(&Instruction::ReturnCall(*i));
+        }
+        WasmInstr::ReturnCallIndirect(arity) => {
+            let type_idx = indirect_type_map.get(arity).copied().unwrap_or(0);
+            f.instruction(&Instruction::ReturnCallIndirect {
                 type_index: type_idx,
                 table_index: 0,
             });
@@ -1608,6 +1637,124 @@ mod tests {
             ctors: vec![],
             entry: FuncId(1),
         }
+    }
+
+    /// Mutual tail recursion, `even`/`odd` shaped:
+    /// - func 0 is multi-block and tail-calls func 1 from its else branch
+    /// - func 1 is single-block and does nothing but tail-call func 0
+    ///
+    /// Both terminators must become real `return_call`s; the single-block form
+    /// used to fall through to a catch-all that returned Unit without calling.
+    fn make_mutual_tail_module() -> super::super::Module {
+        super::super::Module {
+            funcs: vec![
+                Func {
+                    id: FuncId(0),
+                    name: Some("even".to_string()),
+                    params: vec![Ty::Int],
+                    ret: Ty::Bool,
+                    evidence: vec![],
+                    captures: vec![],
+                    blocks: vec![
+                        Block {
+                            id: BlockId(0),
+                            params: vec![Reg(0)],
+                            ops: vec![
+                                Op::Lit(Reg(1), Lit::Int(0), Span::ZERO),
+                                Op::Bin(Reg(2), BinOp::Eq, Reg(0), Reg(1), Span::ZERO),
+                            ],
+                            end: End::Br(Reg(2), BlockId(1), BlockId(2)),
+                        },
+                        Block {
+                            id: BlockId(1),
+                            params: vec![],
+                            ops: vec![Op::Lit(Reg(3), Lit::Bool(true), Span::ZERO)],
+                            end: End::Ret(Reg(3)),
+                        },
+                        Block {
+                            id: BlockId(2),
+                            params: vec![],
+                            ops: vec![
+                                Op::Lit(Reg(4), Lit::Int(1), Span::ZERO),
+                                Op::Bin(Reg(5), BinOp::Sub, Reg(0), Reg(4), Span::ZERO),
+                            ],
+                            end: End::Tail(FuncId(1), vec![Reg(5)]),
+                        },
+                    ],
+                    span: Span::ZERO,
+                    is_closure: false,
+                },
+                Func {
+                    id: FuncId(1),
+                    name: Some("odd".to_string()),
+                    params: vec![Ty::Int],
+                    ret: Ty::Bool,
+                    evidence: vec![],
+                    captures: vec![],
+                    blocks: vec![Block {
+                        id: BlockId(0),
+                        params: vec![Reg(0)],
+                        ops: vec![],
+                        end: End::Tail(FuncId(0), vec![Reg(0)]),
+                    }],
+                    span: Span::ZERO,
+                    is_closure: false,
+                },
+            ],
+            strings: vec![],
+            ctors: vec![],
+            entry: FuncId(0),
+        }
+    }
+
+    /// Tail calls lower to `return_call`, not `call` + `return`. Without this
+    /// the wasm stack grows one frame per tail call and deep tail recursion
+    /// overflows — the exact thing `End::Tail` exists to prevent.
+    #[test]
+    fn tail_calls_lower_to_return_call() {
+        let module = make_mutual_tail_module();
+        let mut ctx = CompileCtx::new(&module);
+        ctx.compile_module().expect("compilation failed");
+
+        for (idx, f) in ctx.functions.iter().enumerate() {
+            assert!(
+                f.body.iter().any(|i| matches!(i, WasmInstr::ReturnCall(_))),
+                "func {idx} should tail-call via return_call, got {:?}",
+                f.body
+            );
+            assert!(
+                !f.body.iter().any(|i| matches!(i, WasmInstr::Call(_))),
+                "func {idx} should not emit a plain call for a tail call"
+            );
+        }
+    }
+
+    /// `End::TailInvoke` (closure in tail position) uses the indirect form.
+    #[test]
+    fn tail_invoke_lowers_to_return_call_indirect() {
+        let mut module = make_mutual_tail_module();
+        module.funcs[1].blocks[0].end = End::TailInvoke(Reg(0), vec![Reg(0)]);
+        let mut ctx = CompileCtx::new(&module);
+        ctx.compile_module().expect("compilation failed");
+
+        assert!(
+            ctx.functions[1]
+                .body
+                .iter()
+                .any(|i| matches!(i, WasmInstr::ReturnCallIndirect(_))),
+            "tail invoke should use return_call_indirect"
+        );
+    }
+
+    /// The emitted binary must still validate with tail calls enabled.
+    #[test]
+    fn tail_call_module_validates() {
+        let module = make_mutual_tail_module();
+        let mut backend = WasmBackend;
+        let bytes = backend.compile(&module).expect("compilation failed");
+        wasmparser::Validator::new()
+            .validate_all(&bytes)
+            .expect("tail-calling module should validate");
     }
 
     #[test]
