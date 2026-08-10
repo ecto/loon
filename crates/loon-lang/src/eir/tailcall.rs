@@ -64,9 +64,14 @@ fn thread_returns(func: &mut Func) -> bool {
         }
 
         let dest = &func.blocks[target];
-        // Only a block that does nothing but return a parameter is safe to
-        // inline into its predecessor. Returning a non-parameter register would
-        // move the read to a block where that register may not be defined.
+        // Only a block that does nothing but return one of its own parameters
+        // is safe to inline into its predecessor. Three conditions, each load
+        // bearing:
+        //   - no ops, or inlining would skip work the callee still owes;
+        //   - arity match, so `args[i]` really is what `params[i]` binds to;
+        //   - the returned register is a *parameter* (the `position` lookup
+        //     below), because returning a register defined elsewhere would move
+        //     the read into a block where it may not be defined.
         if !dest.ops.is_empty() || dest.params.len() != args.len() {
             continue;
         }

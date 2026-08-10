@@ -379,13 +379,22 @@ impl Vm {
     /// in place (a tail call), load `vals` into the argument registers, and
     /// install the callee's captures.
     ///
-    /// `captures` must be what the equivalent non-tail call would have passed:
-    /// empty for `End::Tail` (mirroring `Op::Call`), the closure's own capture
-    /// list for `End::TailInvoke` (mirroring `Op::Invoke`). Leaving the
-    /// *caller's* captures in place would let the callee's `Op::Upval` read
-    /// the wrong frame's upvalues.
+    /// A tail call must be indistinguishable from the equivalent non-tail call
+    /// followed by a return, so the callee has to see exactly the frame that
+    /// `call_func_with_captures` would have built for it:
+    ///
+    /// - **A clean register file.** The non-tail path installs a fresh
+    ///   `vec![Val::UNIT; _]`; reusing the buffer with a bare `resize` would
+    ///   leave the caller's values in every register past the arguments, since
+    ///   `resize` only fills slots it *adds*. Clearing first reuses the
+    ///   allocation while still handing over a blank frame.
+    /// - **The callee's own captures**: empty for `End::Tail` (mirroring
+    ///   `Op::Call`), the closure's capture list for `End::TailInvoke`
+    ///   (mirroring `Op::Invoke`). Leaving the *caller's* captures in place
+    ///   would let the callee's `Op::Upval` read the wrong frame's upvalues.
     fn enter_tail_frame(&mut self, func: FuncId, vals: &[Val], captures: Vec<Val>) {
         let needed = self.reg_count(func).max(vals.len()) + 16;
+        self.regs.clear();
         self.regs.resize(needed, Val::UNIT);
         self.regs[..vals.len()].copy_from_slice(vals);
         self.captures = captures;
@@ -3777,6 +3786,80 @@ mod tests {
         assert_eq!(
             via_tail, via_call,
             "a tail call must not leak the caller's captures into the callee"
+        );
+    }
+
+    /// The register-file half of the same rule: `Op::Call` hands the callee a
+    /// freshly zeroed frame, so a tail call reusing the caller's buffer must
+    /// clear it. Otherwise a register the callee reads before writing sees the
+    /// caller's leftovers instead of Unit.
+    #[test]
+    fn vm_tail_call_does_not_leak_caller_registers() {
+        use crate::eir::{Block, Ty};
+        use crate::syntax::Span;
+
+        // callee() returns a register it never writes.
+        let callee = || Func {
+            id: FuncId(0),
+            name: Some("callee".to_string()),
+            params: vec![],
+            ret: Ty::Any,
+            evidence: vec![],
+            captures: vec![],
+            blocks: vec![Block {
+                id: BlockId(0),
+                params: vec![],
+                ops: vec![],
+                end: End::Ret(Reg(3)),
+            }],
+            span: Span::ZERO,
+            is_closure: false,
+        };
+
+        // __main stashes 7 in that same register, then reaches callee either
+        // way. The caller's frame is the larger one, so a bare `resize` would
+        // not overwrite Reg(3).
+        let build = |tail: bool| Module {
+            funcs: vec![
+                callee(),
+                Func {
+                    id: FuncId(1),
+                    name: Some("__main".to_string()),
+                    params: vec![],
+                    ret: Ty::Any,
+                    evidence: vec![],
+                    captures: vec![],
+                    blocks: vec![Block {
+                        id: BlockId(0),
+                        params: vec![],
+                        ops: {
+                            let mut ops = vec![Op::Lit(Reg(3), Lit::Int(7), Span::ZERO)];
+                            if !tail {
+                                ops.push(Op::Call(Reg(9), FuncId(0), vec![], Span::ZERO));
+                            }
+                            ops
+                        },
+                        end: if tail {
+                            End::Tail(FuncId(0), vec![])
+                        } else {
+                            End::Ret(Reg(9))
+                        },
+                    }],
+                    span: Span::ZERO,
+                    is_closure: false,
+                },
+            ],
+            strings: vec![],
+            ctors: vec![],
+            entry: FuncId(1),
+        };
+
+        let via_call = Vm::new(build(false)).run().expect("vm error").value;
+        let via_tail = Vm::new(build(true)).run().expect("vm error").value;
+        assert_eq!(via_call, Val::UNIT);
+        assert_eq!(
+            via_tail, via_call,
+            "a tail call must not leak the caller's registers into the callee"
         );
     }
 

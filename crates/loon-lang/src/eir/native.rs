@@ -181,6 +181,18 @@ impl NativeModule {
                 phase: "native:setup",
             })?;
         }
+        // Required by `CallConv::Tail`, which every Loon function uses so that
+        // `End::Tail` can lower to `return_call`. Cranelift's x64 tail-call
+        // emitter asserts on a missing frame pointer ("frame pointers aren't
+        // fundamentally required for tail calls, but the current
+        // implementation relies on them being present"); aarch64 maintains one
+        // unconditionally, so this only bites on x86_64.
+        flag_builder
+            .set("preserve_frame_pointers", "true")
+            .map_err(|e| Error {
+                message: format!("cranelift flag error: {e}"),
+                phase: "native:setup",
+            })?;
         let isa_builder = cranelift_native::builder().map_err(|msg| Error {
             message: format!("unsupported host: {msg}"),
             phase: "native:setup",
@@ -330,10 +342,10 @@ impl NativeModule {
                     phase: "native:declare",
                 })?;
 
-            let mut cl_func = Function::with_name_signature(
-                UserFuncName::user(0, eir_module.funcs.len() as u32),
-                sig,
-            );
+            // Namespace 1: EIR functions occupy namespace 0, indexed by
+            // FuncId. The trampoline is not an EIR function, so it gets its
+            // own namespace rather than an index just past the end of theirs.
+            let mut cl_func = Function::with_name_signature(UserFuncName::user(1, 0), sig);
             {
                 let mut builder = FunctionBuilder::new(&mut cl_func, &mut fb_ctx);
                 let block = builder.create_block();
