@@ -443,3 +443,58 @@ fn a_loop_carried_float_survives_the_shader() {
         .validate(&parsed)
         .unwrap_or_else(|e| panic!("WGSL did not validate: {e:?}\n\n{shader}"));
 }
+
+// ── Parallel placement with more than one output ────────────────────────────
+
+/// A kernel writing two buffers, at a size large enough to span every core.
+const SPLIT: &str = "[kernel split [i src lo hi] \
+       [let v [at src i]] \
+       [put lo i [if [< v 0.0] v 0.0]] \
+       [put hi i [if [< v 0.0] 0.0 v]]] \
+     [fn main [] \
+       [let src [buf [map [fn [k] [- k 500]] [range 0 1000]]]] \
+       [let mut lo [buf-zeros 1000]] \
+       [let mut hi [buf-zeros 1000]] \
+       [Place.run split 1000 #[src lo hi]] \
+       [IO.println [sum [Place.read lo]]] \
+       [IO.println [sum [Place.read hi]]]]";
+
+#[test]
+fn parallel_placement_splits_every_output_not_just_one() {
+    // This used to fall back to sequential execution whenever a kernel had
+    // anything other than exactly one output buffer — silently, so asking for
+    // `par` and getting `cpu` was indistinguishable from getting what you
+    // asked for. Every output is now carved into per-thread slices.
+    use loon_lang::eir::place::Mode;
+    let dir = std::env::current_dir().expect("cwd");
+
+    let mut answers = Vec::new();
+    for mode in [Mode::Cpu, Mode::Par, Mode::Device] {
+        let (r, _) = loon_lang::eir::vm::eval_eir_placed(SPLIT, &dir, mode)
+            .unwrap_or_else(|e| panic!("{mode:?} failed: {e:?}"));
+        answers.push(r.output);
+    }
+    // -500..-1 sums to -125250; 0..499 sums to 124750.
+    assert_eq!(answers[0], vec!["-125250", "124750"]);
+    assert!(
+        answers.iter().all(|a| *a == answers[0]),
+        "placements disagreed: {answers:?}"
+    );
+}
+
+#[test]
+fn a_mismatched_output_length_is_reported() {
+    // A buffer shorter than the launch cannot be carved into the ranges the
+    // work items need, and saying so beats writing past the end of one piece
+    // or quietly covering fewer elements.
+    use loon_lang::eir::place::Mode;
+    let dir = std::env::current_dir().expect("cwd");
+    let src = "[kernel k [i b] [put b i 1.0]] \
+               [fn main [] [let mut b [buf-zeros 4]] [Place.run k 64 #[b]]]";
+    let err = loon_lang::eir::vm::eval_eir_placed(src, &dir, Mode::Par).expect_err("should refuse");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("64") || msg.contains("outside"),
+        "expected a length complaint, got: {msg}"
+    );
+}

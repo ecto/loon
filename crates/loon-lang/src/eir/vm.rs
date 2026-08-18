@@ -1148,35 +1148,43 @@ impl Vm {
 
         let parallel = self.place_mode == crate::eir::place::Mode::Par;
         let module = self.module.clone();
+
+        // Keep the buffers in one place and hand out borrows by argument
+        // position. Splitting inputs from outputs is what lets the parallel
+        // driver carve every output into per-thread slices while sharing the
+        // inputs whole.
+        let mut buffers: Vec<(usize, Buffer, bool)> = taken;
         let outcome = {
-            // Assemble the argument list in declaration order.
-            let mut buffers: Vec<(usize, Buffer, bool)> = taken;
-            let mut args: Vec<KArg> = Vec::with_capacity(rest.len());
-            {
-                let mut scalar_iter = scalars.iter();
-                let mut buf_iter = buffers.iter_mut();
-                for i in 0..rest.len() {
-                    if scalars.iter().any(|(j, _)| *j == i) {
-                        let (_, v) = scalar_iter.next().expect("a scalar");
-                        args.push(KArg::Scalar(*v));
-                    } else {
-                        let (_, b, writable) = buf_iter.next().expect("a buffer");
-                        if *writable {
-                            args.push(KArg::Output(b));
-                        } else {
-                            args.push(KArg::Input(b));
-                        }
-                    }
-                }
-            }
-            let r = if parallel {
-                crate::eir::kernel_exec::run_parallel(&module, func_id, &mut args, n)
+            let (writable, readable): (Vec<_>, Vec<_>) =
+                buffers.iter_mut().partition(|(_, _, w)| *w);
+            let inputs: Vec<(usize, &Buffer)> =
+                readable.into_iter().map(|(i, b, _)| (*i, &*b)).collect();
+            let mut outputs: Vec<(usize, &mut Buffer)> =
+                writable.into_iter().map(|(i, b, _)| (*i, b)).collect();
+
+            if parallel {
+                crate::eir::kernel_exec::run_parallel(
+                    &module,
+                    func_id,
+                    &scalars,
+                    &inputs,
+                    &mut outputs,
+                    rest.len(),
+                    n,
+                )
             } else {
-                crate::eir::kernel_exec::run_range(&module, func_id, &mut args, 0..n)
-            };
-            drop(args);
-            r.map(|_| buffers)
+                crate::eir::kernel_exec::run_sequential(
+                    &module,
+                    func_id,
+                    &scalars,
+                    &inputs,
+                    &mut outputs,
+                    rest.len(),
+                    n,
+                )
+            }
         };
+        let outcome = outcome.map(|_| buffers);
 
         let buffers = match outcome {
             Ok(b) => b,

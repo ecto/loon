@@ -218,19 +218,20 @@ pub fn run_range(
 
 /// Run a kernel across every core, splitting the index space.
 ///
-/// Each thread gets a disjoint slice of the single output buffer and the whole
-/// of every input. The disjointness is not asserted — it is what
-/// `split_at_mut` hands back, and the borrow checker is what enforces it. A
-/// kernel that writes outside its own range fails with a message saying so
-/// rather than racing another thread.
+/// Each thread gets a disjoint slice of *every* output buffer and the whole of
+/// every input. The disjointness is not asserted — it is what `split_at_mut`
+/// hands back, and the borrow checker is what enforces it. A GPU partitioning
+/// strategy has to promise the same property through an `unsafe impl`.
 ///
-/// Falls back to sequential execution when the shape does not fit (no output,
-/// or more than one), because a wrong answer computed in parallel is not an
-/// improvement over a right one computed serially.
+/// A kernel that writes outside its own range fails with a message saying so
+/// rather than racing another thread.
 pub fn run_parallel(
     module: &Module,
     func: FuncId,
-    args: &mut [KArg<'_>],
+    scalars: &[(usize, KVal)],
+    inputs: &[(usize, &Buffer)],
+    outputs: &mut [(usize, &mut Buffer)],
+    arity: usize,
     n: i64,
 ) -> Result<(), Error> {
     let threads = std::thread::available_parallelism()
@@ -238,18 +239,14 @@ pub fn run_parallel(
         .unwrap_or(1)
         .min(n.max(1) as usize);
 
-    let outputs: Vec<usize> = args
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| matches!(a, KArg::Output(_)))
-        .map(|(i, _)| i)
-        .collect();
-    if threads <= 1 || outputs.len() != 1 || n <= 0 {
-        return run_range(module, func, args, 0..n);
+    if threads <= 1 || n <= 0 || outputs.is_empty() {
+        // Nothing to split, or nothing to split across. Sequential is the same
+        // answer; only slower.
+        let mut args = assemble(scalars, inputs, outputs, arity)?;
+        return run_range(module, func, &mut args, 0..n);
     }
-    let out_index = outputs[0];
 
-    // Split the work into contiguous chunks, one per thread.
+    // Contiguous chunks of the index space, one per thread.
     let chunk = (n as usize).div_ceil(threads);
     let mut ranges: Vec<(i64, usize)> = Vec::new();
     let mut start = 0usize;
@@ -259,81 +256,116 @@ pub fn run_parallel(
         start += len;
     }
 
-    // Take the output buffer apart, and everything else by shared reference.
-    let (before, rest_args) = args.split_at_mut(out_index);
-    let (out_arg, after) = rest_args.split_first_mut().expect("an output argument");
-    let KArg::Output(out_buf) = out_arg else {
-        return Err(Error("expected an output buffer".into()));
-    };
-
-    let shared: Vec<&KArg<'_>> = before.iter().chain(after.iter()).collect();
-
-    macro_rules! split_and_run {
-        ($variant:ident, $data:expr) => {{
-            let mut remaining: &mut [_] = $data;
-            let mut pieces: Vec<(i64, &mut [_])> = Vec::new();
-            for (base, len) in &ranges {
-                let (head, tail) = remaining.split_at_mut(*len);
-                pieces.push((*base, head));
-                remaining = tail;
-            }
-            std::thread::scope(|scope| {
-                let mut handles = Vec::new();
-                for (base, piece) in pieces {
-                    let shared = &shared;
-                    handles.push(scope.spawn(move || {
-                        let mut local: Vec<KArg> = Vec::with_capacity(shared.len() + 1);
-                        let mut si = shared.iter();
-                        for i in 0..=shared.len() {
-                            if i == out_index {
-                                local.push(KArg::OutputView {
-                                    view: OutView::$variant(piece),
-                                    base,
-                                });
-                                break;
-                            }
-                            local.push(borrow_arg(si.next().expect("an argument")));
-                        }
-                        // Anything after the output.
-                        for a in si {
-                            local.push(borrow_arg(a));
-                        }
-                        let len = match local.get(out_index) {
-                            Some(KArg::OutputView { view, .. }) => view.len() as i64,
-                            _ => 0,
-                        };
-                        run_range(module, func, &mut local, base..base + len)
-                    }));
+    // Carve every output buffer into per-thread views. `iter_mut` yields
+    // disjoint `&mut`s, so pieces taken from different buffers can coexist.
+    let mut per_thread: Vec<Vec<(usize, OutView)>> = ranges.iter().map(|_| Vec::new()).collect();
+    for (arg_idx, buf) in outputs.iter_mut() {
+        if buf.len() < n as usize {
+            return Err(Error(format!(
+                "argument {} has {} elements but the launch covers {n}",
+                *arg_idx + 1,
+                buf.len()
+            )));
+        }
+        macro_rules! carve {
+            ($v:expr, $variant:ident) => {{
+                let mut rest: &mut [_] = &mut $v[..];
+                for (t, (_, len)) in ranges.iter().enumerate() {
+                    let (head, tail) = rest.split_at_mut(*len);
+                    per_thread[t].push((*arg_idx, OutView::$variant(head)));
+                    rest = tail;
                 }
-                let mut result = Ok(());
-                for h in handles {
-                    match h.join() {
-                        Ok(Ok(())) => {}
-                        Ok(Err(e)) => result = Err(e),
-                        Err(_) => result = Err(Error("a kernel thread panicked".into())),
+            }};
+        }
+        match &mut buf.data {
+            BufData::F32(v) => carve!(v, F32),
+            BufData::F64(v) => carve!(v, F64),
+            BufData::I32(v) => carve!(v, I32),
+            BufData::I64(v) => carve!(v, I64),
+        }
+    }
+
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for ((base, _), views) in ranges.iter().zip(per_thread) {
+            let base = *base;
+            handles.push(scope.spawn(move || {
+                let mut args: Vec<KArg> = Vec::with_capacity(arity);
+                let mut views = views;
+                for i in 0..arity {
+                    if let Some((_, v)) = scalars.iter().find(|(j, _)| *j == i) {
+                        args.push(KArg::Scalar(*v));
+                    } else if let Some((_, b)) = inputs.iter().find(|(j, _)| *j == i) {
+                        args.push(KArg::Input(b));
+                    } else if let Some(pos) = views.iter().position(|(j, _)| *j == i) {
+                        let (_, view) = views.remove(pos);
+                        args.push(KArg::OutputView { view, base });
+                    } else {
+                        return Err(Error(format!("argument {} was not provided", i + 1)));
                     }
                 }
-                result
-            })
-        }};
-    }
-
-    match &mut out_buf.data {
-        BufData::F32(v) => split_and_run!(F32, &mut v[..]),
-        BufData::F64(v) => split_and_run!(F64, &mut v[..]),
-        BufData::I32(v) => split_and_run!(I32, &mut v[..]),
-        BufData::I64(v) => split_and_run!(I64, &mut v[..]),
-    }
+                let len = args
+                    .iter()
+                    .find_map(|a| match a {
+                        KArg::OutputView { view, .. } => Some(view.len() as i64),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                run_range(module, func, &mut args, base..base + len)
+            }));
+        }
+        let mut result = Ok(());
+        for h in handles {
+            match h.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => result = Err(e),
+                Err(_) => result = Err(Error("a kernel thread panicked".into())),
+            }
+        }
+        result
+    })
 }
 
-/// Re-borrow a shared argument for one thread. Only inputs and scalars reach
-/// here; the single output is split separately.
-fn borrow_arg<'a>(a: &'a KArg<'_>) -> KArg<'a> {
-    match a {
-        KArg::Input(b) => KArg::Input(b),
-        KArg::Scalar(v) => KArg::Scalar(*v),
-        _ => KArg::Scalar(KVal::Unit),
+/// Run a kernel on one core, from the same separated pieces `run_parallel`
+/// takes, so a caller does not have to assemble arguments two different ways.
+pub fn run_sequential(
+    module: &Module,
+    func: FuncId,
+    scalars: &[(usize, KVal)],
+    inputs: &[(usize, &Buffer)],
+    outputs: &mut [(usize, &mut Buffer)],
+    arity: usize,
+    n: i64,
+) -> Result<(), Error> {
+    let mut args = assemble(scalars, inputs, outputs, arity)?;
+    run_range(module, func, &mut args, 0..n)
+}
+
+/// Build a sequential argument list from the separated pieces.
+fn assemble<'a>(
+    scalars: &[(usize, KVal)],
+    inputs: &[(usize, &'a Buffer)],
+    outputs: &'a mut [(usize, &mut Buffer)],
+    arity: usize,
+) -> Result<Vec<KArg<'a>>, Error> {
+    // Outputs are addressed by argument position, so index them once.
+    let mut out_by_arg: Vec<Option<&mut Buffer>> = (0..arity).map(|_| None).collect();
+    for (i, b) in outputs.iter_mut() {
+        out_by_arg[*i] = Some(b);
     }
+    let mut args: Vec<KArg> = Vec::with_capacity(arity);
+    for i in 0..arity {
+        if let Some((_, v)) = scalars.iter().find(|(j, _)| *j == i) {
+            args.push(KArg::Scalar(*v));
+        } else if let Some((_, b)) = inputs.iter().find(|(j, _)| *j == i) {
+            args.push(KArg::Input(b));
+        } else if let Some(b) = out_by_arg[i].take() {
+            args.push(KArg::Output(b));
+        } else {
+            return Err(Error(format!("argument {} was not provided", i + 1)));
+        }
+    }
+    Ok(args)
 }
 
 fn run_one(
