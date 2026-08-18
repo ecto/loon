@@ -1,0 +1,15 @@
+; Interpreter benchmark. Deliberately IO-free: console bytes are MMIO traps
+; into the emulator and would swamp what we are trying to measure.
+;
+; Two shapes that stress different paths — deep recursion (call frames, the
+; register file) and sequence work (operand vectors, closure application).
+
+[fn fib [n]
+  [if [< n 2] n [+ [fib [- n 1]] [fib [- n 2]]]]]
+
+[fn main []
+  [let a [fib 20]]
+  [let xs [map [range 0 400] [fn [n] [* n 3]]]]
+  [let ys [filter xs [fn [n] [> n 200]]]]
+  [let b [fold ys 0 [fn [acc n] [+ acc n]]]]
+  [+ a b]]

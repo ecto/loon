@@ -1,0 +1,32 @@
+; The kernel draws a fractal. Every float op, every closure application,
+; every string concat here runs on the bare-metal interpreter — no libm,
+; no libc, no OS. It is a Mandelbrot set because a kernel that boots
+; should get to do at least one gratuitous thing.
+;
+;   loon run crates/loon-kernel/boot/mandel.oo   ; host
+;   make -C crates/loon-kernel run             ; machine (runs after init)
+
+[fn escape [zr zi cr ci n]
+  [if [or [> [+ [* zr zr] [* zi zi]] 4.0] [>= n 24]]
+    n
+    [escape [+ [- [* zr zr] [* zi zi]] cr] [+ [* 2.0 [* zr zi]] ci] cr ci [+ n 1]]]]
+
+[fn shade [n]
+  [if [>= n 24] " "
+  [if [< n 2] "@"
+  [if [< n 3] "%"
+  [if [< n 4] "#"
+  [if [< n 6] "*"
+  [if [< n 9] "+"
+  [if [< n 13] "="
+  [if [< n 18] "-" "."]]]]]]]]]
+
+[fn pixel [x y]
+  [let cr [- [* [float [str x]] 0.0375] 2.1]]
+  [let ci [- [* [float [str y]] 0.09] 1.1]]
+  [shade [escape 0.0 0.0 cr ci 0]]]
+
+[fn row [y] [join [map [range 0 80] [fn [x] [pixel x y]]] ""]]
+
+[fn main []
+  [each [range 0 25] [fn [y] [println [row y]]]]]

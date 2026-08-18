@@ -15,5 +15,9 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
-opt-level = "z"
+# An interpreter lives or dies on inlining, and `opt-level = "z"` suppresses
+# it — the dispatch loop was ~150x slower than a native one under `z`. The
+# image is small either way; there is nothing here worth trading speed for.
+opt-level = 3
 lto = true
+codegen-units = 1

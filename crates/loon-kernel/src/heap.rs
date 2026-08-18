@@ -20,6 +20,9 @@ const MIN_BLOCK: usize = core::mem::size_of::<Block>();
 
 pub struct Heap {
     free: UnsafeCell<*mut Block>,
+    /// Allocation count. Wall-clock under emulation is noisy; this is not,
+    /// so it is what optimisation work should be judged against.
+    allocs: core::sync::atomic::AtomicU64,
 }
 
 // Single hart, interrupts off: no concurrent access exists.
@@ -29,7 +32,12 @@ impl Heap {
     pub const fn new() -> Self {
         Heap {
             free: UnsafeCell::new(ptr::null_mut()),
+            allocs: core::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    pub fn allocs(&self) -> u64 {
+        self.allocs.load(core::sync::atomic::Ordering::Relaxed)
     }
 
     /// # Safety
@@ -73,6 +81,8 @@ impl Heap {
 
 unsafe impl GlobalAlloc for Heap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        self.allocs
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         let align = layout.align().max(core::mem::align_of::<Block>());
         let size = align_up(layout.size().max(MIN_BLOCK), core::mem::align_of::<Block>());
 
