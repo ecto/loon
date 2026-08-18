@@ -21,12 +21,17 @@ run: build
 host:
 	cd ../.. && cargo run -q -p loon-cli -- run crates/loon-kernel/boot/init.oo
 
-# Boot, and prove the machine agrees with the host byte for byte.
+# Boot, and prove the machine agrees with the host byte for byte — for init,
+# and for the fractal (which is the float path's parity check in disguise).
 check: build
 	@$(QEMU) $(QFLAGS) -serial mon:stdio -kernel $(KERNEL) < /dev/null 2>/dev/null \
-	  | sed -n '/^hello from loon/,/^init done/p' | tr -d '\r' > /tmp/loon-metal.txt
+	  | tr -d '\r' > /tmp/loon-metal-all.txt
+	@sed -n '/^hello from loon/,/^init done/p' /tmp/loon-metal-all.txt > /tmp/loon-metal.txt
+	@sed -n '/^@@@@@@@@@@@@%/,/^@@@@@@@@@@@%%%%%%%%####/p' /tmp/loon-metal-all.txt > /tmp/loon-metal-mandel.txt
 	@cd ../.. && cargo run -q -p loon-cli -- run crates/loon-kernel/boot/init.oo 2>/dev/null > /tmp/loon-host.txt
+	@cd ../.. && cargo run -q -p loon-cli -- run crates/loon-kernel/boot/mandel.oo 2>/dev/null > /tmp/loon-host-mandel.txt
 	@diff /tmp/loon-host.txt /tmp/loon-metal.txt \
+	  && diff /tmp/loon-host-mandel.txt /tmp/loon-metal-mandel.txt \
 	  && echo "ok: identical output on the host and on bare metal"
 
 clean:

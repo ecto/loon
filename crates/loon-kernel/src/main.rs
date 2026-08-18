@@ -83,6 +83,13 @@ pub extern "C" fn kmain(hart: usize, dtb: usize) -> ! {
     }
     println!();
 
+    // Gratuitous. A kernel that boots should get to do one fun thing.
+    println!();
+    if let Err(e) = run_init(include_bytes!(env!("LOON_MANDEL_IMAGE"))) {
+        println!("mandel failed: {e}");
+    }
+    println!();
+
     let t0 = now();
     match run_init(image) {
         Ok(()) => {

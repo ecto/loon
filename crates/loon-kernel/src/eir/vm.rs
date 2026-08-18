@@ -936,6 +936,36 @@ impl<'m, H: Host> Vm<'m, H> {
                 v => seq(&v).map(|x| x.is_empty()).unwrap_or(false),
             }),
             "Not" => Val::Bool(!a0().truthy()),
+            "Float" => match a0() {
+                Val::Float(f) => Val::Float(f),
+                Val::Int(n) => Val::Float(n as f64),
+                Val::Str(s) => Val::Float(
+                    s.trim()
+                        .parse::<f64>()
+                        .map_err(|_| alloc::format!("cannot parse '{s}' as a float"))?,
+                ),
+                v => {
+                    return Err(alloc::format!(
+                        "cannot convert a {} to a float",
+                        v.type_name()
+                    ))
+                }
+            },
+            "Int" => match a0() {
+                Val::Int(n) => Val::Int(n),
+                Val::Float(f) => Val::Int(f as i64),
+                Val::Str(s) => Val::Int(
+                    s.trim()
+                        .parse::<i64>()
+                        .map_err(|_| alloc::format!("cannot parse '{s}' as an int"))?,
+                ),
+                v => {
+                    return Err(alloc::format!(
+                        "cannot convert a {} to an int",
+                        v.type_name()
+                    ))
+                }
+            },
             "TypeOf" => Val::Str(Rc::new(a0().type_name().to_string())),
             "SomeP" => Val::Bool(!matches!(a0(), Val::Unit)),
             "NoneP" => Val::Bool(matches!(a0(), Val::Unit)),

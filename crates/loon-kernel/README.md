@@ -24,6 +24,7 @@ make check    # boot it and diff the two
 | `src/sbi.rs` | the slice of SBI we need (power off) |
 | `src/eir/` | boot-image decoder and the EIR interpreter |
 | `boot/init.oo` | the init program — ordinary Loon |
+| `boot/mandel.oo` | a Mandelbrot set, because a kernel that boots should get to do one gratuitous thing |
 
 The host toolchain is not in this crate's build graph. `build.rs` shells out
 to `loon image`, which compiles `boot/init.oo` to a boot image; the kernel
@@ -32,7 +33,8 @@ checker, ownership, lowering — stays on the host, where it belongs.
 
 ## Why the output has to match
 
-`make check` diffs the machine against the host. That diff is the point of
+`make check` diffs the machine against the host — init *and* the fractal,
+which doubles as the float path's parity check. That diff is the point of
 the exercise: the same program, the same effects, two entirely different
 bottom halves. If they ever disagree, one of the two runtimes is wrong about
 what Loon means, and a language whose semantics depend on where it runs is
