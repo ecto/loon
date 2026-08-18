@@ -867,6 +867,20 @@ impl Vm {
             return Ok(Val::UNIT);
         }
 
+        // The typed executor handles the numeric subset without boxing every
+        // value or walking the heap for every element. Kernels outside the
+        // subset fall through to the general VM below, which is why this is a
+        // question rather than a requirement.
+        if matches!(
+            self.place_mode,
+            crate::eir::place::Mode::Cpu | crate::eir::place::Mode::Par
+        ) && crate::eir::kernel_exec::supported(&self.module, func_id)
+        {
+            if let Some(result) = self.place_run_fast(func_id, &rest, n)? {
+                return Ok(result);
+            }
+        }
+
         let mut call_args = Vec::with_capacity(rest.len() + 1);
         for i in 0..n {
             call_args.clear();
@@ -1058,6 +1072,112 @@ impl Vm {
 
     fn place_error(&self, message: String) -> VmError {
         VmError::new(VmErrorKind::BuiltinType(message)).with_span(self.current_span)
+    }
+
+    /// Run a kernel through the typed executor, if its arguments allow it.
+    ///
+    /// Returns `None` when the shape is not one this path handles (an aliased
+    /// buffer, say), so the caller falls back rather than failing. Buffers are
+    /// taken out of the heap for the duration and put back afterwards, which
+    /// is what lets the executor hold a `&mut` slice — and, in parallel mode,
+    /// hand disjoint pieces of it to different threads.
+    fn place_run_fast(
+        &mut self,
+        func_id: FuncId,
+        rest: &[Val],
+        n: i64,
+    ) -> Result<Option<Val>, VmError> {
+        use crate::eir::kernel_exec::{KArg, KVal};
+
+        // Which arguments are buffers, and which of those are written?
+        let kinds = crate::eir::wgsl::infer_arg_kinds(&self.module, func_id, DType::F32);
+        if kinds.len() != rest.len() {
+            return Ok(None);
+        }
+
+        // A buffer appearing twice would need two borrows of the same slot.
+        let mut seen: Vec<usize> = Vec::new();
+        for val in rest {
+            if val.is_ptr() && matches!(self.heap.get(val.as_ptr()), Some(Obj::Buffer(_))) {
+                if seen.contains(&val.as_ptr()) {
+                    return Ok(None);
+                }
+                seen.push(val.as_ptr());
+            }
+        }
+
+        // Take each buffer out of the heap so it can be borrowed mutably.
+        let mut taken: Vec<(usize, Buffer, bool)> = Vec::new();
+        let mut scalars: Vec<(usize, KVal)> = Vec::new();
+        for (i, val) in rest.iter().enumerate() {
+            let writable = matches!(
+                kinds[i],
+                crate::eir::wgsl::ArgKind::Buffer { writable: true, .. }
+            );
+            match self.heap.get(val.as_ptr()) {
+                Some(Obj::Buffer(b)) if val.is_ptr() => {
+                    taken.push((i, b.clone(), writable));
+                }
+                _ => {
+                    let v = if val.is_int() {
+                        KVal::I(val.as_int())
+                    } else if val.is_float() {
+                        KVal::F(val.as_float())
+                    } else {
+                        return Ok(None);
+                    };
+                    scalars.push((i, v));
+                }
+            }
+        }
+
+        let parallel = self.place_mode == crate::eir::place::Mode::Par;
+        let module = self.module.clone();
+        let outcome = {
+            // Assemble the argument list in declaration order.
+            let mut buffers: Vec<(usize, Buffer, bool)> = taken;
+            let mut args: Vec<KArg> = Vec::with_capacity(rest.len());
+            {
+                let mut scalar_iter = scalars.iter();
+                let mut buf_iter = buffers.iter_mut();
+                for i in 0..rest.len() {
+                    if scalars.iter().any(|(j, _)| *j == i) {
+                        let (_, v) = scalar_iter.next().expect("a scalar");
+                        args.push(KArg::Scalar(*v));
+                    } else {
+                        let (_, b, writable) = buf_iter.next().expect("a buffer");
+                        if *writable {
+                            args.push(KArg::Output(b));
+                        } else {
+                            args.push(KArg::Input(b));
+                        }
+                    }
+                }
+            }
+            let r = if parallel {
+                crate::eir::kernel_exec::run_parallel(&module, func_id, &mut args, n)
+            } else {
+                crate::eir::kernel_exec::run_range(&module, func_id, &mut args, 0..n)
+            };
+            drop(args);
+            r.map(|_| buffers)
+        };
+
+        let buffers = match outcome {
+            Ok(b) => b,
+            Err(e) => {
+                return Err(VmError::new(VmErrorKind::BuiltinType(e.0)).with_span(self.current_span))
+            }
+        };
+
+        // Put the results back where the program can see them.
+        for (i, buf, _) in buffers {
+            let val = rest[i];
+            if let Some(slot) = self.heap.get_mut(val.as_ptr()) {
+                *slot = Obj::Buffer(buf);
+            }
+        }
+        Ok(Some(Val::UNIT))
     }
 
     /// Heap slot, byte length, and element type of a buffer value.
@@ -3992,7 +4112,7 @@ impl Vm {
                 // one memory, so the read is free — and saying so keeps the
                 // two modes comparable.
                 let must_transfer = match self.place_mode {
-                    crate::eir::place::Mode::Cpu => true,
+                    crate::eir::place::Mode::Cpu | crate::eir::place::Mode::Par => true,
                     crate::eir::place::Mode::Device | crate::eir::place::Mode::Gpu => {
                         self.place_device.is_dirty(id)
                     }

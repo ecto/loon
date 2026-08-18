@@ -17,9 +17,9 @@ identical in both columns — the only difference is whether `place/resident`
 
 | launches | no policy | place/resident | speedup |
 |---------:|----------:|---------------:|--------:|
-| 8 | 28.9 ms | 9.3 ms | 3.1x |
-| 32 | 93.1 ms | 15.4 ms | 6.0x |
-| 128 | 356.7 ms | 18.3 ms | 19.5x |
+| 8 | 29.3 ms | 8.4 ms | 3.5x |
+| 32 | 94.8 ms | 11.2 ms | 8.4x |
+| 128 | 358.8 ms | 18.1 ms | 19.9x |
 
 The gap grows with the chain because without a policy every launch uploads its
 arguments, computes, and copies its results back; with one, the buffers stay
@@ -39,30 +39,38 @@ Exact counts — these do not vary between runs.
 | 16 | 32 uploads | 2 uploads | 480 KB |
 | 64 | 128 uploads | 2 uploads | 2.0 MB |
 
-### Kernel time: interpreter vs GPU
+### Kernel time: where it runs
 
-| elements | interpreter | gpu | ratio |
-|---------:|------------:|----:|------:|
-| 1,024 | 522 µs | 10.0 ms | 0.1x |
-| 16,384 | 2.7 ms | 8.7 ms | 0.3x |
-| 262,144 | 40.9 ms | 13.4 ms | 3.1x |
+The same kernel, the same program, four placements. The CPU columns go through
+the typed executor in `eir::kernel_exec` — raw slices, no boxing — so this is a
+fair floor rather than a straw man.
 
-Read this one carefully. The CPU column is **Loon's own interpreter** walking
-EIR once per work item — the slowest reasonable baseline, not optimized C. The
-ratio says how much there is to gain by leaving the interpreter, not how Loon's
-generated shader compares to a hand-written kernel. We have not measured the
-latter and do not claim it.
+| elements | cpu | par | gpu |
+|---------:|----:|----:|----:|
+| 1,024 | 447 µs | 566 µs | 10.3 ms |
+| 16,384 | 853 µs | 647 µs | 7.2 ms |
+| 262,144 | 8.9 ms | 3.3 ms | 12.4 ms |
+| 1,048,576 | 36.4 ms | 11.4 ms | 19.2 ms |
 
-The GPU loses below ~100k elements, which is the expected shape: a launch is a
-submission to another processor and has a fixed cost that small work cannot
-amortize.
+The interesting row is the last one: on this machine, **every core beats the
+GPU** for this kernel at a million elements. An M4 Max has a lot of fast cores,
+and a GPU launch pays submission and transfer before it computes anything. That
+is not a disappointing result, it is the point — you find it out by changing one
+word on the command line, because the program does not know where it runs.
+
+The GPU only wins when the work per element is large enough to amortize getting
+there, and where that crossover sits is a property of the machine, not of the
+program. Which is a good argument for the decision living outside the program.
+
+This is not a comparison against optimized C or a hand-written kernel. That
+comparison is not attempted here and nothing above should be quoted as one.
 
 ### Launch overhead
 
 | | ns per launch |
 |---|---:|
-| cpu | ~7,200 |
-| gpu, buffers resident | ~110,000 |
+| cpu | ~6,700 |
+| gpu, buffers resident | ~92,000 |
 
 Placement being an effect means every launch is an effect dispatch. That
 dispatch is not what you are paying for: an effect operation costs roughly 3x a

@@ -143,6 +143,11 @@ pub enum Mode {
     /// Right here. There is one memory, so nothing is ever transferred.
     #[default]
     Cpu,
+    /// Every core on this machine, over disjoint slices of the index space.
+    ///
+    /// Still one memory, so nothing is transferred — the only thing that
+    /// changes is how many work items run at once.
+    Par,
     /// A real GPU, through wgpu.
     ///
     /// Requires the `gpu` feature; without it, asking for this mode is an
@@ -165,6 +170,7 @@ impl Mode {
         match s {
             "cpu" | "serial" | "here" => Some(Mode::Cpu),
             "device" | "sim" => Some(Mode::Device),
+            "par" | "parallel" | "threads" => Some(Mode::Par),
             "gpu" | "metal" | "wgpu" => Some(Mode::Gpu),
             _ => None,
         }
@@ -179,6 +185,7 @@ impl Mode {
     pub fn name(self) -> &'static str {
         match self {
             Mode::Cpu => "cpu",
+            Mode::Par => "par",
             Mode::Device => "device",
             Mode::Gpu => "gpu",
         }
@@ -316,7 +323,7 @@ mod tests {
 
     #[test]
     fn mode_names_round_trip() {
-        for m in [Mode::Cpu, Mode::Device, Mode::Gpu] {
+        for m in [Mode::Cpu, Mode::Par, Mode::Device, Mode::Gpu] {
             assert_eq!(Mode::parse(m.name()), Some(m));
         }
         assert_eq!(Mode::parse("sim"), Some(Mode::Device));

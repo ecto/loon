@@ -313,3 +313,61 @@ fn on_the_cpu_there_is_nothing_to_transfer() {
     assert_eq!(stats.uploads, 0);
     assert_eq!(stats.launches, 8);
 }
+
+// ── Every placement gives the same answer ───────────────────────────────────
+
+#[test]
+fn cpu_and_parallel_agree_on_everything() {
+    // The property that makes placement a policy rather than a rewrite: the
+    // answer does not depend on where the work happened. Parallel execution
+    // hands each thread a disjoint slice of the output, so this is also the
+    // test that the split is right.
+    use loon_lang::eir::place::Mode;
+    let dir = std::env::current_dir().expect("cwd");
+
+    let programs = [
+        "[kernel saxpy [i a x y out] [put out i [+ [* a [at x i]] [at y i]]]] \
+         [fn main [] \
+           [let x [buf [range 0 1000]]] [let y [buf [range 0 1000]]] \
+           [let mut out [buf-zeros 1000]] \
+           [Place.run saxpy 1000 #[2.0 x y out]] \
+           [IO.println [sum [Place.read out]]]]",
+        "[kernel clamp [i lo hi b] [let v [at b i]] \
+           [put b i [if [< v lo] lo [if [> v hi] hi v]]]] \
+         [fn main [] \
+           [let mut b [buf [range 0 500]]] \
+           [Place.run clamp 500 #[10.0 100.0 b]] \
+           [IO.println [sum [Place.read b]]]]",
+        "[kernel mathy [i b] [put b i [sqrt [abs [at b i]]]]] \
+         [fn main [] \
+           [let mut b [buf [range 0 777]]] \
+           [Place.run mathy 777 #[b]] \
+           [IO.println [len [Place.read b]]]]",
+    ];
+
+    for src in programs {
+        let (cpu, _) = loon_lang::eir::vm::eval_eir_placed(src, &dir, Mode::Cpu).expect("cpu");
+        let (par, _) = loon_lang::eir::vm::eval_eir_placed(src, &dir, Mode::Par).expect("par");
+        assert_eq!(
+            cpu.output, par.output,
+            "parallel placement changed the answer for:\n{src}"
+        );
+        assert!(!cpu.output.is_empty());
+    }
+}
+
+#[test]
+fn a_kernel_outside_the_fast_subset_still_runs() {
+    // The typed executor covers the numeric subset. Anything else falls back
+    // to the general VM rather than failing, so adding the fast path cannot
+    // have narrowed what a kernel is allowed to be.
+    use loon_lang::eir::place::Mode;
+    let dir = std::env::current_dir().expect("cwd");
+    let src = "[kernel k [i b] [put b i [+ [at b i] 1.0]]] \
+               [fn main [] [let mut b [buf-zeros 4]] \
+                 [Place.run k 4 #[b]] [IO.println [Place.read b]]]";
+    for mode in [Mode::Cpu, Mode::Par] {
+        let (r, _) = loon_lang::eir::vm::eval_eir_placed(src, &dir, mode).expect("runs");
+        assert_eq!(r.output, vec!["#[1 1 1 1]"]);
+    }
+}

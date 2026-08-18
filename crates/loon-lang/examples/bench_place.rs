@@ -10,13 +10,11 @@
 //! Two things are measured, and it is worth being precise about which is which
 //! because they answer different questions.
 //!
-//! **Kernel time** compares running a kernel through Loon's own interpreter
-//! against running it on the GPU. That is not a comparison against optimized C
-//! — the CPU side here is an interpreter walking EIR one work item at a time,
-//! which is the slowest reasonable baseline. The number says how much there is
-//! to gain by leaving the interpreter, not how Loon's generated code compares
-//! to a hand-written kernel. Anyone quoting it as the latter is quoting it
-//! wrong.
+//! **Kernel time** compares the same kernel across every place it can run:
+//! one core, every core, and the GPU. The CPU columns go through the typed
+//! executor in `eir::kernel_exec`, not the general interpreter, so this is a
+//! fair floor rather than a straw man. It is still not a comparison against
+//! optimized C, and nothing here should be quoted as one.
 //!
 //! **Transfer counts** compare a chain of launches with no residency policy
 //! against the same chain under a handler that pins what each launch touches.
@@ -95,25 +93,20 @@ fn main() {
     // element. It is the honest floor, not a tuned baseline.
     println!("\nkernel time — one launch, varying size");
     println!(
-        "  {:>10}  {:>12}  {:>12}  {:>8}",
-        "elements", "interpreter", "gpu", "ratio"
+        "  {:>10}  {:>10}  {:>10}  {:>10}",
+        "elements", "cpu", "par", "gpu"
     );
-    for n in [1_024usize, 16_384, 262_144] {
+    for n in [1_024usize, 16_384, 262_144, 1_048_576] {
         let src = workload(n, 1);
         let cpu = timed(&src, Mode::Cpu).map(|(d, _)| d);
+        let par = timed(&src, Mode::Par).map(|(d, _)| d);
         let gpu = timed(&src, Mode::Gpu).map(|(d, _)| d);
-        let ratio = match (cpu, gpu) {
-            (Some(c), Some(g)) if g.as_secs_f64() > 0.0 => {
-                format!("{:.1}x", c.as_secs_f64() / g.as_secs_f64())
-            }
-            _ => "—".to_string(),
-        };
         println!(
-            "  {:>10}  {:>12}  {:>12}  {:>8}",
+            "  {:>10}  {:>10}  {:>10}  {:>10}",
             n,
             cpu.map(fmt).unwrap_or_else(|| "—".into()),
+            par.map(fmt).unwrap_or_else(|| "—".into()),
             gpu.map(fmt).unwrap_or_else(|| "skipped".into()),
-            ratio
         );
     }
 

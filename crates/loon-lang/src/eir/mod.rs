@@ -6,6 +6,7 @@
 pub mod backend;
 #[cfg(feature = "gpu")]
 pub mod gpu;
+pub mod kernel_exec;
 pub mod layout;
 pub mod lower;
 #[cfg(feature = "native")]
