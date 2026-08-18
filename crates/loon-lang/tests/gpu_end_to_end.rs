@@ -463,3 +463,40 @@ fn a_read_is_what_synchronizes() {
     assert_eq!(stats_a.downloads, 1, "one read, one download");
     assert_eq!(stats_b.downloads, 4, "four reads, four downloads");
 }
+
+#[test]
+fn a_sixty_four_bit_buffer_is_refused_rather_than_narrowed() {
+    // WGSL core has no 64-bit scalar. Quietly computing an f64 buffer in f32
+    // would hand back numbers of a precision the program never asked for and
+    // has no way to notice, so the launch is refused and the alternative
+    // named. The same program runs fine on the CPU.
+    if Gpu::open().is_err() {
+        println!("SKIPPED — no GPU on this machine");
+        return;
+    }
+    let dir = std::env::current_dir().expect("cwd");
+    let src = "[kernel k [i b] [put b i [* 2.0 [at b i]]]] \
+               [fn main [] [let mut b [buf-f64 #[1 2 3]]] \
+                 [Place.run k 3 #[b]] [IO.println [Place.read b]]]";
+
+    let on_gpu = loon_lang::eir::vm::eval_eir_placed(src, &dir, loon_lang::eir::place::Mode::Gpu);
+    match on_gpu {
+        Err(e) => {
+            let msg = format!("{e:?}");
+            assert!(
+                msg.contains("f64"),
+                "the message should name the type: {msg}"
+            );
+            assert!(
+                msg.contains("--place cpu"),
+                "and say what to do instead: {msg}"
+            );
+        }
+        Ok((r, _)) => panic!("expected a refusal, got {:?}", r.output),
+    }
+
+    let (on_cpu, _) =
+        loon_lang::eir::vm::eval_eir_placed(src, &dir, loon_lang::eir::place::Mode::Cpu)
+            .expect("the CPU has 64-bit numbers");
+    assert_eq!(on_cpu.output, vec!["#[2 4 6]"]);
+}

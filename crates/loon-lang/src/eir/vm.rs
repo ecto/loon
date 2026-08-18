@@ -951,6 +951,21 @@ impl Vm {
             }
             match self.get_obj(*val) {
                 Some(Obj::Buffer(b)) => {
+                    // WGSL core has no 64-bit scalar. Quietly computing an f64
+                    // buffer in f32 would hand back numbers of a precision the
+                    // program never asked for and has no way to notice, so the
+                    // launch is refused and the alternative named instead.
+                    if !b.dtype().gpu_ok() {
+                        return Err(self.place_error(format!(
+                            "argument {} is a {} buffer, and a GPU has no {}-bit \
+                             number; run this with --place cpu or --place par, or \
+                             build the buffer with `buf` instead of `buf-{}`",
+                            i + 1,
+                            b.dtype().name(),
+                            b.dtype().size() * 8,
+                            b.dtype().name()
+                        )));
+                    }
                     let id = val.as_ptr();
                     buffer_ids.push(id);
                     to_upload.push((id, gpu::narrow(b), b.byte_len() as u64, b.dtype()));

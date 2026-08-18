@@ -100,6 +100,7 @@ pub fn verify(exprs: &[Expr], names: &HashSet<String>) -> Vec<LoonDiagnostic> {
     let mut v = Verifier {
         kernels: names,
         errors: Vec::new(),
+        index_param: None,
     };
     for expr in exprs {
         v.walk_program(expr);
@@ -110,6 +111,9 @@ pub fn verify(exprs: &[Expr], names: &HashSet<String>) -> Vec<LoonDiagnostic> {
 struct Verifier<'a> {
     kernels: &'a HashSet<String>,
     errors: Vec<LoonDiagnostic>,
+    /// The name of the kernel currently being checked's work index — its first
+    /// parameter. A `put` at any other index is a scatter.
+    index_param: Option<String>,
 }
 
 impl Verifier<'_> {
@@ -122,6 +126,7 @@ impl Verifier<'_> {
         if is_fn && items.len() >= 3 {
             if let ExprKind::Symbol(name) = &items[1].kind {
                 if self.kernels.contains(name) {
+                    self.index_param = first_param(&items[2]);
                     self.check_params(name, &items[2]);
                     for body in &items[3..] {
                         self.check_body(name, body);
@@ -235,6 +240,41 @@ impl Verifier<'_> {
             return;
         }
 
+        // A work item may write at its own index and nowhere else.
+        //
+        // This is the disjointness rule the whole design rests on: it is what
+        // lets the parallel executor hand each thread a slice and what lets a
+        // GPU dispatch run every work item at once. The Rust offload work
+        // arrives at the same guarantee by having partitioning strategies
+        // promise it in an `unsafe impl`; here the program that would violate
+        // it does not compile.
+        if name == "put" && items.len() >= 3 {
+            let idx = &items[2];
+            let ok = match (&idx.kind, &self.index_param) {
+                (ExprKind::Symbol(s), Some(p)) => s == p,
+                _ => false,
+            };
+            if !ok {
+                let index_name = self.index_param.clone().unwrap_or_else(|| "i".to_string());
+                self.errors.push(
+                    LoonDiagnostic::new(
+                        ErrorCode::E0602,
+                        format!("kernel '{kernel}' writes at an index other than its own"),
+                    )
+                    .with_why(format!(
+                        "every work item runs at once, so each may only write element \
+                         '{index_name}'; writing elsewhere means two of them can reach the \
+                         same element and the result would depend on which got there first"
+                    ))
+                    .with_fix(format!(
+                        "write at '{index_name}', and read whatever else this element needs \
+                         with `at`"
+                    ))
+                    .with_label(idx.span, "not this work item's element", true),
+                );
+            }
+        }
+
         if name == "fn" || name == "kernel" {
             self.reject(
                 kernel,
@@ -278,6 +318,17 @@ impl Verifier<'_> {
             )
             .with_label(expr.span, "not allowed inside a kernel", true),
         );
+    }
+}
+
+/// The name of a parameter list's first entry.
+fn first_param(params: &Expr) -> Option<String> {
+    let ExprKind::List(ps) = &params.kind else {
+        return None;
+    };
+    match ps.first().map(|p| &p.kind) {
+        Some(ExprKind::Symbol(name)) => Some(name.clone()),
+        _ => None,
     }
 }
 
@@ -380,6 +431,36 @@ mod tests {
             !errors.is_empty(),
             "a kernel may not call a non-kernel function"
         );
+    }
+
+    #[test]
+    fn writing_at_another_work_items_index_is_rejected() {
+        // The disjointness rule, enforced. Two work items reaching the same
+        // element would make the result depend on which arrived first.
+        for src in [
+            "[kernel k [i s d] [put d [- 99 i] [at s i]]]",
+            "[kernel k [i d] [put d 0 1.0]]",
+            "[kernel k [i d] [put d [+ i 1] 1.0]]",
+        ] {
+            let errors = check(src);
+            assert!(!errors.is_empty(), "should reject a scatter: {src}");
+            assert_eq!(errors[0].code, ErrorCode::E0602, "{src}");
+        }
+    }
+
+    #[test]
+    fn writing_at_your_own_index_is_the_whole_point() {
+        let errors = check("[kernel k [i s d] [put d i [+ [at s i] [at s 0]]]]");
+        assert!(
+            errors.is_empty(),
+            "reading anywhere is fine; only writing is restricted: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn the_index_parameter_can_be_called_anything() {
+        let errors = check("[kernel k [row d] [put d row 1.0]]");
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
     }
 
     #[test]
