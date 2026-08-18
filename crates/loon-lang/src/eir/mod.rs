@@ -4,6 +4,8 @@
 //! Every backend (Register VM, WASM, Cranelift) lowers from this IR.
 
 pub mod backend;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod layout;
 pub mod lower;
 #[cfg(feature = "native")]
