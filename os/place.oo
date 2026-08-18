@@ -49,26 +49,38 @@
 
 ; ── Residency ───────────────────────────────────────────────────────────────
 
-; Keep buffers where they are across launches, and only synchronize when the
-; host actually looks.
+; Keep buffers on the device across launches, and let the host pay for a
+; transfer only when it actually looks.
 ;
 ; This is the handler that closes the gap a recent Rust offload paper measured
 ; at up to 400x between its convenient interface and its explicit one. There,
 ; closing it needed `Preload`/`PreloadMut` types written by the programmer at
-; every call site, plus a transfer-hoisting pass inside LLVM that the authors
-; describe as a prototype. Here it is a `handle` form, because the sync points
-; are already visible: `Place.read` is an operation, so the handler knows
-; exactly when the host wants an answer and can decline to move bytes until
-; then.
+; every call site, plus a transfer-hoisting pass inside LLVM the authors
+; describe as a prototype. Here it is nine lines, because the information the
+; pass was trying to recover is already in the program: `Place.run` says what
+; a launch touches and `Place.read` says when the host wants an answer.
 ;
-; With the serial CPU backend there is nowhere else for a buffer to be, so this
-; handler is a pass-through that reports the residency it would have exploited.
-; The policy is the part worth having in the language; the device is the part
-; that changes underneath it.
+; The policy is simply: everything a launch touches is worth keeping. Pinning
+; is what stops the device from dropping it, so the next launch finds it
+; already there.
 [fn place/resident [thunk]
   [handle [thunk]
     [Place.run k n args]
       [do [Place.pin args]
+          [resume [Place.run k n args]]]
+    [Place.read b]
+      [do [let v [Place.read b]]
+          [Place.unpin b]
+          [resume v]]]]
+
+; The same shape, but only keeping the buffers you name. Useful when the
+; working set is larger than the device and residency has to be chosen rather
+; than assumed — the case the paper flags as needing a heuristic it did not
+; ship. Here the heuristic is an argument.
+[fn place/resident-only [keep thunk]
+  [handle [thunk]
+    [Place.run k n args]
+      [do [Place.pin keep]
           [resume [Place.run k n args]]]
     [Place.read b]
       [resume [Place.read b]]]]

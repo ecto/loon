@@ -135,6 +135,119 @@ impl PlaceStats {
     }
 }
 
+// ─── A device with its own memory ──────────────────────────────────────────
+
+/// Where kernels run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    /// Right here. There is one memory, so nothing is ever transferred.
+    #[default]
+    Cpu,
+    /// A discrete device with separate memory.
+    ///
+    /// The arithmetic still happens on the host — this is not a GPU — but the
+    /// *bookkeeping* is real: a buffer must be uploaded before a kernel can
+    /// use it, and results must be downloaded before the host can read them.
+    /// That makes the cost of a placement policy measurable, and measurable is
+    /// the whole argument. A policy whose benefit you cannot count is a story.
+    Device,
+}
+
+impl Mode {
+    pub fn parse(s: &str) -> Option<Mode> {
+        match s {
+            "cpu" | "serial" | "here" => Some(Mode::Cpu),
+            "device" | "sim" => Some(Mode::Device),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Cpu => "cpu",
+            Mode::Device => "device",
+        }
+    }
+}
+
+/// Device-side memory: which buffers are resident, and which hold results the
+/// host has not seen yet.
+///
+/// Buffers are identified by their heap slot. Nothing is copied — the point is
+/// to account for the copies a real device would need, not to simulate its
+/// arithmetic.
+#[derive(Debug, Clone, Default)]
+pub struct Device {
+    resident: std::collections::HashSet<usize>,
+    dirty: std::collections::HashSet<usize>,
+    /// Buffers a handler asked to keep resident across launches.
+    pinned: std::collections::HashSet<usize>,
+}
+
+impl Device {
+    pub fn is_resident(&self, id: usize) -> bool {
+        self.resident.contains(&id)
+    }
+
+    pub fn is_dirty(&self, id: usize) -> bool {
+        self.dirty.contains(&id)
+    }
+
+    pub fn is_pinned(&self, id: usize) -> bool {
+        self.pinned.contains(&id)
+    }
+
+    pub fn mark_resident(&mut self, id: usize) {
+        self.resident.insert(id);
+    }
+
+    pub fn mark_dirty(&mut self, id: usize) {
+        self.dirty.insert(id);
+    }
+
+    pub fn clear_dirty(&mut self, id: usize) {
+        self.dirty.remove(&id);
+    }
+
+    /// Ask that a buffer survive eviction.
+    ///
+    /// Deliberately does *not* make it resident: pinning says "keep this once
+    /// it is here", not "it is here already". The first launch that uses it
+    /// still pays for the upload. Otherwise a residency policy would look free
+    /// in the accounting by declaring itself so, which is exactly the kind of
+    /// measurement that flatters a design instead of testing it.
+    pub fn pin(&mut self, id: usize) {
+        self.pinned.insert(id);
+    }
+
+    pub fn unpin(&mut self, id: usize) {
+        self.pinned.remove(&id);
+    }
+
+    /// Drop every unpinned buffer.
+    ///
+    /// This is what makes a transfer-per-launch policy the *default* rather
+    /// than a strawman: without someone deciding otherwise, the device does
+    /// not assume a buffer will be wanted again. Deciding otherwise is exactly
+    /// what a residency handler does, and pinning is how it says so.
+    pub fn evict_unpinned(&mut self) -> Vec<usize> {
+        let evicted: Vec<usize> = self
+            .resident
+            .iter()
+            .copied()
+            .filter(|id| !self.pinned.contains(id))
+            .collect();
+        for id in &evicted {
+            self.resident.remove(id);
+        }
+        evicted
+    }
+
+    pub fn resident_count(&self) -> usize {
+        self.resident.len()
+    }
+}
+
 /// Bytes in a unit a person can read at a glance.
 pub fn human_bytes(n: u64) -> String {
     const KB: u64 = 1024;
@@ -154,6 +267,46 @@ pub fn human_bytes(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pinning_does_not_make_a_buffer_resident_for_free() {
+        // The first use still has to upload it; pinning only says it should
+        // stay afterwards.
+        let mut d = Device::default();
+        d.pin(3);
+        assert!(!d.is_resident(3), "pinning is not a transfer");
+    }
+
+    #[test]
+    fn an_unpinned_buffer_does_not_survive_a_launch() {
+        let mut d = Device::default();
+        d.mark_resident(1);
+        d.mark_resident(2);
+        d.pin(2);
+        let evicted = d.evict_unpinned();
+        assert_eq!(evicted, vec![1]);
+        assert!(!d.is_resident(1), "unpinned buffers are dropped");
+        assert!(d.is_resident(2), "pinned buffers stay");
+    }
+
+    #[test]
+    fn unpinning_lets_a_buffer_be_evicted_again() {
+        let mut d = Device::default();
+        d.mark_resident(7);
+        d.pin(7);
+        assert!(d.evict_unpinned().is_empty());
+        d.unpin(7);
+        assert_eq!(d.evict_unpinned(), vec![7]);
+    }
+
+    #[test]
+    fn mode_names_round_trip() {
+        for m in [Mode::Cpu, Mode::Device] {
+            assert_eq!(Mode::parse(m.name()), Some(m));
+        }
+        assert_eq!(Mode::parse("sim"), Some(Mode::Device));
+        assert_eq!(Mode::parse("nonsense"), None);
+    }
 
     fn ev(kind: EventKind, bytes: u64, items: u64) -> PlaceEvent {
         PlaceEvent {

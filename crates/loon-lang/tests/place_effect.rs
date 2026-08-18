@@ -205,3 +205,111 @@ fn buffers_round_trip_through_every_element_type() {
            [IO.println [buf-len [buf-zeros 5]]]]");
     assert_eq!(out, vec!["f32", "i32", "f64", "#[1 2 3]", "5"]);
 }
+
+// ── Residency: the gap a handler closes ─────────────────────────────────────
+
+/// Run in device mode, where buffers live in a separate memory and transfers
+/// are counted.
+fn run_on_device(src: &str) -> loon_lang::eir::place::PlaceStats {
+    let dir = std::env::current_dir().expect("cwd");
+    match loon_lang::eir::vm::eval_eir_placed(src, &dir, loon_lang::eir::place::Mode::Device) {
+        Ok((_, stats)) => stats,
+        Err(e) => panic!("VM error: {e:?}\nsource:\n{src}"),
+    }
+}
+
+/// A chain of `n` launches over the same buffer, optionally wrapped in a
+/// handler. The program text is identical either way.
+fn chain_program(launches: usize, wrapper: Option<&str>) -> String {
+    let runs = (0..launches)
+        .map(|_| "[Place.run step 4 #[1.0 b]]".to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let call = match wrapper {
+        Some(w) => format!("[{w} work]"),
+        None => "[work]".to_string(),
+    };
+    format!(
+        "[kernel step [i s b] [put b i [* s [at b i]]]] \
+         [fn work [] [let mut b [buf #[1 2 3 4]]] {runs} [Place.read b]] \
+         [fn resident [thunk] \
+           [handle [thunk] \
+             [Place.run k n args] [do [Place.pin args] [resume [Place.run k n args]]] \
+             [Place.read b]       [resume [Place.read b]]]] \
+         [fn main [] [IO.println {call}]]"
+    )
+}
+
+#[test]
+fn without_a_policy_every_launch_pays_for_its_own_transfer() {
+    // A device that has not been told a buffer will be wanted again does not
+    // keep it. This is the honest default, and it is the behaviour that makes
+    // the naive interface of an offload compiler slow.
+    for launches in [1usize, 4, 16] {
+        let stats = run_on_device(&chain_program(launches, None));
+        assert_eq!(
+            stats.uploads, launches as u64,
+            "{launches} launches should cost {launches} uploads"
+        );
+        assert_eq!(stats.resident_hits, 0);
+    }
+}
+
+#[test]
+fn a_residency_handler_pays_once_no_matter_how_long_the_chain() {
+    // The same program, wrapped in a handler that pins what each launch
+    // touches. One upload, and every launch after the first finds the buffer
+    // already there. Nothing in `work` changed, and no compiler pass ran.
+    for launches in [1usize, 4, 16] {
+        let stats = run_on_device(&chain_program(launches, Some("resident")));
+        assert_eq!(
+            stats.uploads, 1,
+            "a chain of {launches} should upload exactly once"
+        );
+        assert_eq!(
+            stats.resident_hits,
+            launches as u64 - 1,
+            "every launch after the first should be a residency hit"
+        );
+        // The host still asks for its answer exactly once.
+        assert_eq!(stats.downloads, 1);
+    }
+}
+
+#[test]
+fn the_saving_grows_with_the_chain_and_the_answer_does_not_change() {
+    // The property worth stating: a policy changes what it costs to get the
+    // answer, never the answer. A "policy" that changed the result would be a
+    // bug wearing a nicer name.
+    let long_chain: usize = 32;
+    let naive = run_on_device(&chain_program(long_chain, None));
+    let resident = run_on_device(&chain_program(long_chain, Some("resident")));
+
+    assert_eq!(naive.uploads, long_chain as u64);
+    assert_eq!(resident.uploads, 1);
+    assert!(
+        naive.bytes_in >= resident.bytes_in * 30,
+        "expected roughly a {long_chain}x reduction in bytes moved, got {} vs {}",
+        naive.bytes_in,
+        resident.bytes_in
+    );
+
+    // Both programs computed the same thing.
+    let bare = run(&chain_program(long_chain, None));
+    let wrapped = run(&chain_program(long_chain, Some("resident")));
+    assert_eq!(bare, wrapped);
+}
+
+#[test]
+fn on_the_cpu_there_is_nothing_to_transfer() {
+    // One memory means no uploads at all, whatever the policy says. The
+    // handler is not wrong here, it is simply describing a distinction the
+    // hardware does not have.
+    let src = chain_program(8, Some("resident"));
+    let dir = std::env::current_dir().expect("cwd");
+    let (_, stats) =
+        loon_lang::eir::vm::eval_eir_placed(&src, &dir, loon_lang::eir::place::Mode::Cpu)
+            .expect("runs");
+    assert_eq!(stats.uploads, 0);
+    assert_eq!(stats.launches, 8);
+}

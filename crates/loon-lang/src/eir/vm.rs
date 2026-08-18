@@ -422,6 +422,10 @@ pub struct Vm {
     output: Vec<String>,
     /// Placement accounting: launches, transfers, and residency hits.
     pub place_stats: crate::eir::place::PlaceStats,
+    /// Where kernels run when nothing handles `Place`.
+    pub place_mode: crate::eir::place::Mode,
+    /// Device-side residency, when running in device mode.
+    place_device: crate::eir::place::Device,
     /// String constants resolved to heap indices.
     string_cache: HashMap<StringId, usize>,
     /// Interns string *objects* by content, so structurally-equal strings share
@@ -527,6 +531,8 @@ impl Vm {
             current_span: Span::ZERO,
             heap_stats: HeapStats::default(),
             place_stats: crate::eir::place::PlaceStats::default(),
+            place_mode: crate::eir::place::Mode::default(),
+            place_device: crate::eir::place::Device::default(),
             recorder: None,
             replay: None,
             runtime_syms: Vec::new(),
@@ -749,7 +755,7 @@ impl Vm {
             dtype: None,
             bytes: 0,
             items: n as u64,
-            device: "cpu",
+            device: self.place_mode.name(),
         });
 
         // Kernel arguments arrive as one vector rather than spread across the
@@ -771,6 +777,40 @@ impl Vm {
                 .with_span(self.current_span))
             }
         };
+        // In device mode, every buffer argument has to be on the device before
+        // the kernel can touch it. An argument that is already resident costs
+        // nothing — and counting those hits is what turns a residency policy
+        // from a claim into a measurement.
+        if self.place_mode == crate::eir::place::Mode::Device {
+            for (i, arg) in rest.iter().enumerate() {
+                let Some((id, bytes, dtype)) = self.buffer_info(*arg) else {
+                    continue;
+                };
+                if self.place_device.is_resident(id) {
+                    self.place_stats.record(crate::eir::place::PlaceEvent {
+                        kind: crate::eir::place::EventKind::ResidentHit,
+                        kernel: None,
+                        arg: Some(i as u16),
+                        dtype: Some(dtype),
+                        bytes: 0,
+                        items: 0,
+                        device: "device",
+                    });
+                } else {
+                    self.place_device.mark_resident(id);
+                    self.place_stats.record(crate::eir::place::PlaceEvent {
+                        kind: crate::eir::place::EventKind::Upload,
+                        kernel: None,
+                        arg: Some(i as u16),
+                        dtype: Some(dtype),
+                        bytes,
+                        items: 0,
+                        device: "device",
+                    });
+                }
+            }
+        }
+
         let mut call_args = Vec::with_capacity(rest.len() + 1);
         for i in 0..n {
             call_args.clear();
@@ -778,7 +818,30 @@ impl Vm {
             call_args.extend_from_slice(&rest);
             self.run_call_with_captures(func_id, &call_args, caps.clone())?;
         }
+
+        // Whatever the kernel wrote now differs from the host's copy, and an
+        // unpinned buffer does not survive to the next launch. Both of those
+        // are the *default* behaviour of a device that has not been told
+        // anything — which is precisely what a residency handler exists to
+        // change, by pinning what it knows will be wanted again.
+        if self.place_mode == crate::eir::place::Mode::Device {
+            for arg in &rest {
+                if let Some((id, _, _)) = self.buffer_info(*arg) {
+                    self.place_device.mark_dirty(id);
+                }
+            }
+            self.place_device.evict_unpinned();
+        }
+
         Ok(Val::UNIT)
+    }
+
+    /// Heap slot, byte length, and element type of a buffer value.
+    fn buffer_info(&self, val: Val) -> Option<(usize, u64, DType)> {
+        match self.get_obj(val) {
+            Some(Obj::Buffer(b)) => Some((val.as_ptr(), b.byte_len() as u64, b.dtype())),
+            _ => None,
+        }
     }
 
     fn get_obj(&self, val: Val) -> Option<&Obj> {
@@ -3693,16 +3756,28 @@ impl Vm {
                         let n = buf.len();
                         let bytes = buf.byte_len() as u64;
                         let dtype = buf.dtype();
+                        let id = b.as_ptr();
                         let vals: Vec<Val> = (0..n).filter_map(|i| buf.get(i)).collect();
-                        self.place_stats.record(crate::eir::place::PlaceEvent {
-                            kind: crate::eir::place::EventKind::Download,
-                            kernel: None,
-                            arg: None,
-                            dtype: Some(dtype),
-                            bytes,
-                            items: 0,
-                            device: "cpu",
-                        });
+                        // On a device, a read costs a transfer only when the
+                        // device holds something the host has not seen. On the
+                        // CPU there is one memory, so the read is free — and
+                        // saying so keeps the two modes comparable.
+                        let must_transfer = match self.place_mode {
+                            crate::eir::place::Mode::Cpu => true,
+                            crate::eir::place::Mode::Device => self.place_device.is_dirty(id),
+                        };
+                        if must_transfer {
+                            self.place_device.clear_dirty(id);
+                            self.place_stats.record(crate::eir::place::PlaceEvent {
+                                kind: crate::eir::place::EventKind::Download,
+                                kernel: None,
+                                arg: None,
+                                dtype: Some(dtype),
+                                bytes,
+                                items: 0,
+                                device: self.place_mode.name(),
+                            });
+                        }
                         vals
                     }
                     _ => {
@@ -3716,10 +3791,34 @@ impl Vm {
                 self.alloc(Obj::Vec(items.into_iter().collect()))
             }
             ("Place", "pin") | ("Place", "unpin") => {
-                // Running here, there is nowhere else for a buffer to be, so
-                // pinning is a no-op that returns the buffer unchanged. A
-                // device handler is where the hint means something.
-                args.first().copied().unwrap_or(Val::UNIT)
+                // Pinning says "this buffer will be wanted again, keep it".
+                // It is the whole vocabulary a residency policy needs, and it
+                // is available to any handler — no compiler pass required.
+                //
+                // Accepts a buffer or a vector of them, so a handler can pin a
+                // kernel's entire argument list in one operation.
+                let target = args.first().copied().unwrap_or(Val::UNIT);
+                if self.place_mode == crate::eir::place::Mode::Device {
+                    let pinning = op == "pin";
+                    let ids: Vec<usize> = match self.get_obj(target) {
+                        Some(Obj::Vec(v)) => v
+                            .iter()
+                            .filter(|x| x.is_ptr())
+                            .filter(|x| matches!(self.heap.get(x.as_ptr()), Some(Obj::Buffer(_))))
+                            .map(|x| x.as_ptr())
+                            .collect(),
+                        Some(Obj::Buffer(_)) => vec![target.as_ptr()],
+                        _ => Vec::new(),
+                    };
+                    for id in ids {
+                        if pinning {
+                            self.place_device.pin(id);
+                        } else {
+                            self.place_device.unpin(id);
+                        }
+                    }
+                }
+                target
             }
             ("Place", "stats") => {
                 let s = &self.place_stats;
@@ -3731,6 +3830,10 @@ impl Vm {
                     ("bytes-in", s.bytes_in as i64),
                     ("bytes-out", s.bytes_out as i64),
                     ("resident-hits", s.resident_hits as i64),
+                    (
+                        "resident-buffers",
+                        self.place_device.resident_count() as i64,
+                    ),
                 ];
                 let mut map = ImMap::new();
                 for (k, v) in pairs {
@@ -4064,6 +4167,34 @@ pub fn eval_eir(src: &str) -> Result<VmResult, VmError> {
 /// Like `eval_eir`, but resolves `[use ...]` modules relative to `base_dir`.
 pub fn eval_eir_with_base_dir(src: &str, base_dir: &std::path::Path) -> Result<VmResult, VmError> {
     eval_eir_impl(src, crate::check::Checker::with_base_dir(base_dir))
+}
+
+/// Run with an explicit placement mode, returning the placement accounting
+/// alongside the result.
+///
+/// The counters are the interesting output for an offloaded program: how many
+/// times bytes crossed the boundary, and how many crossings a residency policy
+/// avoided.
+pub fn eval_eir_placed(
+    src: &str,
+    base_dir: &std::path::Path,
+    mode: crate::eir::place::Mode,
+) -> Result<(VmResult, crate::eir::place::PlaceStats), VmError> {
+    let mut checker = crate::check::Checker::with_base_dir(base_dir);
+    let exprs = crate::parser::parse(src).map_err(|e| VmError {
+        kind: VmErrorKind::Trap,
+        span: Some(e.span),
+        context: Some(format!("parse error: {}", e.message)),
+    })?;
+    let errors = checker.check_program(&exprs);
+    if let Some(e) = module_error(&errors) {
+        return Err(e);
+    }
+    let module = crate::eir::lower::lower(&checker);
+    let mut vm = Vm::new(module);
+    vm.place_mode = mode;
+    let result = vm.run()?;
+    Ok((result, vm.place_stats.clone()))
 }
 
 fn eval_eir_impl(src: &str, mut checker: crate::check::Checker) -> Result<VmResult, VmError> {

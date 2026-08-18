@@ -347,3 +347,48 @@ fn place_handlers_do_not_need_compiler_support() {
     // Running the kernel twice per launch really does double it again.
     assert_eq!(out, vec!["#[2 4 6]", "#[4 8 12]"]);
 }
+
+#[test]
+fn residency_demo_closes_the_transfer_gap() {
+    // The demo's whole claim, checked: the same eight-launch chain pays eight
+    // uploads with no policy and one upload under a residency handler, and
+    // both runs produce the same answer. This is the gap a GPU offload
+    // compiler needs a dedicated optimization pass to close.
+    let path = os_dir().join("demo-residency.oo");
+    let src = std::fs::read_to_string(&path).expect("read demo-residency.oo");
+    let (result, _stats) =
+        loon_lang::eir::vm::eval_eir_placed(&src, &os_dir(), loon_lang::eir::place::Mode::Device)
+            .expect("demo runs");
+    let joined = result.output.join("\n");
+
+    assert!(
+        joined.contains("no policy: uploads 8, resident hits 0"),
+        "without a policy every launch transfers:\n{joined}"
+    );
+    assert!(
+        joined.contains("place/resident: uploads 1, resident hits 7"),
+        "the handler should upload once and hit seven times:\n{joined}"
+    );
+    assert_eq!(
+        result
+            .output
+            .iter()
+            .filter(|l| l.contains("#[8 8 8 8]"))
+            .count(),
+        2,
+        "both runs must compute the same answer:\n{joined}"
+    );
+}
+
+#[test]
+fn on_the_cpu_the_residency_demo_moves_nothing() {
+    // Same program, same handler, one memory: the policy is simply describing
+    // a distinction this hardware does not have, and costs nothing to keep.
+    let path = os_dir().join("demo-residency.oo");
+    let src = std::fs::read_to_string(&path).expect("read demo-residency.oo");
+    let (_, stats) =
+        loon_lang::eir::vm::eval_eir_placed(&src, &os_dir(), loon_lang::eir::place::Mode::Cpu)
+            .expect("demo runs");
+    assert_eq!(stats.uploads, 0, "the CPU has nothing to upload to");
+    assert_eq!(stats.launches, 16);
+}
