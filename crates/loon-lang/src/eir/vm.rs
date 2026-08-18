@@ -4123,6 +4123,14 @@ impl Vm {
                         .unwrap_or("anon");
                     format!("<fn:{name}>")
                 }
+                // A buffer prints as its shape, not its contents: it is a
+                // handle to bulk data that may live on another device, and
+                // `Place.read` is how a program asks for the values. Printing
+                // the heap slot instead would leak an allocation number into
+                // output that is supposed to be reproducible.
+                Some(Obj::Buffer(b)) => {
+                    format!("#buf<{} x {}>", b.dtype().name(), b.len())
+                }
                 _ => format!("<obj:{}>", val.as_ptr()),
             }
         } else {

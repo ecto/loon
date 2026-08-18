@@ -182,6 +182,17 @@ impl TraceEntry {
 pub fn is_recorded_op(effect: &str, op: &str) -> bool {
     match effect {
         "Net" | "Env" | "Process" | "Rand" => true,
+        // Placement is recorded so a program that ran on a GPU can be replayed
+        // on a machine that has none: a launch replays as the unit it returned
+        // and a read replays as the values it produced, so the recording is a
+        // faithful account of what the program observed without any hardware
+        // being involved a second time.
+        //
+        // `Place.stats` is excluded. It reports on the run currently
+        // happening, and a replayed run really did move no bytes — feeding
+        // back the original transfer counts would be a recording that lies
+        // about the execution it is part of.
+        "Place" => op != "stats",
         "IO" => !matches!(op, "parse-json" | "to-json" | "blake3"),
         _ => false,
     }
