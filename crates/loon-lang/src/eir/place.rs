@@ -143,6 +143,13 @@ pub enum Mode {
     /// Right here. There is one memory, so nothing is ever transferred.
     #[default]
     Cpu,
+    /// A real GPU, through wgpu.
+    ///
+    /// Requires the `gpu` feature; without it, asking for this mode is an
+    /// error that says so rather than a silent fall back to the CPU. Being
+    /// told your program did not run where you asked is worth more than a
+    /// result that arrived by a route you did not choose.
+    Gpu,
     /// A discrete device with separate memory.
     ///
     /// The arithmetic still happens on the host — this is not a GPU — but the
@@ -158,14 +165,22 @@ impl Mode {
         match s {
             "cpu" | "serial" | "here" => Some(Mode::Cpu),
             "device" | "sim" => Some(Mode::Device),
+            "gpu" | "metal" | "wgpu" => Some(Mode::Gpu),
             _ => None,
         }
+    }
+
+    /// Whether this mode has a memory separate from the host's, so that
+    /// transfers are a real cost worth accounting for.
+    pub fn has_device_memory(self) -> bool {
+        matches!(self, Mode::Device | Mode::Gpu)
     }
 
     pub fn name(self) -> &'static str {
         match self {
             Mode::Cpu => "cpu",
             Mode::Device => "device",
+            Mode::Gpu => "gpu",
         }
     }
 }
@@ -301,7 +316,7 @@ mod tests {
 
     #[test]
     fn mode_names_round_trip() {
-        for m in [Mode::Cpu, Mode::Device] {
+        for m in [Mode::Cpu, Mode::Device, Mode::Gpu] {
             assert_eq!(Mode::parse(m.name()), Some(m));
         }
         assert_eq!(Mode::parse("sim"), Some(Mode::Device));

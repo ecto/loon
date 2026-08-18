@@ -426,6 +426,9 @@ pub struct Vm {
     pub place_mode: crate::eir::place::Mode,
     /// Device-side residency, when running in device mode.
     place_device: crate::eir::place::Device,
+    /// The GPU, opened on first use and kept for the rest of the run.
+    #[cfg(feature = "gpu")]
+    gpu: Option<std::rc::Rc<crate::eir::gpu::Gpu>>,
     /// String constants resolved to heap indices.
     string_cache: HashMap<StringId, usize>,
     /// Interns string *objects* by content, so structurally-equal strings share
@@ -533,6 +536,8 @@ impl Vm {
             place_stats: crate::eir::place::PlaceStats::default(),
             place_mode: crate::eir::place::Mode::default(),
             place_device: crate::eir::place::Device::default(),
+            #[cfg(feature = "gpu")]
+            gpu: None,
             recorder: None,
             replay: None,
             runtime_syms: Vec::new(),
@@ -781,7 +786,7 @@ impl Vm {
         // the kernel can touch it. An argument that is already resident costs
         // nothing — and counting those hits is what turns a residency policy
         // from a claim into a measurement.
-        if self.place_mode == crate::eir::place::Mode::Device {
+        if self.place_mode.has_device_memory() {
             for (i, arg) in rest.iter().enumerate() {
                 let Some((id, bytes, dtype)) = self.buffer_info(*arg) else {
                     continue;
@@ -811,6 +816,23 @@ impl Vm {
             }
         }
 
+        // On a GPU the kernel runs there, not here. Everything above — the
+        // residency bookkeeping, the launch accounting — is the same either
+        // way, because those are properties of placement rather than of any
+        // particular device.
+        if self.place_mode == crate::eir::place::Mode::Gpu {
+            self.place_run_gpu(func_id, &rest, n)?;
+            if self.place_mode.has_device_memory() {
+                for arg in &rest {
+                    if let Some((id, _, _)) = self.buffer_info(*arg) {
+                        self.place_device.mark_dirty(id);
+                    }
+                }
+                self.place_device.evict_unpinned();
+            }
+            return Ok(Val::UNIT);
+        }
+
         let mut call_args = Vec::with_capacity(rest.len() + 1);
         for i in 0..n {
             call_args.clear();
@@ -824,7 +846,7 @@ impl Vm {
         // are the *default* behaviour of a device that has not been told
         // anything — which is precisely what a residency handler exists to
         // change, by pinning what it knows will be wanted again.
-        if self.place_mode == crate::eir::place::Mode::Device {
+        if self.place_mode.has_device_memory() {
             for arg in &rest {
                 if let Some((id, _, _)) = self.buffer_info(*arg) {
                     self.place_device.mark_dirty(id);
@@ -834,6 +856,133 @@ impl Vm {
         }
 
         Ok(Val::UNIT)
+    }
+
+    /// Run a kernel on the GPU: emit its shader, ship the arguments, dispatch,
+    /// and copy back whatever it wrote.
+    #[cfg(feature = "gpu")]
+    fn place_run_gpu(&mut self, func_id: FuncId, rest: &[Val], n: i64) -> Result<(), VmError> {
+        use crate::eir::gpu::{self, GpuArg};
+
+        let kinds = crate::eir::wgsl::infer_arg_kinds(&self.module, func_id, DType::F32);
+        if kinds.len() != rest.len() {
+            return Err(self.place_error(format!(
+                "the kernel takes {} arguments but {} were given",
+                kinds.len(),
+                rest.len()
+            )));
+        }
+
+        let shader = crate::eir::wgsl::emit(&self.module, func_id, &kinds)
+            .map_err(|e| self.place_error(format!("this kernel cannot run on a GPU: {e}")))?;
+
+        // Buffers travel as their 32-bit form; scalars are packed by value.
+        //
+        // Each argument is checked against the shape the kernel body implies.
+        // A buffer handed to a parameter the kernel multiplies by has no
+        // sensible reading, and defaulting it to zero would produce a
+        // confident wrong answer — the exact failure this whole design is
+        // supposed to make impossible.
+        let mut owned: Vec<Buffer> = Vec::new();
+        let mut scalars: Vec<f32> = Vec::new();
+        for (i, val) in rest.iter().enumerate() {
+            let is_buffer = matches!(self.get_obj(*val), Some(Obj::Buffer(_)));
+            let wants_buffer = matches!(kinds[i], crate::eir::wgsl::ArgKind::Buffer { .. });
+            if is_buffer != wants_buffer {
+                let (given, wanted) = if is_buffer {
+                    ("a buffer", "a number")
+                } else {
+                    ("a number", "a buffer")
+                };
+                return Err(self.place_error(format!(
+                    "argument {} is {given}, but the kernel uses it as {wanted}",
+                    i + 1
+                )));
+            }
+            match self.get_obj(*val) {
+                Some(Obj::Buffer(b)) => owned.push(gpu::narrow(b)),
+                _ => {
+                    let x = if val.is_int() {
+                        val.as_int() as f32
+                    } else if val.is_float() {
+                        val.as_float() as f32
+                    } else {
+                        return Err(self.place_error(format!(
+                            "argument {} is neither a buffer nor a number",
+                            i + 1
+                        )));
+                    };
+                    scalars.push(x);
+                }
+            }
+        }
+
+        let device = self.gpu_device()?;
+        let mut scalar_iter = scalars.iter();
+        let mut owned_iter = owned.iter();
+        let gpu_args: Vec<GpuArg> = kinds
+            .iter()
+            .map(|k| match k {
+                crate::eir::wgsl::ArgKind::Scalar(_) => {
+                    GpuArg::Scalar(scalar_iter.next().copied().unwrap_or(0.0))
+                }
+                crate::eir::wgsl::ArgKind::Buffer { writable, .. } => GpuArg::Buffer {
+                    data: owned_iter.next().expect("a buffer argument"),
+                    writable: *writable,
+                },
+            })
+            .collect();
+
+        let results = device
+            .run(&shader, "main", n.max(0) as u32, &gpu_args)
+            .map_err(|e| self.place_error(format!("the GPU refused the launch: {e}")))?;
+
+        // Copy results home, into the host buffer each one came from.
+        for (slot, bytes) in results {
+            let Some(val) = rest.get(slot) else { continue };
+            let ptr = val.as_ptr();
+            let Some(Obj::Buffer(buf)) = self.heap.get_mut(ptr) else {
+                continue;
+            };
+            let len = buf.len();
+            let vals: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .take(len)
+                .collect();
+            for (i, v) in vals.into_iter().enumerate() {
+                buf.set(i, Val::float(v as f64));
+            }
+        }
+        Ok(())
+    }
+
+    /// Without the `gpu` feature there is no GPU, and saying so plainly beats
+    /// running somewhere the caller did not ask for.
+    #[cfg(not(feature = "gpu"))]
+    fn place_run_gpu(&mut self, _func: FuncId, _rest: &[Val], _n: i64) -> Result<(), VmError> {
+        Err(self.place_error(
+            "this build has no GPU support; rebuild with `--features gpu`, or use \
+             `--place cpu`"
+                .to_string(),
+        ))
+    }
+
+    /// The GPU, opened once and kept.
+    #[cfg(feature = "gpu")]
+    fn gpu_device(&mut self) -> Result<std::rc::Rc<crate::eir::gpu::Gpu>, VmError> {
+        if let Some(g) = &self.gpu {
+            return Ok(g.clone());
+        }
+        let g = std::rc::Rc::new(
+            crate::eir::gpu::Gpu::open().map_err(|e| self.place_error(e.to_string()))?,
+        );
+        self.gpu = Some(g.clone());
+        Ok(g)
+    }
+
+    fn place_error(&self, message: String) -> VmError {
+        VmError::new(VmErrorKind::BuiltinType(message)).with_span(self.current_span)
     }
 
     /// Heap slot, byte length, and element type of a buffer value.
@@ -3764,7 +3913,9 @@ impl Vm {
                         // saying so keeps the two modes comparable.
                         let must_transfer = match self.place_mode {
                             crate::eir::place::Mode::Cpu => true,
-                            crate::eir::place::Mode::Device => self.place_device.is_dirty(id),
+                            crate::eir::place::Mode::Device | crate::eir::place::Mode::Gpu => {
+                                self.place_device.is_dirty(id)
+                            }
                         };
                         if must_transfer {
                             self.place_device.clear_dirty(id);
@@ -3798,7 +3949,7 @@ impl Vm {
                 // Accepts a buffer or a vector of them, so a handler can pin a
                 // kernel's entire argument list in one operation.
                 let target = args.first().copied().unwrap_or(Val::UNIT);
-                if self.place_mode == crate::eir::place::Mode::Device {
+                if self.place_mode.has_device_memory() {
                     let pinning = op == "pin";
                     let ids: Vec<usize> = match self.get_obj(target) {
                         Some(Obj::Vec(v)) => v

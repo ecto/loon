@@ -7,6 +7,11 @@ edition.workspace = true
 name = "loon"
 path = "src/main.rs"
 
+[features]
+default = []
+# Real GPU execution for `loon run --place gpu`.
+gpu = ["loon-lang/gpu"]
+
 [dependencies]
 loon-lang = { path = "../loon-lang", features = ["pkg-fetch", "native"] }
 clap = { version = "4", features = ["derive"] }

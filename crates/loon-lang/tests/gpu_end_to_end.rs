@@ -255,3 +255,109 @@ fn a_large_launch_covers_every_element() {
         got.iter().filter(|v| **v != 7.0).count()
     );
 }
+
+// ── Placement mode: the same program, a different device ────────────────────
+
+/// Run a program under a placement mode, returning its output and accounting.
+fn run_placed(
+    src: &str,
+    mode: loon_lang::eir::place::Mode,
+) -> (Vec<String>, loon_lang::eir::place::PlaceStats) {
+    let dir = std::env::current_dir().expect("cwd");
+    let (result, stats) =
+        loon_lang::eir::vm::eval_eir_placed(src, &dir, mode).expect("program runs");
+    (result.output, stats)
+}
+
+const CHAIN: &str = "[kernel step [i b] [put b i [+ 1.0 [at b i]]]] \
+     [fn work [] [let mut b [buf #[0 0 0 0]]] \
+       [Place.run step 4 #[b]] [Place.run step 4 #[b]] \
+       [Place.run step 4 #[b]] [Place.run step 4 #[b]] \
+       [Place.read b]] \
+     [fn resident [thunk] \
+       [handle [thunk] \
+         [Place.run k n args] [do [Place.pin args] [resume [Place.run k n args]]] \
+         [Place.read b]       [resume [Place.read b]]]] \
+     [fn main [] [IO.println [work]] [IO.println [resident work]]]";
+
+#[test]
+fn the_gpu_is_selected_by_a_flag_and_changes_nothing_else() {
+    // This is the claim in one test. The program is a constant; the mode is a
+    // parameter. A GPU that produced a different answer would not be a faster
+    // way to run this program, it would be a different program.
+    if Gpu::open().is_err() {
+        println!("SKIPPED — no GPU on this machine");
+        return;
+    }
+    let (cpu_out, _) = run_placed(CHAIN, loon_lang::eir::place::Mode::Cpu);
+    let (gpu_out, gpu_stats) = run_placed(CHAIN, loon_lang::eir::place::Mode::Gpu);
+
+    assert_eq!(cpu_out, gpu_out, "the GPU must compute what the CPU does");
+    assert_eq!(cpu_out, vec!["#[4 4 4 4]", "#[4 4 4 4]"]);
+
+    // Eight launches: four with no policy, four under the residency handler.
+    assert_eq!(gpu_stats.launches, 8);
+}
+
+#[test]
+fn a_residency_handler_saves_real_transfers_on_real_hardware() {
+    // The policy was written against an effect, not against a device. Here it
+    // is deciding what a Metal GPU actually has to copy.
+    if Gpu::open().is_err() {
+        println!("SKIPPED — no GPU on this machine");
+        return;
+    }
+    let naive = "[kernel step [i b] [put b i [+ 1.0 [at b i]]]] \
+         [fn work [] [let mut b [buf #[0 0 0 0]]] \
+           [Place.run step 4 #[b]] [Place.run step 4 #[b]] \
+           [Place.run step 4 #[b]] [Place.run step 4 #[b]] \
+           [Place.read b]] \
+         [fn main [] [IO.println [work]]]";
+    let managed = "[kernel step [i b] [put b i [+ 1.0 [at b i]]]] \
+         [fn work [] [let mut b [buf #[0 0 0 0]]] \
+           [Place.run step 4 #[b]] [Place.run step 4 #[b]] \
+           [Place.run step 4 #[b]] [Place.run step 4 #[b]] \
+           [Place.read b]] \
+         [fn resident [thunk] \
+           [handle [thunk] \
+             [Place.run k n args] [do [Place.pin args] [resume [Place.run k n args]]] \
+             [Place.read b]       [resume [Place.read b]]]] \
+         [fn main [] [IO.println [resident work]]]";
+
+    let (bare, bare_stats) = run_placed(naive, loon_lang::eir::place::Mode::Gpu);
+    let (wrapped, wrapped_stats) = run_placed(managed, loon_lang::eir::place::Mode::Gpu);
+
+    assert_eq!(bare, wrapped, "same answer either way");
+    assert_eq!(bare_stats.uploads, 4);
+    assert_eq!(wrapped_stats.uploads, 1);
+    assert_eq!(wrapped_stats.resident_hits, 3);
+}
+
+#[test]
+fn asking_for_a_gpu_that_cannot_run_the_kernel_says_so() {
+    // A kernel outside the GPU subset must be refused by name rather than
+    // quietly run somewhere else. Being told your program did not run where
+    // you asked is worth more than a result that arrived by another route.
+    if Gpu::open().is_err() {
+        println!("SKIPPED — no GPU on this machine");
+        return;
+    }
+    let dir = std::env::current_dir().expect("cwd");
+    // `s` is a scalar the launch passes, but the kernel indexes `b` — fine.
+    // Make it impossible instead: pass a buffer where the body wants a number.
+    let src = "[kernel bad [i a b] [put b i [* a [at b i]]]] \
+               [fn main [] \
+                 [let x [buf #[1 2]]] [let mut o [buf-zeros 2]] \
+                 [Place.run bad 2 #[x o]]]";
+    let result = loon_lang::eir::vm::eval_eir_placed(src, &dir, loon_lang::eir::place::Mode::Gpu);
+    match result {
+        Err(e) => {
+            let msg = format!("{e:?}");
+            assert!(
+                msg.contains("buffer") || msg.contains("GPU"),
+                "the refusal should explain itself: {msg}"
+            );
+        }
+        Ok((r, _)) => panic!("expected a refusal, got output {:?}", r.output),
+    }
+}
