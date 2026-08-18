@@ -1,0 +1,31 @@
+; First light. A Loon program painting a framebuffer, as the kernel.
+;
+; `Fb` is an effect like any other: nothing here knows whether the pixels
+; land in a ramfb, a virtio-gpu, a PPM file on the host, or a simulation
+; that only checks the draw calls. This one runs when the machine has a
+; display (`make gui`) and is skipped when it does not.
+
+[effect Fb
+  [width [] Int]
+  [height [] Int]
+  [clear [Int] Unit]
+  [fill-rect [Int Int Int Int Int] Unit]
+  [present [] Unit]]
+
+; A column of bars, each a little further along, each a little bluer.
+[fn bar [i]
+  [let w [Fb.width]]
+  [let y [+ 40 [* i 36]]]
+  [let len [+ 120 [* i 44]]]
+  [let blue [+ 96 [* i 16]]]
+  [Fb.fill-rect 40 y len 24 [+ [* 40 65536] [+ [* 60 256] blue]]]]
+
+[fn main []
+  [Fb.clear 1710618]                                  ; 0x1a1a1a
+  [each [range 0 10] bar]
+  ; the loon: a big off-white square with a dark eye
+  [let w [Fb.width]]
+  [Fb.fill-rect [- w 200] 60 140 140 15658734]        ; 0xeeeeee
+  [Fb.fill-rect [- w 130] 100 24 24 1710618]
+  [Fb.present]
+  [println [str "painted " w "x" [Fb.height]]]]
