@@ -34,4 +34,7 @@ cranelift-native = { version = "0.116", optional = true }
 
 [dev-dependencies]
 insta = "1"
+# Validates emitted WGSL the way a driver would, so shader errors surface in
+# CI rather than on a machine that happens to have a GPU.
+naga = { version = "25", features = ["wgsl-in"] }
 wasmparser = "0.227"

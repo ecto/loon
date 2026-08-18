@@ -41,10 +41,15 @@ const KERNEL_BUILTINS: &[&str] = &[
     // Buffer element access.
     "at", "put", "buf-len", // Math.
     "sqrt", "pow", "floor", "ceil", "round", "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
-    "log", "log10", "exp", "abs", "min", "max", // Numeric conversion.
-    "int", "float", // Logic.
+    "log", "log10", "exp", "abs", "min", "max", // Logic.
     "not",
 ];
+
+// Deliberately absent: `int` and `float`. In Loon those parse strings, and a
+// kernel has no strings to parse. Mixing an integer and a float in kernel
+// arithmetic is handled where it belongs — the WGSL emitter inserts the
+// conversion, because WGSL will not mix the two silently and neither should
+// the language pretend to.
 
 /// Special forms a kernel body may use.
 const KERNEL_FORMS: &[&str] = &["let", "if", "do", "and", "or", "recur", "mut"];

@@ -16,6 +16,7 @@ pub mod trace;
 pub mod value64;
 pub mod vm;
 pub mod wasm;
+pub mod wgsl;
 
 use crate::syntax::Span;
 
