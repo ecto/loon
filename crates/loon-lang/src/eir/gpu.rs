@@ -24,6 +24,30 @@ pub struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
     name: String,
+    /// Buffers that currently live on the device, keyed by the host's heap
+    /// slot.
+    ///
+    /// This is what makes residency real rather than modelled. Without it,
+    /// every launch would upload its arguments again and copy its results back
+    /// again, and a residency policy would be describing a saving that did not
+    /// happen. With it, `Place.pin` keeps an allocation alive across launches
+    /// and `Place.read` is the only thing that moves bytes home.
+    resident: std::cell::RefCell<std::collections::HashMap<usize, wgpu::Buffer>>,
+    /// Compiled pipelines, keyed by shader source.
+    ///
+    /// Compiling a shader takes on the order of a millisecond, which is
+    /// hundreds of times what a small launch costs. Without this cache a loop
+    /// that launches the same kernel repeatedly — the shape every offload
+    /// benchmark has, and the shape a residency policy exists to serve — pays
+    /// to recompile it on every iteration, and the GPU loses to an
+    /// interpreter for entirely uninteresting reasons.
+    pipelines: std::cell::RefCell<std::collections::HashMap<String, CachedPipeline>>,
+}
+
+/// A shader that has already been compiled.
+struct CachedPipeline {
+    pipeline: wgpu::ComputePipeline,
+    layout: wgpu::BindGroupLayout,
 }
 
 /// What went wrong, in a sentence a person can act on.
@@ -77,6 +101,8 @@ impl Gpu {
             device,
             queue,
             name,
+            resident: std::cell::RefCell::new(std::collections::HashMap::new()),
+            pipelines: std::cell::RefCell::new(std::collections::HashMap::new()),
         })
     }
 
@@ -102,12 +128,7 @@ impl Gpu {
         n: u32,
         args: &[GpuArg<'_>],
     ) -> Result<Vec<(usize, Vec<u8>)>, Error> {
-        let module = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(entry),
-                source: wgpu::ShaderSource::Wgsl(shader.into()),
-            });
+        self.ensure_pipeline(shader, entry);
 
         // The uniform block is `n` followed by every scalar argument, in order
         // — matching what the emitter wrote into `struct Params`.
@@ -157,20 +178,12 @@ impl Gpu {
             });
         }
 
-        let pipeline = self
-            .device
-            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(entry),
-                layout: None,
-                module: &module,
-                entry_point: Some(entry),
-                compilation_options: Default::default(),
-                cache: None,
-            });
+        let cache = self.pipelines.borrow();
+        let cached = cache.get(shader).expect("pipeline was just ensured");
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("args"),
-            layout: &pipeline.get_bind_group_layout(0),
+            layout: &cached.layout,
             entries: &entries,
         });
 
@@ -182,7 +195,7 @@ impl Gpu {
                 label: Some(entry),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&pipeline);
+            pass.set_pipeline(&cached.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             // The shader's workgroup size is 64; round up and let the bounds
             // check in the shader discard the overshoot.
@@ -208,6 +221,7 @@ impl Gpu {
         }
 
         self.queue.submit(Some(encoder.finish()));
+        drop(cache);
 
         // Map each staging buffer and collect what came back.
         let mut results: Vec<(usize, Vec<u8>)> = Vec::new();
@@ -231,6 +245,178 @@ impl Gpu {
         }
 
         Ok(results)
+    }
+
+    /// Ensure `id`'s data is on the device, uploading it if it is not already.
+    ///
+    /// Returns whether an upload actually happened, so the caller's accounting
+    /// reflects what the hardware did rather than what the model predicted.
+    pub fn ensure_resident(&self, id: usize, buf: &Buffer) -> bool {
+        if self.resident.borrow().contains_key(&id) {
+            return false;
+        }
+        let bytes = buf.to_bytes();
+        let gpu_buf = self.create_buffer(
+            &format!("buf{id}"),
+            &bytes,
+            wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+        );
+        self.resident.borrow_mut().insert(id, gpu_buf);
+        true
+    }
+
+    /// Whether `id` is currently on the device.
+    pub fn is_resident(&self, id: usize) -> bool {
+        self.resident.borrow().contains_key(&id)
+    }
+
+    /// Drop a device allocation.
+    pub fn evict(&self, id: usize) {
+        self.resident.borrow_mut().remove(&id);
+    }
+
+    /// Copy a resident buffer's contents back to the host.
+    ///
+    /// This is the only path by which device data becomes visible again, which
+    /// is exactly what makes `Place.read` the synchronization point a
+    /// residency handler can reason about.
+    pub fn download(&self, id: usize, byte_len: usize) -> Result<Vec<u8>, Error> {
+        let resident = self.resident.borrow();
+        let Some(src) = resident.get(&id) else {
+            return Err(Error(format!("buffer {id} is not on the device")));
+        };
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: byte_len.max(4) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("download"),
+            });
+        encoder.copy_buffer_to_buffer(src, 0, &staging, 0, byte_len.max(4) as u64);
+        self.queue.submit(Some(encoder.finish()));
+
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device
+            .poll(wgpu::PollType::Wait)
+            .map_err(|e| Error(format!("waiting for the GPU: {e:?}")))?;
+        match rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(Error(format!("mapping results: {e:?}"))),
+            Err(e) => return Err(Error(format!("the GPU never reported back: {e}"))),
+        }
+        let mut bytes = slice.get_mapped_range().to_vec();
+        staging.unmap();
+        bytes.truncate(byte_len);
+        Ok(bytes)
+    }
+
+    /// Dispatch a shader over buffers that are already resident.
+    ///
+    /// Nothing is uploaded and nothing is read back: the caller decides when
+    /// data moves, which is the whole point of making placement a handler's
+    /// decision rather than a launch's side effect.
+    pub fn dispatch(
+        &self,
+        shader: &str,
+        entry: &str,
+        n: u32,
+        scalars: &[f32],
+        buffers: &[usize],
+    ) -> Result<(), Error> {
+        self.ensure_pipeline(shader, entry);
+
+        let mut uniform: Vec<u8> = (n as i32).to_le_bytes().to_vec();
+        for v in scalars {
+            uniform.extend_from_slice(&v.to_le_bytes());
+        }
+        while uniform.len() % 16 != 0 {
+            uniform.push(0);
+        }
+        let uniform_buf = self.create_buffer(
+            "params",
+            &uniform,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
+
+        let resident = self.resident.borrow();
+        let mut entries: Vec<wgpu::BindGroupEntry> = vec![wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buf.as_entire_binding(),
+        }];
+        for (slot, id) in buffers.iter().enumerate() {
+            let buf = resident
+                .get(id)
+                .ok_or_else(|| Error(format!("buffer {id} is not on the device")))?;
+            entries.push(wgpu::BindGroupEntry {
+                binding: slot as u32 + 1,
+                resource: buf.as_entire_binding(),
+            });
+        }
+
+        let cache = self.pipelines.borrow();
+        let cached = cache.get(shader).expect("pipeline was just ensured");
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("args"),
+            layout: &cached.layout,
+            entries: &entries,
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("run") });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some(entry),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&cached.pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(n.div_ceil(64).max(1), 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
+    /// Compile `shader` if this is the first time we have seen it.
+    fn ensure_pipeline(&self, shader: &str, entry: &str) {
+        if self.pipelines.borrow().contains_key(shader) {
+            return;
+        }
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(entry),
+                source: wgpu::ShaderSource::Wgsl(shader.into()),
+            });
+        let pipeline = self
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(entry),
+                layout: None,
+                module: &module,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+        let layout = pipeline.get_bind_group_layout(0);
+        self.pipelines
+            .borrow_mut()
+            .insert(shader.to_string(), CachedPipeline { pipeline, layout });
+    }
+
+    /// How many distinct shaders have been compiled so far.
+    pub fn compiled_shaders(&self) -> usize {
+        self.pipelines.borrow().len()
     }
 
     fn create_buffer(&self, label: &str, bytes: &[u8], usage: wgpu::BufferUsages) -> wgpu::Buffer {

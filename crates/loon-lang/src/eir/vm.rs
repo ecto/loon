@@ -786,7 +786,7 @@ impl Vm {
         // the kernel can touch it. An argument that is already resident costs
         // nothing — and counting those hits is what turns a residency policy
         // from a claim into a measurement.
-        if self.place_mode.has_device_memory() {
+        if self.place_mode == crate::eir::place::Mode::Device {
             for (i, arg) in rest.iter().enumerate() {
                 let Some((id, bytes, dtype)) = self.buffer_info(*arg) else {
                     continue;
@@ -822,14 +822,48 @@ impl Vm {
         // particular device.
         if self.place_mode == crate::eir::place::Mode::Gpu {
             self.place_run_gpu(func_id, &rest, n)?;
-            if self.place_mode.has_device_memory() {
-                for arg in &rest {
-                    if let Some((id, _, _)) = self.buffer_info(*arg) {
-                        self.place_device.mark_dirty(id);
-                    }
+            for arg in &rest {
+                if let Some((id, _, _)) = self.buffer_info(*arg) {
+                    self.place_device.mark_resident(id);
+                    self.place_device.mark_dirty(id);
                 }
-                self.place_device.evict_unpinned();
             }
+            // An unpinned buffer does not survive the launch, and on a GPU
+            // that means really releasing the allocation — otherwise
+            // "resident" would be a word the accounting used and the hardware
+            // ignored.
+            //
+            // Evicting something the kernel just wrote has to write it back
+            // first. A cache that drops dirty data is not a cache, it is a
+            // bug; and this write-back is exactly the cost a policy of keeping
+            // nothing resident is choosing to pay, once per launch.
+            let evicted = self.place_device.evict_unpinned();
+            let dirty: Vec<Val> = rest
+                .iter()
+                .copied()
+                .filter(|v| {
+                    v.is_ptr()
+                        && evicted.contains(&v.as_ptr())
+                        && self.place_device.is_dirty(v.as_ptr())
+                })
+                .collect();
+            for val in dirty {
+                let id = val.as_ptr();
+                self.gpu_download_into(id, val)?;
+                self.place_device.clear_dirty(id);
+                if let Some((_, bytes, dtype)) = self.buffer_info(val) {
+                    self.place_stats.record(crate::eir::place::PlaceEvent {
+                        kind: crate::eir::place::EventKind::Download,
+                        kernel: None,
+                        arg: None,
+                        dtype: Some(dtype),
+                        bytes,
+                        items: 0,
+                        device: "gpu",
+                    });
+                }
+            }
+            self.gpu_evict(&evicted);
             return Ok(Val::UNIT);
         }
 
@@ -858,11 +892,16 @@ impl Vm {
         Ok(Val::UNIT)
     }
 
-    /// Run a kernel on the GPU: emit its shader, ship the arguments, dispatch,
-    /// and copy back whatever it wrote.
+    /// Run a kernel on the GPU.
+    ///
+    /// Arguments are uploaded only if they are not already there, and nothing
+    /// is copied back — results stay on the device until `Place.read` asks for
+    /// them. That is what makes the residency accounting describe the hardware
+    /// rather than a model of it: an upload counted here is an upload that
+    /// happened.
     #[cfg(feature = "gpu")]
     fn place_run_gpu(&mut self, func_id: FuncId, rest: &[Val], n: i64) -> Result<(), VmError> {
-        use crate::eir::gpu::{self, GpuArg};
+        use crate::eir::gpu;
 
         let kinds = crate::eir::wgsl::infer_arg_kinds(&self.module, func_id, DType::F32);
         if kinds.len() != rest.len() {
@@ -872,19 +911,16 @@ impl Vm {
                 rest.len()
             )));
         }
-
         let shader = crate::eir::wgsl::emit(&self.module, func_id, &kinds)
             .map_err(|e| self.place_error(format!("this kernel cannot run on a GPU: {e}")))?;
 
-        // Buffers travel as their 32-bit form; scalars are packed by value.
-        //
-        // Each argument is checked against the shape the kernel body implies.
-        // A buffer handed to a parameter the kernel multiplies by has no
-        // sensible reading, and defaulting it to zero would produce a
-        // confident wrong answer — the exact failure this whole design is
-        // supposed to make impossible.
-        let mut owned: Vec<Buffer> = Vec::new();
+        // Check every argument against the shape the kernel body implies. A
+        // buffer handed to a parameter the kernel multiplies by has no
+        // sensible reading, and defaulting it to zero would be a confident
+        // wrong answer.
         let mut scalars: Vec<f32> = Vec::new();
+        let mut buffer_ids: Vec<usize> = Vec::new();
+        let mut to_upload: Vec<(usize, Buffer, u64, DType)> = Vec::new();
         for (i, val) in rest.iter().enumerate() {
             let is_buffer = matches!(self.get_obj(*val), Some(Obj::Buffer(_)));
             let wants_buffer = matches!(kinds[i], crate::eir::wgsl::ArgKind::Buffer { .. });
@@ -900,7 +936,11 @@ impl Vm {
                 )));
             }
             match self.get_obj(*val) {
-                Some(Obj::Buffer(b)) => owned.push(gpu::narrow(b)),
+                Some(Obj::Buffer(b)) => {
+                    let id = val.as_ptr();
+                    buffer_ids.push(id);
+                    to_upload.push((id, gpu::narrow(b), b.byte_len() as u64, b.dtype()));
+                }
                 _ => {
                     let x = if val.is_int() {
                         val.as_int() as f32
@@ -918,42 +958,26 @@ impl Vm {
         }
 
         let device = self.gpu_device()?;
-        let mut scalar_iter = scalars.iter();
-        let mut owned_iter = owned.iter();
-        let gpu_args: Vec<GpuArg> = kinds
-            .iter()
-            .map(|k| match k {
-                crate::eir::wgsl::ArgKind::Scalar(_) => {
-                    GpuArg::Scalar(scalar_iter.next().copied().unwrap_or(0.0))
-                }
-                crate::eir::wgsl::ArgKind::Buffer { writable, .. } => GpuArg::Buffer {
-                    data: owned_iter.next().expect("a buffer argument"),
-                    writable: *writable,
+        for (i, (id, narrowed, bytes, dtype)) in to_upload.iter().enumerate() {
+            let uploaded = device.ensure_resident(*id, narrowed);
+            self.place_stats.record(crate::eir::place::PlaceEvent {
+                kind: if uploaded {
+                    crate::eir::place::EventKind::Upload
+                } else {
+                    crate::eir::place::EventKind::ResidentHit
                 },
-            })
-            .collect();
-
-        let results = device
-            .run(&shader, "main", n.max(0) as u32, &gpu_args)
-            .map_err(|e| self.place_error(format!("the GPU refused the launch: {e}")))?;
-
-        // Copy results home, into the host buffer each one came from.
-        for (slot, bytes) in results {
-            let Some(val) = rest.get(slot) else { continue };
-            let ptr = val.as_ptr();
-            let Some(Obj::Buffer(buf)) = self.heap.get_mut(ptr) else {
-                continue;
-            };
-            let len = buf.len();
-            let vals: Vec<f32> = bytes
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                .take(len)
-                .collect();
-            for (i, v) in vals.into_iter().enumerate() {
-                buf.set(i, Val::float(v as f64));
-            }
+                kernel: None,
+                arg: Some(i as u16),
+                dtype: Some(*dtype),
+                bytes: if uploaded { *bytes } else { 0 },
+                items: 0,
+                device: "gpu",
+            });
         }
+
+        device
+            .dispatch(&shader, "main", n.max(0) as u32, &scalars, &buffer_ids)
+            .map_err(|e| self.place_error(format!("the GPU refused the launch: {e}")))?;
         Ok(())
     }
 
@@ -979,6 +1003,57 @@ impl Vm {
         );
         self.gpu = Some(g.clone());
         Ok(g)
+    }
+
+    /// Release device allocations for buffers the model just evicted.
+    #[cfg(feature = "gpu")]
+    fn gpu_evict(&mut self, ids: &[usize]) {
+        if let Some(g) = &self.gpu {
+            for id in ids {
+                g.evict(*id);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "gpu"))]
+    fn gpu_evict(&mut self, _ids: &[usize]) {}
+
+    /// Bring a buffer's device contents home, if it lives on a GPU.
+    #[cfg(feature = "gpu")]
+    fn gpu_download_into(&mut self, id: usize, val: Val) -> Result<(), VmError> {
+        if self.place_mode != crate::eir::place::Mode::Gpu {
+            return Ok(());
+        }
+        let Some(g) = self.gpu.clone() else {
+            return Ok(());
+        };
+        if !g.is_resident(id) {
+            return Ok(());
+        }
+        let byte_len = match self.get_obj(val) {
+            Some(Obj::Buffer(b)) => b.byte_len(),
+            _ => return Ok(()),
+        };
+        let bytes = g
+            .download(id, byte_len)
+            .map_err(|e| self.place_error(format!("reading back from the GPU: {e}")))?;
+        if let Some(Obj::Buffer(buf)) = self.heap.get_mut(id) {
+            let len = buf.len();
+            let vals: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .take(len)
+                .collect();
+            for (i, v) in vals.into_iter().enumerate() {
+                buf.set(i, Val::float(v as f64));
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "gpu"))]
+    fn gpu_download_into(&mut self, _id: usize, _val: Val) -> Result<(), VmError> {
+        Ok(())
     }
 
     fn place_error(&self, message: String) -> VmError {
@@ -3900,36 +3975,50 @@ impl Vm {
                 // what the `Preload`/`PreloadMut` types in the Rust offload
                 // work exist to reconstruct.
                 let b = args.first().copied().unwrap_or(Val::UNIT);
+                let (bytes, dtype) = match self.buffer_info(b) {
+                    Some((_, bytes, dtype)) => (bytes, dtype),
+                    None => {
+                        return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                            "Place.read expects a buffer, got {}",
+                            self.val_to_string(b)
+                        )))
+                        .with_span(self.current_span))
+                    }
+                };
+                let id = b.as_ptr();
+
+                // On a device, a read costs a transfer only when the device
+                // holds something the host has not seen. On the CPU there is
+                // one memory, so the read is free — and saying so keeps the
+                // two modes comparable.
+                let must_transfer = match self.place_mode {
+                    crate::eir::place::Mode::Cpu => true,
+                    crate::eir::place::Mode::Device | crate::eir::place::Mode::Gpu => {
+                        self.place_device.is_dirty(id)
+                    }
+                };
+                // The transfer happens *before* the values are read, which is
+                // the whole content of the word "synchronization". Reading
+                // first would return the host's stale copy and report a
+                // download that changed nothing.
+                if must_transfer {
+                    self.place_device.clear_dirty(id);
+                    self.gpu_download_into(id, b)?;
+                    self.place_stats.record(crate::eir::place::PlaceEvent {
+                        kind: crate::eir::place::EventKind::Download,
+                        kernel: None,
+                        arg: None,
+                        dtype: Some(dtype),
+                        bytes,
+                        items: 0,
+                        device: self.place_mode.name(),
+                    });
+                }
+
                 let items: Vec<Val> = match self.get_obj(b) {
                     Some(Obj::Buffer(buf)) => {
                         let n = buf.len();
-                        let bytes = buf.byte_len() as u64;
-                        let dtype = buf.dtype();
-                        let id = b.as_ptr();
-                        let vals: Vec<Val> = (0..n).filter_map(|i| buf.get(i)).collect();
-                        // On a device, a read costs a transfer only when the
-                        // device holds something the host has not seen. On the
-                        // CPU there is one memory, so the read is free — and
-                        // saying so keeps the two modes comparable.
-                        let must_transfer = match self.place_mode {
-                            crate::eir::place::Mode::Cpu => true,
-                            crate::eir::place::Mode::Device | crate::eir::place::Mode::Gpu => {
-                                self.place_device.is_dirty(id)
-                            }
-                        };
-                        if must_transfer {
-                            self.place_device.clear_dirty(id);
-                            self.place_stats.record(crate::eir::place::PlaceEvent {
-                                kind: crate::eir::place::EventKind::Download,
-                                kernel: None,
-                                arg: None,
-                                dtype: Some(dtype),
-                                bytes,
-                                items: 0,
-                                device: self.place_mode.name(),
-                            });
-                        }
-                        vals
+                        (0..n).filter_map(|i| buf.get(i)).collect()
                     }
                     _ => {
                         return Err(VmError::new(VmErrorKind::BuiltinType(format!(

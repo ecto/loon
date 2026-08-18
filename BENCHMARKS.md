@@ -1,5 +1,81 @@
 # Benchmarks
 
+## Placement (v0.9.0)
+
+Where a kernel runs is decided by a handler, not by the program. These numbers
+say what that costs and what a residency policy is worth.
+
+Harness: `cargo run -q --release -p loon-lang --features gpu --example bench_place`
+Machine: Apple M4 Max (Metal, via wgpu). Numbers move a little run to run;
+the transfer counts do not move at all.
+
+### What a residency policy is worth
+
+A chain of launches over one 4096-element buffer, on the GPU. The program is
+identical in both columns — the only difference is whether `place/resident`
+(nine lines, in `os/place.oo`) is wrapped around it.
+
+| launches | no policy | place/resident | speedup |
+|---------:|----------:|---------------:|--------:|
+| 8 | 28.9 ms | 9.3 ms | 3.1x |
+| 32 | 93.1 ms | 15.4 ms | 6.0x |
+| 128 | 356.7 ms | 18.3 ms | 19.5x |
+
+The gap grows with the chain because without a policy every launch uploads its
+arguments, computes, and copies its results back; with one, the buffers stay
+put and only the final `Place.read` moves anything. A recent Rust GPU-offload
+paper measures the same gap at up to 400x between its convenient and explicit
+interfaces, and closes it with `Preload`/`PreloadMut` annotations at every call
+site plus a transfer-hoisting pass inside LLVM. Here it is a `handle` form.
+
+### Transfers
+
+Exact counts — these do not vary between runs.
+
+| launches | no policy | place/resident | bytes saved |
+|---------:|----------:|---------------:|------------:|
+| 1 | 2 uploads | 2 uploads | 0 B |
+| 4 | 8 uploads | 2 uploads | 96 KB |
+| 16 | 32 uploads | 2 uploads | 480 KB |
+| 64 | 128 uploads | 2 uploads | 2.0 MB |
+
+### Kernel time: interpreter vs GPU
+
+| elements | interpreter | gpu | ratio |
+|---------:|------------:|----:|------:|
+| 1,024 | 522 µs | 10.0 ms | 0.1x |
+| 16,384 | 2.7 ms | 8.7 ms | 0.3x |
+| 262,144 | 40.9 ms | 13.4 ms | 3.1x |
+
+Read this one carefully. The CPU column is **Loon's own interpreter** walking
+EIR once per work item — the slowest reasonable baseline, not optimized C. The
+ratio says how much there is to gain by leaving the interpreter, not how Loon's
+generated shader compares to a hand-written kernel. We have not measured the
+latter and do not claim it.
+
+The GPU loses below ~100k elements, which is the expected shape: a launch is a
+submission to another processor and has a fixed cost that small work cannot
+amortize.
+
+### Launch overhead
+
+| | ns per launch |
+|---|---:|
+| cpu | ~7,200 |
+| gpu, buffers resident | ~110,000 |
+
+Placement being an effect means every launch is an effect dispatch. That
+dispatch is not what you are paying for: an effect operation costs roughly 3x a
+function call (see the Effects section), which is nanoseconds, while a GPU
+submission is tens of microseconds.
+
+### What is not measured
+
+- Any comparison against hand-written CUDA, HIP, or Metal. Not attempted.
+- Reductions and atomics — outside the kernel subset for now.
+- f64 on the GPU: WGSL core has no 64-bit scalar, so 64-bit buffers are
+  computed in 32 bits and that narrowing is reported rather than hidden.
+
 ## Collection Benchmarks (v0.5.0)
 
 100,000-element collections using `loop`/`recur` with persistent data structures (imbl).
