@@ -9,6 +9,7 @@ pub mod lower;
 #[cfg(feature = "native")]
 pub mod native;
 pub mod net;
+pub mod place;
 pub mod replay;
 pub mod tailcall;
 pub mod trace;
@@ -453,6 +454,27 @@ pub enum Built {
     /// for any other value. Emitted by pattern compilation so `#[a b]` can
     /// test "is a sequence of length 2" in one comparison.
     SeqLen,
+    // ── Dense buffers ──
+    /// `buf` — an f32 buffer from a vector of numbers.
+    BufNew,
+    /// `buf-i32` — an i32 buffer from a vector of numbers.
+    BufNewI32,
+    /// `buf-f64` — an f64 buffer from a vector of numbers.
+    BufNewF64,
+    /// `buf-zeros` — an f32 buffer of n zeros.
+    BufZeros,
+    /// `buf-zeros-i32` — an i32 buffer of n zeros.
+    BufZerosI32,
+    /// `buf-len` — element count.
+    BufLen,
+    /// `buf->vec` — copy out to an ordinary vector.
+    BufToVec,
+    /// `buf-dtype` — element type name, as a string.
+    BufDtype,
+    /// `at` — read element i. Out of range is an error, never a made-up zero.
+    BufAt,
+    /// `put` — write element i in place and return the buffer.
+    BufPut,
     /// Internal (not name-resolvable): destructuring guard. Args are
     /// (value, expected-binder-count). Errors loudly unless the value is a
     /// vector/tuple with at least that many elements — a silent `()` bind

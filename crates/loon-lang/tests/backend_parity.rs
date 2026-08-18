@@ -32,6 +32,22 @@ fn interp_output(src: &str) -> Result<String, String> {
 /// result(s) so the comparison is on observable output.
 const CORPUS: &[(&str, &str)] = &[
     ("arith", "[fn main [] [println [+ [* 6 7] [- 10 8]]]]"),
+    // Regression: a closure called by a higher-order builtin must not
+    // overwrite a binding in the caller. The VM re-enters itself to run the
+    // closure, and that re-entry used to name register 0 as the destination
+    // for the result — whatever the caller happened to be keeping there was
+    // silently replaced. Here `n` came back as 14, the last value `map`
+    // computed, instead of 8.
+    (
+        "closure-call-preserves-caller-bindings",
+        "[fn main [] [let n 8] [let y [map [fn [v] [* 2 v]] [range 0 n]]] [println n] [println y]]",
+    ),
+    (
+        "nested-closure-calls-preserve-bindings",
+        "[fn main [] [let a 1] [let b 2] \
+           [let r [map [fn [v] [len [map [fn [w] [* w v]] [range 0 3]]]] [range 0 3]]] \
+           [println [+ a b]] [println r]]",
+    ),
     ("float", "[fn main [] [println [* 2.0 3.5]]]"),
     ("strings", r#"[fn main [] [println [str "a" "-" 42 "-" "b"]]]"#),
     ("bool", "[fn main [] [println [and [> 3 2] [not [< 5 1]]]]]"),

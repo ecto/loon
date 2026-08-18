@@ -126,11 +126,14 @@ impl<'a> OwnershipChecker<'a> {
             // lets the escaping/answer-passing style (e.g. `[[resume s] s]`)
             // reuse a value across the resume without a false move error.
             "resume",
-            // Kernel element read. `[at buf i]` observes one element and never
-            // consumes the buffer, so a kernel parameter that is only read
-            // stays a borrow — which is what makes it an `:in` (host-to-device
-            // only) argument at a placement boundary.
+            // Buffer readers. `[at buf i]` observes one element, and the rest
+            // inspect or copy out without consuming, so a kernel parameter
+            // that is only read stays a borrow — which is what makes it an
+            // `:in` (host-to-device only) argument at a placement boundary.
             "at",
+            "buf-len",
+            "buf-dtype",
+            "buf->vec",
         ] {
             borrow_fns.insert(name.to_string());
         }
@@ -584,8 +587,10 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     return;
                 }
-                "push!" => {
-                    // push! requires mutable borrow of first arg
+                "push!" | "put" => {
+                    // Writes through the first argument, reads the rest — a
+                    // mutable borrow, not a move: the caller still owns the
+                    // buffer (or vector) afterwards.
                     if items.len() > 1 {
                         if let ExprKind::Symbol(name) = &items[1].kind {
                             self.mut_borrow(name, items[1].span);
@@ -604,6 +609,24 @@ impl<'a> OwnershipChecker<'a> {
                     return;
                 }
                 _ => {}
+            }
+        }
+
+        // Effect operations consume their arguments by default, which is what
+        // makes "responding twice with the same value is a compile error" a
+        // property of the language rather than a convention.
+        //
+        // `Place` is the exception, and not by special pleading: placement is
+        // defined to read its inputs and write through its outputs, never to
+        // take ownership of either. `[Place.run k n x out]` leaves the caller
+        // owning both `x` and `out` — indeed `[Place.read out]` afterwards is
+        // the entire point, and is how a program gets its results back.
+        if let ExprKind::DotAccess(base, _) = &items[0].kind {
+            if matches!(&base.kind, ExprKind::Symbol(b) if b == "Place") {
+                for item in &items[1..] {
+                    self.check_expr(item);
+                }
+                return;
             }
         }
 
@@ -678,11 +701,22 @@ impl<'a> OwnershipChecker<'a> {
                 self.fn_param_modes.insert(name.clone(), modes);
             }
 
+            // A parameter the analysis just inferred as mutably borrowed IS
+            // mutable inside this body — that is what the inference means.
+            // Requiring `let mut` on a parameter would be asking the author to
+            // restate a conclusion the compiler already reached, and there is
+            // nowhere to write it anyway.
+            let modes = fn_name
+                .as_ref()
+                .and_then(|n| self.fn_param_modes.get(n).cloned())
+                .unwrap_or_default();
+
             self.push_scope();
-            for p in params {
+            for (idx, p) in params.iter().enumerate() {
                 if let ExprKind::Symbol(name) = &p.kind {
                     let is_copy = self.is_value_copy(p);
-                    self.define(name.clone(), p.span, is_copy, false);
+                    let is_mut = matches!(modes.get(idx), Some(ParamMode::MutBorrow));
+                    self.define(name.clone(), p.span, is_copy, is_mut);
                 }
             }
             for expr in &args[body_start..] {
@@ -821,18 +855,11 @@ impl<'a> OwnershipChecker<'a> {
                     // exactly as `check_defn` does.
                     let mut body_start = 3;
                     if body_start < items.len()
-                        && matches!(
-                            &items[body_start].kind,
-                            ExprKind::Set(_) | ExprKind::Map(_)
-                        )
+                        && matches!(&items[body_start].kind, ExprKind::Set(_) | ExprKind::Map(_))
                     {
                         body_start += 1;
                     }
-                    out.push((
-                        name.clone(),
-                        param_names,
-                        items[body_start..].to_vec(),
-                    ));
+                    out.push((name.clone(), param_names, items[body_start..].to_vec()));
                     return;
                 }
             }

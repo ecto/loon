@@ -1181,6 +1181,7 @@ impl Compiler {
                     name: op_name,
                     params,
                     return_type,
+                    variadic: false,
                 });
             }
         }

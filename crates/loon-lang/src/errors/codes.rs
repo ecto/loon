@@ -42,6 +42,10 @@ pub enum ErrorCode {
     E0501, // private symbol
     E0502, // circular dependency
 
+    // Placement errors
+    E0600, // construct not allowed inside a kernel
+    E0601, // kernel signature is not placeable
+
     // Warnings
     W0100, // transparent wildcard
 }
@@ -71,6 +75,8 @@ impl ErrorCode {
             ErrorCode::E0402 => "E0402",
             ErrorCode::E0403 => "E0403",
             ErrorCode::E0404 => "E0404",
+            ErrorCode::E0600 => "E0600",
+            ErrorCode::E0601 => "E0601",
             ErrorCode::E0500 => "E0500",
             ErrorCode::E0501 => "E0501",
             ErrorCode::E0502 => "E0502",
@@ -102,6 +108,7 @@ impl ErrorCode {
             | ErrorCode::E0403
             | ErrorCode::E0404 => "effect",
             ErrorCode::E0500 | ErrorCode::E0501 | ErrorCode::E0502 => "module",
+            ErrorCode::E0600 | ErrorCode::E0601 => "placement",
             ErrorCode::W0100 => "warning",
         }
     }
@@ -130,6 +137,8 @@ impl ErrorCode {
             ErrorCode::E0402 => "unknown effect operation",
             ErrorCode::E0403 => "effect mismatch",
             ErrorCode::E0404 => "effect not granted",
+            ErrorCode::E0600 => "not allowed inside a kernel",
+            ErrorCode::E0601 => "kernel signature is not placeable",
             ErrorCode::E0500 => "unresolved module",
             ErrorCode::E0501 => "private symbol",
             ErrorCode::E0502 => "circular dependency",

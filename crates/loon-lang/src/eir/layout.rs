@@ -232,8 +232,16 @@ pub const GOLDEN_IMMEDIATES: &[(&str, &str, u64)] = &[
     ("int-zero", "0", nanbox::encode_int(0)),
     ("int-42", "42", nanbox::encode_int(42)),
     ("int-neg", "-7", nanbox::encode_int(-7)),
-    ("int-max48", "140737488355327", nanbox::encode_int((1i64 << 47) - 1)),
-    ("int-min48", "-140737488355328", nanbox::encode_int(-(1i64 << 47))),
+    (
+        "int-max48",
+        "140737488355327",
+        nanbox::encode_int((1i64 << 47) - 1),
+    ),
+    (
+        "int-min48",
+        "-140737488355328",
+        nanbox::encode_int(-(1i64 << 47)),
+    ),
 ];
 
 /// A byte pattern chosen to break sloppy marshalling: negative zero, a NaN

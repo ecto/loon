@@ -298,3 +298,52 @@ fn replay_needs_no_kernel_and_no_real_world() {
     .join("\n");
     assert!(out.contains("GHOST MATCHES"), "{out}");
 }
+
+#[test]
+fn place_demo_gives_the_same_answer_under_every_handler() {
+    // The claim the demo exists to make: the program is untouched between
+    // runs, only the handler wrapped around it changes, and the computed
+    // result is identical in each case. A placement policy that changed the
+    // answer would not be a policy, it would be a bug.
+    let out = run_demo("demo-place.oo");
+    let joined = out.join("\n");
+
+    let expected = "#[11 21 31 41 51 61 71 81]";
+    let answers = out.iter().filter(|l| l.contains(expected)).count();
+    assert_eq!(
+        answers, 3,
+        "unhandled, traced, and resident runs should all agree:\n{joined}"
+    );
+
+    // Tracing is interposition: the handler sees each launch and the single
+    // point where the host asks for data back.
+    assert!(
+        joined.contains("place: launch 8 work items, 3 args"),
+        "{joined}"
+    );
+    assert!(joined.contains("place: sync"), "{joined}");
+
+    // The dry run accounts for the work without performing any of it, which is
+    // how a program can be exercised without the hardware it targets.
+    assert!(
+        joined.contains("#[]"),
+        "dry run should return nothing:\n{joined}"
+    );
+}
+
+#[test]
+fn place_handlers_do_not_need_compiler_support() {
+    // Every handler in os/place.oo is ordinary Loon. This test pins that a
+    // policy can be written inline, in a test file, with no privileges: the
+    // residency and transfer-hoisting logic a GPU compiler implements as an
+    // optimization pass is expressible as user code here.
+    let out = run("[kernel k [i b] [put b i [* 2.0 [at b i]]]] \
+         [fn work [] [let mut b [buf #[1 2 3]]] [Place.run k 3 #[b]] [Place.read b]] \
+         [fn twice-as-many [thunk] \
+           [handle [thunk] \
+             [Place.run kf n args] [do [Place.run kf n args] \
+                                       [resume [Place.run kf n args]]]]] \
+         [fn main [] [IO.println [work]] [IO.println [twice-as-many work]]]");
+    // Running the kernel twice per launch really does double it again.
+    assert_eq!(out, vec!["#[2 4 6]", "#[4 8 12]"]);
+}

@@ -5,6 +5,7 @@
 //! Tail calls reuse the current frame. No continuation stack — just a
 //! call stack of `(FuncId, BlockId, ip, registers)`.
 
+use crate::eir::layout::DType;
 pub use crate::eir::value64::Val;
 use crate::eir::*;
 use std::collections::HashMap;
@@ -119,6 +120,15 @@ enum Obj {
     Tuple(Vec<Val>),           // fixed-size, no persistence needed
     Adt(u16, Vec<Val>),        // tag + fields
     Closure(FuncId, Vec<Val>), // func + captured values
+    /// A dense, fixed-length array of unboxed numbers.
+    ///
+    /// Loon's ordinary collections are persistent trees of NaN-boxed words,
+    /// which is the right shape for a functional language and the wrong shape
+    /// for anything that has to hand bytes to another processor. A `Buffer` is
+    /// the other shape: contiguous, untagged, and describable by a
+    /// `layout::BufferHeader`, so the same bytes can be shipped to a thread, a
+    /// kernel, or a device queue without a conversion step.
+    Buffer(Buffer),
     /// A reified multi-shot delimited continuation captured at a `perform`: the
     /// frame segment between the perform and its handler's prompt, plus the
     /// execution point to resume at. `resume_continuation` clones this segment on
@@ -152,6 +162,7 @@ impl Obj {
             Obj::Map(m) => (24 + m.len() * 16) as u64,
             Obj::Adt(_, fields) => (24 + 2 + fields.len() * 8) as u64,
             Obj::Closure(_, caps) => (24 + 4 + caps.len() * 8) as u64,
+            Obj::Buffer(b) => 24 + b.byte_len() as u64,
             Obj::Continuation {
                 saved,
                 regs,
@@ -161,6 +172,166 @@ impl Obj {
         }
     }
 }
+
+// ─── Dense buffers ─────────────────────────────────────────────────────────
+
+/// The elements of a [`Obj::Buffer`], one variant per [`DType`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum BufData {
+    F32(Vec<f32>),
+    F64(Vec<f64>),
+    I32(Vec<i32>),
+    I64(Vec<i64>),
+}
+
+/// A dense numeric array.
+///
+/// Values are read and written by index through `at` and `put`. Unlike Loon's
+/// persistent collections a buffer is mutated in place when its owner is
+/// unique, which is what makes it cheap enough to be worth sending anywhere.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Buffer {
+    pub data: BufData,
+}
+
+impl Buffer {
+    pub fn zeros(dtype: DType, len: usize) -> Buffer {
+        Buffer {
+            data: match dtype {
+                DType::F32 => BufData::F32(vec![0.0; len]),
+                DType::F64 => BufData::F64(vec![0.0; len]),
+                DType::I32 => BufData::I32(vec![0; len]),
+                DType::I64 => BufData::I64(vec![0; len]),
+            },
+        }
+    }
+
+    pub fn dtype(&self) -> DType {
+        match &self.data {
+            BufData::F32(_) => DType::F32,
+            BufData::F64(_) => DType::F64,
+            BufData::I32(_) => DType::I32,
+            BufData::I64(_) => DType::I64,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match &self.data {
+            BufData::F32(v) => v.len(),
+            BufData::F64(v) => v.len(),
+            BufData::I32(v) => v.len(),
+            BufData::I64(v) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn byte_len(&self) -> usize {
+        self.len() * self.dtype().size()
+    }
+
+    /// Element `i` as a Loon value, or `None` if out of range.
+    ///
+    /// Out of range is deliberately not silently zero: reading past the end of
+    /// a buffer is a bug in the program, and a language that answers `0` for it
+    /// teaches you to trust an answer it made up.
+    pub fn get(&self, i: usize) -> Option<Val> {
+        match &self.data {
+            BufData::F32(v) => v.get(i).map(|x| Val::float(*x as f64)),
+            BufData::F64(v) => v.get(i).map(|x| Val::float(*x)),
+            BufData::I32(v) => v.get(i).map(|x| Val::int(*x as i64)),
+            BufData::I64(v) => v.get(i).map(|x| Val::int(*x)),
+        }
+    }
+
+    /// Write element `i`, converting to the buffer's element type. Returns
+    /// false if the index is out of range or the value is not numeric.
+    pub fn set(&mut self, i: usize, val: Val) -> bool {
+        let num = if val.is_int() {
+            val.as_int() as f64
+        } else if val.is_float() {
+            val.as_float()
+        } else {
+            return false;
+        };
+        match &mut self.data {
+            BufData::F32(v) => match v.get_mut(i) {
+                Some(slot) => *slot = num as f32,
+                None => return false,
+            },
+            BufData::F64(v) => match v.get_mut(i) {
+                Some(slot) => *slot = num,
+                None => return false,
+            },
+            BufData::I32(v) => match v.get_mut(i) {
+                Some(slot) => *slot = num as i32,
+                None => return false,
+            },
+            BufData::I64(v) => match v.get_mut(i) {
+                Some(slot) => *slot = num as i64,
+                None => return false,
+            },
+        }
+        true
+    }
+
+    /// The raw bytes of the elements, little-endian.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        match &self.data {
+            BufData::F32(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            BufData::F64(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            BufData::I32(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            BufData::I64(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+        }
+    }
+
+    /// Rebuild from raw little-endian bytes. Returns `None` on a length that
+    /// is not a whole number of elements.
+    pub fn from_bytes(dtype: DType, bytes: &[u8]) -> Option<Buffer> {
+        if bytes.len() % dtype.size() != 0 {
+            return None;
+        }
+        let data = match dtype {
+            DType::F32 => BufData::F32(
+                bytes
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                    .collect(),
+            ),
+            DType::F64 => BufData::F64(
+                bytes
+                    .chunks_exact(8)
+                    .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+                    .collect(),
+            ),
+            DType::I32 => BufData::I32(
+                bytes
+                    .chunks_exact(4)
+                    .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+                    .collect(),
+            ),
+            DType::I64 => BufData::I64(
+                bytes
+                    .chunks_exact(8)
+                    .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                    .collect(),
+            ),
+        };
+        Some(Buffer { data })
+    }
+}
+
+/// A `ret_reg` meaning "this call's result is returned to the Rust caller,
+/// not stored into a register".
+///
+/// The VM re-enters itself whenever a builtin calls back into Loon — `map`
+/// over a closure, a kernel launched by `Place.run`. Those calls have no
+/// destination register in the caller, because the caller is Rust. Naming
+/// register 0 instead, as this used to, silently overwrote whatever the
+/// caller's first register held.
+const RET_DISCARD: u32 = u32::MAX;
 
 // ─── Call frame ────────────────────────────────────────────────────────────
 
@@ -174,6 +345,8 @@ struct Frame {
     /// Register file for the suspended frame.
     regs: Vec<Val>,
     /// Register in the caller's frame to write the return value into.
+    /// Register in *this* frame that receives the callee's return value, or
+    /// [`RET_DISCARD`] when the value goes back to Rust instead.
     ret_reg: u32,
     /// Closure captures for the suspended frame.
     captures: Vec<Val>,
@@ -247,6 +420,8 @@ pub struct Vm {
     ip: usize,
     /// Output capture (for println).
     output: Vec<String>,
+    /// Placement accounting: launches, transfers, and residency hits.
+    pub place_stats: crate::eir::place::PlaceStats,
     /// String constants resolved to heap indices.
     string_cache: HashMap<StringId, usize>,
     /// Interns string *objects* by content, so structurally-equal strings share
@@ -351,6 +526,7 @@ impl Vm {
             resume_closure: Val::UNIT, // set in run()
             current_span: Span::ZERO,
             heap_stats: HeapStats::default(),
+            place_stats: crate::eir::place::PlaceStats::default(),
             recorder: None,
             replay: None,
             runtime_syms: Vec::new(),
@@ -497,7 +673,7 @@ impl Vm {
         caps: Vec<Val>,
     ) -> Result<Val, VmError> {
         let depth = self.frames.len();
-        self.call_func_with_captures(func_id, args, 0, caps)?;
+        self.call_func_with_captures(func_id, args, RET_DISCARD, caps)?;
         self.execute(depth + 1)
     }
 
@@ -524,6 +700,85 @@ impl Vm {
         let val = self.alloc(Obj::Str(s.clone()));
         self.str_interner.insert(s, val.as_ptr());
         val
+    }
+
+    /// Run a kernel once per work item, right here.
+    ///
+    /// `[Place.run kernel n args...]` calls `kernel(i, args...)` for each `i`
+    /// in `0..n`. Kernels return nothing useful; they write through their
+    /// buffer arguments, which is why the ownership pass reporting a
+    /// written-through parameter as `InOut` is the same fact as "this buffer
+    /// has to come back".
+    fn place_run_serial(&mut self, args: &[Val]) -> Result<Val, VmError> {
+        let kernel = args.first().copied().unwrap_or(Val::UNIT);
+        let n_val = args.get(1).copied().unwrap_or(Val::UNIT);
+
+        let (func_id, caps, name) = match self.get_obj(kernel) {
+            Some(Obj::Closure(f, c)) => {
+                let name = self
+                    .module
+                    .funcs
+                    .get(f.0 as usize)
+                    .and_then(|fun| fun.name.clone());
+                (*f, c.clone(), name)
+            }
+            _ => {
+                return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                    "Place.run expects a kernel as its first argument, got {}",
+                    self.val_to_string(kernel)
+                )))
+                .with_span(self.current_span))
+            }
+        };
+
+        if !n_val.is_int() || n_val.as_int() < 0 {
+            return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                "Place.run expects a non-negative work count, got {}",
+                self.val_to_string(n_val)
+            )))
+            .with_span(self.current_span));
+        }
+        let n = n_val.as_int();
+
+        // Charge the launch before running, so a kernel that fails partway
+        // still shows up in the accounting.
+        self.place_stats.record(crate::eir::place::PlaceEvent {
+            kind: crate::eir::place::EventKind::Launch,
+            kernel: name,
+            arg: None,
+            dtype: None,
+            bytes: 0,
+            items: n as u64,
+            device: "cpu",
+        });
+
+        // Kernel arguments arrive as one vector rather than spread across the
+        // operation. That keeps the operation's own arity fixed at three, so a
+        // handler clause can bind and forward it — `[Place.run k n args]` —
+        // and, more usefully, can *inspect* the argument list. A residency
+        // policy is exactly a handler that looks at those arguments and
+        // decides which of them still need to move.
+        let args_val = args.get(2).copied().unwrap_or(Val::UNIT);
+        let rest: Vec<Val> = match self.get_obj(args_val) {
+            Some(Obj::Vec(v)) => v.iter().copied().collect(),
+            Some(Obj::Tuple(v)) => v.clone(),
+            _ if args.len() <= 2 => Vec::new(),
+            _ => {
+                return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                    "Place.run expects a vector of kernel arguments, got {}",
+                    self.val_to_string(args_val)
+                )))
+                .with_span(self.current_span))
+            }
+        };
+        let mut call_args = Vec::with_capacity(rest.len() + 1);
+        for i in 0..n {
+            call_args.clear();
+            call_args.push(Val::int(i));
+            call_args.extend_from_slice(&rest);
+            self.run_call_with_captures(func_id, &call_args, caps.clone())?;
+        }
+        Ok(Val::UNIT)
     }
 
     fn get_obj(&self, val: Val) -> Option<&Obj> {
@@ -754,7 +1009,9 @@ impl Vm {
             self.func = frame.func;
             self.block = frame.block;
             self.ip = frame.ip;
-            self.regs[ret_reg as usize] = val;
+            if ret_reg != RET_DISCARD {
+                self.regs[ret_reg as usize] = val;
+            }
             // A resumed segment may have left ephemeral handlers scoped to a
             // prompt frame that is now gone; drop them so they cannot shadow a
             // later handle for the same effect.
@@ -1455,9 +1712,167 @@ impl Vm {
                     Some(Obj::Set(items)) => items.len() as i64,
                     Some(Obj::Str(s)) => s.len() as i64,
                     Some(Obj::Tuple(items)) => items.len() as i64,
+                    // A buffer has a length like any other sequence. Falling
+                    // through to 0 here made `[len buf]` a confident lie.
+                    Some(Obj::Buffer(b)) => b.len() as i64,
                     _ => 0,
                 };
                 Ok(Val::int(len))
+            }
+            // ── Dense buffers ──
+            Built::BufNew | Built::BufNewI32 | Built::BufNewF64 => {
+                let dtype = match built {
+                    Built::BufNewI32 => DType::I32,
+                    Built::BufNewF64 => DType::F64,
+                    _ => DType::F32,
+                };
+                let src = args.first().copied().unwrap_or(Val::UNIT);
+                let items: Vec<Val> = match self.get_obj(src) {
+                    Some(Obj::Vec(v)) => v.iter().copied().collect(),
+                    Some(Obj::Tuple(v)) => v.clone(),
+                    _ => {
+                        return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                            "{} expects a vector of numbers, got {}",
+                            match built {
+                                Built::BufNewI32 => "buf-i32",
+                                Built::BufNewF64 => "buf-f64",
+                                _ => "buf",
+                            },
+                            self.val_to_string(src)
+                        ))))
+                    }
+                };
+                let mut buf = Buffer::zeros(dtype, items.len());
+                for (i, v) in items.iter().enumerate() {
+                    if !buf.set(i, *v) {
+                        return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                            "buffer element {i} is not a number: {}",
+                            self.val_to_string(*v)
+                        ))));
+                    }
+                }
+                Ok(self.alloc(Obj::Buffer(buf)))
+            }
+            Built::BufZeros | Built::BufZerosI32 => {
+                let dtype = if matches!(built, Built::BufZerosI32) {
+                    DType::I32
+                } else {
+                    DType::F32
+                };
+                let n = args.first().copied().unwrap_or(Val::UNIT);
+                if !n.is_int() || n.as_int() < 0 {
+                    return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "buffer length must be a non-negative integer, got {}",
+                        self.val_to_string(n)
+                    ))));
+                }
+                Ok(self.alloc(Obj::Buffer(Buffer::zeros(dtype, n.as_int() as usize))))
+            }
+            Built::BufLen => {
+                let b = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_obj(b) {
+                    Some(Obj::Buffer(buf)) => Ok(Val::int(buf.len() as i64)),
+                    _ => Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "buf-len expects a buffer, got {}",
+                        self.val_to_string(b)
+                    )))),
+                }
+            }
+            Built::BufDtype => {
+                let b = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_obj(b) {
+                    Some(Obj::Buffer(buf)) => {
+                        let name = buf.dtype().name();
+                        Ok(self.alloc_str_owned(name.to_string()))
+                    }
+                    _ => Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "buf-dtype expects a buffer, got {}",
+                        self.val_to_string(b)
+                    )))),
+                }
+            }
+            Built::BufToVec => {
+                let b = args.first().copied().unwrap_or(Val::UNIT);
+                let items: Vec<Val> = match self.get_obj(b) {
+                    Some(Obj::Buffer(buf)) => (0..buf.len()).filter_map(|i| buf.get(i)).collect(),
+                    _ => {
+                        return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                            "buf->vec expects a buffer, got {}",
+                            self.val_to_string(b)
+                        ))))
+                    }
+                };
+                Ok(self.alloc(Obj::Vec(items.into_iter().collect())))
+            }
+            Built::BufAt => {
+                let b = args.first().copied().unwrap_or(Val::UNIT);
+                let i = args.get(1).copied().unwrap_or(Val::UNIT);
+                let Some(Obj::Buffer(buf)) = self.get_obj(b) else {
+                    return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "at expects a buffer, got {}",
+                        self.val_to_string(b)
+                    ))));
+                };
+                if !i.is_int() {
+                    return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "at expects an integer index, got {}",
+                        self.val_to_string(i)
+                    ))));
+                }
+                let idx = i.as_int();
+                let len = buf.len();
+                match usize::try_from(idx).ok().and_then(|u| buf.get(u)) {
+                    Some(v) => Ok(v),
+                    None => Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "at: index {idx} is outside a buffer of length {len}"
+                    )))),
+                }
+            }
+            Built::BufPut => {
+                // Writes through the buffer in place. Every other Loon
+                // collection is persistent; a buffer is not, because copying
+                // one per element write is exactly the cost buffers exist to
+                // avoid. The ownership pass is what keeps this honest — it
+                // reports a written-through parameter as `InOut`.
+                let b = args.first().copied().unwrap_or(Val::UNIT);
+                let i = args.get(1).copied().unwrap_or(Val::UNIT);
+                let x = args.get(2).copied().unwrap_or(Val::UNIT);
+                if !b.is_ptr() || !matches!(self.heap.get(b.as_ptr()), Some(Obj::Buffer(_))) {
+                    return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "put expects a buffer, got {}",
+                        self.val_to_string(b)
+                    ))));
+                }
+                if !i.is_int() {
+                    return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "put expects an integer index, got {}",
+                        self.val_to_string(i)
+                    ))));
+                }
+                let idx = i.as_int();
+                let ptr = b.as_ptr();
+                let len = match self.heap.get(ptr) {
+                    Some(Obj::Buffer(buf)) => buf.len(),
+                    _ => 0,
+                };
+                let ok = usize::try_from(idx)
+                    .ok()
+                    .map(|u| match self.heap.get_mut(ptr) {
+                        Some(Obj::Buffer(buf)) => buf.set(u, x),
+                        _ => false,
+                    })
+                    .unwrap_or(false);
+                if !ok {
+                    let shown = self.val_to_string(x);
+                    return Err(VmError::new(VmErrorKind::BuiltinType(
+                        if idx < 0 || idx as usize >= len {
+                            format!("put: index {idx} is outside a buffer of length {len}")
+                        } else {
+                            format!("put: {shown} is not a number")
+                        },
+                    )));
+                }
+                Ok(b)
             }
             Built::SeqLen => {
                 let v = args.first().copied().unwrap_or(Val::UNIT);
@@ -3257,6 +3672,74 @@ impl Vm {
             // (value-or-"" lookup). The interpreter has no such ops — it hard
             // errors — so they were dropped for cross-backend conformance;
             // `Process.env` is the Option-returning form both backends share.
+            // ── Placement ──
+            //
+            // Reached only when no handler took the operation, so this is the
+            // default answer to "where does this run": right here, one work
+            // item at a time. A program that never mentions placement gets
+            // this; installing a handler is what changes the answer, and the
+            // program itself does not move.
+            ("Place", "run") => self.place_run_serial(args)?,
+            ("Place", "read") => {
+                // The one path from device-side data back to the host. It is
+                // an operation rather than a plain accessor so that a
+                // residency handler can see every synchronization point
+                // without the programmer having marked any of them — which is
+                // what the `Preload`/`PreloadMut` types in the Rust offload
+                // work exist to reconstruct.
+                let b = args.first().copied().unwrap_or(Val::UNIT);
+                let items: Vec<Val> = match self.get_obj(b) {
+                    Some(Obj::Buffer(buf)) => {
+                        let n = buf.len();
+                        let bytes = buf.byte_len() as u64;
+                        let dtype = buf.dtype();
+                        let vals: Vec<Val> = (0..n).filter_map(|i| buf.get(i)).collect();
+                        self.place_stats.record(crate::eir::place::PlaceEvent {
+                            kind: crate::eir::place::EventKind::Download,
+                            kernel: None,
+                            arg: None,
+                            dtype: Some(dtype),
+                            bytes,
+                            items: 0,
+                            device: "cpu",
+                        });
+                        vals
+                    }
+                    _ => {
+                        return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                            "Place.read expects a buffer, got {}",
+                            self.val_to_string(b)
+                        )))
+                        .with_span(self.current_span))
+                    }
+                };
+                self.alloc(Obj::Vec(items.into_iter().collect()))
+            }
+            ("Place", "pin") | ("Place", "unpin") => {
+                // Running here, there is nowhere else for a buffer to be, so
+                // pinning is a no-op that returns the buffer unchanged. A
+                // device handler is where the hint means something.
+                args.first().copied().unwrap_or(Val::UNIT)
+            }
+            ("Place", "stats") => {
+                let s = &self.place_stats;
+                let pairs = [
+                    ("launches", s.launches as i64),
+                    ("work-items", s.work_items as i64),
+                    ("uploads", s.uploads as i64),
+                    ("downloads", s.downloads as i64),
+                    ("bytes-in", s.bytes_in as i64),
+                    ("bytes-out", s.bytes_out as i64),
+                    ("resident-hits", s.resident_hits as i64),
+                ];
+                let mut map = ImMap::new();
+                for (k, v) in pairs {
+                    let key = self.intern_sym(k);
+                    map.insert(key, Val::int(v));
+                }
+                self.alloc(Obj::Map(map))
+            }
+
             // Real TCP/HTTP sockets (see eir/net.rs). A blocking one-at-a-time
             // server: listen a port, accept a request, send the response.
             ("Net", "listen") => {

@@ -547,7 +547,6 @@ fn op_description(op: &Op) -> &'static str {
     }
 }
 
-
 #[allow(clippy::too_many_arguments)]
 fn compile_op(
     builder: &mut FunctionBuilder,
