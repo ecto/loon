@@ -4,6 +4,7 @@
 //! Every backend (Register VM, WASM, Cranelift) lowers from this IR.
 
 pub mod backend;
+pub mod layout;
 pub mod lower;
 #[cfg(feature = "native")]
 pub mod native;
@@ -61,6 +62,14 @@ pub struct Func {
     pub id: FuncId,
     pub name: Option<String>,
     pub params: Vec<Ty>,
+    /// How each parameter is used: read, written through, or consumed.
+    ///
+    /// Inferred by the ownership pass rather than written by the programmer.
+    /// Empty for functions the analysis did not name (closures, handler
+    /// clauses); otherwise one entry per parameter. Backends use it the way a
+    /// C API would use `const`: an [`Mode::In`] argument never has to be
+    /// copied back from wherever it was sent.
+    pub param_modes: Vec<Mode>,
     pub ret: Ty,
     /// Implicit handler function-pointer parameters (evidence-passing).
     pub evidence: Vec<Evidence>,
@@ -70,6 +79,31 @@ pub struct Func {
     pub blocks: Vec<Block>,
     pub span: Span,
     pub is_closure: bool,
+}
+
+/// Direction of a parameter across a call — or across a placement boundary.
+///
+/// This is the whole of what `&T` / `&mut T` / `T` tell a Rust offload
+/// compiler about which way bytes move, except nobody had to write it down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Read only. Travels toward the callee and never comes back.
+    In,
+    /// Written through. Must be visible to the caller afterwards.
+    InOut,
+    /// Consumed. The caller may not use it again.
+    Owned,
+}
+
+impl Mode {
+    /// The keyword a Loon-level handler sees for this mode.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Mode::In => "in",
+            Mode::InOut => "inout",
+            Mode::Owned => "owned",
+        }
+    }
 }
 
 /// Evidence parameter — a handler function pointer threaded through calls.

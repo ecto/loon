@@ -31,8 +31,14 @@ enum BindingState {
 }
 
 /// How a function uses a particular parameter.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum ParamMode {
+///
+/// This is Loon's answer to what other languages make you write down. Rust
+/// spells it `&T` / `&mut T` / `T` at every signature; here it is inferred
+/// from the body and then used the same way — to decide what a call site may
+/// do with a binding, and (for kernels) which direction data has to move
+/// across a placement boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamMode {
     /// Parameter is only read — immutable borrow at call site.
     Borrow,
     /// Parameter is mutated (push!, set!) — mutable borrow at call site.
@@ -120,6 +126,11 @@ impl<'a> OwnershipChecker<'a> {
             // lets the escaping/answer-passing style (e.g. `[[resume s] s]`)
             // reuse a value across the resume without a false move error.
             "resume",
+            // Kernel element read. `[at buf i]` observes one element and never
+            // consumes the buffer, so a kernel parameter that is only read
+            // stays a borrow — which is what makes it an `:in` (host-to-device
+            // only) argument at a placement boundary.
+            "at",
         ] {
             borrow_fns.insert(name.to_string());
         }
@@ -409,8 +420,11 @@ impl<'a> OwnershipChecker<'a> {
                                 );
                             }
                         }
-                        "push!" | "set!" => {
-                            // First arg is mutably borrowed
+                        "push!" | "set!" | "put" => {
+                            // First arg is mutably borrowed. `put` is the
+                            // kernel element write; treating it exactly like
+                            // `set!` is what makes a written-to kernel buffer
+                            // infer as `:inout` with no annotation.
                             if items.len() > 1 {
                                 if let ExprKind::Symbol(name) = &items[1].kind {
                                     if let Some(idx) = param_names.iter().position(|p| p == name) {
@@ -733,6 +747,122 @@ impl<'a> OwnershipChecker<'a> {
         }
         std::mem::take(&mut self.errors)
     }
+
+    /// Per-parameter modes for every named function seen so far.
+    pub fn param_modes(&self) -> &HashMap<String, Vec<ParamMode>> {
+        &self.fn_param_modes
+    }
+
+    /// Re-run mode analysis over every named function until the answers stop
+    /// changing.
+    ///
+    /// The first pass sees definitions in source order, so a call to a
+    /// not-yet-analyzed function falls back to the conservative `Move`. Once
+    /// every function has an entry, re-analyzing resolves those calls for
+    /// real. Repeating until stable makes the result independent of the order
+    /// the definitions were written in, which matters because a spuriously
+    /// `Move` parameter reads as "the callee consumed this" — a claim that
+    /// costs optimizations downstream and is simply untrue.
+    ///
+    /// Bounded to a small number of rounds: each round can only replace a
+    /// guess with a real answer, so a program that has not settled by then has
+    /// a cycle whose conservative reading is the correct one to keep.
+    pub fn refine_param_modes(&mut self, exprs: &[Expr]) {
+        const MAX_ROUNDS: usize = 8;
+        let defns = Self::collect_fn_defns(exprs);
+        for _ in 0..MAX_ROUNDS {
+            let mut changed = false;
+            for (name, param_names, body) in &defns {
+                let modes = self.analyze_param_modes(param_names, body);
+                match self.fn_param_modes.get(name) {
+                    Some(prev) if *prev == modes => {}
+                    _ => {
+                        self.fn_param_modes.insert(name.clone(), modes);
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                return;
+            }
+        }
+    }
+
+    /// Every `[fn name [params] body...]` in the program, including those
+    /// nested inside module-level forms, as (name, param names, body).
+    fn collect_fn_defns(exprs: &[Expr]) -> Vec<(String, Vec<String>, Vec<Expr>)> {
+        let mut out = Vec::new();
+        for expr in exprs {
+            Self::collect_fn_defns_into(expr, &mut out);
+        }
+        out
+    }
+
+    fn collect_fn_defns_into(expr: &Expr, out: &mut Vec<(String, Vec<String>, Vec<Expr>)>) {
+        let ExprKind::List(items) = &expr.kind else {
+            return;
+        };
+        let Some(head) = items.first() else {
+            return;
+        };
+        if let ExprKind::Symbol(h) = &head.kind {
+            if h == "fn" && items.len() >= 3 {
+                if let (ExprKind::Symbol(name), ExprKind::List(params)) =
+                    (&items[1].kind, &items[2].kind)
+                {
+                    let param_names: Vec<String> = params
+                        .iter()
+                        .filter_map(|p| match &p.kind {
+                            ExprKind::Symbol(n) => Some(n.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    // Skip an effect-row annotation between params and body,
+                    // exactly as `check_defn` does.
+                    let mut body_start = 3;
+                    if body_start < items.len()
+                        && matches!(
+                            &items[body_start].kind,
+                            ExprKind::Set(_) | ExprKind::Map(_)
+                        )
+                    {
+                        body_start += 1;
+                    }
+                    out.push((
+                        name.clone(),
+                        param_names,
+                        items[body_start..].to_vec(),
+                    ));
+                    return;
+                }
+            }
+        }
+        // Not a function definition — look inside for nested ones.
+        for item in items {
+            Self::collect_fn_defns_into(item, out);
+        }
+    }
+}
+
+/// Infer parameter modes for a program without reporting ownership errors.
+///
+/// The full ownership check runs as a separate frontend pass and its results
+/// are thrown away with the checker. The *modes* it computes along the way are
+/// useful to the compiler proper — they say, for each parameter, whether a
+/// caller's value is read, mutated, or consumed — so this entry point runs the
+/// same analysis for its modes alone. Diagnostics are discarded here; the
+/// dedicated pass is still what reports them.
+///
+/// Unlike the diagnostic pass, this one iterates to a fixed point. A single
+/// pass in source order has to guess at callees it has not reached yet, and it
+/// guesses `Move`; that makes the answer depend on the order two functions
+/// happen to be written in, which is not a property anything downstream should
+/// inherit. Re-running until nothing changes removes the guess.
+pub fn infer_param_modes(exprs: &[Expr]) -> HashMap<String, Vec<ParamMode>> {
+    let mut checker = OwnershipChecker::new();
+    let _ = checker.check_program(exprs);
+    checker.refine_param_modes(exprs);
+    checker.fn_param_modes
 }
 
 impl Default for OwnershipChecker<'_> {

@@ -243,6 +243,7 @@ mod tests {
                 id: FuncId(0),
                 name: Some("f".to_string()),
                 params: vec![],
+                param_modes: Vec::new(),
                 ret: Ty::Any,
                 evidence: vec![],
                 captures: vec![],

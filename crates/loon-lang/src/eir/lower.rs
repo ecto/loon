@@ -11,6 +11,7 @@
 //! - Tail calls → End::Tail / End::Recur
 
 use crate::ast::{Expr, ExprKind};
+use crate::check::ownership::ParamMode;
 use crate::check::Checker;
 use crate::eir::*;
 use crate::syntax::Span;
@@ -486,12 +487,33 @@ impl<'a> Lower<'a> {
 
     // ── Function creation ──────────────────────────────────────────────
 
+    /// Ownership modes for a named function's parameters, as inferred by the
+    /// ownership pass and carried on the checker.
+    ///
+    /// Falls back to [`Mode::Owned`] when the analysis has nothing to say: the
+    /// conservative answer is "assume the callee consumes it", which is always
+    /// sound and merely gives up an optimization.
+    fn param_modes_for(&self, name: &str, arity: usize) -> Vec<Mode> {
+        match self.checker.fn_param_modes.get(name) {
+            Some(modes) if modes.len() == arity => modes
+                .iter()
+                .map(|m| match m {
+                    ParamMode::Borrow => Mode::In,
+                    ParamMode::MutBorrow => Mode::InOut,
+                    ParamMode::Move => Mode::Owned,
+                })
+                .collect(),
+            _ => vec![Mode::Owned; arity],
+        }
+    }
+
     fn begin_func(&mut self, name: Option<&str>, span: Span) -> FuncId {
         let id = FuncId(self.module.funcs.len() as u32);
         self.module.funcs.push(Func {
             id,
             name: name.map(|s| s.to_string()),
             params: Vec::new(),
+            param_modes: Vec::new(),
             ret: Ty::Any,
             evidence: Vec::new(),
             captures: Vec::new(),
@@ -904,6 +926,8 @@ impl<'a> Lower<'a> {
                 self.bind(pname, r);
             }
             self.module.funcs[func_id.0 as usize].params = vec![Ty::Any; param_names.len()];
+            let modes = self.param_modes_for(&name, param_names.len());
+            self.module.funcs[func_id.0 as usize].param_modes = modes;
 
             // Set block0 params for fn/recur support
             let param_regs: Vec<Reg> = (0..param_names.len()).map(|i| Reg(i as u32)).collect();

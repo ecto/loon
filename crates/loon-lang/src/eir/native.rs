@@ -13,12 +13,18 @@
 //! - Function calls (direct), including tail calls (`return_call`)
 //! - Builtin println (via extern)
 //!
-//! Not yet implemented (fall back to VM):
+//! Not yet implemented (fall back to VM). Using one of these is a compile
+//! error, never a silently wrong value — see `compile_op`:
 //! - Closures / upvalues / indirect calls
 //! - Collection construction (Vec, Map, Set, Tuple, ADT)
 //! - Field access, tag extraction
 //! - Effect operations (perform, push/pop handler)
 //! - String operations
+//!
+//! Because a program with a `main` function reaches it through a closure, that
+//! whole shape is currently rejected here rather than executed. `loon run
+//! --native` therefore serves bare top-level expressions today and says so
+//! plainly otherwise.
 //!
 //! Loon functions are compiled with Cranelift's `tail` calling convention so
 //! that `End::Tail` can lower to a real `return_call` (constant stack for
@@ -42,19 +48,14 @@ use super::{BinOp, End, Lit, Op, Reg, UnOp};
 
 use std::collections::HashMap;
 
-// ─── NaN-boxing constants (must match value64.rs) ───────────────────────────
+// ─── NaN-boxing constants ───────────────────────────────────────────────────
+//
+// Imported from `eir::layout`, the one place the encoding is defined.
 
-const QNAN: u64 = 0x7FF8_0000_0000_0000;
-const SIGN: u64 = 0x8000_0000_0000_0000;
-const BASE: u64 = SIGN | QNAN;
-const TAG_INT: u64 = 0x0001_0000_0000_0000;
-const TAG_IMM: u64 = 0x0007_0000_0000_0000;
-const PAYLOAD: u64 = 0x0000_FFFF_FFFF_FFFF;
-
-const VAL_UNIT: u64 = BASE | TAG_IMM;
-const VAL_TRUE: u64 = BASE | TAG_IMM | 1;
-const VAL_FALSE: u64 = BASE | TAG_IMM | 2;
-const VAL_NONE: u64 = BASE | TAG_IMM | 3;
+#[allow(unused_imports)]
+use super::layout::nanbox::{
+    BASE, PAYLOAD, QNAN, SIGN, TAG_IMM, TAG_INT, VAL_FALSE, VAL_NONE, VAL_TRUE, VAL_UNIT,
+};
 
 /// Symbol name of the C-ABI shim that calls the module's entry function.
 const ENTRY_TRAMPOLINE: &str = "loon_entry_trampoline";
@@ -526,6 +527,27 @@ fn compile_function(
 
 // ─── Op compilation ─────────────────────────────────────────────────────────
 
+/// A human-readable name for an operation, used in "not supported yet"
+/// diagnostics so the message names the feature rather than an opcode.
+fn op_description(op: &Op) -> &'static str {
+    match op {
+        Op::Upval(..) => "reading a closure upvalue",
+        Op::Invoke(..) => "calling a closure",
+        Op::Close(..) => "creating a closure",
+        Op::Vec(..) => "building a vector",
+        Op::Map(..) => "building a map",
+        Op::Set(..) => "building a set",
+        Op::Tup(..) => "building a tuple",
+        Op::Adt(..) => "constructing an ADT value",
+        Op::Field(..) => "field access",
+        Op::Tag(..) => "reading a constructor tag",
+        Op::Perform(..) => "performing an effect",
+        Op::PushHandler(..) => "installing an effect handler",
+        _ => "this operation",
+    }
+}
+
+
 #[allow(clippy::too_many_arguments)]
 fn compile_op(
     builder: &mut FunctionBuilder,
@@ -614,22 +636,64 @@ fn compile_op(
             builder.def_var(vars[dst.0 as usize], result);
         }
 
-        // Operations that need heap/runtime support — emit unit placeholder.
-        Op::Upval(dst, _, _)
-        | Op::Invoke(dst, _, _, _)
-        | Op::Close(dst, _, _, _)
+        // Operations that *use* a value this backend cannot represent. They
+        // fail loudly, exactly as `End::TailInvoke` below does and for the
+        // same reason.
+        //
+        // These used to emit a unit placeholder, which made every program with
+        // a `main` function silently evaluate to `()`: the synthetic entry
+        // point reaches `main` through `Close` + `Invoke`, so `loon run
+        // --native` printed nothing and exited 0 while the VM ran the program
+        // correctly. A missing feature that announces itself is a far smaller
+        // problem than a wrong answer that does not.
+        Op::Upval(_, _, _)
+        | Op::Invoke(_, _, _, _)
+        | Op::Field(_, _, _, _)
+        | Op::Tag(_, _, _)
+        | Op::Perform(_, _, _, _, _, _)
+        | Op::PushHandler(_, _, _, _) => {
+            return Err(Error {
+                message: format!(
+                    "{} is not supported by the native backend yet",
+                    op_description(op)
+                ),
+                phase: "native:compile",
+            });
+        }
+
+        // Operations that merely *construct* a value the backend cannot
+        // represent. Lowering emits these freely — every named function gets a
+        // `Close` for its value form, whether or not anything calls it
+        // indirectly — so rejecting them outright would refuse programs that
+        // compile and run correctly today. The placeholder is inert: the only
+        // ways to observe one are the operations above, which do fail.
+        Op::Close(dst, _, _, _)
         | Op::Vec(dst, _, _)
         | Op::Map(dst, _, _)
         | Op::Set(dst, _, _)
-        | Op::Tup(dst, _, _)
-        | Op::Adt(dst, _, _, _)
-        | Op::Field(dst, _, _, _)
-        | Op::Tag(dst, _, _)
-        | Op::Perform(dst, _, _, _, _, _)
-        | Op::PushHandler(dst, _, _, _) => {
-            // TODO: implement via runtime helper calls.
+        | Op::Tup(dst, _, _) => {
             let unit = builder.ins().iconst(I64, VAL_UNIT as i64);
             builder.def_var(vars[dst.0 as usize], unit);
+        }
+
+        Op::Adt(dst, tag, fields, _) => {
+            // The nullary `None` is an immediate singleton on every backend,
+            // never a heap value: bit equality is `None` equality and the
+            // falsy test is a bit test. Emitting the placeholder here instead
+            // would make `None` indistinguishable from `()`.
+            let none_tag = _eir_module
+                .ctors
+                .iter()
+                .rev()
+                .find(|c| c.name == "None")
+                .map(|c| c.tag);
+            let val = if fields.is_empty() && none_tag == Some(*tag) {
+                VAL_NONE
+            } else {
+                VAL_UNIT
+            };
+            let v = builder.ins().iconst(I64, val as i64);
+            builder.def_var(vars[dst.0 as usize], v);
         }
 
         Op::PopHandler(_) => {
@@ -1181,6 +1245,7 @@ mod tests {
             id: FuncId(id),
             name: Some(format!("parity{id}")),
             params: vec![Ty::Int],
+            param_modes: Vec::new(),
             ret: Ty::Bool,
             evidence: vec![],
             captures: vec![],
@@ -1222,6 +1287,7 @@ mod tests {
                     id: FuncId(2),
                     name: Some("__main".to_string()),
                     params: vec![],
+                    param_modes: Vec::new(),
                     ret: Ty::Bool,
                     evidence: vec![],
                     captures: vec![],
@@ -1260,6 +1326,7 @@ mod tests {
                 id: FuncId(0),
                 name: Some("__main".to_string()),
                 params: vec![],
+                param_modes: Vec::new(),
                 ret: Ty::Any,
                 evidence: vec![],
                 captures: vec![],
@@ -1295,6 +1362,62 @@ mod tests {
         let result = eval_native("[% 10 3]").unwrap();
         assert!(result.is_int());
         assert_eq!(result.as_int(), 1);
+    }
+
+    /// A program with a `main` function must never appear to succeed while
+    /// doing nothing.
+    ///
+    /// The synthetic entry point reaches `main` through `Close` + `Invoke`,
+    /// and `Invoke` is not implemented here. That used to yield Unit, so
+    /// `loon run --native` on any real program printed nothing and exited 0
+    /// while the VM ran it correctly — a silent wrong answer produced by a
+    /// shipped flag. It must be an error until closures are implemented, and
+    /// a correct result afterwards; what it must never be again is Unit.
+    #[test]
+    fn a_main_function_is_never_silently_unit() {
+        let src = "[fn main [] 42]";
+        match eval_native(src) {
+            Err(msg) => assert!(
+                msg.contains("closure"),
+                "the error should name the missing feature, got: {msg}"
+            ),
+            Ok(v) => assert_eq!(
+                v.as_int(),
+                42,
+                "if closures are implemented, `main` must actually run"
+            ),
+        }
+    }
+
+    /// The VM and the native backend must never disagree about a value they
+    /// both claim to have computed. Either the native backend produces the
+    /// same bits, or it refuses the program.
+    #[test]
+    fn native_never_disagrees_with_the_vm() {
+        for src in [
+            "42",
+            "[+ 1 2]",
+            "[* [+ 2 3] [- 10 4]]",
+            "true",
+            "false",
+            "[if true 1 2]",
+            "[do [let x 10] [+ x 5]]",
+            "[fn double [x] [* x 2]] [double 21]",
+            "[fn main [] 42]",
+            "[fn main [] [+ 1 2]]",
+        ] {
+            let Ok(native) = eval_native(src) else {
+                continue; // refused outright — the acceptable answer
+            };
+            let vm = crate::eir::vm::eval_eir(src).expect("VM runs it");
+            assert_eq!(
+                native.bits(),
+                vm.value.bits(),
+                "`{src}`: native {:#018x} vs VM {:#018x}",
+                native.bits(),
+                vm.value.bits()
+            );
+        }
     }
 
     #[test]

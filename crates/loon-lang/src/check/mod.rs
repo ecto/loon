@@ -120,6 +120,11 @@ pub struct Checker {
     recur_params: Vec<Vec<Type>>,
     /// Expanded program after macro expansion (available after check_program)
     pub expanded_program: Vec<Expr>,
+    /// Per-parameter ownership modes for each named function, inferred during
+    /// `check_program`. Rust makes you write these down as `&T` / `&mut T`;
+    /// Loon infers them, and lowering carries them into the IR so backends can
+    /// tell a read-only argument from one that is written through.
+    pub fn_param_modes: HashMap<String, Vec<crate::check::ownership::ParamMode>>,
 }
 
 /// Split a param list at a `&` marker: returns the fixed params and the
@@ -145,6 +150,7 @@ impl Checker {
             subst: Subst::new(),
             env: TypeEnv::new(),
             errors: Vec::new(),
+            fn_param_modes: HashMap::new(),
             constructors: HashMap::new(),
             type_constructors: HashMap::new(),
             type_of: HashMap::new(),
@@ -5746,6 +5752,10 @@ impl Checker {
 
         self.expanded_program = final_exprs;
         self.check_trait_constraints();
+        // Ownership modes ride along with the checker so lowering can see them.
+        // This is a syntactic pass over the expanded program; its diagnostics
+        // are the dedicated ownership pass's job, not ours.
+        self.fn_param_modes = ownership::infer_param_modes(&self.expanded_program);
         std::mem::take(&mut self.errors)
     }
 
