@@ -4,6 +4,7 @@
 //! Every backend (Register VM, WASM, Cranelift) lowers from this IR.
 
 pub mod backend;
+pub mod image;
 pub mod lower;
 #[cfg(feature = "native")]
 pub mod native;

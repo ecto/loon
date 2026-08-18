@@ -16,6 +16,7 @@ loon/
 ├── crates/
 │   ├── loon-lang/        # Core: parser, type checker, interpreter
 │   ├── loon-cli/         # CLI: run, repl, fmt, explain
+│   ├── loon-kernel/      # RISC-V unikernel: Loon as the kernel (own workspace)
 │   ├── loon-lsp/         # Language server protocol
 │   └── loon-wasm/        # WASM bindings for browser
 ├── web/                  # Website (written in Loon, uses .loon files)
@@ -41,7 +42,15 @@ cargo test --workspace          # Run all tests
 cargo run -p loon-cli -- run samples/hello.oo   # Run a sample
 cargo run -p loon-cli -- fmt samples/           # Format files
 cargo run -p loon-cli -- new test-proj          # Creates pkg.oo + src/main.oo
+cargo run -p loon-cli -- image prog.oo         # Compile to a bare-metal boot image
+
+make -C crates/loon-kernel run                 # Boot Loon under QEMU (needs qemu + riscv64gc target)
+make -C crates/loon-kernel check               # Boot it and diff against the host
 ```
+
+`crates/loon-kernel` is deliberately outside the root workspace — it only
+builds for `riscv64gc-unknown-none-elf` and must not be swept into
+`cargo build --workspace`.
 
 ## Key Patterns
 

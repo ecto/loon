@@ -1,0 +1,79 @@
+; The unikernel's init program.
+;
+; Nothing here knows it is running on bare metal. It performs effects; what
+; they mean is decided by whoever handles them, and on this machine the
+; outermost handler is a UART driver instead of a syscall. That is the whole
+; claim of the design, so this file is deliberately ordinary Loon:
+;
+;   loon run    crates/loon-kernel/boot/init.oo     ; on the host
+;   make -C crates/loon-kernel run                  ; on the machine
+;
+; Both must print the same thing.
+
+[effect Console
+  [write [String] Unit]]
+
+; The driver. On the host `print` is a libc write; in the unikernel the same
+; builtin lands on the 16550 at 0x10000000. Neither is visible from here.
+[fn console [thunk]
+  [handle
+    [thunk]
+    [Console.write s]
+    [do [print s] [resume []]]]]
+
+; Observability as interposition: prefix each line, then forward the write
+; to the next handler out. This only terminates because handlers are deep —
+; a clause that re-performs its own effect escapes its own handler.
+[fn traced [thunk]
+  [handle
+    [thunk]
+    [Console.write s]
+    [resume [Console.write [str "[log] " s]]]]]
+
+[fn line [s] [Console.write [str s "\n"]]]
+
+; A handler that never resumes: the clause's value becomes the value of the
+; whole `handle`, and the rest of the body is dropped on the floor. Aborting
+; is the same mechanism as resuming, minus one call.
+[effect Halt
+  [stop [String] Unit]]
+
+[fn guarded [thunk]
+  [handle
+    [thunk]
+    [Halt.stop why]
+    [str "aborted: " why]]]
+
+; A non-tail resume: work happens after the continuation comes back, so the
+; clause frame has to survive the resumed segment.
+[effect Ask
+  [num [] Int]]
+
+[fn doubling [thunk]
+  [handle
+    [thunk]
+    [Ask.num]
+    [+ 1000 [resume 7]]]]
+
+[fn fib [n]
+  [if [< n 2] n [+ [fib [- n 1]] [fib [- n 2]]]]]
+
+[fn main []
+  [console
+    [fn []
+      [line "hello from loon, running as the kernel"]
+
+      ; Pure compute: recursion, closures, the sequence intrinsics.
+      [line [str "fib 0..14  " [map [range 0 15] fib]]]
+      [let evens [map [range 1 11] [fn [n] [* 2 n]]]]
+      [line [str "evens<=20  " evens]]
+      [line [str "their sum  " [fold evens 0 [fn [a b] [+ a b]]]]]
+
+      ; Interposition: the inner write is handled twice on the way out.
+      [traced [fn [] [line "this write passed through a wrapping handler"]]]
+
+      ; Effects that abort, and effects that resume in non-tail position.
+      [line [str "abort     " [guarded [fn [] [do [Halt.stop "on purpose"] "unreachable"]]]]]
+      [line [str "non-tail  " [doubling [fn [] [* 2 [Ask.num]]]]]]
+
+      [line "init done"]]]]

@@ -1,0 +1,19 @@
+[package]
+name = "loon-kernel"
+version = "0.7.0"
+edition = "2021"
+description = "Loon as a unikernel: the EIR VM on bare metal, drivers as effect handlers."
+
+# Deliberately outside the root workspace: this crate only builds for a
+# bare-metal target and must not be swept into `cargo build --workspace`.
+[workspace]
+
+[dependencies]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
