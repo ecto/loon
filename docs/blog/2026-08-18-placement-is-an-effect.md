@@ -160,7 +160,13 @@ Every accounting number, no execution. And strace-for-GPU is the same shape as s
 
 Metal on this laptop, today. Vulkan on a Linux box and DX12 on Windows are the same code path through wgpu, and I have not run either, so take them as "should" rather than "does."
 
-The one I want to be careful about is the browser. WGSL is WebGPU's shading language, and every kernel we emit is validated by naga — the same front end a browser uses — so the *shader* half is genuinely portable, and PTX and AMDGCN cannot go there at all. But Loon's browser build still runs the old tree-walking interpreter, not the EIR VM, so you cannot actually run one of these programs in a tab yet. That's a pre-existing gap that has nothing to do with placement and everything to do with which interpreter the wasm build embeds. I'm noting the architecture points at a target the alternatives can't reach; I'm not claiming to have arrived.
+The one I want to be careful about is the browser. WGSL is WebGPU's shading language, and every kernel we emit is validated by naga — the same front end a browser uses — so the *shader* half is genuinely portable, and PTX and AMDGCN cannot go there at all. The whole placement stack also compiles for `wasm32-unknown-unknown`:
+
+```
+cargo check -p loon-lang --target wasm32-unknown-unknown
+```
+
+But you still cannot run one of these programs in a tab, because Loon's browser build embeds the old tree-walking interpreter rather than the EIR VM. That gap predates this work and has nothing to do with placement — it is a TODO in `crates/loon-wasm` about the DOM bridge. So: the code is ready to go there, the shaders are known-good there, and nobody has moved the runtime yet. I'm noting the architecture points at a target the alternatives can't reach; I'm not claiming to have arrived.
 
 Every kernel in the repo is parsed and type-checked by naga in CI, on machines with no GPU. That's the automated cross-target validation the paper says is still missing — they found a host/device divergence in slice lowering by hand, `(ptr, len)` on two targets and `[i64; 2]` on a third. We have the same class of hazard: NaN-boxing constants that used to be copy-pasted into three backends under a comment asking the next person to keep them in sync. They now live in one file, and a conformance test compiles the same literals on every backend and compares raw bits.
 
