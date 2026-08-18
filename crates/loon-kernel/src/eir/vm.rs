@@ -25,6 +25,32 @@ pub trait Host {
     fn ticks(&mut self) -> i64;
 }
 
+/// Operands read out of registers for one instruction.
+///
+/// They die before the next op is dispatched, so heap-allocating a vector per
+/// op bought nothing; this keeps the common case off the heap entirely and
+/// spills for the rare wide call. Note this did *not* show up as a speedup
+/// (see README) — the value is a near-constant-memory interpreter, not
+/// throughput. The inline capacity is kept small deliberately: it is copied
+/// on every read, so widening it trades one cost for another.
+pub struct Operands {
+    inline: [Val; INLINE_OPERANDS],
+    len: usize,
+    spill: Vec<Val>,
+}
+
+const INLINE_OPERANDS: usize = 4;
+
+impl Operands {
+    fn as_slice(&self) -> &[Val] {
+        if self.spill.is_empty() {
+            &self.inline[..self.len]
+        } else {
+            &self.spill
+        }
+    }
+}
+
 pub struct Frame {
     func: FuncId,
     block: BlockId,
@@ -77,7 +103,22 @@ pub struct Vm<'m, H: Host> {
     captures: Rc<Vec<Val>>,
     /// Bounds runaway programs; there is no watchdog timer to save us yet.
     fuel: u64,
+    /// Dispatch-loop iterations, for benchmarking. One per instruction or
+    /// terminator, so it is a real op count rather than a wall-clock proxy.
+    steps: u64,
+    /// One shared empty capture list. A plain function has no captures, so
+    /// `Rc::new(Vec::new())` at every call site would allocate an RcBox per
+    /// call to hold nothing; cloning this is a refcount bump instead.
+    no_caps: Rc<Vec<Val>>,
+    /// Retired register files, kept for the next call. Frames are strictly
+    /// stack-shaped, so a returning call almost always hands back a buffer
+    /// the next one can take.
+    reg_pool: Vec<Vec<Val>>,
 }
+
+/// How many register files to keep parked. Deep recursion churns through
+/// these; past a few hundred the memory is better left to the heap.
+const REG_POOL_MAX: usize = 256;
 
 pub type VmResult<T> = Result<T, String>;
 
@@ -95,7 +136,15 @@ impl<'m, H: Host> Vm<'m, H> {
             m,
             host,
             fuel: u64::MAX,
+            steps: 0,
+            no_caps: Rc::new(Vec::new()),
+            reg_pool: Vec::new(),
         }
+    }
+
+    /// Instructions and terminators executed so far.
+    pub fn steps(&self) -> u64 {
+        self.steps
     }
 
     pub fn with_fuel(mut self, fuel: u64) -> Self {
@@ -117,7 +166,31 @@ impl<'m, H: Host> Vm<'m, H> {
         self.regs[i] = v;
     }
 
-    fn read(&self, rs: &[Reg]) -> Vec<Val> {
+    /// Read operands without touching the heap unless there are many.
+    fn read(&self, rs: &[Reg]) -> Operands {
+        const UNIT: Val = Val::Unit;
+        if rs.len() <= INLINE_OPERANDS {
+            let mut inline = [UNIT; INLINE_OPERANDS];
+            for (slot, r) in inline.iter_mut().zip(rs) {
+                *slot = self.r(*r);
+            }
+            Operands {
+                inline,
+                len: rs.len(),
+                spill: Vec::new(),
+            }
+        } else {
+            Operands {
+                inline: [UNIT; INLINE_OPERANDS],
+                len: 0,
+                spill: rs.iter().map(|r| self.r(*r)).collect(),
+            }
+        }
+    }
+
+    /// Read operands into an owned vector, for ops that build a value out of
+    /// them and would have to copy anyway.
+    fn read_owned(&self, rs: &[Reg]) -> Vec<Val> {
         rs.iter().map(|r| self.r(*r)).collect()
     }
 
@@ -145,6 +218,7 @@ impl<'m, H: Host> Vm<'m, H> {
                 return Err("out of fuel: the program did not terminate".to_string());
             }
             self.fuel -= 1;
+            self.steps += 1;
 
             // Borrow the code out of the module reference, not out of `self`:
             // `'m` outlives this loop, so ops stay borrowed while `self` is
@@ -178,7 +252,7 @@ impl<'m, H: Host> Vm<'m, H> {
                 }
                 End::Jmp(b, args) => {
                     let vals = self.read(args);
-                    self.jump(*b, &vals)?;
+                    self.jump(*b, vals.as_slice())?;
                 }
                 End::Br(c, t, e) => {
                     let target = if self.r(*c).truthy() { *t } else { *e };
@@ -197,21 +271,23 @@ impl<'m, H: Host> Vm<'m, H> {
                 }
                 End::Recur(args) => {
                     let vals = self.read(args);
-                    self.jump(BlockId(0), &vals)?;
+                    self.jump(BlockId(0), vals.as_slice())?;
                 }
                 End::Tail(callee, args) => {
                     let vals = self.read(args);
-                    self.enter(*callee, &vals, Rc::new(Vec::new()))?;
+                    let caps = self.no_caps.clone();
+                    self.enter(*callee, vals.as_slice(), caps)?;
                 }
                 End::TailInvoke(f, args) => {
                     let callee = self.r(*f);
                     let vals = self.read(args);
+                    let vals = vals.as_slice();
                     // A tail call must not push a frame — that is the whole
                     // promise — so it cannot reuse `invoke`'s path.
                     match callee {
-                        Val::Closure(fid, caps) => self.enter(fid, &vals, caps)?,
+                        Val::Closure(fid, caps) => self.enter(fid, vals, caps)?,
                         Val::Cont(k) => {
-                            let v = vals.into_iter().next().unwrap_or(Val::Unit);
+                            let v = vals.first().cloned().unwrap_or(Val::Unit);
                             self.resume(&k, v)?;
                         }
                         other => {
@@ -231,14 +307,24 @@ impl<'m, H: Host> Vm<'m, H> {
 
     /// Jump within the current function, binding the target's block params.
     fn jump(&mut self, b: BlockId, args: &[Val]) -> VmResult<()> {
-        let f = self.func_def(self.func)?;
+        // Borrow the param list out of the module (lifetime `'m`), not out
+        // of `self` — cloning it here cost an allocation on every jump, which
+        // for a tail-recursive loop is one per iteration.
+        let m = self.m;
+        let f = m
+            .funcs
+            .get(self.func.0 as usize)
+            .ok_or_else(|| alloc::format!("bad function id {}", self.func.0))?;
         let target = f
             .blocks
             .get(b.0 as usize)
             .ok_or_else(|| alloc::format!("bad block id {}", b.0))?;
-        let params = target.params.clone();
-        for (p, v) in params.iter().zip(args.iter()) {
-            self.w(*p, v.clone());
+        for (p, v) in target.params.iter().zip(args.iter()) {
+            let i = p.0 as usize;
+            if i >= self.regs.len() {
+                self.regs.resize(i + 1, Val::Unit);
+            }
+            self.regs[i] = v.clone();
         }
         self.block = b;
         self.ip = 0;
@@ -255,7 +341,17 @@ impl<'m, H: Host> Vm<'m, H> {
         // lowering numbers parameters first and the entry block inherits
         // them rather than being jumped to with operands.
         let n = (f.regs as usize).max(args.len());
-        let mut regs = vec![Val::Unit; n];
+        // Reclaim the outgoing register file first. A tail call replaces the
+        // frame rather than returning through it, so without this a
+        // tail-recursive loop allocates a fresh one every iteration and the
+        // pool never sees a buffer. (On the `call` path this is the empty
+        // vector left behind by the frame push, which costs nothing.)
+        let dead = core::mem::take(&mut self.regs);
+        self.recycle(dead);
+
+        let mut regs = self.reg_pool.pop().unwrap_or_default();
+        regs.clear();
+        regs.resize(n, Val::Unit);
         for (i, v) in args.iter().enumerate() {
             regs[i] = v.clone();
         }
@@ -280,7 +376,7 @@ impl<'m, H: Host> Vm<'m, H> {
             block: self.block,
             ip: self.ip,
             regs: core::mem::take(&mut self.regs),
-            captures: core::mem::replace(&mut self.captures, Rc::new(Vec::new())),
+            captures: core::mem::replace(&mut self.captures, self.no_caps.clone()),
             ret_reg,
         });
         if self.frames.len() > 8192 {
@@ -297,7 +393,9 @@ impl<'m, H: Host> Vm<'m, H> {
         self.func = fr.func;
         self.block = fr.block;
         self.ip = fr.ip;
-        self.regs = fr.regs;
+        // The callee's register file is dead now; park it for the next call.
+        let dead = core::mem::replace(&mut self.regs, fr.regs);
+        self.recycle(dead);
         self.captures = fr.captures;
         if fr.ret_reg != DISCARD {
             self.w(Reg(fr.ret_reg), v);
@@ -307,6 +405,18 @@ impl<'m, H: Host> Vm<'m, H> {
         // later handle for the same effect.
         self.prune_ephemeral();
         Ok(())
+    }
+
+    /// Park a dead register file for reuse, dropping its values so they do
+    /// not stay alive in the pool.
+    fn recycle(&mut self, mut regs: Vec<Val>) {
+        // A zero-capacity vector is not a buffer — parking one would push a
+        // real buffer out of the pool and hand the next call something it
+        // has to grow from nothing.
+        if regs.capacity() > 0 && self.reg_pool.len() < REG_POOL_MAX {
+            regs.clear();
+            self.reg_pool.push(regs);
+        }
     }
 
     /// Call a Loon value from Rust (a builtin taking a function, say) and
@@ -370,15 +480,16 @@ impl<'m, H: Host> Vm<'m, H> {
             }
             Op::Call(d, f, args) => {
                 let vals = self.read(args);
-                self.call(*f, &vals, d.0, Rc::new(Vec::new()))?;
+                let caps = self.no_caps.clone();
+                self.call(*f, vals.as_slice(), d.0, caps)?;
             }
             Op::Invoke(d, f, args) => {
                 let callee = self.r(*f);
                 let vals = self.read(args);
                 match callee {
-                    Val::Closure(fid, caps) => self.call(fid, &vals, d.0, caps)?,
+                    Val::Closure(fid, caps) => self.call(fid, vals.as_slice(), d.0, caps)?,
                     Val::Cont(k) => {
-                        let v = vals.into_iter().next().unwrap_or(Val::Unit);
+                        let v = vals.as_slice().first().cloned().unwrap_or(Val::Unit);
                         self.resume_at(&k, v, Some(d.0))?;
                     }
                     other => {
@@ -387,20 +498,20 @@ impl<'m, H: Host> Vm<'m, H> {
                 }
             }
             Op::Close(d, f, caps) => {
-                let vals = self.read(caps);
+                let vals = self.read_owned(caps);
                 self.w(*d, Val::Closure(*f, Rc::new(vals)));
             }
             Op::Vec(d, rs) => {
-                let vals = self.read(rs);
+                let vals = self.read_owned(rs);
                 self.w(*d, Val::Vec(Rc::new(vals)));
             }
             Op::Tup(d, rs) => {
-                let vals = self.read(rs);
+                let vals = self.read_owned(rs);
                 self.w(*d, Val::Tup(Rc::new(vals)));
             }
             Op::Set(d, rs) => {
                 let mut vals: Vec<Val> = Vec::new();
-                for v in self.read(rs) {
+                for v in self.read_owned(rs) {
                     if !vals.contains(&v) {
                         vals.push(v);
                     }
@@ -419,7 +530,7 @@ impl<'m, H: Host> Vm<'m, H> {
                 self.w(*d, Val::Map(Rc::new(out)));
             }
             Op::Adt(d, tag, rs) => {
-                let vals = self.read(rs);
+                let vals = self.read_owned(rs);
                 self.w(*d, Val::Adt(*tag, Rc::new(vals)));
             }
             Op::Tag(d, a) => {
@@ -436,7 +547,7 @@ impl<'m, H: Host> Vm<'m, H> {
             }
             Op::Builtin(d, tag, args) => {
                 let vals = self.read(args);
-                let v = self.builtin(*tag, &vals)?;
+                let v = self.builtin(*tag, vals.as_slice())?;
                 self.w(*d, v);
             }
             Op::PushHandler(h, eff, o) => {
@@ -463,7 +574,7 @@ impl<'m, H: Host> Vm<'m, H> {
             }
             Op::Perform(d, eff, o, args) => {
                 let vals = self.read(args);
-                self.perform(*d, *eff, *o, vals)?;
+                self.perform(*d, *eff, *o, vals.as_slice())?;
             }
         }
         Ok(())
@@ -521,7 +632,7 @@ impl<'m, H: Host> Vm<'m, H> {
     /// Perform an effect: find the innermost handler, capture everything
     /// between here and its prompt as a continuation, and run the clause at
     /// the prompt with `resume` bound to that continuation.
-    fn perform(&mut self, dst: Reg, eff: StringId, o: StringId, args: Vec<Val>) -> VmResult<()> {
+    fn perform(&mut self, dst: Reg, eff: StringId, o: StringId, args: &[Val]) -> VmResult<()> {
         let found = self
             .handlers
             .iter()
@@ -531,7 +642,7 @@ impl<'m, H: Host> Vm<'m, H> {
 
         let Some((hval, prompt_depth)) = found else {
             // Nothing in Loon handles this, so it falls through to hardware.
-            let v = self.hardware(eff, o, &args)?;
+            let v = self.hardware(eff, o, args)?;
             self.w(dst, v);
             return Ok(());
         };
@@ -558,7 +669,7 @@ impl<'m, H: Host> Vm<'m, H> {
             block: self.block,
             ip: self.ip,
             regs: core::mem::take(&mut self.regs),
-            captures: core::mem::replace(&mut self.captures, Rc::new(Vec::new())),
+            captures: core::mem::replace(&mut self.captures, self.no_caps.clone()),
             perform_dst: dst.0,
             prompt_handlers,
         };
@@ -581,7 +692,7 @@ impl<'m, H: Host> Vm<'m, H> {
         match hval {
             Val::Closure(fid, caps) => {
                 let mut call_args = vec![k];
-                call_args.extend(args);
+                call_args.extend_from_slice(args);
                 self.call(fid, &call_args, handle_ret, caps)
             }
             other => Err(alloc::format!(
@@ -613,7 +724,7 @@ impl<'m, H: Host> Vm<'m, H> {
                 block: self.block,
                 ip: self.ip,
                 regs: core::mem::take(&mut self.regs),
-                captures: core::mem::replace(&mut self.captures, Rc::new(Vec::new())),
+                captures: core::mem::replace(&mut self.captures, self.no_caps.clone()),
                 ret_reg: dst,
             });
         }

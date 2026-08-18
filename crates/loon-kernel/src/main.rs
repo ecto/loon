@@ -73,6 +73,16 @@ pub extern "C" fn kmain(hart: usize, dtb: usize) -> ! {
     println!("init image {} bytes", image.len());
     println!();
 
+    for (name, img) in [
+        ("loop ", include_bytes!(env!("LOON_LOOP_IMAGE")).as_slice()),
+        ("bench", include_bytes!(env!("LOON_BENCH_IMAGE")).as_slice()),
+    ] {
+        if let Err(e) = run_bench_named(name, img) {
+            println!("{name} failed: {e}");
+        }
+    }
+    println!();
+
     let t0 = now();
     match run_init(image) {
         Ok(()) => {
@@ -127,6 +137,29 @@ fn run_init(image: &[u8]) -> Result<(), alloc::string::String> {
     let mut machine = Machine;
     let mut vm = eir::vm::Vm::new(&module, &mut machine).with_fuel(500_000_000);
     vm.run()?;
+    Ok(())
+}
+
+/// Time the interpreter on an IO-free workload and report ns per dispatched
+/// op. Steps come from the VM's own loop counter, so this measures the
+/// interpreter rather than the console.
+fn run_bench_named(name: &str, image: &[u8]) -> Result<(), alloc::string::String> {
+    let module = eir::decode::decode(image)?;
+    let mut machine = Machine;
+    let mut vm = eir::vm::Vm::new(&module, &mut machine).with_fuel(2_000_000_000);
+
+    let t = now();
+    let a0 = HEAP.allocs();
+    vm.run()?;
+    let us = micros_since(t);
+    let allocs = HEAP.allocs() - a0;
+    let steps = vm.steps();
+
+    println!(
+        "{name}: {steps} ops in {us} us = {} ns/op, {allocs} allocs = {} per 100 ops",
+        (us * 1000).checked_div(steps).unwrap_or(0),
+        (allocs * 100).checked_div(steps).unwrap_or(0),
+    );
     Ok(())
 }
 
