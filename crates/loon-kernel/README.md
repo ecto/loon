@@ -8,9 +8,11 @@ the outermost handler is a UART driver rather than a call into Linux.
 brew install qemu
 rustup target add riscv64gc-unknown-none-elf
 
-make run      # boot it
-make host     # run the same program on the host
-make check    # boot it and diff the two
+make run         # boot it (serial console)
+make gui         # boot it with a display — the kernel paints a framebuffer
+make screenshot  # boot headless, grab the framebuffer over QMP as a PNG
+make host        # run the same program on the host
+make check       # boot it and diff the two
 ```
 
 ## What is here
@@ -22,9 +24,13 @@ make check    # boot it and diff the two
 | `src/mmio.rs` | the one place that touches device registers |
 | `src/heap.rs` | first-fit free-list allocator over RAM above the image |
 | `src/sbi.rs` | the slice of SBI we need (power off) |
+| `src/fwcfg.rs` | QEMU fw_cfg, via its DMA interface — used to find and configure the ramfb |
+| `src/ramfb.rs` | the display: a linear XRGB framebuffer in RAM that QEMU scans out |
+| `tools/screenshot.py` | headless boot + QMP `screendump` → PNG |
 | `src/eir/` | boot-image decoder and the EIR interpreter |
 | `boot/init.oo` | the init program — ordinary Loon |
 | `boot/mandel.oo` | a Mandelbrot set, because a kernel that boots should get to do one gratuitous thing |
+| `boot/gui.oo` | first light: a Loon program painting the framebuffer through `Fb` effects |
 
 The host toolchain is not in this crate's build graph. `build.rs` shells out
 to `loon image`, which compiles `boot/init.oo` to a boot image; the kernel
@@ -88,6 +94,22 @@ was not costing measurable time.
 What remains is roughly 500 ns/op against ~7 ns/op for a minimal native
 dispatch loop under the same emulator. That gap is real and unexplained;
 chasing it needs an idle machine and a profiler, not more guessing.
+
+## The display
+
+`Fb` is an effect (`width`, `height`, `clear`, `fill-rect`, `present`) that
+falls through the Loon handler stack to the ramfb driver, exactly as
+`Console.write` falls through to the UART. `boot/gui.oo` runs only when the
+machine was booted with `-device ramfb`; without one, `Fb` ops raise a loud
+error naming the missing device, and the headless boot never invokes them.
+
+Raster stays in Rust behind rectangle-sized primitives on purpose: at the
+interpreter's current speed, per-pixel Loon would be ~150 ms per 640×480
+frame. What lives in Loon is the *what*, not the *how*.
+
+Not yet: text (needs an embedded bitmap font), input (virtio-input — the next
+real piece of work), a host-side `Fb` handler so `make check` can diff the
+GUI the way it diffs the console, and any notion of time in the event loop.
 
 ## Known limits
 
