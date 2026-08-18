@@ -361,3 +361,105 @@ fn asking_for_a_gpu_that_cannot_run_the_kernel_says_so() {
         Ok((r, _)) => panic!("expected a refusal, got output {:?}", r.output),
     }
 }
+
+// ── Launches pipeline; only a read synchronizes ─────────────────────────────
+
+#[test]
+fn launches_do_not_block_on_each_other() {
+    // A kernel launch submits to the queue and returns. Nothing waits for the
+    // GPU until the host asks for data — which, since `Place.read` is the only
+    // way to ask, means a handler that defers reads is also deferring every
+    // synchronization point in the program.
+    //
+    // The observable consequence: N launches under a residency policy cost far
+    // less than N times a single blocking round trip. If every launch waited,
+    // the two would be equal.
+    if Gpu::open().is_err() {
+        println!("SKIPPED — no GPU on this machine");
+        return;
+    }
+
+    let chain = |reps: usize| {
+        let runs = (0..reps)
+            .map(|_| "[Place.run step 4096 #[b]]".to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            "[kernel step [i b] [put b i [+ 1.0 [at b i]]]] \
+             [fn work [] [let mut b [buf-zeros 4096]] {runs} [Place.read b]] \
+             [fn resident [thunk] \
+               [handle [thunk] \
+                 [Place.run k n args] [do [Place.pin args] [resume [Place.run k n args]]] \
+                 [Place.read b]       [resume [Place.read b]]]] \
+             [fn main [] [let _ [resident work]] []]"
+        )
+    };
+
+    let time = |src: &str| {
+        let dir = std::env::current_dir().expect("cwd");
+        // Warm: the first run pays for adapter discovery and shader compilation.
+        let _ = loon_lang::eir::vm::eval_eir_placed(src, &dir, loon_lang::eir::place::Mode::Gpu);
+        let start = std::time::Instant::now();
+        loon_lang::eir::vm::eval_eir_placed(src, &dir, loon_lang::eir::place::Mode::Gpu)
+            .expect("runs");
+        start.elapsed()
+    };
+
+    let one = time(&chain(1));
+    let many = time(&chain(64));
+
+    println!("1 launch: {one:?}, 64 launches: {many:?}");
+    assert!(
+        many < one * 32,
+        "64 launches took {many:?} against {one:?} for one — that is the shape of \
+         every launch waiting for the previous one"
+    );
+}
+
+#[test]
+fn a_read_is_what_synchronizes() {
+    // Reading between every launch forfeits the pipelining, which is precisely
+    // why `Place.read` being an operation matters: it is the thing a policy
+    // gets to move.
+    if Gpu::open().is_err() {
+        println!("SKIPPED — no GPU on this machine");
+        return;
+    }
+    let dir = std::env::current_dir().expect("cwd");
+
+    let deferred = "[kernel step [i b] [put b i [+ 1.0 [at b i]]]] \
+         [fn work [] [let mut b [buf-zeros 1024]] \
+           [Place.run step 1024 #[b]] [Place.run step 1024 #[b]] \
+           [Place.run step 1024 #[b]] [Place.run step 1024 #[b]] \
+           [Place.read b]] \
+         [fn resident [thunk] \
+           [handle [thunk] \
+             [Place.run k n args] [do [Place.pin args] [resume [Place.run k n args]]] \
+             [Place.read b]       [resume [Place.read b]]]] \
+         [fn main [] [IO.println [sum [resident work]]]]";
+
+    let eager = "[kernel step [i b] [put b i [+ 1.0 [at b i]]]] \
+         [fn work [] [let mut b [buf-zeros 1024]] \
+           [Place.run step 1024 #[b]] [let _ [Place.read b]] \
+           [Place.run step 1024 #[b]] [let _ [Place.read b]] \
+           [Place.run step 1024 #[b]] [let _ [Place.read b]] \
+           [Place.run step 1024 #[b]] \
+           [Place.read b]] \
+         [fn resident [thunk] \
+           [handle [thunk] \
+             [Place.run k n args] [do [Place.pin args] [resume [Place.run k n args]]] \
+             [Place.read b]       [resume [Place.read b]]]] \
+         [fn main [] [IO.println [sum [resident work]]]]";
+
+    let (a, stats_a) =
+        loon_lang::eir::vm::eval_eir_placed(deferred, &dir, loon_lang::eir::place::Mode::Gpu)
+            .expect("runs");
+    let (b, stats_b) =
+        loon_lang::eir::vm::eval_eir_placed(eager, &dir, loon_lang::eir::place::Mode::Gpu)
+            .expect("runs");
+
+    // Same answer; the reads changed only when data moved, never what it was.
+    assert_eq!(a.output, b.output);
+    assert_eq!(stats_a.downloads, 1, "one read, one download");
+    assert_eq!(stats_b.downloads, 4, "four reads, four downloads");
+}

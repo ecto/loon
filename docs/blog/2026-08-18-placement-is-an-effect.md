@@ -78,9 +78,9 @@ On an actual GPU — this is an M4 Max, through Metal, via wgpu — the wall clo
 
 | launches | no policy | place/resident | speedup |
 |---------:|----------:|---------------:|--------:|
-| 8 | 28.9 ms | 9.3 ms | 3.1x |
-| 32 | 93.1 ms | 15.4 ms | 6.0x |
-| 128 | 356.7 ms | 18.3 ms | 19.5x |
+| 8 | 29.3 ms | 8.4 ms | 3.5x |
+| 32 | 94.8 ms | 11.2 ms | 8.4x |
+| 128 | 358.8 ms | 18.1 ms | 19.9x |
 
 The gap grows with the chain, which is exactly the paper's curve. The difference is where the fix lives. Theirs is an LLVM pass and a type. Mine is a `handle` form you can read in one sitting, change without rebuilding a compiler, and — this is the part I keep coming back to — *replace with a different one* when your program has different needs.
 
@@ -158,11 +158,31 @@ Every accounting number, no execution. And strace-for-GPU is the same shape as s
 
 ## Where it runs
 
-Metal on this laptop. Vulkan on a Linux box. DX12 on Windows. And WebGPU in a browser tab, which is a target you cannot reach at all if you're emitting PTX and AMDGCN. That last one isn't cleverness; it's what you get for free by picking a portable shading language instead of a vendor's, and it's the one place where I think the architecture is straightforwardly better rather than differently-shaped.
+Metal on this laptop, today. Vulkan on a Linux box and DX12 on Windows are the same code path through wgpu, and I have not run either, so take them as "should" rather than "does."
+
+The one I want to be careful about is the browser. WGSL is WebGPU's shading language, and every kernel we emit is validated by naga — the same front end a browser uses — so the *shader* half is genuinely portable, and PTX and AMDGCN cannot go there at all. But Loon's browser build still runs the old tree-walking interpreter, not the EIR VM, so you cannot actually run one of these programs in a tab yet. That's a pre-existing gap that has nothing to do with placement and everything to do with which interpreter the wasm build embeds. I'm noting the architecture points at a target the alternatives can't reach; I'm not claiming to have arrived.
 
 Every kernel in the repo is parsed and type-checked by naga in CI, on machines with no GPU. That's the automated cross-target validation the paper says is still missing — they found a host/device divergence in slice lowering by hand, `(ptr, len)` on two targets and `[i64; 2]` on a third. We have the same class of hazard: NaN-boxing constants that used to be copy-pasted into three backends under a comment asking the next person to keep them in sync. They now live in one file, and a conformance test compiles the same literals on every backend and compares raw bits.
 
 That test found three real divergences the first time it ran, including one where `loon run --native` silently returned `()` for any program with a `main` function. Which is a good argument for writing the test.
+
+## The row I didn't expect
+
+Once kernels stopped going through the interpreter — there's a typed executor now that runs the numeric subset against raw slices — I added `--place par`, which splits the index range across cores. Each thread gets a disjoint piece of the output from `split_at_mut`, so "threads touch disjoint elements" isn't promised by an `unsafe impl`; it's what the borrow checker hands back.
+
+Then I ran the same kernel four ways:
+
+| elements | cpu | par | gpu |
+|---------:|----:|----:|----:|
+| 1,024 | 447 µs | 566 µs | 10.3 ms |
+| 262,144 | 8.9 ms | 3.3 ms | 12.4 ms |
+| 1,048,576 | 36.4 ms | 11.4 ms | 19.2 ms |
+
+Every core beats the GPU at a million elements. This machine has a lot of fast ones, and a launch pays submission and transfer before it computes anything.
+
+I like this result more than I'd like a win. Where the crossover sits is a property of the machine, not of the program — and I found it by changing one word on a command line, because the program genuinely does not know where it runs. If placement were a compile-time decision I'd have had to rebuild something to ask the question, and I probably wouldn't have bothered.
+
+One more thing falls out of making `Place.read` the only way to get data back: launches don't block on each other. A dispatch submits and returns; nothing waits until the host asks. Sixty-four launches take 19.9 ms against 6.9 ms for one — if each waited, that would be closer to 440. The paper prototypes asynchronous transfers as a separate optimization. Here it's just what happens when the synchronization point is a thing the program says out loud.
 
 ## What I'm not claiming
 
