@@ -10,11 +10,9 @@
 ; A two-kernel chain. Chains are where placement policy earns its keep: the
 ; intermediate never needs to come back to the host, and only a handler is in
 ; a position to know that.
-[kernel scale [i s src dst]
-  [put dst i [* s [at src i]]]]
+[kernel scale [i s src dst] [put dst i [* s [at src i]]]]
 
-[kernel offset [i d buf]
-  [put buf i [+ d [at buf i]]]]
+[kernel offset [i d buf] [put buf i [+ d [at buf i]]]]
 
 [fn work []
   [let src [buf #[1 2 3 4 5 6 7 8]]]
@@ -26,14 +24,14 @@
 [fn main []
   [IO.println "no handler — it runs right here:"]
   [IO.println [str "  " [work]]]
-
+  
   [IO.println "traced — every launch and sync is visible:"]
   [IO.println [str "  " [place/trace work]]]
-
+  
   [IO.println "dry run — accounted for, nothing executed:"]
   [IO.println [str "  " [place/dry-run work]]]
-
+  
   [IO.println "resident — buffers stay put between launches:"]
   [IO.println [str "  " [place/resident work]]]
-
+  
   [IO.println [str "totals: " [Place.stats]]]]

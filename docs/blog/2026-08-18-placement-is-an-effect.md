@@ -1,0 +1,189 @@
+# Placement Is an Effect
+
+*August 2026*
+
+Last month I wrote that a syscall is an effect, and so the kernel is just the outermost handler. This month someone handed me a paper about running Rust on GPUs, and I spent a week discovering that the same sentence has another half.
+
+The paper is [GPU Offload in Rust: Portable, Safe, and Fast](https://arxiv.org/abs/2608.13759), by Drehwald, Domínguez, Sala, Aspuru-Guzik, and Doerfert. It is good work and you should read it. They put GPU compilation inside `rustc`, they get data direction out of `&T` versus `&mut T` instead of making you write pragmas, and they measure themselves honestly against hand-written CUDA. My interest is in the part they are candid about not having solved, because it turns out to be a shape I recognized.
+
+## The 400x
+
+Their convenient interface looks like this:
+
+```rust
+offload!(vec_add, &a, &b, &mut c);
+```
+
+You write that, and the compiler transfers `a` and `b` to the GPU, runs the kernel, and copies `c` back. Lovely. Now put it in a loop, and every iteration ships the same two arrays across the bus again. They measure this at **up to 400x slower** than doing the transfers by hand.
+
+So they add a second interface. You wrap your data in a `Preload` or `PreloadMut`, which pins it on the device and marks the point where it comes home with the value's `drop`. That works, and it costs you an annotation at every site. And then, to make the *convenient* interface fast too, they prototype a transfer-hoisting pass inside LLVM — loop-invariant code motion for `memcpy`s, essentially — which is still future work at the time of writing.
+
+There is one benchmark they can't fix that way. It's called Energy: six kernels sharing about fifteen arrays, each with a few of its own. Keeping everything resident might blow past the device's memory; keeping nothing resident is the 400x. Deciding needs a heuristic, and they say plainly that they didn't ship one.
+
+I read that and thought: that isn't a missing optimization. That's a missing *seam*.
+
+## The seam
+
+Here's the thing the compiler is trying to recover. It wants to know two facts:
+
+1. What does this launch touch?
+2. When does the host actually want to look?
+
+And it can't just ask, because in Rust neither fact is written down anywhere. A launch is a function call. A host read is... a host read, some ordinary expression somewhere in the program that happens to name the same variable. So the compiler goes and reconstructs both from dataflow analysis, and where analysis fails, `Preload` makes you write the answer down by hand.
+
+But both facts are *events*. Things that happen, in an order, that somebody might want to intercept.
+
+We have a way to spell that.
+
+```
+[Place.run saxpy n #[3.0 x y out]]
+[Place.read out]
+```
+
+`Place.run` is an effect operation. `Place.read` is an effect operation. Not a function, not a method on a smart pointer — an operation, which floats up until some handler catches it. And once those two are effects, the two questions the LLVM pass was reverse-engineering are just *arguments to a handler clause*.
+
+## Nine lines
+
+Here is the residency policy. It is in `os/place.oo`. It is not privileged, it is not in the compiler, and you could have written it.
+
+```
+[fn place/resident [thunk]
+  [handle [thunk]
+    [Place.run k n args]
+      [do [Place.pin args]
+          [resume [Place.run k n args]]]
+    [Place.read b]
+      [do [let v [Place.read b]]
+          [Place.unpin b]
+          [resume v]]]]]
+```
+
+Read it slowly, because it is doing the whole job. It catches every launch, tells the device to keep whatever that launch touched, and forwards the launch outward unchanged. It catches every read, lets the read happen, and releases the pin. That's it. `Place.pin` is the entire vocabulary — it means "this will be wanted again."
+
+Wrap it around a program and:
+
+```
+loon run os/demo-residency.oo --place gpu
+
+eight launches over one buffer
+  answer #[8 8 8 8]
+  no policy: uploads 8, resident hits 0, bytes in 128
+  answer #[8 8 8 8]
+  place/resident: uploads 1, resident hits 7, bytes in 16
+```
+
+Same program both times. Same answer both times. Eight uploads became one, because a handler said so.
+
+On an actual GPU — this is an M4 Max, through Metal, via wgpu — the wall clock follows:
+
+| launches | no policy | place/resident | speedup |
+|---------:|----------:|---------------:|--------:|
+| 8 | 28.9 ms | 9.3 ms | 3.1x |
+| 32 | 93.1 ms | 15.4 ms | 6.0x |
+| 128 | 356.7 ms | 18.3 ms | 19.5x |
+
+The gap grows with the chain, which is exactly the paper's curve. The difference is where the fix lives. Theirs is an LLVM pass and a type. Mine is a `handle` form you can read in one sitting, change without rebuilding a compiler, and — this is the part I keep coming back to — *replace with a different one* when your program has different needs.
+
+Which brings us to Energy.
+
+## The heuristic they didn't ship
+
+The Energy case is only hard if there's exactly one policy and it has to be right for everybody. When residency is a handler, "keep everything" and "keep these" are two handlers, and choosing between them is a line of code rather than a compiler flag nobody can change:
+
+```
+[place/resident-only #[e-new p-new q-new] work]
+```
+
+That's the heuristic. It's an argument. I am not claiming I solved their benchmark — I haven't run RAJAPerf and I'm not going to pretend otherwise. I'm claiming the thing they needed a heuristic *for* is, in this design, a place where the user gets to put one.
+
+## Nobody wrote `&mut`
+
+Here's the part I'm smug about. This is a kernel:
+
+```
+[kernel saxpy [i a x y out]
+  [put out i [+ [* a [at x i]] [at y i]]]]
+```
+
+`x` and `y` are inputs. `out` has to come home. Nothing in that source says so.
+
+Loon already had an ownership pass that figures out, for every function parameter, whether the body reads it, writes through it, or consumes it — the same distinction Rust makes you spell as `&T` / `&mut T` / `T`. It was computing that, using it for error messages, and throwing it away. Now it rides into the IR, and the placement layer reads it: `at` is a read, `put` is a write-through, so `out` is the argument that needs synchronizing back. The paper reads exactly the same fact off exactly the same distinction. They just make you type it.
+
+The emitted shader gets it right down to the binding:
+
+```wgsl
+@group(0) @binding(1) var<storage, read> b1: array<f32>;
+@group(0) @binding(2) var<storage, read> b2: array<f32>;
+@group(0) @binding(3) var<storage, read_write> b3: array<f32>;
+```
+
+`read` versus `read_write`, decided by whether the kernel body said `at` or `put`.
+
+## What a kernel isn't
+
+Kernels are restricted. No closures, no allocation, no strings, no effects. Try it and the compiler names what it found:
+
+```
+kernel 'k' contains the effect operation 'IO.println'
+  why: a kernel runs where there is no handler tower to perform effects against
+```
+
+That restriction is the safety argument, and it's where I think this design earns its keep against theirs. Their kernels can receive a slice and index it however they like, so "threads touch disjoint elements" has to be *promised* — by an `unsafe impl` of a partitioning strategy. Here a kernel receives an index and writes at that index. The unsafe program isn't rejected; it's unwriteable.
+
+I'll take a restriction over a promise. A promise is a place where someone will eventually be wrong.
+
+## Testing a GPU program without a GPU
+
+This is the part the paper doesn't have a section for, and I don't think that's an oversight so much as a consequence: if launches aren't events, there's nothing to record.
+
+```
+loon run samples/place/saxpy.oo --place gpu --record trace.oo
+loon replay trace.oo samples/place/saxpy.oo
+```
+
+The second command runs on a build with no GPU support compiled into it at all, and prints the same thing. From the program's point of view a kernel launch was an operation that returned nothing and a read was one that produced some numbers, so recording those *is* the run.
+
+`Place.stats` is deliberately excluded from the recording. It reports on the run currently happening, and a replayed run genuinely moved no bytes — feeding back the original transfer counts would be a recording that lies about the execution it's part of. The replayed run says zero launches, because it performed zero launches.
+
+And since a handler can decline to forward at all, "run this without a device" is four lines:
+
+```
+[fn place/dry-run [thunk]
+  [handle [thunk]
+    [Place.run k n args] [resume []]
+    [Place.read b]       [resume #[]]]]
+```
+
+Every accounting number, no execution. And strace-for-GPU is the same shape as strace-for-syscalls was last month — perform the operation you intercepted, print on the way past.
+
+## Where it runs
+
+Metal on this laptop. Vulkan on a Linux box. DX12 on Windows. And WebGPU in a browser tab, which is a target you cannot reach at all if you're emitting PTX and AMDGCN. That last one isn't cleverness; it's what you get for free by picking a portable shading language instead of a vendor's, and it's the one place where I think the architecture is straightforwardly better rather than differently-shaped.
+
+Every kernel in the repo is parsed and type-checked by naga in CI, on machines with no GPU. That's the automated cross-target validation the paper says is still missing — they found a host/device divergence in slice lowering by hand, `(ptr, len)` on two targets and `[i64; 2]` on a third. We have the same class of hazard: NaN-boxing constants that used to be copy-pasted into three backends under a comment asking the next person to keep them in sync. They now live in one file, and a conformance test compiles the same literals on every backend and compares raw bits.
+
+That test found three real divergences the first time it ran, including one where `loon run --native` silently returned `()` for any program with a `main` function. Which is a good argument for writing the test.
+
+## What I'm not claiming
+
+We do not beat hand-written CUDA. We haven't measured against it and we're not going to imply otherwise. The CPU column in our benchmarks is Loon's own interpreter — the slowest honest baseline — so "3.1x faster on the GPU at 262k elements" means *there is a lot to gain by leaving the interpreter*, not anything about generated code quality.
+
+Reductions and atomics are outside the kernel subset. WGSL core has no 64-bit scalar, so an f64 buffer is computed in f32 on the device and we report the narrowing rather than hiding it.
+
+And the honest summary of the whole comparison: they built a compiler and I moved a seam. Those are different kinds of work. The reason I think the seam is worth the post is that it makes a class of thing — residency, prefetch, eviction, tracing, simulation, replay — stop being compiler features that someone has to ship for you, and start being ordinary code that you can write on a Tuesday.
+
+## The arc
+
+v0.7: effects, end to end. v0.8: syscalls are effects, so the kernel is the outermost handler. v0.9: placement is an effect, so the GPU is a handler in the middle.
+
+I don't have a fourth one yet. But I've stopped being surprised when something that looked like it needed a compiler pass turns out to need a `handle`.
+
+---
+
+Try it:
+
+```
+loon run os/demo-place.oo                    # one program, four handlers
+loon run os/demo-residency.oo --place device # the transfer gap
+loon run samples/place/saxpy.oo --place gpu  # on real hardware
+```

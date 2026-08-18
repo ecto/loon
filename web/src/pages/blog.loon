@@ -81,6 +81,67 @@
             :margin-bottom "3.5rem"}}
         "Changelog"]
       
+      ; ── v0.9.0 — Placement is an effect ────────────────────────────────
+      [blog-article
+        "Placement Is an Effect"
+        "Aug 18, 2026"
+
+        [p
+          "A syscall is an effect, so the kernel is the outermost handler. Follow the same sentence one step further and the GPU becomes a handler in the middle. Where a kernel runs is no longer a property of the program — it is a decision somebody makes around it, and the program does not move."]
+
+        [blog-h3 "A kernel, and nothing about where it runs"]
+        [p
+          "A kernel is an ordinary function that promised to stay small: no closures, no allocation, no strings, no effects. Nothing in it mentions a device, a queue, or a transfer."]
+        [blog-code
+          [str
+            "[kernel saxpy [i a x y out]\n"
+            "  [put out i [+ [* a [at x i]] [at y i]]]]\n"
+            "\n"
+            "[Place.run saxpy n #[3.0 x y out]]\n"
+            "[Place.read out]"]]
+        [p
+          "Which arguments travel to the device and which have to come home is inferred, not annotated. Loon already worked out, for every parameter, whether the body reads it, writes through it, or consumes it — the distinction Rust makes you spell as &T, &mut T, and T. Here `at` is a read and `put` is a write-through, so `out` is the one that needs synchronizing back, and the emitted shader binds it read_write while the inputs bind read."]
+
+        [blog-h3 "Residency is nine lines"]
+        [p
+          "Because Place.run and Place.read are operations rather than function calls, a handler sees every launch and every synchronization point. That is enough to write a residency policy as ordinary library code — the transfer-hoisting a GPU compiler implements as an optimization pass."]
+        [blog-code
+          [str
+            "[fn place/resident [thunk]\n"
+            "  [handle [thunk]\n"
+            "    [Place.run k n args]\n"
+            "      [do [Place.pin args]\n"
+            "          [resume [Place.run k n args]]]\n"
+            "    [Place.read b]\n"
+            "      [do [let v [Place.read b]]\n"
+            "          [Place.unpin b]\n"
+            "          [resume v]]]]]"]]
+        [p
+          "On an Apple M4 Max through Metal, a chain of 128 launches over one buffer takes 356.7 ms with no policy and 18.3 ms under that handler — 19.5x, from 128 uploads down to 2. Same program, same answer; only the line wrapped around it differs."]
+
+        [blog-h3 "Testing a GPU program without a GPU"]
+        [p
+          "Launches are events, so they can go on tape. Record a run on the GPU and replay it on a build with no GPU support compiled in at all — the program observes exactly what it observed the first time. A handler that declines to forward gives you a dry run: every accounting number, no execution."]
+        [blog-code
+          [str
+            "$ loon run samples/place/saxpy.oo --place gpu --record trace.oo\n"
+            "out   = #[0 5 10 15 20 25 30 35]\n"
+            "\n"
+            "$ loon replay trace.oo samples/place/saxpy.oo   ; no GPU in this build\n"
+            "out   = #[0 5 10 15 20 25 30 35]"]]
+
+        [blog-h3 "Landing alongside"]
+        [ul-el
+          {:style {:margin-left "1.5rem" :line-height "1.8"}}
+          [li-el
+            "Kernels compile to WGSL and every one in the repo is validated by naga in CI, on machines with no GPU."]
+          [li-el
+            "One shared value layout across the VM, WASM, and native backends, with a conformance test that compares raw bits — it found three real divergences the first time it ran."]
+          [li-el
+            "--place cpu|device|gpu and --place-stats, reporting launches, transfers, and bytes."]
+          [li-el
+            "Buffers: dense, unboxed numeric arrays that can leave the process, which persistent collections cannot."]]]
+
       ; ── Record/replay + capability security ────────────────────────────
       [blog-article
         "Record the Bug, Replay It Forever"

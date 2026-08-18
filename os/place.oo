@@ -14,41 +14,41 @@
 ;   [place/trace work]                  ; watch what happens
 ;   [place/resident work]               ; keep buffers where they are
 ;   [place/dry-run work]                ; account for it, run nothing
-
 ; ── Watching ────────────────────────────────────────────────────────────────
-
 ; strace, for placement. Forwards every operation outward unchanged and prints
 ; what went past. The whole of "GPU tracing" is a handler that performs the
 ; same operation it intercepted.
 [fn place/trace [thunk]
-  [handle [thunk]
+  [handle
+    [thunk]
     [Place.run k n args]
-      [do [IO.println [str "place: launch " n " work items, " [len args] " args"]]
-          [resume [Place.run k n args]]]
+    [do
+      [IO.println [str "place: launch " n " work items, " [len args] " args"]]
+      [resume [Place.run k n args]]]
     [Place.read b]
-      [do [IO.println [str "place: sync — reading " [buf-len b] " elements back"]]
-          [resume [Place.read b]]]]]
+    [do
+      [IO.println [str "place: sync — reading " [buf-len b] " elements back"]]
+      [resume [Place.read b]]]]]
 
 ; Count launches and syncs without printing anything. Returns the thunk's
 ; value; ask `Place.stats` afterwards for the totals.
 [fn place/counted [thunk]
-  [handle [thunk]
-    [Place.run k n args] [resume [Place.run k n args]]
-    [Place.read b]       [resume [Place.read b]]]]
+  [handle
+    [thunk]
+    [Place.run k n args]
+    [resume [Place.run k n args]]
+    [Place.read b]
+    [resume [Place.read b]]]]
 
 ; ── Accounting without running ──────────────────────────────────────────────
-
 ; Answer every launch by doing nothing, and every read with an empty vector.
 ; The program runs to completion and its placement decisions are counted, but
 ; no kernel executes. This is how you ask "what would this cost" — and how a
 ; program targeting hardware you do not have can still be exercised.
 [fn place/dry-run [thunk]
-  [handle [thunk]
-    [Place.run k n args] [resume []]
-    [Place.read b]       [resume #[]]]]
+  [handle [thunk] [Place.run k n args] [resume []] [Place.read b] [resume #[]]]]
 
 ; ── Residency ───────────────────────────────────────────────────────────────
-
 ; Keep buffers on the device across launches, and let the host pay for a
 ; transfer only when it actually looks.
 ;
@@ -64,23 +64,21 @@
 ; is what stops the device from dropping it, so the next launch finds it
 ; already there.
 [fn place/resident [thunk]
-  [handle [thunk]
+  [handle
+    [thunk]
     [Place.run k n args]
-      [do [Place.pin args]
-          [resume [Place.run k n args]]]
+    [do [Place.pin args] [resume [Place.run k n args]]]
     [Place.read b]
-      [do [let v [Place.read b]]
-          [Place.unpin b]
-          [resume v]]]]
+    [do [let v [Place.read b]] [Place.unpin b] [resume v]]]]
 
 ; The same shape, but only keeping the buffers you name. Useful when the
 ; working set is larger than the device and residency has to be chosen rather
 ; than assumed — the case the paper flags as needing a heuristic it did not
 ; ship. Here the heuristic is an argument.
 [fn place/resident-only [keep thunk]
-  [handle [thunk]
+  [handle
+    [thunk]
     [Place.run k n args]
-      [do [Place.pin keep]
-          [resume [Place.run k n args]]]
+    [do [Place.pin keep] [resume [Place.run k n args]]]
     [Place.read b]
-      [resume [Place.read b]]]]
+    [resume [Place.read b]]]]

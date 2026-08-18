@@ -17,8 +17,7 @@
 ; program, the same answer, no transfers at all.
 [use place]
 
-[kernel step [i b]
-  [put b i [+ 1.0 [at b i]]]]
+[kernel step [i b] [put b i [+ 1.0 [at b i]]]]
 
 ; Eight launches over the same buffer. Nothing here mentions residency; the
 ; question "does this buffer need to travel" is not the program's to answer.
@@ -36,21 +35,27 @@
 
 [fn report [label before]
   [let s [Place.stats]]
-  [IO.println [str "  " label
-                   ": uploads " [- [get s :uploads] [get before :uploads]]
-                   ", resident hits " [- [get s :resident-hits] [get before :resident-hits]]
-                   ", bytes in " [- [get s :bytes-in] [get before :bytes-in]]]]
+  [IO.println
+    [str
+      "  "
+      label
+      ": uploads "
+      [- [get s :uploads] [get before :uploads]]
+      ", resident hits "
+      [- [get s :resident-hits] [get before :resident-hits]]
+      ", bytes in "
+      [- [get s :bytes-in] [get before :bytes-in]]]]
   s]
 
 [fn main []
   [IO.println "eight launches over one buffer"]
-
+  
   [let start [Place.stats]]
   [IO.println [str "  answer " [chain]]]
   [let after-naive [report "no policy" start]]
-
+  
   [IO.println [str "  answer " [place/resident chain]]]
   [let _ [report "place/resident" after-naive]]
-
+  
   [IO.println ""]
   [IO.println "same program, same answer; the handler decided what had to move"]]
