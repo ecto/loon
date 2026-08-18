@@ -17,8 +17,10 @@ static HEAP: heap::Heap = heap::Heap::new();
 #[macro_use]
 mod uart;
 mod eir;
+mod fwcfg;
 mod heap;
 mod mmio;
+mod ramfb;
 mod sbi;
 
 // Set up a stack and clear .bss before anything Rust-shaped runs. `a0` holds
@@ -99,7 +101,26 @@ pub extern "C" fn kmain(hart: usize, dtb: usize) -> ! {
                 micros_since(t0),
                 micros_since(BOOT.load(core::sync::atomic::Ordering::Relaxed)),
             );
-            sbi::shutdown(false)
+            // If the machine has a display, hand it to the GUI program and
+            // stay up so there is something to look at. Otherwise we are a
+            // headless run and the polite thing is to power off.
+            match ramfb::Ramfb::init(640, 480) {
+                Some(fb) => {
+                    println!("framebuffer {}x{} — running gui", fb.width, fb.height);
+                    if let Err(e) = run_on(
+                        include_bytes!(env!("LOON_GUI_IMAGE")),
+                        Machine { fb: Some(fb) },
+                    ) {
+                        println!("gui failed: {e}");
+                        sbi::shutdown(true);
+                    }
+                    println!("gui up — close the window or ^A x to quit");
+                    loop {
+                        unsafe { core::arch::asm!("wfi") };
+                    }
+                }
+                None => sbi::shutdown(false),
+            }
         }
         Err(e) => {
             println!();
@@ -111,7 +132,9 @@ pub extern "C" fn kmain(hart: usize, dtb: usize) -> ! {
 
 /// The machine, as the VM sees it. Effects that no Loon handler caught
 /// arrive here, which is the only place in the system that touches hardware.
-struct Machine;
+struct Machine {
+    fb: Option<ramfb::Ramfb>,
+}
 
 impl eir::vm::Host for Machine {
     fn write(&mut self, s: &str) {
@@ -119,9 +142,37 @@ impl eir::vm::Host for Machine {
     }
 
     fn ticks(&mut self) -> i64 {
-        let t: u64;
-        unsafe { core::arch::asm!("rdtime {}", out(reg) t) };
-        t as i64
+        now() as i64
+    }
+
+    fn fb(&mut self, op: &str, a: &[i64]) -> Result<Option<i64>, alloc::string::String> {
+        let Some(fb) = self.fb.as_mut() else {
+            return Err(alloc::format!(
+                "Fb.{op}: this machine has no framebuffer (boot with -device ramfb)"
+            ));
+        };
+        let arg = |i: usize| -> Result<i64, alloc::string::String> {
+            a.get(i)
+                .copied()
+                .ok_or_else(|| alloc::format!("Fb.{op}: missing argument {i}"))
+        };
+        match op {
+            "width" => Ok(Some(fb.width as i64)),
+            "height" => Ok(Some(fb.height as i64)),
+            "clear" => {
+                fb.clear(arg(0)? as u32);
+                Ok(None)
+            }
+            "fill-rect" => {
+                fb.fill_rect(arg(0)?, arg(1)?, arg(2)?, arg(3)?, arg(4)? as u32);
+                Ok(None)
+            }
+            "present" => {
+                fb.present();
+                Ok(None)
+            }
+            _ => Err(alloc::format!("Fb.{op}: no such framebuffer operation")),
+        }
     }
 }
 
@@ -140,8 +191,11 @@ fn micros_since(start: u64) -> u64 {
 }
 
 fn run_init(image: &[u8]) -> Result<(), alloc::string::String> {
+    run_on(image, Machine { fb: None })
+}
+
+fn run_on(image: &[u8], mut machine: Machine) -> Result<(), alloc::string::String> {
     let module = eir::decode::decode(image)?;
-    let mut machine = Machine;
     let mut vm = eir::vm::Vm::new(&module, &mut machine).with_fuel(500_000_000);
     vm.run()?;
     Ok(())
@@ -152,7 +206,7 @@ fn run_init(image: &[u8]) -> Result<(), alloc::string::String> {
 /// interpreter rather than the console.
 fn run_bench_named(name: &str, image: &[u8]) -> Result<(), alloc::string::String> {
     let module = eir::decode::decode(image)?;
-    let mut machine = Machine;
+    let mut machine = Machine { fb: None };
     let mut vm = eir::vm::Vm::new(&module, &mut machine).with_fuel(2_000_000_000);
 
     let t = now();

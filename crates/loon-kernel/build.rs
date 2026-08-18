@@ -18,6 +18,7 @@ fn main() {
         ("bench", "LOON_BENCH_IMAGE"),
         ("loop", "LOON_LOOP_IMAGE"),
         ("mandel", "LOON_MANDEL_IMAGE"),
+        ("gui", "LOON_GUI_IMAGE"),
     ] {
         let src = manifest.join(format!("boot/{name}.oo"));
         let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join(format!("{name}.img"));

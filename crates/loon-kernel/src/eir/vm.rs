@@ -23,6 +23,10 @@ pub trait Host {
     fn write(&mut self, s: &str);
     /// Monotonic ticks since boot.
     fn ticks(&mut self) -> i64;
+    /// Framebuffer, if the machine has one. Ops are named rather than
+    /// enumerated so the VM does not have to know what a display can do; the
+    /// host decides, and says loudly when it can't.
+    fn fb(&mut self, op: &str, args: &[i64]) -> Result<Option<i64>, String>;
 }
 
 /// Operands read out of registers for one instruction.
@@ -785,6 +789,27 @@ impl<'m, H: Host> Vm<'m, H> {
                 Ok(Val::Unit)
             }
             ("Clock", "now") | ("Clock", "ticks") => Ok(Val::Int(self.host.ticks())),
+            ("Fb", op) => {
+                // Everything a framebuffer takes is an integer: coordinates,
+                // sizes, 0xRRGGBB colours.
+                let mut ints = Vec::with_capacity(args.len());
+                for a in args {
+                    match a {
+                        Val::Int(n) => ints.push(*n),
+                        Val::Float(f) => ints.push(*f as i64),
+                        v => {
+                            return Err(alloc::format!(
+                                "Fb.{op}: expected an integer argument, got a {}",
+                                v.type_name()
+                            ))
+                        }
+                    }
+                }
+                Ok(match self.host.fb(op, &ints)? {
+                    Some(n) => Val::Int(n),
+                    None => Val::Unit,
+                })
+            }
             ("Fail", "fail") => Err(alloc::format!(
                 "unhandled failure: {}",
                 args.first().map(show).unwrap_or_default()
