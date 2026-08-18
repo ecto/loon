@@ -852,8 +852,12 @@ impl<'m, H: Host> Vm<'m, H> {
                     _ => Val::Unit,
                 }
             }
-            "First" => seq(&a0()).and_then(|xs| xs.first().cloned()).unwrap_or(Val::Unit),
-            "Last" => seq(&a0()).and_then(|xs| xs.last().cloned()).unwrap_or(Val::Unit),
+            "First" => seq(&a0())
+                .and_then(|xs| xs.first().cloned())
+                .unwrap_or(Val::Unit),
+            "Last" => seq(&a0())
+                .and_then(|xs| xs.last().cloned())
+                .unwrap_or(Val::Unit),
             "Reverse" => {
                 let mut xs = seq(&a0()).map(|x| x.as_ref().clone()).unwrap_or_default();
                 xs.reverse();
@@ -906,7 +910,7 @@ impl<'m, H: Host> Vm<'m, H> {
                 let f = a1();
                 let mut out = Vec::with_capacity(xs.len());
                 for x in xs.iter() {
-                    out.push(self.apply(&f, &[x.clone()])?);
+                    out.push(self.apply(&f, core::slice::from_ref(x))?);
                 }
                 Val::Vec(Rc::new(out))
             }
@@ -915,7 +919,7 @@ impl<'m, H: Host> Vm<'m, H> {
                 let f = a1();
                 let mut out = Vec::new();
                 for x in xs.iter() {
-                    if self.apply(&f, &[x.clone()])?.truthy() {
+                    if self.apply(&f, core::slice::from_ref(x))?.truthy() {
                         out.push(x.clone());
                     }
                 }
@@ -925,7 +929,7 @@ impl<'m, H: Host> Vm<'m, H> {
                 let xs = seq(&a0()).ok_or_else(|| "each expects a sequence".to_string())?;
                 let f = a1();
                 for x in xs.iter() {
-                    self.apply(&f, &[x.clone()])?;
+                    self.apply(&f, core::slice::from_ref(x))?;
                 }
                 Val::Unit
             }
@@ -949,12 +953,7 @@ impl<'m, H: Host> Vm<'m, H> {
                 }
                 Val::Unit
             }
-            "MatchFail" => {
-                return Err(alloc::format!(
-                    "no match arm matched {}",
-                    show(&a0())
-                ))
-            }
+            "MatchFail" => return Err(alloc::format!("no match arm matched {}", show(&a0()))),
             "UnboundSym" => return Err(alloc::format!("unbound symbol '{}'", show(&a0()))),
             // Everything else exists on the host but has not been ported.
             // Saying so is the point: a silently wrong answer on hardware is

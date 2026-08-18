@@ -53,13 +53,21 @@ static BOOT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(
 pub extern "C" fn kmain(hart: usize, dtb: usize) -> ! {
     BOOT.store(now(), core::sync::atomic::Ordering::Relaxed);
     let (start, end) = unsafe {
-        (&__heap_start as *const u8 as usize, &__heap_end as *const u8 as usize)
+        (
+            &__heap_start as *const u8 as usize,
+            &__heap_end as *const u8 as usize,
+        )
     };
     unsafe { HEAP.init(start, end - start) };
 
     println!();
     println!("loon unikernel — hart {hart}, dtb {dtb:#x}");
-    println!("heap {:#x}..{:#x} ({} KiB)", start, end, (end - start) / 1024);
+    println!(
+        "heap {:#x}..{:#x} ({} KiB)",
+        start,
+        end,
+        (end - start) / 1024
+    );
 
     let image = include_bytes!(env!("LOON_BOOT_IMAGE"));
     println!("init image {} bytes", image.len());

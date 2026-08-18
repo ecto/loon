@@ -35,7 +35,9 @@ fn unikernel_boots_and_matches_the_host() {
         eprintln!("skipping: qemu-system-riscv64 not installed");
         return;
     }
-    let targets = Command::new("rustup").args(["target", "list", "--installed"]).output();
+    let targets = Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output();
     let has_target = targets
         .map(|o| String::from_utf8_lossy(&o.stdout).contains("riscv64gc-unknown-none-elf"))
         .unwrap_or(false);

@@ -27,7 +27,9 @@ unsafe impl Sync for Heap {}
 
 impl Heap {
     pub const fn new() -> Self {
-        Heap { free: UnsafeCell::new(ptr::null_mut()) }
+        Heap {
+            free: UnsafeCell::new(ptr::null_mut()),
+        }
     }
 
     /// # Safety

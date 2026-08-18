@@ -19,7 +19,6 @@ pub struct Uart;
 // The receive half is unused until init wants a console to read from; it is
 // kept because a driver that can only talk is not a console driver.
 #[allow(dead_code)]
-
 impl Uart {
     pub fn putc(&self, c: u8) {
         unsafe {

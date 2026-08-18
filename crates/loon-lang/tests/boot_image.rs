@@ -28,7 +28,10 @@ fn binop_tags_are_pinned() {
         (BinOp::Concat, 13),
     ];
     for (op, tag) in expected {
-        assert_eq!(op as u8, tag, "{op:?} moved: the unikernel decodes it as {tag}");
+        assert_eq!(
+            op as u8, tag,
+            "{op:?} moved: the unikernel decodes it as {tag}"
+        );
     }
 }
 

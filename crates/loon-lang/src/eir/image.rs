@@ -146,7 +146,9 @@ fn max_reg(f: &Func) -> u32 {
 fn op_srcs(o: &Op) -> Vec<Reg> {
     match o {
         Op::Lit(..) | Op::Upval(..) | Op::PopHandler(_) => vec![],
-        Op::Mov(_, a, _) | Op::Un(_, _, a, _) | Op::Field(_, a, _, _) | Op::Tag(_, a, _) => vec![*a],
+        Op::Mov(_, a, _) | Op::Un(_, _, a, _) | Op::Field(_, a, _, _) | Op::Tag(_, a, _) => {
+            vec![*a]
+        }
         Op::Bin(_, _, a, b, _) => vec![*a, *b],
         Op::Call(_, _, rs, _)
         | Op::Close(_, _, rs, _)
