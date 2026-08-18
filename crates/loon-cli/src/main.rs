@@ -33,6 +33,10 @@ enum Command {
     /// Run a Loon file (interpreter)
     Run {
         file: PathBuf,
+        /// Skip the static checker and go straight to the VM. The VM still
+        /// fails loudly at runtime; this only drops the up-front pass.
+        #[arg(long)]
+        unchecked: bool,
         /// Run via WASM compilation + wasmtime instead of interpreter
         #[arg(long)]
         wasm: bool,
@@ -166,6 +170,7 @@ fn main() {
     match cli.command {
         Command::Run {
             ref file,
+            unchecked,
             wasm,
             legacy,
             native,
@@ -186,7 +191,7 @@ fn main() {
             } else if legacy {
                 run_file_legacy(file);
             } else {
-                run_file(file, record.as_deref());
+                run_file(file, record.as_deref(), unchecked);
             }
         }
         Command::Replay {
@@ -276,7 +281,7 @@ fn precheck_source(path: &std::path::Path, source: &str) {
     }
 }
 
-fn run_file(path: &PathBuf, record: Option<&std::path::Path>) {
+fn run_file(path: &PathBuf, record: Option<&std::path::Path>, unchecked: bool) {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -285,7 +290,9 @@ fn run_file(path: &PathBuf, record: Option<&std::path::Path>) {
         }
     };
 
-    precheck_source(path, &source);
+    if !unchecked {
+        precheck_source(path, &source);
+    }
     let base_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let result = match record {
         Some(trace_path) => {

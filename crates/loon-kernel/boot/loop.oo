@@ -1,7 +1,0 @@
-; Pure dispatch cost: tail self-recursion lowers to `Recur` (a jump to block
-; zero), so this never pushes a frame. Whatever this costs per op is the
-; interpreter's floor; the gap to bench.oo is what calling costs.
-[fn spin [n acc]
-  [if [= n 0] acc [spin [- n 1] [+ acc n]]]]
-
-[fn main [] [spin 20000 0]]

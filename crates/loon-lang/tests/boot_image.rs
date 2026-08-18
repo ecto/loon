@@ -1,6 +1,6 @@
 //! The boot image is an ABI between two crates that never link together.
 //!
-//! `loon-kernel` decodes these tags by number. Nothing in the type system
+//! fxos (github.com/ecto/fxos, `kernel/src/eir/decode.rs`) decodes these tags by number. Nothing in the type system
 //! connects the two sides, so reordering an enum here would silently remap
 //! an operator in every image the kernel runs. These tests are the seam.
 
@@ -10,7 +10,7 @@ use loon_lang::eir::{BinOp, UnOp};
 #[test]
 fn binop_tags_are_pinned() {
     // Changing any of these means changing `binop()` in
-    // crates/loon-kernel/src/eir/decode.rs to match.
+    // fxos `kernel/src/eir/decode.rs` to match.
     let expected = [
         (BinOp::Add, 0),
         (BinOp::Sub, 1),
