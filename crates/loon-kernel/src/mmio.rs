@@ -19,3 +19,15 @@ pub unsafe fn read8(addr: usize) -> u8 {
 pub unsafe fn write8(addr: usize, val: u8) {
     core::ptr::write_volatile(addr as *mut u8, val)
 }
+
+/// # Safety
+/// `addr` must be a valid, naturally aligned MMIO register.
+pub unsafe fn write16(addr: usize, val: u16) {
+    core::ptr::write_volatile(addr as *mut u16, val)
+}
+
+/// # Safety
+/// `addr` must be a valid, naturally aligned MMIO register.
+pub unsafe fn write64(addr: usize, val: u64) {
+    core::ptr::write_volatile(addr as *mut u64, val)
+}

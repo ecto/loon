@@ -6,7 +6,7 @@ KERNEL := target/riscv64gc-unknown-none-elf/release/loon-kernel
 QEMU   := qemu-system-riscv64
 QFLAGS := -machine virt -cpu rv64 -smp 1 -m 128M -nographic -bios default
 
-.PHONY: build run check clean
+.PHONY: build run gui screenshot check clean
 
 build:
 	cargo build --release
@@ -14,6 +14,15 @@ build:
 # Boot the machine. It powers itself off when init returns.
 run: build
 	$(QEMU) $(QFLAGS) -serial mon:stdio -kernel $(KERNEL)
+
+# Boot with a display. The kernel finds the ramfb, runs boot/gui.oo, and
+# stays up so there is something to look at. Close the window to quit.
+gui: build
+	$(QEMU) $(QFLAGS) -serial mon:stdio -device ramfb -display cocoa -kernel $(KERNEL)
+
+# Boot headless with a display, grab the framebuffer over QMP as a PNG.
+screenshot: build
+	@python3 tools/screenshot.py screenshot.png
 
 # The same program on the host, for comparison. Run from the workspace root:
 # this directory's .cargo/config.toml pins a bare-metal target that the host
