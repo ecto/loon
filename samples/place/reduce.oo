@@ -1,0 +1,45 @@
+; Reduction, without leaving the rules.
+;
+; A kernel may write at its own index and nowhere else. That sounds like it
+; rules out summing an array — a sum has one destination and every element
+; wants to reach it.
+;
+; It doesn't, because a reduction is a map followed by a much smaller
+; reduction. Give each work item its own chunk of the input and its own slot in
+; a partials buffer, and every item is still writing exactly one element: its
+; own. Combine the handful of partials afterwards.
+;
+; So there is no `Place.reduce` operation and no workgroup-shared memory here.
+; The two-phase shape is what the disjointness rule already permits, which is a
+; better outcome than a special case would have been.
+;
+;   loon run samples/place/reduce.oo --place cpu | par | device | gpu
+; Phase one: work item `c` sums the `width` elements starting at `c * width`.
+; It reads all over the input — gather is safe — and writes only `partials[c]`.
+[kernel
+  sum-chunk
+  [c width src partials]
+  [let start [* c width]]
+  [let total
+  [loop
+    [k 0 acc 0.0]
+    [if [>= k width] acc [recur [+ k 1] [+ acc [at src [+ start k]]]]]]]
+  [put partials c total]]
+
+[fn main []
+  [let n 4096]
+  [let chunks 64]
+  [let width [/ n chunks]]
+  
+  [let src [buf [range 0 n]]]
+  [let mut partials [buf-zeros chunks]]
+  
+  [Place.run sum-chunk chunks #[width src partials]]
+  
+  ; Phase two: sixty-four numbers, added on the host. Sending this to a device
+  ; would cost more than doing it.
+  [let total [sum [Place.read partials]]]
+  
+  [IO.println [str "sum of 0.." n " = " total]]
+  [IO.println [str "expected      = " [/ [* [- n 1] n] 2]]]
+  [IO.println [str "stats: " [Place.stats]]]]

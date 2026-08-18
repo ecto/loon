@@ -2507,17 +2507,46 @@ impl Vm {
                 }
             }
             Built::Sum => {
+                // Ints stay ints; any float promotes the whole sum, matching
+                // the interpreter and the `Vec Num → Num` the registry
+                // declares. This used to filter to integers and silently drop
+                // everything else, so summing a vector of floats answered 0 —
+                // which is the shape of wrong answer that is worst, because it
+                // looks like an empty sum rather than a failure.
                 let coll = args.first().copied().unwrap_or(Val::UNIT);
-                match self.get_obj(coll) {
-                    Some(Obj::Vec(items)) => {
-                        let sum: i64 = items
-                            .iter()
-                            .filter(|v| v.is_int())
-                            .map(|v| v.as_int())
-                            .sum();
-                        Ok(Val::int(sum))
+                let Some(Obj::Vec(items)) = self.get_obj(coll) else {
+                    return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "sum requires a vector, got {}",
+                        self.val_to_string(coll)
+                    )))
+                    .with_span(self.current_span));
+                };
+                let items: Vec<Val> = items.iter().copied().collect();
+                let any_float = items.iter().any(|v| v.is_float());
+                for v in &items {
+                    if !v.is_int() && !v.is_float() {
+                        let shown = self.val_to_string(*v);
+                        return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                            "sum requires a vector of numbers; found {shown}"
+                        )))
+                        .with_span(self.current_span));
                     }
-                    _ => Ok(Val::int(0)),
+                }
+                if any_float {
+                    let total: f64 = items
+                        .iter()
+                        .map(|v| {
+                            if v.is_float() {
+                                v.as_float()
+                            } else {
+                                v.as_int() as f64
+                            }
+                        })
+                        .sum();
+                    Ok(Val::float(total))
+                } else {
+                    let total: i64 = items.iter().map(|v| v.as_int()).sum();
+                    Ok(Val::int(total))
                 }
             }
             Built::Min | Built::Max => {

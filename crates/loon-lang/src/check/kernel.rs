@@ -52,7 +52,11 @@ const KERNEL_BUILTINS: &[&str] = &[
 // the language pretend to.
 
 /// Special forms a kernel body may use.
-const KERNEL_FORMS: &[&str] = &["let", "if", "do", "and", "or", "recur", "mut"];
+///
+/// `loop`/`recur` earn their place because a reduction needs them: a work item
+/// that sums its own chunk of the input is still writing only its own element,
+/// so the disjointness rule holds and no new language feature is required.
+const KERNEL_FORMS: &[&str] = &["let", "if", "do", "and", "or", "loop", "recur", "mut"];
 
 /// Rewrite every `[kernel name [params] body...]` into the equivalent `fn`,
 /// returning the rewritten program and the set of kernel names.
@@ -237,6 +241,21 @@ impl Verifier<'_> {
                 &format!("the effect operation '{name}'"),
                 "a kernel runs where there is no handler tower to perform effects against",
             );
+            return;
+        }
+
+        // `[loop [name init ...] body...]` — the binding list is names paired
+        // with initializers, not a call, so only the initializers and the body
+        // are expressions to check.
+        if name == "loop" && items.len() >= 2 {
+            if let ExprKind::List(bindings) = &items[1].kind {
+                for init in bindings.iter().skip(1).step_by(2) {
+                    self.check_body(kernel, init);
+                }
+            }
+            for body in &items[2..] {
+                self.check_body(kernel, body);
+            }
             return;
         }
 

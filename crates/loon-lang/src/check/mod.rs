@@ -1751,15 +1751,37 @@ impl Checker {
             }
         }
 
-        // sum: Vec Int → Int (approximate)
-        self.env.set_global(
-            "sum".to_string(),
-            Scheme::mono(Type::Fn(
-                vec![Type::Con("Vec".to_string(), vec![Type::Int])],
-                Box::new(Type::Int),
-                EffectRow::pure(),
-            )),
-        );
+        // sum: ∀a:Num. Vec a → a
+        //
+        // The builtin registry has always declared this `Vec Num → Num` and the
+        // interpreter has always implemented it that way. The checker said
+        // `Vec Int → Int` with the comment "(approximate)", which meant summing
+        // a vector of floats — the natural last step of any reduction — did not
+        // type check.
+        {
+            let a = self.subst.fresh();
+            let tv = match a {
+                Type::Var(v) => v,
+                _ => unreachable!("fresh() returns a Var"),
+            };
+            self.env.set_global(
+                "sum".to_string(),
+                Scheme {
+                    bounds: vec![(
+                        tv,
+                        vec![TraitBound {
+                            trait_name: "Num".to_string(),
+                        }],
+                    )],
+                    vars: vec![tv],
+                    ty: Type::Fn(
+                        vec![Type::Con("Vec".to_string(), vec![Type::Var(tv)])],
+                        Box::new(Type::Var(tv)),
+                        EffectRow::pure(),
+                    ),
+                },
+            );
+        }
 
         // str: ∀a. a → Str
         {

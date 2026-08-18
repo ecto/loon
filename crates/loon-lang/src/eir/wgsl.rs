@@ -222,14 +222,14 @@ pub fn emit(module: &Module, func: FuncId, args: &[ArgKind]) -> Result<String, E
 
     if f.blocks.len() == 1 {
         // The common case: no control flow, so no dispatch machinery.
-        e.emit_block(&mut out, &f.blocks[0], "    ", false)?;
+        e.emit_block(&mut out, &f.blocks, &f.blocks[0], "    ", false)?;
     } else {
         writeln!(out, "    var blk: i32 = 0;").unwrap();
         writeln!(out, "    loop {{").unwrap();
         writeln!(out, "        switch blk {{").unwrap();
         for block in &f.blocks {
             writeln!(out, "            case {}: {{", block.id.0).unwrap();
-            e.emit_block(&mut out, block, "                ", true)?;
+            e.emit_block(&mut out, &f.blocks, block, "                ", true)?;
             writeln!(out, "            }}").unwrap();
         }
         writeln!(out, "            default: {{ return; }}").unwrap();
@@ -343,26 +343,70 @@ impl Emitter<'_> {
     /// Repeats until stable so a register defined in a later block — a loop
     /// back-edge carrying a value — still gets a type before it is used.
     fn infer(&mut self, blocks: &[Block]) -> Result<(), Error> {
-        for _ in 0..blocks.len().max(1) + 1 {
-            let before = self.types.len();
+        // Iterate until nothing changes, not merely until nothing new appears.
+        //
+        // A loop-carried value is the case that makes the difference. Its type
+        // is set by whichever predecessor is visited first, and a later one may
+        // demand a wider type; stopping as soon as every register *had* a type
+        // left the earlier, narrower answer in place. The result was a shader
+        // that assigned an i32 register to an f32 one and failed validation —
+        // which is at least a loud failure, but only because something checks.
+        let limit = blocks.len().max(1) * 4 + 4;
+        for _ in 0..limit {
+            let snapshot = self.types.clone();
             for block in blocks {
                 for op in &block.ops {
                     self.infer_op(op)?;
                 }
-                // Block parameters take the type of whatever is passed in.
-                if let End::Jmp(_, args) | End::Recur(args) = &block.end {
-                    for (i, a) in args.iter().enumerate() {
-                        if let (Some(t), Some(p)) = (self.ty_opt(*a), block.params.get(i)) {
-                            self.types.insert(p.0, t);
+                // Block parameters take the widest type any predecessor passes.
+                if let End::Jmp(_, args) = &block.end {
+                    // A jump's arguments land in the *target* block's params.
+                    if let Some(target) = self.block_by_id(blocks, block) {
+                        for (i, a) in args.iter().enumerate() {
+                            if let (Some(t), Some(p)) = (self.ty_opt(*a), target.params.get(i)) {
+                                self.widen(p.0, t);
+                            }
+                        }
+                    }
+                }
+                if let End::Recur(args) = &block.end {
+                    // `recur` re-enters the function's entry block.
+                    if let (Some(entry), true) = (blocks.first(), true) {
+                        for (i, a) in args.iter().enumerate() {
+                            if let (Some(t), Some(p)) = (self.ty_opt(*a), entry.params.get(i)) {
+                                self.widen(p.0, t);
+                            }
                         }
                     }
                 }
             }
-            if self.types.len() == before {
+            if self.types == snapshot {
                 break;
             }
         }
         Ok(())
+    }
+
+    /// The block a terminator jumps to.
+    fn block_by_id<'b>(&self, blocks: &'b [Block], from: &Block) -> Option<&'b Block> {
+        let End::Jmp(target, _) = &from.end else {
+            return None;
+        };
+        blocks.iter().find(|b| b.id == *target)
+    }
+
+    /// Record a register's type, widening rather than replacing.
+    ///
+    /// WGSL will not mix i32 and f32, so when predecessors disagree the wider
+    /// type has to win everywhere — otherwise the declaration and the
+    /// assignments describe different types.
+    fn widen(&mut self, reg: u32, t: Ty) {
+        let merged = match self.types.get(&reg).copied() {
+            Some(existing) if existing != t => Ty::join(existing, t),
+            Some(existing) => existing,
+            None => t,
+        };
+        self.types.insert(reg, merged);
     }
 
     fn infer_op(&mut self, op: &Op) -> Result<(), Error> {
@@ -381,7 +425,7 @@ impl Emitter<'_> {
             }
             Op::Mov(d, s, _) => {
                 if let Some(t) = self.ty_opt(*s) {
-                    self.types.insert(d.0, t);
+                    self.widen(d.0, t);
                 }
             }
             Op::Bin(d, bop, a, b, _) => {
@@ -513,6 +557,7 @@ impl Emitter<'_> {
     fn emit_block(
         &self,
         out: &mut String,
+        blocks: &[Block],
         block: &Block,
         pad: &str,
         dispatched: bool,
@@ -530,7 +575,7 @@ impl Emitter<'_> {
                 writeln!(out, "{pad}return;").unwrap();
             }
             End::Jmp(target, args) => {
-                self.emit_branch_args(out, block, *target, args, pad);
+                self.emit_branch_args(out, blocks, *target, args, pad);
                 if dispatched {
                     writeln!(out, "{pad}blk = {}; continue;", target.0).unwrap();
                 } else {
@@ -567,7 +612,7 @@ impl Emitter<'_> {
                 if !dispatched {
                     return err("a loop needs the block dispatcher");
                 }
-                self.emit_branch_args(out, block, block.id, args, pad);
+                self.emit_branch_args(out, blocks, block.id, args, pad);
                 writeln!(out, "{pad}blk = {}; continue;", block.id.0).unwrap();
             }
             End::Tail(..) | End::TailInvoke(..) => {
@@ -581,18 +626,17 @@ impl Emitter<'_> {
     fn emit_branch_args(
         &self,
         out: &mut String,
-        _from: &Block,
+        blocks: &[Block],
         target: super::BlockId,
         args: &[Reg],
         pad: &str,
     ) {
-        let Some(block) = self
-            .module
-            .funcs
-            .iter()
-            .flat_map(|f| f.blocks.iter())
-            .find(|b| b.id == target)
-        else {
+        // Within this function's blocks only. `BlockId` is per-function, so
+        // searching the whole module found whichever function happened to have
+        // a block with the same number — and copied jump arguments into its
+        // parameters, with its types. The shader that came out assigned an i32
+        // register to an f32 one.
+        let Some(block) = blocks.iter().find(|b| b.id == target) else {
             return;
         };
         for (p, a) in block.params.iter().zip(args.iter()) {
@@ -616,6 +660,13 @@ impl Emitter<'_> {
             (Ty::Bool, Ty::F32) => format!("select(0.0, 1.0, {text})"),
             (Ty::I32, Ty::Bool) => format!("({text} != 0)"),
             (Ty::F32, Ty::Bool) => format!("({text} != 0.0)"),
+            // A unit value reaching a numeric slot is zero, which is how the
+            // CPU executor already reads it. It happens on a control-flow path
+            // that produces no value — the fallthrough of a loop, say — and
+            // leaving it unconverted emitted a bare i32 register where WGSL
+            // wanted an f32, which is a shader that does not compile.
+            (Ty::Unit, Ty::F32) => format!("f32({text})"),
+            (Ty::Unit, Ty::Bool) => format!("({text} != 0)"),
             _ => text,
         }
     }

@@ -371,3 +371,75 @@ fn a_kernel_outside_the_fast_subset_still_runs() {
         assert_eq!(r.output, vec!["#[1 1 1 1]"]);
     }
 }
+
+// ── Reductions, within the rules ────────────────────────────────────────────
+
+/// A reduction expressed as chunked partials plus a host-side combine.
+const REDUCE: &str = "[kernel sum-chunk [c width src partials] \
+       [let start [* c width]] \
+       [let total [loop [k 0 acc 0.0] \
+         [if [>= k width] acc [recur [+ k 1] [+ acc [at src [+ start k]]]]]]] \
+       [put partials c total]] \
+     [fn main [] \
+       [let src [buf [range 0 256]]] \
+       [let mut partials [buf-zeros 16]] \
+       [Place.run sum-chunk 16 #[16 src partials]] \
+       [IO.println [sum [Place.read partials]]]]";
+
+#[test]
+fn a_reduction_needs_no_new_language_feature() {
+    // Each work item sums its own chunk and writes its own partial, so the
+    // disjointness rule holds throughout. There is no `Place.reduce`, no
+    // workgroup-shared memory, and no exception carved out.
+    let out = run(REDUCE);
+    // 0 + 1 + ... + 255
+    assert_eq!(out, vec!["32640"]);
+}
+
+#[test]
+fn a_reduction_agrees_across_every_placement() {
+    use loon_lang::eir::place::Mode;
+    let dir = std::env::current_dir().expect("cwd");
+    for mode in [Mode::Cpu, Mode::Par, Mode::Device] {
+        let (r, _) = loon_lang::eir::vm::eval_eir_placed(REDUCE, &dir, mode)
+            .unwrap_or_else(|e| panic!("{mode:?} failed: {e:?}"));
+        assert_eq!(r.output, vec!["32640"], "{mode:?} disagreed");
+    }
+}
+
+#[test]
+fn a_loop_carried_float_survives_the_shader() {
+    // The reduction's accumulator starts at 0.0 and is carried around a loop.
+    // Emitting that to WGSL exercised three separate bugs: a type-inference
+    // fixpoint that stopped before a loop-carried type settled, a branch target
+    // resolved across the whole module rather than one function, and a unit
+    // value reaching a float slot with no conversion. Each produced a shader
+    // that failed validation, which is the good outcome — but only because the
+    // emitter is checked.
+    use loon_lang::check::Checker;
+    use loon_lang::eir::layout::DType;
+    use loon_lang::eir::lower::lower;
+    use loon_lang::eir::wgsl;
+
+    let exprs = loon_lang::parser::parse(REDUCE).expect("parses");
+    let mut checker = Checker::new();
+    assert!(checker.check_program(&exprs).is_empty());
+    let module = lower(&checker);
+    let f = module
+        .funcs
+        .iter()
+        .find(|f| f.name.as_deref() == Some("sum-chunk"))
+        .expect("kernel lowered");
+    let kinds = wgsl::infer_arg_kinds(&module, f.id, DType::F32);
+    let shader = wgsl::emit(&module, f.id, &kinds).expect("emits");
+
+    let parsed = naga::front::wgsl::parse_str(&shader)
+        .unwrap_or_else(|e| panic!("WGSL did not parse: {e}\n\n{shader}"));
+    let mut validator = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    );
+    validator
+        .validate(&parsed)
+        .unwrap_or_else(|e| panic!("WGSL did not validate: {e:?}\n\n{shader}"));
+}
