@@ -160,13 +160,18 @@ Every accounting number, no execution. And strace-for-GPU is the same shape as s
 
 Metal on this laptop, today. Vulkan on a Linux box and DX12 on Windows are the same code path through wgpu, and I have not run either, so take them as "should" rather than "does."
 
-The one I want to be careful about is the browser. WGSL is WebGPU's shading language, and every kernel we emit is validated by naga — the same front end a browser uses — so the *shader* half is genuinely portable, and PTX and AMDGCN cannot go there at all. The whole placement stack also compiles for `wasm32-unknown-unknown`:
+The browser needs care, because there are two halves to it and they are in different states.
+
+Programs do run in a tab. `web/public/place.html` loads the wasm build, and the buttons pick a placement:
 
 ```
-cargo check -p loon-lang --target wasm32-unknown-unknown
+placed on device: 4 launches over 32 work items;
+                  9 uploads (288 B), 2 downloads (64 B), 3 resident hits
 ```
 
-But you still cannot run one of these programs in a tab, because Loon's browser build embeds the old tree-walking interpreter rather than the EIR VM. That gap predates this work and has nothing to do with placement — it is a TODO in `crates/loon-wasm` about the DOM bridge. So: the code is ready to go there, the shaders are known-good there, and nobody has moved the runtime yet. I'm noting the architecture points at a target the alternatives can't reach; I'm not claiming to have arrived.
+That is the residency handler, written against no hardware at all, deciding what a browser copies. Kernels and buffers only exist on the EIR VM, so the wasm crate grew an `eval_placed` export that runs on it; the DOM-driving exports stay on the old tree-walking interpreter, because the guide's examples use builtins the EIR VM doesn't implement and I would rather add an entry point than break documented pages.
+
+WebGPU is the half that isn't done. WGSL is its shading language and naga validates every kernel we emit, so the shaders are known-good there — but reaching an actual GPU from a tab needs wgpu's asynchronous device setup, which this build doesn't do. `--place gpu` in the browser refuses and says why. So: the programs run, the shaders would run, and the wire between them is missing.
 
 Every kernel in the repo is parsed and type-checked by naga in CI, on machines with no GPU. That's the automated cross-target validation the paper says is still missing — they found a host/device divergence in slice lowering by hand, `(ptr, len)` on two targets and `[i64; 2]` on a third. We have the same class of hazard: NaN-boxing constants that used to be copy-pasted into three backends under a comment asking the next person to keep them in sync. They now live in one file, and a conformance test compiles the same literals on every backend and compares raw bits.
 

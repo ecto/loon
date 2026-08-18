@@ -42,12 +42,44 @@ fn call_js_bridge(op: &str, args: &[Value]) -> Result<Value, loon_lang::interp::
     })
 }
 
+/// Run a Loon program on the EIR VM, with a placement mode.
+///
+/// This is the entry point a browser needs for placed programs: kernels,
+/// buffers, and the `Place` effect exist only on the EIR VM, so the
+/// interpreter-backed exports below cannot run them at all.
+///
+/// `place` is `cpu`, `par`, `device`, or `gpu`. In a browser, `cpu` is the
+/// real answer and `device` models a discrete memory so transfer counts can
+/// be shown; `par` has no threads to use here and behaves as `cpu`; `gpu`
+/// reports that this build has no GPU support, because reaching WebGPU needs
+/// wgpu's async device initialization, which this crate does not do yet.
+///
+/// Returns the program's printed output followed by its placement accounting,
+/// so a page can show what crossed the boundary.
+#[wasm_bindgen]
+pub fn eval_placed(source: &str, place: &str) -> Result<String, String> {
+    let mode = loon_lang::eir::place::Mode::parse(place)
+        .ok_or_else(|| format!("unknown placement mode '{place}'"))?;
+    let (result, stats) =
+        loon_lang::eir::vm::eval_eir_placed(source, std::path::Path::new("."), mode)
+            .map_err(|e| e.to_string())?;
+
+    let mut out = result.output.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str("\u{2014}\n");
+    out.push_str(&format!("placed on {}: {}", mode.name(), stats.summary()));
+    Ok(out)
+}
+
 /// Evaluate a Loon program and return the result as a string.
-// TODO: migrate to `loon_lang::eir::vm::eval_eir` once the EIR VM supports
-// the DOM bridge (init_dom_bridge / eval_ui / invoke_callback). The WASM crate
-// still uses the legacy tree-walking interpreter because the DOM bridge depends
-// on `Value` and `InterpError`, which differ from the EIR's NaN-boxed `Val` /
-// `VmResult`. A conversion layer or EIR-native DOM bridge is needed first.
+// The DOM-driving exports (`eval_ui`, `invoke_callback`) stay on the legacy
+// tree-walking interpreter: the DOM bridge is written against `Value` and
+// `InterpError`, which differ from the EIR's NaN-boxed `Val` and `VmResult`.
+// `eval_program` and `eval_with_output` stay with them so the guide's examples
+// keep working — several use builtins such as `push!` that the EIR VM does not
+// implement. Programs that need the EIR VM call `eval_placed` above.
 #[wasm_bindgen]
 pub fn eval_program(source: &str) -> Result<String, String> {
     let exprs = loon_lang::parser::parse(source).map_err(|e| format!("{e}"))?;

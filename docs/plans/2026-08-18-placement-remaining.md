@@ -28,36 +28,43 @@ code.
 
 ## Not done
 
-### The browser
+### WebGPU from a browser
 
-`crates/loon-wasm` embeds the tree-walking interpreter, not the EIR VM, so
-none of the above reaches a tab. The blocker is the DOM bridge (`lib.rs:46`),
-which predates placement entirely. The placement code itself compiles for
-`wasm32-unknown-unknown` today:
+Placed programs *do* run in a browser: `crates/loon-wasm` exports `eval_placed`,
+which runs on the EIR VM, and `web/public/place.html` exercises cpu, par, and
+device placement in a tab with transfer accounting. The residency handler works
+there.
 
-    cargo check -p loon-lang --target wasm32-unknown-unknown
+What is missing is the GPU behind it. wgpu's WebGPU backend needs asynchronous
+device initialization (`request_adapter`/`request_device` return futures that a
+browser resolves on its event loop), and `eir::gpu` uses `pollster::block_on`,
+which cannot block on wasm. `--place gpu` in a browser refuses and says so.
 
-Moving the wasm build onto the EIR VM is its own project. Once done, wgpu's
-WebGPU backend and async device initialization are the remaining pieces.
+The DOM-driving exports (`eval_ui`, `invoke_callback`) remain on the legacy
+interpreter. The bridge is written against `Value`/`InterpError` rather than the
+EIR's `Val`/`VmResult`, and the guide's examples use builtins such as `push!`
+that the EIR VM does not implement — so `eval_program` and `eval_with_output`
+were left alone rather than regressing documented pages.
 
-### Reductions and atomics
+### Atomics
 
-Kernels are map-shaped: a work item writes at its own index. A reduction needs
-workgroup-shared memory and a two-phase dispatch, and the disjointness
-argument that makes parallel placement sound stops holding. Host-side
-reduction after `Place.read` works today and is what the samples do.
+Reductions are done — see `samples/place/reduce.oo`. They needed no new feature:
+each work item sums its own chunk into its own slot of a partials buffer, which
+is still "write at your own index", and the handful of partials is combined on
+the host. Anything genuinely needing atomics (a histogram, a scatter-add) is
+still out, and that is the same restriction as the scatter rule below.
 
 ### 64-bit on a GPU
 
-WGSL core has no `f64` or 64-bit integer. Buffers of those types are narrowed
-to 32-bit on the device, reported rather than hidden (`DType::gpu_ok`).
+WGSL core has no `f64` or 64-bit integer, so a launch with such a buffer is
+refused with a message naming the type and the alternative. It is not narrowed
+silently — handing back a precision the program never asked for, and cannot
+detect, is the failure this design exists to avoid.
 
 ### Scatter kernels
 
-`check::kernel` does not yet enforce that a `put` index is the work index. The
-parallel executor catches a violation at runtime — a write outside the slice a
-thread owns is an error naming the problem — but catching it at compile time
-would be better.
+Rejected at compile time now (E0602), naming the offending index. Reading
+anywhere is still allowed: gather is safe, scatter is not.
 
 ### Numbers we do not have
 

@@ -134,7 +134,11 @@
         [ul-el
           {:style {:margin-left "1.5rem" :line-height "1.8"}}
           [li-el
-            "Kernels compile to WGSL and every one in the repo is validated by naga in CI, on machines with no GPU. WGSL is WebGPU's language, so the shader half is portable to a browser — though the browser build still embeds the old interpreter, so running one there is not possible yet."]
+            "Kernels compile to WGSL and every one in the repo is validated by naga in CI, on machines with no GPU."]
+          [li-el
+            "Placed programs run in a browser: web/public/place.html picks a placement in a tab and shows what crossed the boundary. Reaching a GPU from there still needs wgpu's asynchronous device setup, so --place gpu refuses and says why."]
+          [li-el
+            "Reductions, with no new language feature: each work item sums its own chunk into its own slot, so the write-at-your-own-index rule holds throughout (samples/place/reduce.oo)."]
           [li-el
             "One shared value layout across the VM, WASM, and native backends, with a conformance test that compares raw bits — it found three real divergences the first time it ran."]
           [li-el

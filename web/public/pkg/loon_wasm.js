@@ -42,6 +42,48 @@ export function enable_effect_log(enabled) {
 }
 
 /**
+ * Run a Loon program on the EIR VM, with a placement mode.
+ *
+ * This is the entry point a browser needs for placed programs: kernels,
+ * buffers, and the `Place` effect exist only on the EIR VM, so the
+ * interpreter-backed exports below cannot run them at all.
+ *
+ * `place` is `cpu`, `par`, `device`, or `gpu`. In a browser, `cpu` is the
+ * real answer and `device` models a discrete memory so transfer counts can
+ * be shown; `par` has no threads to use here and behaves as `cpu`; `gpu`
+ * reports that this build has no GPU support, because reaching WebGPU needs
+ * wgpu's async device initialization, which this crate does not do yet.
+ *
+ * Returns the program's printed output followed by its placement accounting,
+ * so a page can show what crossed the boundary.
+ * @param {string} source
+ * @param {string} place
+ * @returns {string}
+ */
+export function eval_placed(source, place) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(place, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.eval_placed(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * Evaluate a Loon program and return the result as a string.
  * @param {string} source
  * @returns {string}

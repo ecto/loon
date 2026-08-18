@@ -3,6 +3,7 @@
 export const memory: WebAssembly.Memory;
 export const check_program: (a: number, b: number) => [number, number, number, number];
 export const enable_effect_log: (a: number) => void;
+export const eval_placed: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const eval_program: (a: number, b: number) => [number, number, number, number];
 export const eval_ui: (a: number, b: number) => [number, number];
 export const eval_ui_checked: (a: number, b: number) => [number, number];

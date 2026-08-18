@@ -17,6 +17,24 @@ export function clear_effect_log(): void;
 export function enable_effect_log(enabled: boolean): void;
 
 /**
+ * Run a Loon program on the EIR VM, with a placement mode.
+ *
+ * This is the entry point a browser needs for placed programs: kernels,
+ * buffers, and the `Place` effect exist only on the EIR VM, so the
+ * interpreter-backed exports below cannot run them at all.
+ *
+ * `place` is `cpu`, `par`, `device`, or `gpu`. In a browser, `cpu` is the
+ * real answer and `device` models a discrete memory so transfer counts can
+ * be shown; `par` has no threads to use here and behaves as `cpu`; `gpu`
+ * reports that this build has no GPU support, because reaching WebGPU needs
+ * wgpu's async device initialization, which this crate does not do yet.
+ *
+ * Returns the program's printed output followed by its placement accounting,
+ * so a page can show what crossed the boundary.
+ */
+export function eval_placed(source: string, place: string): string;
+
+/**
  * Evaluate a Loon program and return the result as a string.
  */
 export function eval_program(source: string): string;
@@ -71,6 +89,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly check_program: (a: number, b: number) => [number, number, number, number];
     readonly enable_effect_log: (a: number) => void;
+    readonly eval_placed: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly eval_program: (a: number, b: number) => [number, number, number, number];
     readonly eval_ui: (a: number, b: number) => [number, number];
     readonly eval_ui_checked: (a: number, b: number) => [number, number];

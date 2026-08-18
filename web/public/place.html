@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Placement in a browser — Loon</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1a1a1a; --bg: #fdfdfc; --dim: #6b6b6b;
+          --accent: #7a4f2a; --line: #e0ded9; --code-bg: #f4f2ee; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #e8e6e1; --bg: #191817; --dim: #9a9791;
+            --accent: #d3a26a; --line: #34322f; --code-bg: #221f1d; }
+  }
+  body { margin: 0 auto; padding: 2.5rem 1.25rem 4rem; max-width: 46rem;
+         background: var(--bg); color: var(--fg);
+         font: 16px/1.65 ui-serif, Georgia, serif; }
+  h1 { font-size: 1.7rem; margin: 0 0 .35rem; }
+  .sub { color: var(--dim); margin: 0 0 2rem; }
+  h2 { font-size: 1.05rem; margin: 2.25rem 0 .6rem; color: var(--accent); }
+  p { margin: 0 0 1rem; }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px;
+        padding: .85rem 1rem; overflow-x: auto;
+        font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .row { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 1rem; }
+  button { font: inherit; font-size: .9rem; padding: .4rem .9rem; cursor: pointer;
+           background: var(--bg); color: var(--fg);
+           border: 1px solid var(--line); border-radius: 5px; }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  code { background: var(--code-bg); padding: .1em .35em; border-radius: 3px; font-size: .9em; }
+  .note { color: var(--dim); font-size: .9rem; }
+</style>
+</head>
+<body>
+<h1>Placement in a browser</h1>
+<p class="sub">The same kernel, the same program — running in this tab.</p>
+
+<p>Below is a Loon kernel and a residency handler. Nothing in the program says
+where the work happens; the buttons choose a placement, and the answer does not
+change between them.</p>
+
+<pre id="src"></pre>
+
+<h2>Run it</h2>
+<div class="row">
+  <button data-mode="cpu">--place cpu</button>
+  <button data-mode="par">--place par</button>
+  <button data-mode="device">--place device</button>
+  <button data-mode="gpu">--place gpu</button>
+</div>
+<pre id="out">loading the wasm build…</pre>
+<p class="note">
+  <code>cpu</code> is the real answer here. <code>device</code> models a separate
+  memory so you can see transfers counted. <code>par</code> has no threads to use
+  in a browser and behaves as <code>cpu</code>. <code>gpu</code> is expected to
+  refuse: reaching WebGPU needs wgpu's asynchronous device setup, which this
+  build does not do yet — the shaders are validated in CI, but the runtime has
+  not been wired up.
+</p>
+
+<script type="module">
+import init, { eval_placed } from '/loon_wasm.js';
+
+const program = `[kernel saxpy [i a x y out]
+  [put out i [+ [* a [at x i]] [at y i]]]]
+
+[fn work []
+  [let x [buf [range 0 8]]]
+  [let y [buf [range 0 8]]]
+  [let mut out [buf-zeros 8]]
+  [Place.run saxpy 8 #[3.0 x y out]]
+  [Place.run saxpy 8 #[3.0 x y out]]
+  [Place.read out]]
+
+[fn resident [thunk]
+  [handle [thunk]
+    [Place.run k n args] [do [Place.pin args] [resume [Place.run k n args]]]
+    [Place.read b]       [resume [Place.read b]]]]
+
+[fn main []
+  [IO.println [str "no policy: " [work]]]
+  [IO.println [str "resident:  " [resident work]]]]`;
+
+document.getElementById('src').textContent = program;
+const out = document.getElementById('out');
+const buttons = [...document.querySelectorAll('button')];
+
+try {
+  await init();
+  out.textContent = 'ready — pick a placement.';
+  buttons.forEach(b => b.disabled = false);
+} catch (e) {
+  out.textContent = 'could not load the wasm build: ' + e;
+}
+
+for (const b of buttons) {
+  b.addEventListener('click', () => {
+    const mode = b.dataset.mode;
+    try {
+      out.textContent = eval_placed(program, mode);
+    } catch (e) {
+      out.textContent = String(e);
+    }
+  });
+}
+</script>
+</body>
+</html>
