@@ -4,6 +4,7 @@
 //! Every backend (Register VM, WASM, Cranelift) lowers from this IR.
 
 pub mod backend;
+pub mod device;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod kernel_exec;

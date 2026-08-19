@@ -426,9 +426,12 @@ pub struct Vm {
     pub place_mode: crate::eir::place::Mode,
     /// Device-side residency, when running in device mode.
     place_device: crate::eir::place::Device,
-    /// The GPU, opened on first use and kept for the rest of the run.
-    #[cfg(feature = "gpu")]
-    gpu: Option<std::rc::Rc<crate::eir::gpu::Gpu>>,
+    /// The device kernels are dispatched to, opened on first use and kept for
+    /// the rest of the run.
+    ///
+    /// Any `Device` will do: wgpu on a desktop, a bridge to JavaScript in a
+    /// browser. The VM does not know which it has.
+    device: Option<std::rc::Rc<dyn crate::eir::device::Device>>,
     /// String constants resolved to heap indices.
     string_cache: HashMap<StringId, usize>,
     /// Interns string *objects* by content, so structurally-equal strings share
@@ -536,8 +539,7 @@ impl Vm {
             place_stats: crate::eir::place::PlaceStats::default(),
             place_mode: crate::eir::place::Mode::default(),
             place_device: crate::eir::place::Device::default(),
-            #[cfg(feature = "gpu")]
-            gpu: None,
+            device: None,
             recorder: None,
             replay: None,
             runtime_syms: Vec::new(),
@@ -822,10 +824,22 @@ impl Vm {
         // particular device.
         if self.place_mode == crate::eir::place::Mode::Gpu {
             self.place_run_gpu(func_id, &rest, n)?;
-            for arg in &rest {
+
+            // Only what the kernel *wrote* differs from the host's copy. This
+            // used to mark every argument dirty, so a launch reading two
+            // buffers and writing one reported three transfers home when one
+            // was needed — and did three, which is worse than the accounting
+            // being wrong.
+            let kinds = crate::eir::wgsl::infer_arg_kinds(&self.module, func_id, DType::F32);
+            for (i, arg) in rest.iter().enumerate() {
                 if let Some((id, _, _)) = self.buffer_info(*arg) {
                     self.place_device.mark_resident(id);
-                    self.place_device.mark_dirty(id);
+                    if matches!(
+                        kinds.get(i),
+                        Some(crate::eir::wgsl::ArgKind::Buffer { writable: true, .. })
+                    ) {
+                        self.place_device.mark_dirty(id);
+                    }
                 }
             }
             // An unpinned buffer does not survive the launch, and on a GPU
@@ -913,10 +927,7 @@ impl Vm {
     /// them. That is what makes the residency accounting describe the hardware
     /// rather than a model of it: an upload counted here is an upload that
     /// happened.
-    #[cfg(feature = "gpu")]
     fn place_run_gpu(&mut self, func_id: FuncId, rest: &[Val], n: i64) -> Result<(), VmError> {
-        use crate::eir::gpu;
-
         let kinds = crate::eir::wgsl::infer_arg_kinds(&self.module, func_id, DType::F32);
         if kinds.len() != rest.len() {
             return Err(self.place_error(format!(
@@ -968,7 +979,12 @@ impl Vm {
                     }
                     let id = val.as_ptr();
                     buffer_ids.push(id);
-                    to_upload.push((id, gpu::narrow(b), b.byte_len() as u64, b.dtype()));
+                    to_upload.push((
+                        id,
+                        crate::eir::device::narrow(b),
+                        b.byte_len() as u64,
+                        b.dtype(),
+                    ));
                 }
                 _ => {
                     let x = if val.is_int() {
@@ -988,7 +1004,9 @@ impl Vm {
 
         let device = self.gpu_device()?;
         for (i, (id, narrowed, bytes, dtype)) in to_upload.iter().enumerate() {
-            let uploaded = device.ensure_resident(*id, narrowed);
+            let uploaded = device
+                .ensure_resident(*id, narrowed)
+                .map_err(|e| self.place_error(e.0))?;
             self.place_stats.record(crate::eir::place::PlaceEvent {
                 kind: if uploaded {
                     crate::eir::place::EventKind::Upload
@@ -1010,62 +1028,65 @@ impl Vm {
         Ok(())
     }
 
-    /// Without the `gpu` feature there is no GPU, and saying so plainly beats
-    /// running somewhere the caller did not ask for.
-    #[cfg(not(feature = "gpu"))]
-    fn place_run_gpu(&mut self, _func: FuncId, _rest: &[Val], _n: i64) -> Result<(), VmError> {
-        Err(self.place_error(
-            "this build has no GPU support; rebuild with `--features gpu`, or use \
-             `--place cpu`"
-                .to_string(),
-        ))
-    }
-
-    /// The GPU, opened once and kept.
-    #[cfg(feature = "gpu")]
-    fn gpu_device(&mut self) -> Result<std::rc::Rc<crate::eir::gpu::Gpu>, VmError> {
-        if let Some(g) = &self.gpu {
-            return Ok(g.clone());
+    /// The device, opened on first use and kept.
+    ///
+    /// A bridge installed by the host wins: in a browser that is the only way
+    /// to reach a GPU, because WebGPU is asynchronous and this VM is not. With
+    /// no bridge and no `gpu` feature there is nowhere to run, and saying so
+    /// beats quietly running somewhere the caller did not ask for.
+    fn gpu_device(&mut self) -> Result<std::rc::Rc<dyn crate::eir::device::Device>, VmError> {
+        if let Some(d) = &self.device {
+            return Ok(d.clone());
         }
-        let g = std::rc::Rc::new(
-            crate::eir::gpu::Gpu::open().map_err(|e| self.place_error(e.to_string()))?,
-        );
-        self.gpu = Some(g.clone());
-        Ok(g)
+        if let Some(d) = crate::eir::device::installed() {
+            self.device = Some(d.clone());
+            return Ok(d);
+        }
+        #[cfg(feature = "gpu")]
+        {
+            let g: std::rc::Rc<dyn crate::eir::device::Device> = std::rc::Rc::new(
+                crate::eir::gpu::Gpu::open().map_err(|e| self.place_error(e.to_string()))?,
+            );
+            self.device = Some(g.clone());
+            Ok(g)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            Err(self.place_error(
+                "this build has no GPU support; rebuild with `--features gpu`, install a \
+                 device bridge, or use `--place cpu`"
+                    .to_string(),
+            ))
+        }
     }
 
-    /// Release device allocations for buffers the model just evicted.
-    #[cfg(feature = "gpu")]
+    /// Release device storage for buffers the model just evicted.
     fn gpu_evict(&mut self, ids: &[usize]) {
-        if let Some(g) = &self.gpu {
+        if let Some(d) = &self.device {
             for id in ids {
-                g.evict(*id);
+                d.evict(*id);
             }
         }
     }
 
-    #[cfg(not(feature = "gpu"))]
-    fn gpu_evict(&mut self, _ids: &[usize]) {}
-
-    /// Bring a buffer's device contents home, if it lives on a GPU.
-    #[cfg(feature = "gpu")]
+    /// Bring a buffer's device contents home, if it lives on a device.
     fn gpu_download_into(&mut self, id: usize, val: Val) -> Result<(), VmError> {
         if self.place_mode != crate::eir::place::Mode::Gpu {
             return Ok(());
         }
-        let Some(g) = self.gpu.clone() else {
+        let Some(d) = self.device.clone() else {
             return Ok(());
         };
-        if !g.is_resident(id) {
+        if !d.is_resident(id) {
             return Ok(());
         }
         let byte_len = match self.get_obj(val) {
             Some(Obj::Buffer(b)) => b.byte_len(),
             _ => return Ok(()),
         };
-        let bytes = g
+        let bytes = d
             .download(id, byte_len)
-            .map_err(|e| self.place_error(format!("reading back from the GPU: {e}")))?;
+            .map_err(|e| self.place_error(format!("reading back from the device: {e}")))?;
         if let Some(Obj::Buffer(buf)) = self.heap.get_mut(id) {
             let len = buf.len();
             let vals: Vec<f32> = bytes
@@ -1077,11 +1098,6 @@ impl Vm {
                 buf.set(i, Val::float(v as f64));
             }
         }
-        Ok(())
-    }
-
-    #[cfg(not(feature = "gpu"))]
-    fn gpu_download_into(&mut self, _id: usize, _val: Val) -> Result<(), VmError> {
         Ok(())
     }
 

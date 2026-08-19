@@ -15,9 +15,43 @@
 //! test suite depends on hardware being present — it only gets *checked* on
 //! hardware when hardware is there.
 
+use super::device::{Device, DeviceError};
 use super::layout::DType;
 use super::vm::{BufData, Buffer};
 use super::wgsl::ArgKind;
+
+impl Device for Gpu {
+    fn name(&self) -> String {
+        Gpu::name(self).to_string()
+    }
+
+    fn ensure_resident(&self, id: usize, buf: &Buffer) -> Result<bool, DeviceError> {
+        Ok(Gpu::ensure_resident(self, id, buf))
+    }
+
+    fn is_resident(&self, id: usize) -> bool {
+        Gpu::is_resident(self, id)
+    }
+
+    fn dispatch(
+        &self,
+        shader: &str,
+        entry: &str,
+        n: u32,
+        scalars: &[f32],
+        buffers: &[usize],
+    ) -> Result<(), DeviceError> {
+        Gpu::dispatch(self, shader, entry, n, scalars, buffers).map_err(|e| DeviceError(e.0))
+    }
+
+    fn download(&self, id: usize, byte_len: usize) -> Result<Vec<u8>, DeviceError> {
+        Gpu::download(self, id, byte_len).map_err(|e| DeviceError(e.0))
+    }
+
+    fn evict(&self, id: usize) {
+        Gpu::evict(self, id)
+    }
+}
 
 /// A GPU we can dispatch to.
 pub struct Gpu {
