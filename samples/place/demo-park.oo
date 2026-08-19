@@ -1,0 +1,58 @@
+; Demo: suspending a computation and finishing it later.
+;
+; A handler clause does not have to call `resume`. If it hands `resume`
+; somewhere else and returns, the handled computation unwinds — and the
+; continuation is still live, held by whoever received it. Calling it later
+; picks the program up exactly where it stopped.
+;
+; That is the whole mechanism an asynchronous host needs. A browser cannot
+; answer `Place.read` immediately, because reading a GPU buffer back is a
+; promise; but it does not have to. It can take the continuation, go away, and
+; come back when the bytes arrive.
+;
+; Nothing here is special-cased in the VM. This is what reified, escaping
+; continuations already are.
+;
+; One thing to know before using this, because it decides where the handler
+; goes: parking unwinds to the `handle`, so whatever follows the handle runs
+; *immediately*, with whatever the clause returned — not with the real answer.
+; The suspended part is the only thing that waits. So a handler that defers an
+; answer belongs outermost, with nothing meaningful after it, and the value of
+; the computation comes back when the continuation is called rather than from
+; the call that parked.
+;
+;   loon run samples/place/demo-park.oo
+[use lib]
+
+[effect Slow
+  [fetch [Int] Int]]
+
+[effect Host
+  [park [a] Unit]]
+
+; A computation that stops in the middle to ask for something slow.
+[fn work []
+  [IO.println "  work: starting"]
+  [let answer [Slow.fetch 1]]
+  [IO.println [str "  work: continued with " answer]]
+  [* answer 2]]
+
+; The handler that suspends. It does not resume; it hands `resume` outward and
+; returns, so the computation unwinds with its rest still intact.
+[fn suspending [thunk]
+  [handle [thunk] [Slow.fetch id] [do [Host.park resume] 0]]]
+
+[fn suspended-work [] [suspending work]]
+
+; The host: catches the parked continuation, does whatever slow thing it
+; likes, and then calls it.
+[fn main []
+  [handle
+    [suspended-work]
+    [Host.park k]
+    [do
+      [IO.println "  host: computation parked; the rest of it is mine now"]
+      [IO.println "  host: ...doing something slow..."]
+      [IO.println [str "  host: finished with " [k 21]]]
+      [resume []]]]
+  [IO.println "done"]]

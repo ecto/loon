@@ -25,24 +25,12 @@ use std::fmt;
 #[repr(transparent)]
 pub struct Val(u64);
 
-// Bit layout constants
-const QNAN: u64 = 0x7FF8_0000_0000_0000; // quiet NaN base
-const SIGN: u64 = 0x8000_0000_0000_0000; // sign bit
-const BASE: u64 = SIGN | QNAN; // all tagged values have this prefix
-const TAG_MASK: u64 = 0x0007_0000_0000_0000; // bits 48-50
-const PAYLOAD: u64 = 0x0000_FFFF_FFFF_FFFF; // low 48 bits
-
-// Tag values (shifted into position)
-const TAG_PTR: u64 = 0x0000_0000_0000_0000; // heap pointer
-const TAG_INT: u64 = 0x0001_0000_0000_0000; // inline int48
-const TAG_SYM: u64 = 0x0006_0000_0000_0000; // interned symbol/keyword
-const TAG_IMM: u64 = 0x0007_0000_0000_0000; // immediate
-
-// Immediate sub-tags (in low bits)
-const IMM_UNIT: u64 = 0;
-const IMM_TRUE: u64 = 1;
-const IMM_FALSE: u64 = 2;
-const IMM_NONE: u64 = 3;
+// The bit layout itself lives in `layout::nanbox` so that the WASM emitter and
+// the Cranelift backend encode values the same way this file decodes them.
+use super::layout::nanbox::{
+    BASE, IMM_FALSE, IMM_NONE, IMM_TRUE, IMM_UNIT, PAYLOAD, TAG_IMM, TAG_INT, TAG_MASK, TAG_PTR,
+    TAG_SYM,
+};
 
 impl Val {
     // ── Constants ──────────────────────────────────────────────────────

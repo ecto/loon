@@ -17,6 +17,23 @@ export function clear_effect_log(): void;
 export function enable_effect_log(enabled: boolean): void;
 
 /**
+ * Run a Loon program on the EIR VM, with a placement mode.
+ *
+ * This is the entry point a browser needs for placed programs: kernels,
+ * buffers, and the `Place` effect exist only on the EIR VM, so the
+ * interpreter-backed exports below cannot run them at all.
+ *
+ * `place` is `cpu`, `par`, `device`, or `gpu`. In a browser, `cpu` is the
+ * real answer and `device` models a discrete memory so transfer counts can be
+ * shown; `par` has no threads to use here and behaves as `cpu`; `gpu` needs a
+ * bridge installed with `init_gpu_bridge`, and says so if there is none.
+ *
+ * Returns the program's printed output followed by its placement accounting,
+ * so a page can show what crossed the boundary.
+ */
+export function eval_placed(source: string, place: string): string;
+
+/**
  * Evaluate a Loon program and return the result as a string.
  */
 export function eval_program(source: string): string;
@@ -44,6 +61,11 @@ export function eval_with_output(source: string): string;
 export function get_effect_log(): string;
 
 /**
+ * Whether a GPU bridge has been installed.
+ */
+export function has_gpu_bridge(): boolean;
+
+/**
  * Infer the type of the last named binding (fn/let) in the source.
  */
 export function infer_type(source: string): string;
@@ -56,9 +78,36 @@ export function infer_type(source: string): string;
 export function init_dom_bridge(bridge: Function): void;
 
 /**
+ * Install the GPU bridge: a JS function taking `(op, payload)` and returning
+ * synchronously.
+ *
+ * The operations are `name`, `upload`, `dispatch`, `download`, and `evict`.
+ * How the JS side becomes synchronous is up to it — the demo runs the VM in a
+ * worker and blocks on `Atomics.wait` while the main thread drives WebGPU.
+ *
+ * With a bridge installed, `--place gpu` works in a browser. Without one it
+ * says there is nowhere to run, which is better than quietly running on the
+ * CPU and reporting GPU numbers.
+ */
+export function init_gpu_bridge(bridge: Function): void;
+
+/**
  * Invoke a stored Loon callback by ID (called from JS event handlers).
  */
 export function invoke_callback(id: number): void;
+
+/**
+ * Finish a parked step by supplying the numbers the host went to fetch.
+ */
+export function place_resume(values: Float32Array): any;
+
+/**
+ * Start a program, running until it finishes or parks.
+ *
+ * Returns `{done, output, request}`. `done` false means it parked and is
+ * waiting for `place_resume`.
+ */
+export function place_start(source: string, place: string): any;
 
 /**
  * Reset the Loon runtime state (callbacks, etc.) for hot reload.
@@ -71,14 +120,19 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly check_program: (a: number, b: number) => [number, number, number, number];
     readonly enable_effect_log: (a: number) => void;
+    readonly eval_placed: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly eval_program: (a: number, b: number) => [number, number, number, number];
     readonly eval_ui: (a: number, b: number) => [number, number];
     readonly eval_ui_checked: (a: number, b: number) => [number, number];
     readonly eval_with_output: (a: number, b: number) => [number, number, number, number];
     readonly get_effect_log: () => [number, number];
+    readonly has_gpu_bridge: () => number;
     readonly infer_type: (a: number, b: number) => [number, number, number, number];
     readonly init_dom_bridge: (a: any) => void;
+    readonly init_gpu_bridge: (a: any) => void;
     readonly invoke_callback: (a: number) => void;
+    readonly place_resume: (a: number, b: number) => [number, number, number];
+    readonly place_start: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly clear_effect_log: () => void;
     readonly reset_runtime: () => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;

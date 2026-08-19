@@ -1,0 +1,37 @@
+; Demo: one program, four answers to "where does this run".
+;
+; `blur` and `work` never mention a device, a queue, or a transfer. The only
+; thing that changes between the runs below is which handler is wrapped around
+; the same thunk — and the answer is identical every time.
+;
+;   loon run samples/place/demo-handlers.oo
+[use lib]
+
+; A two-kernel chain. Chains are where placement policy earns its keep: the
+; intermediate never needs to come back to the host, and only a handler is in
+; a position to know that.
+[kernel scale [i s src dst] [put dst i [* s [at src i]]]]
+
+[kernel offset [i d buf] [put buf i [+ d [at buf i]]]]
+
+[fn work []
+  [let src [buf #[1 2 3 4 5 6 7 8]]]
+  [let mut dst [buf-zeros 8]]
+  [Place.run scale 8 #[10.0 src dst]]
+  [Place.run offset 8 #[1.0 dst]]
+  [Place.read dst]]
+
+[fn main []
+  [IO.println "no handler — it runs right here:"]
+  [IO.println [str "  " [work]]]
+  
+  [IO.println "traced — every launch and sync is visible:"]
+  [IO.println [str "  " [place/trace work]]]
+  
+  [IO.println "dry run — accounted for, nothing executed:"]
+  [IO.println [str "  " [place/dry-run work]]]
+  
+  [IO.println "resident — buffers stay put between launches:"]
+  [IO.println [str "  " [place/resident work]]]
+  
+  [IO.println [str "totals: " [Place.stats]]]]

@@ -50,6 +50,13 @@ enum Command {
         /// (Loon data format), for `loon replay`
         #[arg(long, value_name = "TRACE")]
         record: Option<PathBuf>,
+        /// Where kernels run when nothing handles `Place`: `cpu` (one memory,
+        /// no transfers) or `device` (separate memory, transfers accounted)
+        #[arg(long, value_name = "MODE", default_value = "cpu")]
+        place: String,
+        /// Print placement accounting — launches, transfers, bytes — on exit
+        #[arg(long)]
+        place_stats: bool,
     },
     /// Re-run a program feeding recorded effect results back from a trace
     /// (see `loon run --record`) — same trace, same execution, same crash
@@ -175,7 +182,29 @@ fn main() {
             legacy,
             native,
             ref record,
+            ref place,
+            place_stats,
         } => {
+            let place_mode = match loon_lang::eir::place::Mode::parse(place) {
+                Some(m) => m,
+                None => {
+                    eprintln!(
+                        "{}: unknown placement mode '{place}' — expected 'cpu' or 'device'",
+                        "error".red().bold()
+                    );
+                    std::process::exit(1);
+                }
+            };
+            if (place_mode != loon_lang::eir::place::Mode::Cpu || place_stats)
+                && (wasm || legacy || native)
+            {
+                eprintln!(
+                    "{}: --place/--place-stats require the default EIR VM backend \
+                     (drop --wasm/--legacy/--native)",
+                    "error".red().bold()
+                );
+                std::process::exit(1);
+            }
             if record.is_some() && (wasm || legacy || native) {
                 eprintln!(
                     "{}: --record requires the default EIR VM backend \
@@ -191,7 +220,7 @@ fn main() {
             } else if legacy {
                 run_file_legacy(file);
             } else {
-                run_file(file, record.as_deref(), unchecked);
+                run_file(file, record.as_deref(), unchecked, place_mode, place_stats);
             }
         }
         Command::Replay {
@@ -281,7 +310,13 @@ fn precheck_source(path: &std::path::Path, source: &str) {
     }
 }
 
-fn run_file(path: &PathBuf, record: Option<&std::path::Path>, unchecked: bool) {
+fn run_file(
+    path: &PathBuf,
+    record: Option<&std::path::Path>,
+    unchecked: bool,
+    place_mode: loon_lang::eir::place::Mode,
+    show_place_stats: bool,
+) {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -398,6 +433,17 @@ fn run_file(path: &PathBuf, record: Option<&std::path::Path>, unchecked: bool) {
                 );
             }
             r
+        }
+        None if place_mode != loon_lang::eir::place::Mode::Cpu || show_place_stats => {
+            match loon_lang::eir::vm::eval_eir_placed(&source, base_dir, place_mode) {
+                Ok((r, stats)) => {
+                    if show_place_stats {
+                        print!("{}", stats.table());
+                    }
+                    Ok(r)
+                }
+                Err(e) => Err(e),
+            }
         }
         None => loon_lang::eir::vm::eval_eir_with_base_dir(&source, base_dir),
     };

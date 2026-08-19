@@ -1,0 +1,22 @@
+; saxpy: out[i] = a * x[i] + y[i]
+;
+; Nothing in this program says where the work happens. `Place.run` is an
+; effect; with no handler installed it runs serially on this CPU. Install a
+; handler and the same source runs somewhere else — that is the whole idea.
+;
+; Note what is *not* written anywhere: which buffers travel to the device and
+; which have to come back. Loon infers that. `x` and `y` are only ever read
+; (`at`), so they are inputs; `out` is written through (`put`), so it is the
+; one that has to be synchronized back.
+[kernel saxpy [i a x y out] [put out i [+ [* a [at x i]] [at y i]]]]
+
+[fn main []
+  [let n 8]
+  [let x [buf [range 0 n]]]
+  [let y [buf [map [fn [v] [* 2 v]] [range 0 n]]]]
+  [let mut out [buf-zeros n]]
+  
+  [Place.run saxpy n #[3.0 x y out]]
+  
+  [IO.println [str "out   = " [Place.read out]]]
+  [IO.println [str "stats = " [Place.stats]]]]

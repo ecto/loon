@@ -4,17 +4,24 @@
 //! Every backend (Register VM, WASM, Cranelift) lowers from this IR.
 
 pub mod backend;
+pub mod device;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod image;
+pub mod kernel_exec;
+pub mod layout;
 pub mod lower;
 #[cfg(feature = "native")]
 pub mod native;
 pub mod net;
+pub mod place;
 pub mod replay;
 pub mod tailcall;
 pub mod trace;
 pub mod value64;
 pub mod vm;
 pub mod wasm;
+pub mod wgsl;
 
 use crate::syntax::Span;
 
@@ -62,6 +69,14 @@ pub struct Func {
     pub id: FuncId,
     pub name: Option<String>,
     pub params: Vec<Ty>,
+    /// How each parameter is used: read, written through, or consumed.
+    ///
+    /// Inferred by the ownership pass rather than written by the programmer.
+    /// Empty for functions the analysis did not name (closures, handler
+    /// clauses); otherwise one entry per parameter. Backends use it the way a
+    /// C API would use `const`: an [`Mode::In`] argument never has to be
+    /// copied back from wherever it was sent.
+    pub param_modes: Vec<Mode>,
     pub ret: Ty,
     /// Implicit handler function-pointer parameters (evidence-passing).
     pub evidence: Vec<Evidence>,
@@ -71,6 +86,31 @@ pub struct Func {
     pub blocks: Vec<Block>,
     pub span: Span,
     pub is_closure: bool,
+}
+
+/// Direction of a parameter across a call — or across a placement boundary.
+///
+/// This is the whole of what `&T` / `&mut T` / `T` tell a Rust offload
+/// compiler about which way bytes move, except nobody had to write it down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Read only. Travels toward the callee and never comes back.
+    In,
+    /// Written through. Must be visible to the caller afterwards.
+    InOut,
+    /// Consumed. The caller may not use it again.
+    Owned,
+}
+
+impl Mode {
+    /// The keyword a Loon-level handler sees for this mode.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Mode::In => "in",
+            Mode::InOut => "inout",
+            Mode::Owned => "owned",
+        }
+    }
 }
 
 /// Evidence parameter — a handler function pointer threaded through calls.
@@ -420,6 +460,27 @@ pub enum Built {
     /// for any other value. Emitted by pattern compilation so `#[a b]` can
     /// test "is a sequence of length 2" in one comparison.
     SeqLen,
+    // ── Dense buffers ──
+    /// `buf` — an f32 buffer from a vector of numbers.
+    BufNew,
+    /// `buf-i32` — an i32 buffer from a vector of numbers.
+    BufNewI32,
+    /// `buf-f64` — an f64 buffer from a vector of numbers.
+    BufNewF64,
+    /// `buf-zeros` — an f32 buffer of n zeros.
+    BufZeros,
+    /// `buf-zeros-i32` — an i32 buffer of n zeros.
+    BufZerosI32,
+    /// `buf-len` — element count.
+    BufLen,
+    /// `buf->vec` — copy out to an ordinary vector.
+    BufToVec,
+    /// `buf-dtype` — element type name, as a string.
+    BufDtype,
+    /// `at` — read element i. Out of range is an error, never a made-up zero.
+    BufAt,
+    /// `put` — write element i in place and return the buffer.
+    BufPut,
     /// Internal (not name-resolvable): destructuring guard. Args are
     /// (value, expected-binder-count). Errors loudly unless the value is a
     /// vector/tuple with at least that many elements — a silent `()` bind

@@ -1,5 +1,7 @@
 use wasm_bindgen::prelude::*;
 
+mod gpu_bridge;
+
 use loon_lang::interp::dom_builtins;
 use loon_lang::interp::Value;
 use std::cell::RefCell;
@@ -42,12 +44,142 @@ fn call_js_bridge(op: &str, args: &[Value]) -> Result<Value, loon_lang::interp::
     })
 }
 
+/// Install the GPU bridge: a JS function taking `(op, payload)` and returning
+/// synchronously.
+///
+/// The operations are `name`, `upload`, `dispatch`, `download`, and `evict`.
+/// How the JS side becomes synchronous is up to it — the demo runs the VM in a
+/// worker and blocks on `Atomics.wait` while the main thread drives WebGPU.
+///
+/// With a bridge installed, `--place gpu` works in a browser. Without one it
+/// says there is nowhere to run, which is better than quietly running on the
+/// CPU and reporting GPU numbers.
+#[wasm_bindgen]
+pub fn init_gpu_bridge(bridge: &js_sys::Function) {
+    gpu_bridge::set_bridge(bridge.clone());
+    loon_lang::eir::device::install(std::rc::Rc::new(gpu_bridge::BridgeGpu::new()));
+}
+
+/// Whether a GPU bridge has been installed.
+#[wasm_bindgen]
+pub fn has_gpu_bridge() -> bool {
+    gpu_bridge::has_bridge()
+}
+
+/// Run a Loon program on the EIR VM, with a placement mode.
+///
+/// This is the entry point a browser needs for placed programs: kernels,
+/// buffers, and the `Place` effect exist only on the EIR VM, so the
+/// interpreter-backed exports below cannot run them at all.
+///
+/// `place` is `cpu`, `par`, `device`, or `gpu`. In a browser, `cpu` is the
+/// real answer and `device` models a discrete memory so transfer counts can be
+/// shown; `par` has no threads to use here and behaves as `cpu`; `gpu` needs a
+/// bridge installed with `init_gpu_bridge`, and says so if there is none.
+///
+/// Returns the program's printed output followed by its placement accounting,
+/// so a page can show what crossed the boundary.
+#[wasm_bindgen]
+pub fn eval_placed(source: &str, place: &str) -> Result<String, String> {
+    let mode = loon_lang::eir::place::Mode::parse(place)
+        .ok_or_else(|| format!("unknown placement mode '{place}'"))?;
+    let (result, stats) =
+        loon_lang::eir::vm::eval_eir_placed(source, std::path::Path::new("."), mode)
+            .map_err(|e| e.to_string())?;
+
+    let mut out = result.output.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str("\u{2014}\n");
+    out.push_str(&format!("placed on {}: {}", mode.name(), stats.summary()));
+    Ok(out)
+}
+
+// ── Suspending a program the host cannot answer synchronously ──────────────
+//
+// A browser cannot answer `Place.read` immediately, because reading a GPU
+// buffer back is a promise. It does not have to: a handler that hands `resume`
+// to `Host.park` and returns unwinds the computation, and the page can finish
+// it once the bytes arrive.
+//
+// The session below is what keeps that possible — a parked continuation lives
+// in the VM's heap, so the VM has to still be there when the answer shows up.
+// See `samples/place/demo-park.oo`, and note where the deferring handler has to sit.
+
+thread_local! {
+    static SESSION: RefCell<Option<loon_lang::eir::vm::Session>> =
+        const { RefCell::new(None) };
+}
+
+/// Start a program, running until it finishes or parks.
+///
+/// Returns `{done, output, request}`. `done` false means it parked and is
+/// waiting for `place_resume`.
+#[wasm_bindgen]
+pub fn place_start(source: &str, place: &str) -> Result<JsValue, String> {
+    let mode = loon_lang::eir::place::Mode::parse(place)
+        .ok_or_else(|| format!("unknown placement mode '{place}'"))?;
+    let mut session = loon_lang::eir::vm::Session::new(source, std::path::Path::new("."), mode)
+        .map_err(|e| e.to_string())?;
+    let step = session.start().map_err(|e| e.to_string())?;
+    let js = step_to_js(&mut session, step);
+    SESSION.with(|s| *s.borrow_mut() = Some(session));
+    Ok(js)
+}
+
+/// Finish a parked step by supplying the numbers the host went to fetch.
+#[wasm_bindgen]
+pub fn place_resume(values: &[f32]) -> Result<JsValue, String> {
+    SESSION.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        let session = guard
+            .as_mut()
+            .ok_or_else(|| "no program is running".to_string())?;
+        let k = session
+            .pending()
+            .ok_or_else(|| "nothing is parked".to_string())?;
+        let data = session.vec_of_floats(values);
+        let step = session.resume(k, data).map_err(|e| e.to_string())?;
+        Ok(step_to_js(session, step))
+    })
+}
+
+fn step_to_js(
+    session: &mut loon_lang::eir::vm::Session,
+    step: loon_lang::eir::vm::Step,
+) -> JsValue {
+    let o = js_sys::Object::new();
+    let (done, request) = match step {
+        loon_lang::eir::vm::Step::Done(_) => (true, JsValue::NULL),
+        loon_lang::eir::vm::Step::Parked { request } => {
+            (false, JsValue::from_str(&session.show(request)))
+        }
+    };
+    let out = session.take_output().join("\n");
+    let _ = js_sys::Reflect::set(&o, &JsValue::from_str("done"), &JsValue::from_bool(done));
+    let _ = js_sys::Reflect::set(&o, &JsValue::from_str("output"), &JsValue::from_str(&out));
+    let _ = js_sys::Reflect::set(&o, &JsValue::from_str("request"), &request);
+    let _ = js_sys::Reflect::set(
+        &o,
+        &JsValue::from_str("value"),
+        &JsValue::from_str(&session.show(session.value())),
+    );
+    let _ = js_sys::Reflect::set(
+        &o,
+        &JsValue::from_str("stats"),
+        &JsValue::from_str(&session.stats().summary()),
+    );
+    o.into()
+}
+
 /// Evaluate a Loon program and return the result as a string.
-// TODO: migrate to `loon_lang::eir::vm::eval_eir` once the EIR VM supports
-// the DOM bridge (init_dom_bridge / eval_ui / invoke_callback). The WASM crate
-// still uses the legacy tree-walking interpreter because the DOM bridge depends
-// on `Value` and `InterpError`, which differ from the EIR's NaN-boxed `Val` /
-// `VmResult`. A conversion layer or EIR-native DOM bridge is needed first.
+// The DOM-driving exports (`eval_ui`, `invoke_callback`) stay on the legacy
+// tree-walking interpreter: the DOM bridge is written against `Value` and
+// `InterpError`, which differ from the EIR's NaN-boxed `Val` and `VmResult`.
+// `eval_program` and `eval_with_output` stay with them so the guide's examples
+// keep working — several use builtins such as `push!` that the EIR VM does not
+// implement. Programs that need the EIR VM call `eval_placed` above.
 #[wasm_bindgen]
 pub fn eval_program(source: &str) -> Result<String, String> {
     let exprs = loon_lang::parser::parse(source).map_err(|e| format!("{e}"))?;

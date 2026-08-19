@@ -13,6 +13,11 @@ pub struct EffectOp {
     pub name: String,
     pub params: Vec<(String, Option<String>)>, // (name, type_name)
     pub return_type: Option<String>,
+    /// The final parameter absorbs any number of extra arguments.
+    ///
+    /// `Place.run` needs this: a kernel's arguments are its own, and the
+    /// placement operation carries however many of them there are.
+    pub variadic: bool,
 }
 
 /// Registry of declared effects
@@ -34,6 +39,17 @@ fn op(name: &str, param_names: &[&str]) -> EffectOp {
         name: name.to_string(),
         params: params(param_names),
         return_type: None,
+        variadic: false,
+    }
+}
+
+/// An op whose last parameter absorbs any number of trailing arguments.
+fn var_op(name: &str, param_names: &[&str]) -> EffectOp {
+    EffectOp {
+        name: name.to_string(),
+        params: params(param_names),
+        return_type: None,
+        variadic: true,
     }
 }
 
@@ -43,6 +59,7 @@ fn typed_op(name: &str, param_names: &[&str], ret: &str) -> EffectOp {
         name: name.to_string(),
         params: params(param_names),
         return_type: Some(ret.to_string()),
+        variadic: false,
     }
 }
 
@@ -123,6 +140,39 @@ impl EffectRegistry {
                 typed_op("rand-int", &["lo", "hi"], "Int"),
                 op("seed", &["n"]),
             ],
+        });
+        // Place effect — where a kernel runs is a decision a handler makes,
+        // not a property of the program. Unhandled, it runs serially on the
+        // CPU, so a program that never mentions placement still works.
+        reg.register(EffectDecl {
+            name: "Place".to_string(),
+            operations: vec![
+                // [Place.run kernel n args...] — run `kernel` once per index
+                // in 0..n. Returns unit; kernels write through buffers.
+                op("run", &["kernel", "n", "args"]),
+                // [Place.read buf] — the only way to get buffer contents back
+                // to the host. Being an operation is the point: a residency
+                // handler learns where every synchronization point is without
+                // the programmer marking any of them.
+                op("read", &["buf"]),
+                // [Place.pin buf] / [Place.unpin buf] — hints that a buffer
+                // should stay where it is between launches.
+                op("pin", &["buf"]),
+                op("unpin", &["buf"]),
+                // [Place.stats] — transfer and launch counters so far.
+                op("stats", &[]),
+            ],
+        });
+        // Host effect — the seam an asynchronous embedder needs.
+        //
+        // `Host.park` takes a continuation and keeps it. The handler that
+        // performs it returns without resuming, so the computation unwinds and
+        // the host decides when the rest of it runs. That is the whole
+        // mechanism behind answering an operation that cannot be answered yet,
+        // like reading back a GPU buffer in a browser.
+        reg.register(EffectDecl {
+            name: "Host".to_string(),
+            operations: vec![op("park", &["continuation", "request"])],
         });
         reg.register(EffectDecl {
             name: "Embed".to_string(),

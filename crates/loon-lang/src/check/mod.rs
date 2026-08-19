@@ -1,3 +1,4 @@
+pub mod kernel;
 pub mod ownership;
 
 use crate::ast::{Expr, ExprKind, NodeId};
@@ -120,6 +121,15 @@ pub struct Checker {
     recur_params: Vec<Vec<Type>>,
     /// Expanded program after macro expansion (available after check_program)
     pub expanded_program: Vec<Expr>,
+    /// Per-parameter ownership modes for each named function, inferred during
+    /// `check_program`. Rust makes you write these down as `&T` / `&mut T`;
+    /// Loon infers them, and lowering carries them into the IR so backends can
+    /// tell a read-only argument from one that is written through.
+    pub fn_param_modes: HashMap<String, Vec<crate::check::ownership::ParamMode>>,
+    /// Names defined with the `kernel` keyword. They are ordinary functions
+    /// after desugaring; this is what remembers that they promised to stay
+    /// inside the placeable subset.
+    pub kernels: HashSet<String>,
 }
 
 /// Split a param list at a `&` marker: returns the fixed params and the
@@ -145,6 +155,8 @@ impl Checker {
             subst: Subst::new(),
             env: TypeEnv::new(),
             errors: Vec::new(),
+            fn_param_modes: HashMap::new(),
+            kernels: HashSet::new(),
             constructors: HashMap::new(),
             type_constructors: HashMap::new(),
             type_of: HashMap::new(),
@@ -1398,6 +1410,145 @@ impl Checker {
             );
         }
 
+        // ── Dense buffers ──
+        //
+        // `Buf a` is an opaque, fixed-length array of unboxed numbers. It is
+        // the representation that can leave the process — to another thread,
+        // another backend, or a device — which ordinary persistent
+        // collections cannot.
+        {
+            let mk_var = |c: &mut Self| match c.subst.fresh() {
+                Type::Var(v) => v,
+                _ => unreachable!("fresh() returns a Var"),
+            };
+            let buf_of = |t: Type| Type::Con("Buf".to_string(), vec![t]);
+            let vec_of = |t: Type| Type::Con("Vec".to_string(), vec![t]);
+
+            // buf / buf-f64: ∀a:Num. Vec a → Buf Float
+            // buf-i32:        ∀a:Num. Vec a → Buf Int
+            //
+            // The source vector may hold ints or floats; the buffer's element
+            // type is fixed by which constructor was called, and the values
+            // are converted on the way in. That conversion is the honest part:
+            // an f32 buffer really does hold f32, and saying so in the type is
+            // better than pretending the input type survived.
+            for (name, elem) in [
+                ("buf", Type::Float),
+                ("buf-f64", Type::Float),
+                ("buf-i32", Type::Int),
+            ] {
+                let a = self.subst.fresh();
+                let tv = match a {
+                    Type::Var(v) => v,
+                    _ => unreachable!("fresh() returns a Var"),
+                };
+                self.env.set_global(
+                    name.to_string(),
+                    Scheme {
+                        bounds: vec![(
+                            tv,
+                            vec![TraitBound {
+                                trait_name: "Num".to_string(),
+                            }],
+                        )],
+                        vars: vec![tv],
+                        ty: Type::Fn(
+                            vec![vec_of(Type::Var(tv))],
+                            Box::new(buf_of(elem)),
+                            EffectRow::pure(),
+                        ),
+                    },
+                );
+            }
+
+            // buf-zeros: Int → Buf Float, buf-zeros-i32: Int → Buf Int
+            for (name, elem) in [("buf-zeros", Type::Float), ("buf-zeros-i32", Type::Int)] {
+                self.env.set_global(
+                    name.to_string(),
+                    Scheme::mono(Type::Fn(
+                        vec![Type::Int],
+                        Box::new(buf_of(elem)),
+                        EffectRow::pure(),
+                    )),
+                );
+            }
+
+            // buf-len: ∀a. Buf a → Int
+            let v = mk_var(self);
+            self.env.set_global(
+                "buf-len".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![v],
+                    ty: Type::Fn(
+                        vec![buf_of(Type::Var(v))],
+                        Box::new(Type::Int),
+                        EffectRow::pure(),
+                    ),
+                },
+            );
+
+            // buf-dtype: ∀a. Buf a → Str
+            let v = mk_var(self);
+            self.env.set_global(
+                "buf-dtype".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![v],
+                    ty: Type::Fn(
+                        vec![buf_of(Type::Var(v))],
+                        Box::new(Type::Str),
+                        EffectRow::pure(),
+                    ),
+                },
+            );
+
+            // buf->vec: ∀a. Buf a → Vec a
+            let v = mk_var(self);
+            self.env.set_global(
+                "buf->vec".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![v],
+                    ty: Type::Fn(
+                        vec![buf_of(Type::Var(v))],
+                        Box::new(vec_of(Type::Var(v))),
+                        EffectRow::pure(),
+                    ),
+                },
+            );
+
+            // at: ∀a. Buf a → Int → a
+            let v = mk_var(self);
+            self.env.set_global(
+                "at".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![v],
+                    ty: Type::Fn(
+                        vec![buf_of(Type::Var(v)), Type::Int],
+                        Box::new(Type::Var(v)),
+                        EffectRow::pure(),
+                    ),
+                },
+            );
+
+            // put: ∀a. Buf a → Int → a → Buf a
+            let v = mk_var(self);
+            self.env.set_global(
+                "put".to_string(),
+                Scheme {
+                    bounds: vec![],
+                    vars: vec![v],
+                    ty: Type::Fn(
+                        vec![buf_of(Type::Var(v)), Type::Int, Type::Var(v)],
+                        Box::new(buf_of(Type::Var(v))),
+                        EffectRow::pure(),
+                    ),
+                },
+            );
+        }
+
         // int: Str → Int
         self.env.set_global(
             "int".to_string(),
@@ -1600,15 +1751,37 @@ impl Checker {
             }
         }
 
-        // sum: Vec Int → Int (approximate)
-        self.env.set_global(
-            "sum".to_string(),
-            Scheme::mono(Type::Fn(
-                vec![Type::Con("Vec".to_string(), vec![Type::Int])],
-                Box::new(Type::Int),
-                EffectRow::pure(),
-            )),
-        );
+        // sum: ∀a:Num. Vec a → a
+        //
+        // The builtin registry has always declared this `Vec Num → Num` and the
+        // interpreter has always implemented it that way. The checker said
+        // `Vec Int → Int` with the comment "(approximate)", which meant summing
+        // a vector of floats — the natural last step of any reduction — did not
+        // type check.
+        {
+            let a = self.subst.fresh();
+            let tv = match a {
+                Type::Var(v) => v,
+                _ => unreachable!("fresh() returns a Var"),
+            };
+            self.env.set_global(
+                "sum".to_string(),
+                Scheme {
+                    bounds: vec![(
+                        tv,
+                        vec![TraitBound {
+                            trait_name: "Num".to_string(),
+                        }],
+                    )],
+                    vars: vec![tv],
+                    ty: Type::Fn(
+                        vec![Type::Con("Vec".to_string(), vec![Type::Var(tv)])],
+                        Box::new(Type::Var(tv)),
+                        EffectRow::pure(),
+                    ),
+                },
+            );
+        }
 
         // str: ∀a. a → Str
         {
@@ -3182,13 +3355,25 @@ impl Checker {
                         // Type-check arguments against declared param types
                         let arg_types: Vec<Type> =
                             items[1..].iter().map(|a| self.infer(a)).collect();
-                        if arg_types.len() != op_def.params.len() {
+                        // A variadic op's last parameter absorbs the rest, so
+                        // it needs at least the fixed ones and accepts more.
+                        let arity_ok = if op_def.variadic {
+                            arg_types.len() + 1 >= op_def.params.len()
+                        } else {
+                            arg_types.len() == op_def.params.len()
+                        };
+                        if !arity_ok {
                             self.errors.push(
                                 LoonDiagnostic::new(
                                     ErrorCode::E0202,
                                     format!(
-                                        "`{effect}.{op}` expects {} argument(s), got {}",
-                                        op_def.params.len(),
+                                        "`{effect}.{op}` expects {}{} argument(s), got {}",
+                                        if op_def.variadic { "at least " } else { "" },
+                                        if op_def.variadic {
+                                            op_def.params.len() - 1
+                                        } else {
+                                            op_def.params.len()
+                                        },
                                         arg_types.len()
                                     ),
                                 )
@@ -3823,6 +4008,7 @@ impl Checker {
                     name: op_name,
                     params,
                     return_type,
+                    variadic: false,
                 });
             }
         }
@@ -5691,6 +5877,12 @@ impl Checker {
             }
         };
 
+        // Phase 1b: Kernels become ordinary functions before anything else
+        // looks at the program, so they infer, lower, and run through exactly
+        // the same path. Only the promise they made is kept aside.
+        let (expanded, kernels) = kernel::desugar(&expanded);
+        self.kernels = kernels;
+
         // Phase 2a: Pre-declare top-level functions so forward references
         // (including mutual recursion across definitions) resolve. Each name
         // gets a placeholder type; its real scheme replaces it at the
@@ -5746,6 +5938,14 @@ impl Checker {
 
         self.expanded_program = final_exprs;
         self.check_trait_constraints();
+        // Ownership modes ride along with the checker so lowering can see them.
+        // This is a syntactic pass over the expanded program; its diagnostics
+        // are the dedicated ownership pass's job, not ours.
+        self.fn_param_modes = ownership::infer_param_modes(&self.expanded_program);
+        // A kernel that cannot be placed is worth saying so about at compile
+        // time, not when a handler tries to ship it somewhere.
+        self.errors
+            .extend(kernel::verify(&self.expanded_program, &self.kernels));
         std::mem::take(&mut self.errors)
     }
 

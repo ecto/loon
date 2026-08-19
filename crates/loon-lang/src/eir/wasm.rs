@@ -20,28 +20,16 @@ use wasm_encoder::{
     TableType, TypeSection, ValType,
 };
 
-// ─── NaN-boxing constants (must match value64.rs) ─────────────────────────
+// ─── NaN-boxing constants ─────────────────────────────────────────────────
+//
+// Imported, not re-declared: `eir::layout` is the single source of truth, so a
+// change to the encoding cannot leave this backend behind.
 
-const QNAN: u64 = 0x7FF8_0000_0000_0000;
-const SIGN: u64 = 0x8000_0000_0000_0000;
-const BASE: u64 = SIGN | QNAN;
-#[allow(dead_code)]
-const TAG_MASK: u64 = 0x0007_0000_0000_0000;
-const PAYLOAD: u64 = 0x0000_FFFF_FFFF_FFFF;
-const TAG_INT: u64 = 0x0001_0000_0000_0000;
-const TAG_PTR: u64 = 0x0000_0000_0000_0000;
-const TAG_IMM: u64 = 0x0007_0000_0000_0000;
-const TAG_SYM: u64 = 0x0006_0000_0000_0000;
-#[allow(dead_code)]
-const IMM_UNIT: u64 = 0;
-#[allow(dead_code)]
-const IMM_TRUE: u64 = 1;
-#[allow(dead_code)]
-const IMM_FALSE: u64 = 2;
-
-const VAL_UNIT: u64 = BASE | TAG_IMM;
-const VAL_TRUE: u64 = BASE | TAG_IMM | 1;
-const VAL_FALSE: u64 = BASE | TAG_IMM | 2;
+#[allow(unused_imports)]
+use super::layout::nanbox::{
+    BASE, IMM_FALSE, IMM_TRUE, IMM_UNIT, PAYLOAD, QNAN, SIGN, TAG_IMM, TAG_INT, TAG_MASK, TAG_PTR,
+    TAG_SYM, VAL_FALSE, VAL_NONE, VAL_TRUE, VAL_UNIT,
+};
 
 // ─── Import indices ───────────────────────────────────────────────────────
 
@@ -90,6 +78,12 @@ struct CompileCtx<'a> {
     string_data: Vec<(u32, Vec<u8>)>,
     /// Next free offset in the data segment.
     data_offset: u32,
+    /// Tag of the nullary `None` constructor, if this module declares one.
+    ///
+    /// `None` is an immediate singleton rather than a heap value, so that bit
+    /// equality is `None` equality and the falsy test stays a pure bit test.
+    /// Every construction site has to honour that — see `Op::Adt`.
+    none_tag: Option<u16>,
 }
 
 struct WasmFunc {
@@ -190,6 +184,12 @@ impl<'a> CompileCtx<'a> {
             table_entries: Vec::new(),
             string_data: Vec::new(),
             data_offset: 1024,
+            none_tag: module
+                .ctors
+                .iter()
+                .rev()
+                .find(|c| c.name == "None")
+                .map(|c| c.tag),
         }
     }
 
@@ -496,6 +496,17 @@ impl<'a> CompileCtx<'a> {
             }
 
             Op::Adt(dst, tag, fields, _) => {
+                // The nullary `None` is the immediate singleton, never a heap
+                // allocation. The VM normalizes it at every construction site
+                // because bit equality is `None` equality and truthiness is a
+                // bit test; a heap-allocated `None` would compare unequal to
+                // itself across backends and, worse, test *truthy* here while
+                // testing falsy on the VM.
+                if fields.is_empty() && self.none_tag == Some(*tag) {
+                    out.push(WasmInstr::I64Const(VAL_NONE as i64));
+                    out.push(WasmInstr::LocalSet(dst.0));
+                    return Ok(());
+                }
                 // Layout: [tag: u16 | field_count: u16 packed as i32][fields...]
                 let size = 4 + fields.len() as u32 * 8;
                 emit_heap_alloc(size, addr_local, out);
@@ -1434,6 +1445,7 @@ mod tests {
                 id: FuncId(0),
                 name: Some("main".to_string()),
                 params: vec![],
+                param_modes: Vec::new(),
                 ret: Ty::Int,
                 evidence: vec![],
                 captures: vec![],
@@ -1459,6 +1471,7 @@ mod tests {
                 id: FuncId(0),
                 name: Some("main".to_string()),
                 params: vec![],
+                param_modes: Vec::new(),
                 ret: Ty::Int,
                 evidence: vec![],
                 captures: vec![],
@@ -1488,6 +1501,7 @@ mod tests {
                 id: FuncId(0),
                 name: Some("main".to_string()),
                 params: vec![],
+                param_modes: Vec::new(),
                 ret: Ty::Int,
                 evidence: vec![],
                 captures: vec![],
@@ -1532,6 +1546,7 @@ mod tests {
                     id: FuncId(0),
                     name: Some("double".to_string()),
                     params: vec![Ty::Int],
+                    param_modes: Vec::new(),
                     ret: Ty::Int,
                     evidence: vec![],
                     captures: vec![],
@@ -1548,6 +1563,7 @@ mod tests {
                     id: FuncId(1),
                     name: Some("main".to_string()),
                     params: vec![],
+                    param_modes: Vec::new(),
                     ret: Ty::Int,
                     evidence: vec![],
                     captures: vec![],
@@ -1580,6 +1596,7 @@ mod tests {
                     id: FuncId(0),
                     name: Some("countdown".to_string()),
                     params: vec![Ty::Int],
+                    param_modes: Vec::new(),
                     ret: Ty::Int,
                     evidence: vec![],
                     captures: vec![],
@@ -1617,6 +1634,7 @@ mod tests {
                     id: FuncId(1),
                     name: Some("main".to_string()),
                     params: vec![],
+                    param_modes: Vec::new(),
                     ret: Ty::Int,
                     evidence: vec![],
                     captures: vec![],
@@ -1652,6 +1670,7 @@ mod tests {
                     id: FuncId(0),
                     name: Some("even".to_string()),
                     params: vec![Ty::Int],
+                    param_modes: Vec::new(),
                     ret: Ty::Bool,
                     evidence: vec![],
                     captures: vec![],
@@ -1688,6 +1707,7 @@ mod tests {
                     id: FuncId(1),
                     name: Some("odd".to_string()),
                     params: vec![Ty::Int],
+                    param_modes: Vec::new(),
                     ret: Ty::Bool,
                     evidence: vec![],
                     captures: vec![],
@@ -1807,6 +1827,7 @@ mod tests {
                 id: FuncId(0),
                 name: Some("main".to_string()),
                 params: vec![],
+                param_modes: Vec::new(),
                 ret: Ty::Unit,
                 evidence: vec![],
                 captures: vec![],
@@ -1830,6 +1851,7 @@ mod tests {
                 id: FuncId(0),
                 name: Some("main".to_string()),
                 params: vec![],
+                param_modes: Vec::new(),
                 ret: Ty::Str,
                 evidence: vec![],
                 captures: vec![],

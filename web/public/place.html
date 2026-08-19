@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Placement in a browser — Loon</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1a1a1a; --bg: #fdfdfc; --dim: #6b6b6b;
+          --accent: #7a4f2a; --line: #e0ded9; --code-bg: #f4f2ee; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #e8e6e1; --bg: #191817; --dim: #9a9791;
+            --accent: #d3a26a; --line: #34322f; --code-bg: #221f1d; }
+  }
+  body { margin: 0 auto; padding: 2.5rem 1.25rem 4rem; max-width: 46rem;
+         background: var(--bg); color: var(--fg);
+         font: 16px/1.65 ui-serif, Georgia, serif; }
+  h1 { font-size: 1.7rem; margin: 0 0 .35rem; }
+  .sub { color: var(--dim); margin: 0 0 2rem; }
+  h2 { font-size: 1.05rem; margin: 2.25rem 0 .6rem; color: var(--accent); }
+  p { margin: 0 0 1rem; }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px;
+        padding: .85rem 1rem; overflow-x: auto;
+        font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .row { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 1rem; }
+  button { font: inherit; font-size: .9rem; padding: .4rem .9rem; cursor: pointer;
+           background: var(--bg); color: var(--fg);
+           border: 1px solid var(--line); border-radius: 5px; }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  code { background: var(--code-bg); padding: .1em .35em; border-radius: 3px; font-size: .9em; }
+  .note { color: var(--dim); font-size: .9rem; }
+</style>
+</head>
+<body>
+<h1>Placement in a browser</h1>
+<p class="sub">The same kernel, the same program — running in this tab.</p>
+
+<p>Below is a Loon kernel and a residency handler. Nothing in the program says
+where the work happens; the buttons choose a placement, and the answer does not
+change between them.</p>
+
+<pre id="src"></pre>
+
+<h2>Run it</h2>
+<div class="row">
+  <button data-mode="cpu">--place cpu</button>
+  <button data-mode="par">--place par</button>
+  <button data-mode="device">--place device</button>
+  <button data-mode="gpu">--place gpu</button>
+</div>
+<pre id="out">loading the wasm build…</pre>
+<p class="note" id="note"></p>
+
+<p class="note">
+  <code>cpu</code> and <code>par</code> run inline on this thread — one memory,
+  so nothing is transferred. <code>device</code> models a separate memory to
+  show transfers counted. <code>gpu</code> is real WebGPU: Loon's VM is
+  synchronous and WebGPU is not, so the VM runs in a worker and blocks on
+  <code>Atomics.wait</code> while this thread drives the device. It needs
+  cross-origin isolation (COOP/COEP) for <code>SharedArrayBuffer</code>; without
+  it the other placements still work and this one says why.
+</p>
+
+<script type="module">
+import init, { eval_placed } from '/loon_wasm.js';
+import { attachGpuBridge } from '/place-gpu.js';
+
+const program = `[kernel saxpy [i a x y out]
+  [put out i [+ [* a [at x i]] [at y i]]]]
+
+[fn work []
+  [let x [buf [range 0 8]]]
+  [let y [buf [range 0 8]]]
+  [let mut out [buf-zeros 8]]
+  [Place.run saxpy 8 #[3.0 x y out]]
+  [Place.run saxpy 8 #[3.0 x y out]]
+  [Place.read out]]
+
+[fn resident [thunk]
+  [handle [thunk]
+    [Place.run k n args] [do [Place.pin args] [resume [Place.run k n args]]]
+    [Place.read b]       [resume [Place.read b]]]]
+
+[fn main []
+  [IO.println [str "no policy: " [work]]]
+  [IO.println [str "resident:  " [resident work]]]]`;
+
+document.getElementById('src').textContent = program;
+const out = document.getElementById('out');
+const note = document.getElementById('note');
+const buttons = [...document.querySelectorAll('button')];
+
+// The GPU needs a worker: WebGPU is asynchronous and the VM is not, so the VM
+// blocks on Atomics.wait off the main thread while WebGPU work happens here.
+// Everything else can run inline.
+let worker = null;
+let gpuName = null;
+let gpuError = null;
+let nextId = 0;
+const pending = new Map();
+
+async function setupGpu() {
+  if (!crossOriginIsolated) {
+    throw new Error(
+      'this page is not cross-origin isolated, so SharedArrayBuffer is unavailable ' +
+        '(needs COOP/COEP headers)',
+    );
+  }
+  const w = new Worker('/place-worker.js', { type: 'module' });
+  w.addEventListener('message', (e) => {
+    if (e.data?.kind !== 'result') return;
+    const resolve = pending.get(e.data.id);
+    pending.delete(e.data.id);
+    resolve?.(e.data);
+  });
+  const { name } = await attachGpuBridge(w);
+  worker = w;
+  gpuName = name;
+}
+
+function runOnWorker(place) {
+  const id = nextId++;
+  return new Promise((resolve) => {
+    pending.set(id, resolve);
+    worker.postMessage({ kind: 'run', id, program, place });
+  });
+}
+
+await init();
+try {
+  await setupGpu();
+  note.textContent = `GPU bridge ready — ${gpuName}. cpu, par, and device run inline; ` +
+    `gpu runs in a worker that blocks on Atomics.wait while this thread drives WebGPU.`;
+} catch (e) {
+  gpuError = String(e.message ?? e);
+  note.textContent = `No GPU here: ${gpuError} — the other placements still work.`;
+}
+out.textContent = 'ready — pick a placement.';
+buttons.forEach((b) => (b.disabled = false));
+
+for (const b of buttons) {
+  b.addEventListener('click', async () => {
+    const mode = b.dataset.mode;
+    out.textContent = `running on ${mode}…`;
+    try {
+      if (mode === 'gpu') {
+        if (!worker) throw new Error(gpuError ?? 'no GPU bridge');
+        const r = await runOnWorker(mode);
+        out.textContent = r.out;
+      } else {
+        out.textContent = eval_placed(program, mode);
+      }
+    } catch (e) {
+      out.textContent = String(e.message ?? e);
+    }
+  });
+}
+</script>
+</body>
+</html>

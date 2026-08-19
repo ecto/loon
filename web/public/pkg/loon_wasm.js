@@ -42,6 +42,47 @@ export function enable_effect_log(enabled) {
 }
 
 /**
+ * Run a Loon program on the EIR VM, with a placement mode.
+ *
+ * This is the entry point a browser needs for placed programs: kernels,
+ * buffers, and the `Place` effect exist only on the EIR VM, so the
+ * interpreter-backed exports below cannot run them at all.
+ *
+ * `place` is `cpu`, `par`, `device`, or `gpu`. In a browser, `cpu` is the
+ * real answer and `device` models a discrete memory so transfer counts can be
+ * shown; `par` has no threads to use here and behaves as `cpu`; `gpu` needs a
+ * bridge installed with `init_gpu_bridge`, and says so if there is none.
+ *
+ * Returns the program's printed output followed by its placement accounting,
+ * so a page can show what crossed the boundary.
+ * @param {string} source
+ * @param {string} place
+ * @returns {string}
+ */
+export function eval_placed(source, place) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(place, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.eval_placed(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * Evaluate a Loon program and return the result as a string.
  * @param {string} source
  * @returns {string}
@@ -146,6 +187,15 @@ export function get_effect_log() {
 }
 
 /**
+ * Whether a GPU bridge has been installed.
+ * @returns {boolean}
+ */
+export function has_gpu_bridge() {
+    const ret = wasm.has_gpu_bridge();
+    return ret !== 0;
+}
+
+/**
  * Infer the type of the last named binding (fn/let) in the source.
  * @param {string} source
  * @returns {string}
@@ -182,11 +232,64 @@ export function init_dom_bridge(bridge) {
 }
 
 /**
+ * Install the GPU bridge: a JS function taking `(op, payload)` and returning
+ * synchronously.
+ *
+ * The operations are `name`, `upload`, `dispatch`, `download`, and `evict`.
+ * How the JS side becomes synchronous is up to it — the demo runs the VM in a
+ * worker and blocks on `Atomics.wait` while the main thread drives WebGPU.
+ *
+ * With a bridge installed, `--place gpu` works in a browser. Without one it
+ * says there is nowhere to run, which is better than quietly running on the
+ * CPU and reporting GPU numbers.
+ * @param {Function} bridge
+ */
+export function init_gpu_bridge(bridge) {
+    wasm.init_gpu_bridge(bridge);
+}
+
+/**
  * Invoke a stored Loon callback by ID (called from JS event handlers).
  * @param {number} id
  */
 export function invoke_callback(id) {
     wasm.invoke_callback(id);
+}
+
+/**
+ * Finish a parked step by supplying the numbers the host went to fetch.
+ * @param {Float32Array} values
+ * @returns {any}
+ */
+export function place_resume(values) {
+    const ptr0 = passArrayF32ToWasm0(values, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.place_resume(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
+ * Start a program, running until it finishes or parks.
+ *
+ * Returns `{done, output, request}`. `done` false means it parked and is
+ * waiting for `place_resume`.
+ * @param {string} source
+ * @param {string} place
+ * @returns {any}
+ */
+export function place_start(source, place) {
+    const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(place, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.place_start(ptr0, len0, ptr1, len1);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
 }
 
 /**
@@ -244,6 +347,10 @@ function __wbg_get_imports() {
             const ret = arg0.call(arg1, arg2, arg3);
             return ret;
         }, arguments); },
+        __wbg_get_b3ed3ad4be2bc8ac: function() { return handleError(function (arg0, arg1) {
+            const ret = Reflect.get(arg0, arg1);
+            return ret;
+        }, arguments); },
         __wbg_instanceof_Window_ed49b2db8df90359: function(arg0) {
             let result;
             try {
@@ -254,6 +361,14 @@ function __wbg_get_imports() {
             const ret = result;
             return ret;
         },
+        __wbg_length_32ed9a279acd054c: function(arg0) {
+            const ret = arg0.length;
+            return ret;
+        },
+        __wbg_length_9a7876c9728a0979: function(arg0) {
+            const ret = arg0.length;
+            return ret;
+        },
         __wbg_new_361308b2356cecd0: function() {
             const ret = new Object();
             return ret;
@@ -262,8 +377,20 @@ function __wbg_get_imports() {
             const ret = new Array();
             return ret;
         },
+        __wbg_new_dd2b680c8bf6ae29: function(arg0) {
+            const ret = new Uint8Array(arg0);
+            return ret;
+        },
         __wbg_new_no_args_1c7c842f08d00ebb: function(arg0, arg1) {
             const ret = new Function(getStringFromWasm0(arg0, arg1));
+            return ret;
+        },
+        __wbg_new_with_length_63f2683cc2521026: function(arg0) {
+            const ret = new Float32Array(arg0 >>> 0);
+            return ret;
+        },
+        __wbg_new_with_length_a2c39cbe88fd8ff1: function(arg0) {
+            const ret = new Uint8Array(arg0 >>> 0);
             return ret;
         },
         __wbg_now_a3af9a2f4bbaa4d1: function() {
@@ -278,6 +405,9 @@ function __wbg_get_imports() {
             const ret = arg0.performance;
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
         },
+        __wbg_prototypesetcall_bdcdcc5842e4d77d: function(arg0, arg1, arg2) {
+            Uint8Array.prototype.set.call(getArrayU8FromWasm0(arg0, arg1), arg2);
+        },
         __wbg_push_8ffdcb2063340ba5: function(arg0, arg1) {
             const ret = arg0.push(arg1);
             return ret;
@@ -286,6 +416,12 @@ function __wbg_get_imports() {
             const ret = Reflect.set(arg0, arg1, arg2);
             return ret;
         }, arguments); },
+        __wbg_set_cc56eefd2dd91957: function(arg0, arg1, arg2) {
+            arg0.set(getArrayU8FromWasm0(arg1, arg2));
+        },
+        __wbg_set_f8edeec46569cc70: function(arg0, arg1, arg2) {
+            arg0.set(getArrayF32FromWasm0(arg1, arg2));
+        },
         __wbg_static_accessor_GLOBAL_12837167ad935116: function() {
             const ret = typeof global === 'undefined' ? null : global;
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
@@ -402,12 +538,30 @@ function debugString(val) {
     return className;
 }
 
+function getArrayF32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getFloat32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
+function getArrayU8FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
+}
+
 let cachedDataViewMemory0 = null;
 function getDataViewMemory0() {
     if (cachedDataViewMemory0 === null || cachedDataViewMemory0.buffer.detached === true || (cachedDataViewMemory0.buffer.detached === undefined && cachedDataViewMemory0.buffer !== wasm.memory.buffer)) {
         cachedDataViewMemory0 = new DataView(wasm.memory.buffer);
     }
     return cachedDataViewMemory0;
+}
+
+let cachedFloat32ArrayMemory0 = null;
+function getFloat32ArrayMemory0() {
+    if (cachedFloat32ArrayMemory0 === null || cachedFloat32ArrayMemory0.byteLength === 0) {
+        cachedFloat32ArrayMemory0 = new Float32Array(wasm.memory.buffer);
+    }
+    return cachedFloat32ArrayMemory0;
 }
 
 function getStringFromWasm0(ptr, len) {
@@ -434,6 +588,13 @@ function handleError(f, args) {
 
 function isLikeNone(x) {
     return x === undefined || x === null;
+}
+
+function passArrayF32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getFloat32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passStringToWasm0(arg, malloc, realloc) {
@@ -513,6 +674,7 @@ function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     wasmModule = module;
     cachedDataViewMemory0 = null;
+    cachedFloat32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     wasm.__wbindgen_start();
     return wasm;

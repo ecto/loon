@@ -5,6 +5,7 @@
 //! Tail calls reuse the current frame. No continuation stack — just a
 //! call stack of `(FuncId, BlockId, ip, registers)`.
 
+use crate::eir::layout::DType;
 pub use crate::eir::value64::Val;
 use crate::eir::*;
 use std::collections::HashMap;
@@ -119,6 +120,15 @@ enum Obj {
     Tuple(Vec<Val>),           // fixed-size, no persistence needed
     Adt(u16, Vec<Val>),        // tag + fields
     Closure(FuncId, Vec<Val>), // func + captured values
+    /// A dense, fixed-length array of unboxed numbers.
+    ///
+    /// Loon's ordinary collections are persistent trees of NaN-boxed words,
+    /// which is the right shape for a functional language and the wrong shape
+    /// for anything that has to hand bytes to another processor. A `Buffer` is
+    /// the other shape: contiguous, untagged, and describable by a
+    /// `layout::BufferHeader`, so the same bytes can be shipped to a thread, a
+    /// kernel, or a device queue without a conversion step.
+    Buffer(Buffer),
     /// A reified multi-shot delimited continuation captured at a `perform`: the
     /// frame segment between the perform and its handler's prompt, plus the
     /// execution point to resume at. `resume_continuation` clones this segment on
@@ -152,6 +162,7 @@ impl Obj {
             Obj::Map(m) => (24 + m.len() * 16) as u64,
             Obj::Adt(_, fields) => (24 + 2 + fields.len() * 8) as u64,
             Obj::Closure(_, caps) => (24 + 4 + caps.len() * 8) as u64,
+            Obj::Buffer(b) => 24 + b.byte_len() as u64,
             Obj::Continuation {
                 saved,
                 regs,
@@ -161,6 +172,166 @@ impl Obj {
         }
     }
 }
+
+// ─── Dense buffers ─────────────────────────────────────────────────────────
+
+/// The elements of a [`Obj::Buffer`], one variant per [`DType`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum BufData {
+    F32(Vec<f32>),
+    F64(Vec<f64>),
+    I32(Vec<i32>),
+    I64(Vec<i64>),
+}
+
+/// A dense numeric array.
+///
+/// Values are read and written by index through `at` and `put`. Unlike Loon's
+/// persistent collections a buffer is mutated in place when its owner is
+/// unique, which is what makes it cheap enough to be worth sending anywhere.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Buffer {
+    pub data: BufData,
+}
+
+impl Buffer {
+    pub fn zeros(dtype: DType, len: usize) -> Buffer {
+        Buffer {
+            data: match dtype {
+                DType::F32 => BufData::F32(vec![0.0; len]),
+                DType::F64 => BufData::F64(vec![0.0; len]),
+                DType::I32 => BufData::I32(vec![0; len]),
+                DType::I64 => BufData::I64(vec![0; len]),
+            },
+        }
+    }
+
+    pub fn dtype(&self) -> DType {
+        match &self.data {
+            BufData::F32(_) => DType::F32,
+            BufData::F64(_) => DType::F64,
+            BufData::I32(_) => DType::I32,
+            BufData::I64(_) => DType::I64,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match &self.data {
+            BufData::F32(v) => v.len(),
+            BufData::F64(v) => v.len(),
+            BufData::I32(v) => v.len(),
+            BufData::I64(v) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn byte_len(&self) -> usize {
+        self.len() * self.dtype().size()
+    }
+
+    /// Element `i` as a Loon value, or `None` if out of range.
+    ///
+    /// Out of range is deliberately not silently zero: reading past the end of
+    /// a buffer is a bug in the program, and a language that answers `0` for it
+    /// teaches you to trust an answer it made up.
+    pub fn get(&self, i: usize) -> Option<Val> {
+        match &self.data {
+            BufData::F32(v) => v.get(i).map(|x| Val::float(*x as f64)),
+            BufData::F64(v) => v.get(i).map(|x| Val::float(*x)),
+            BufData::I32(v) => v.get(i).map(|x| Val::int(*x as i64)),
+            BufData::I64(v) => v.get(i).map(|x| Val::int(*x)),
+        }
+    }
+
+    /// Write element `i`, converting to the buffer's element type. Returns
+    /// false if the index is out of range or the value is not numeric.
+    pub fn set(&mut self, i: usize, val: Val) -> bool {
+        let num = if val.is_int() {
+            val.as_int() as f64
+        } else if val.is_float() {
+            val.as_float()
+        } else {
+            return false;
+        };
+        match &mut self.data {
+            BufData::F32(v) => match v.get_mut(i) {
+                Some(slot) => *slot = num as f32,
+                None => return false,
+            },
+            BufData::F64(v) => match v.get_mut(i) {
+                Some(slot) => *slot = num,
+                None => return false,
+            },
+            BufData::I32(v) => match v.get_mut(i) {
+                Some(slot) => *slot = num as i32,
+                None => return false,
+            },
+            BufData::I64(v) => match v.get_mut(i) {
+                Some(slot) => *slot = num as i64,
+                None => return false,
+            },
+        }
+        true
+    }
+
+    /// The raw bytes of the elements, little-endian.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        match &self.data {
+            BufData::F32(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            BufData::F64(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            BufData::I32(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            BufData::I64(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+        }
+    }
+
+    /// Rebuild from raw little-endian bytes. Returns `None` on a length that
+    /// is not a whole number of elements.
+    pub fn from_bytes(dtype: DType, bytes: &[u8]) -> Option<Buffer> {
+        if bytes.len() % dtype.size() != 0 {
+            return None;
+        }
+        let data = match dtype {
+            DType::F32 => BufData::F32(
+                bytes
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                    .collect(),
+            ),
+            DType::F64 => BufData::F64(
+                bytes
+                    .chunks_exact(8)
+                    .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+                    .collect(),
+            ),
+            DType::I32 => BufData::I32(
+                bytes
+                    .chunks_exact(4)
+                    .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+                    .collect(),
+            ),
+            DType::I64 => BufData::I64(
+                bytes
+                    .chunks_exact(8)
+                    .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                    .collect(),
+            ),
+        };
+        Some(Buffer { data })
+    }
+}
+
+/// A `ret_reg` meaning "this call's result is returned to the Rust caller,
+/// not stored into a register".
+///
+/// The VM re-enters itself whenever a builtin calls back into Loon — `map`
+/// over a closure, a kernel launched by `Place.run`. Those calls have no
+/// destination register in the caller, because the caller is Rust. Naming
+/// register 0 instead, as this used to, silently overwrote whatever the
+/// caller's first register held.
+const RET_DISCARD: u32 = u32::MAX;
 
 // ─── Call frame ────────────────────────────────────────────────────────────
 
@@ -174,6 +345,8 @@ struct Frame {
     /// Register file for the suspended frame.
     regs: Vec<Val>,
     /// Register in the caller's frame to write the return value into.
+    /// Register in *this* frame that receives the callee's return value, or
+    /// [`RET_DISCARD`] when the value goes back to Rust instead.
     ret_reg: u32,
     /// Closure captures for the suspended frame.
     captures: Vec<Val>,
@@ -247,6 +420,23 @@ pub struct Vm {
     ip: usize,
     /// Output capture (for println).
     output: Vec<String>,
+    /// Placement accounting: launches, transfers, and residency hits.
+    pub place_stats: crate::eir::place::PlaceStats,
+    /// Where kernels run when nothing handles `Place`.
+    pub place_mode: crate::eir::place::Mode,
+    /// Device-side residency, when running in device mode.
+    place_device: crate::eir::place::Device,
+    /// A continuation handed out by `Host.park`, with what it is waiting for.
+    ///
+    /// Set when a program suspends; the host reads it, does whatever it could
+    /// not do synchronously, and resumes through `Vm::call_value`.
+    parked: Option<(Val, Val)>,
+    /// The device kernels are dispatched to, opened on first use and kept for
+    /// the rest of the run.
+    ///
+    /// Any `Device` will do: wgpu on a desktop, a bridge to JavaScript in a
+    /// browser. The VM does not know which it has.
+    device: Option<std::rc::Rc<dyn crate::eir::device::Device>>,
     /// String constants resolved to heap indices.
     string_cache: HashMap<StringId, usize>,
     /// Interns string *objects* by content, so structurally-equal strings share
@@ -351,6 +541,11 @@ impl Vm {
             resume_closure: Val::UNIT, // set in run()
             current_span: Span::ZERO,
             heap_stats: HeapStats::default(),
+            place_stats: crate::eir::place::PlaceStats::default(),
+            place_mode: crate::eir::place::Mode::default(),
+            place_device: crate::eir::place::Device::default(),
+            parked: None,
+            device: None,
             recorder: None,
             replay: None,
             runtime_syms: Vec::new(),
@@ -455,6 +650,9 @@ impl Vm {
                 id,
                 name: Some("resume".to_string()),
                 params: vec![Ty::Any],
+                // `resume` hands its argument onward without consuming it — a
+                // multi-shot continuation may be resumed more than once.
+                param_modes: vec![Mode::In],
                 ret: Ty::Any,
                 evidence: Vec::new(),
                 captures: Vec::new(),
@@ -494,7 +692,7 @@ impl Vm {
         caps: Vec<Val>,
     ) -> Result<Val, VmError> {
         let depth = self.frames.len();
-        self.call_func_with_captures(func_id, args, 0, caps)?;
+        self.call_func_with_captures(func_id, args, RET_DISCARD, caps)?;
         self.execute(depth + 1)
     }
 
@@ -521,6 +719,518 @@ impl Vm {
         let val = self.alloc(Obj::Str(s.clone()));
         self.str_interner.insert(s, val.as_ptr());
         val
+    }
+
+    /// Run a kernel once per work item, right here.
+    ///
+    /// `[Place.run kernel n args...]` calls `kernel(i, args...)` for each `i`
+    /// in `0..n`. Kernels return nothing useful; they write through their
+    /// buffer arguments, which is why the ownership pass reporting a
+    /// written-through parameter as `InOut` is the same fact as "this buffer
+    /// has to come back".
+    fn place_run_serial(&mut self, args: &[Val]) -> Result<Val, VmError> {
+        let kernel = args.first().copied().unwrap_or(Val::UNIT);
+        let n_val = args.get(1).copied().unwrap_or(Val::UNIT);
+
+        let (func_id, caps, name) = match self.get_obj(kernel) {
+            Some(Obj::Closure(f, c)) => {
+                let name = self
+                    .module
+                    .funcs
+                    .get(f.0 as usize)
+                    .and_then(|fun| fun.name.clone());
+                (*f, c.clone(), name)
+            }
+            _ => {
+                return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                    "Place.run expects a kernel as its first argument, got {}",
+                    self.val_to_string(kernel)
+                )))
+                .with_span(self.current_span))
+            }
+        };
+
+        if !n_val.is_int() || n_val.as_int() < 0 {
+            return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                "Place.run expects a non-negative work count, got {}",
+                self.val_to_string(n_val)
+            )))
+            .with_span(self.current_span));
+        }
+        let n = n_val.as_int();
+
+        // Charge the launch before running, so a kernel that fails partway
+        // still shows up in the accounting.
+        self.place_stats.record(crate::eir::place::PlaceEvent {
+            kind: crate::eir::place::EventKind::Launch,
+            kernel: name,
+            arg: None,
+            dtype: None,
+            bytes: 0,
+            items: n as u64,
+            device: self.place_mode.name(),
+        });
+
+        // Kernel arguments arrive as one vector rather than spread across the
+        // operation. That keeps the operation's own arity fixed at three, so a
+        // handler clause can bind and forward it — `[Place.run k n args]` —
+        // and, more usefully, can *inspect* the argument list. A residency
+        // policy is exactly a handler that looks at those arguments and
+        // decides which of them still need to move.
+        let args_val = args.get(2).copied().unwrap_or(Val::UNIT);
+        let rest: Vec<Val> = match self.get_obj(args_val) {
+            Some(Obj::Vec(v)) => v.iter().copied().collect(),
+            Some(Obj::Tuple(v)) => v.clone(),
+            _ if args.len() <= 2 => Vec::new(),
+            _ => {
+                return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                    "Place.run expects a vector of kernel arguments, got {}",
+                    self.val_to_string(args_val)
+                )))
+                .with_span(self.current_span))
+            }
+        };
+        // In device mode, every buffer argument has to be on the device before
+        // the kernel can touch it. An argument that is already resident costs
+        // nothing — and counting those hits is what turns a residency policy
+        // from a claim into a measurement.
+        if self.place_mode == crate::eir::place::Mode::Device {
+            for (i, arg) in rest.iter().enumerate() {
+                let Some((id, bytes, dtype)) = self.buffer_info(*arg) else {
+                    continue;
+                };
+                if self.place_device.is_resident(id) {
+                    self.place_stats.record(crate::eir::place::PlaceEvent {
+                        kind: crate::eir::place::EventKind::ResidentHit,
+                        kernel: None,
+                        arg: Some(i as u16),
+                        dtype: Some(dtype),
+                        bytes: 0,
+                        items: 0,
+                        device: "device",
+                    });
+                } else {
+                    self.place_device.mark_resident(id);
+                    self.place_stats.record(crate::eir::place::PlaceEvent {
+                        kind: crate::eir::place::EventKind::Upload,
+                        kernel: None,
+                        arg: Some(i as u16),
+                        dtype: Some(dtype),
+                        bytes,
+                        items: 0,
+                        device: "device",
+                    });
+                }
+            }
+        }
+
+        // On a GPU the kernel runs there, not here. Everything above — the
+        // residency bookkeeping, the launch accounting — is the same either
+        // way, because those are properties of placement rather than of any
+        // particular device.
+        if self.place_mode == crate::eir::place::Mode::Gpu {
+            self.place_run_gpu(func_id, &rest, n)?;
+
+            // Only what the kernel *wrote* differs from the host's copy. This
+            // used to mark every argument dirty, so a launch reading two
+            // buffers and writing one reported three transfers home when one
+            // was needed — and did three, which is worse than the accounting
+            // being wrong.
+            let kinds = crate::eir::wgsl::infer_arg_kinds(&self.module, func_id, DType::F32);
+            for (i, arg) in rest.iter().enumerate() {
+                if let Some((id, _, _)) = self.buffer_info(*arg) {
+                    self.place_device.mark_resident(id);
+                    if matches!(
+                        kinds.get(i),
+                        Some(crate::eir::wgsl::ArgKind::Buffer { writable: true, .. })
+                    ) {
+                        self.place_device.mark_dirty(id);
+                    }
+                }
+            }
+            // An unpinned buffer does not survive the launch, and on a GPU
+            // that means really releasing the allocation — otherwise
+            // "resident" would be a word the accounting used and the hardware
+            // ignored.
+            //
+            // Evicting something the kernel just wrote has to write it back
+            // first. A cache that drops dirty data is not a cache, it is a
+            // bug; and this write-back is exactly the cost a policy of keeping
+            // nothing resident is choosing to pay, once per launch.
+            let evicted = self.place_device.evict_unpinned();
+            let dirty: Vec<Val> = rest
+                .iter()
+                .copied()
+                .filter(|v| {
+                    v.is_ptr()
+                        && evicted.contains(&v.as_ptr())
+                        && self.place_device.is_dirty(v.as_ptr())
+                })
+                .collect();
+            for val in dirty {
+                let id = val.as_ptr();
+                self.gpu_download_into(id, val)?;
+                self.place_device.clear_dirty(id);
+                if let Some((_, bytes, dtype)) = self.buffer_info(val) {
+                    self.place_stats.record(crate::eir::place::PlaceEvent {
+                        kind: crate::eir::place::EventKind::Download,
+                        kernel: None,
+                        arg: None,
+                        dtype: Some(dtype),
+                        bytes,
+                        items: 0,
+                        device: "gpu",
+                    });
+                }
+            }
+            self.gpu_evict(&evicted);
+            return Ok(Val::UNIT);
+        }
+
+        // The typed executor handles the numeric subset without boxing every
+        // value or walking the heap for every element. Kernels outside the
+        // subset fall through to the general VM below, which is why this is a
+        // question rather than a requirement.
+        if matches!(
+            self.place_mode,
+            crate::eir::place::Mode::Cpu | crate::eir::place::Mode::Par
+        ) && crate::eir::kernel_exec::supported(&self.module, func_id)
+        {
+            if let Some(result) = self.place_run_fast(func_id, &rest, n)? {
+                return Ok(result);
+            }
+        }
+
+        let mut call_args = Vec::with_capacity(rest.len() + 1);
+        for i in 0..n {
+            call_args.clear();
+            call_args.push(Val::int(i));
+            call_args.extend_from_slice(&rest);
+            self.run_call_with_captures(func_id, &call_args, caps.clone())?;
+        }
+
+        // Whatever the kernel wrote now differs from the host's copy, and an
+        // unpinned buffer does not survive to the next launch. Both of those
+        // are the *default* behaviour of a device that has not been told
+        // anything — which is precisely what a residency handler exists to
+        // change, by pinning what it knows will be wanted again.
+        if self.place_mode.has_device_memory() {
+            for arg in &rest {
+                if let Some((id, _, _)) = self.buffer_info(*arg) {
+                    self.place_device.mark_dirty(id);
+                }
+            }
+            self.place_device.evict_unpinned();
+        }
+
+        Ok(Val::UNIT)
+    }
+
+    /// Run a kernel on the GPU.
+    ///
+    /// Arguments are uploaded only if they are not already there, and nothing
+    /// is copied back — results stay on the device until `Place.read` asks for
+    /// them. That is what makes the residency accounting describe the hardware
+    /// rather than a model of it: an upload counted here is an upload that
+    /// happened.
+    fn place_run_gpu(&mut self, func_id: FuncId, rest: &[Val], n: i64) -> Result<(), VmError> {
+        let kinds = crate::eir::wgsl::infer_arg_kinds(&self.module, func_id, DType::F32);
+        if kinds.len() != rest.len() {
+            return Err(self.place_error(format!(
+                "the kernel takes {} arguments but {} were given",
+                kinds.len(),
+                rest.len()
+            )));
+        }
+        let shader = crate::eir::wgsl::emit(&self.module, func_id, &kinds)
+            .map_err(|e| self.place_error(format!("this kernel cannot run on a GPU: {e}")))?;
+
+        // Check every argument against the shape the kernel body implies. A
+        // buffer handed to a parameter the kernel multiplies by has no
+        // sensible reading, and defaulting it to zero would be a confident
+        // wrong answer.
+        let mut scalars: Vec<f32> = Vec::new();
+        let mut buffer_ids: Vec<usize> = Vec::new();
+        let mut to_upload: Vec<(usize, Buffer, u64, DType)> = Vec::new();
+        for (i, val) in rest.iter().enumerate() {
+            let is_buffer = matches!(self.get_obj(*val), Some(Obj::Buffer(_)));
+            let wants_buffer = matches!(kinds[i], crate::eir::wgsl::ArgKind::Buffer { .. });
+            if is_buffer != wants_buffer {
+                let (given, wanted) = if is_buffer {
+                    ("a buffer", "a number")
+                } else {
+                    ("a number", "a buffer")
+                };
+                return Err(self.place_error(format!(
+                    "argument {} is {given}, but the kernel uses it as {wanted}",
+                    i + 1
+                )));
+            }
+            match self.get_obj(*val) {
+                Some(Obj::Buffer(b)) => {
+                    // WGSL core has no 64-bit scalar. Quietly computing an f64
+                    // buffer in f32 would hand back numbers of a precision the
+                    // program never asked for and has no way to notice, so the
+                    // launch is refused and the alternative named instead.
+                    if !b.dtype().gpu_ok() {
+                        return Err(self.place_error(format!(
+                            "argument {} is a {} buffer, and a GPU has no {}-bit \
+                             number; run this with --place cpu or --place par, or \
+                             build the buffer with `buf` instead of `buf-{}`",
+                            i + 1,
+                            b.dtype().name(),
+                            b.dtype().size() * 8,
+                            b.dtype().name()
+                        )));
+                    }
+                    let id = val.as_ptr();
+                    buffer_ids.push(id);
+                    to_upload.push((
+                        id,
+                        crate::eir::device::narrow(b),
+                        b.byte_len() as u64,
+                        b.dtype(),
+                    ));
+                }
+                _ => {
+                    let x = if val.is_int() {
+                        val.as_int() as f32
+                    } else if val.is_float() {
+                        val.as_float() as f32
+                    } else {
+                        return Err(self.place_error(format!(
+                            "argument {} is neither a buffer nor a number",
+                            i + 1
+                        )));
+                    };
+                    scalars.push(x);
+                }
+            }
+        }
+
+        let device = self.gpu_device()?;
+        for (i, (id, narrowed, bytes, dtype)) in to_upload.iter().enumerate() {
+            let uploaded = device
+                .ensure_resident(*id, narrowed)
+                .map_err(|e| self.place_error(e.0))?;
+            self.place_stats.record(crate::eir::place::PlaceEvent {
+                kind: if uploaded {
+                    crate::eir::place::EventKind::Upload
+                } else {
+                    crate::eir::place::EventKind::ResidentHit
+                },
+                kernel: None,
+                arg: Some(i as u16),
+                dtype: Some(*dtype),
+                bytes: if uploaded { *bytes } else { 0 },
+                items: 0,
+                device: "gpu",
+            });
+        }
+
+        device
+            .dispatch(&shader, "main", n.max(0) as u32, &scalars, &buffer_ids)
+            .map_err(|e| self.place_error(format!("the GPU refused the launch: {e}")))?;
+        Ok(())
+    }
+
+    /// The device, opened on first use and kept.
+    ///
+    /// A bridge installed by the host wins: in a browser that is the only way
+    /// to reach a GPU, because WebGPU is asynchronous and this VM is not. With
+    /// no bridge and no `gpu` feature there is nowhere to run, and saying so
+    /// beats quietly running somewhere the caller did not ask for.
+    fn gpu_device(&mut self) -> Result<std::rc::Rc<dyn crate::eir::device::Device>, VmError> {
+        if let Some(d) = &self.device {
+            return Ok(d.clone());
+        }
+        if let Some(d) = crate::eir::device::installed() {
+            self.device = Some(d.clone());
+            return Ok(d);
+        }
+        #[cfg(feature = "gpu")]
+        {
+            let g: std::rc::Rc<dyn crate::eir::device::Device> = std::rc::Rc::new(
+                crate::eir::gpu::Gpu::open().map_err(|e| self.place_error(e.to_string()))?,
+            );
+            self.device = Some(g.clone());
+            Ok(g)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            Err(self.place_error(
+                "this build has no GPU support; rebuild with `--features gpu`, install a \
+                 device bridge, or use `--place cpu`"
+                    .to_string(),
+            ))
+        }
+    }
+
+    /// Release device storage for buffers the model just evicted.
+    fn gpu_evict(&mut self, ids: &[usize]) {
+        if let Some(d) = &self.device {
+            for id in ids {
+                d.evict(*id);
+            }
+        }
+    }
+
+    /// Bring a buffer's device contents home, if it lives on a device.
+    fn gpu_download_into(&mut self, id: usize, val: Val) -> Result<(), VmError> {
+        if self.place_mode != crate::eir::place::Mode::Gpu {
+            return Ok(());
+        }
+        let Some(d) = self.device.clone() else {
+            return Ok(());
+        };
+        if !d.is_resident(id) {
+            return Ok(());
+        }
+        let byte_len = match self.get_obj(val) {
+            Some(Obj::Buffer(b)) => b.byte_len(),
+            _ => return Ok(()),
+        };
+        let bytes = d
+            .download(id, byte_len)
+            .map_err(|e| self.place_error(format!("reading back from the device: {e}")))?;
+        if let Some(Obj::Buffer(buf)) = self.heap.get_mut(id) {
+            let len = buf.len();
+            let vals: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .take(len)
+                .collect();
+            for (i, v) in vals.into_iter().enumerate() {
+                buf.set(i, Val::float(v as f64));
+            }
+        }
+        Ok(())
+    }
+
+    fn place_error(&self, message: String) -> VmError {
+        VmError::new(VmErrorKind::BuiltinType(message)).with_span(self.current_span)
+    }
+
+    /// Run a kernel through the typed executor, if its arguments allow it.
+    ///
+    /// Returns `None` when the shape is not one this path handles (an aliased
+    /// buffer, say), so the caller falls back rather than failing. Buffers are
+    /// taken out of the heap for the duration and put back afterwards, which
+    /// is what lets the executor hold a `&mut` slice — and, in parallel mode,
+    /// hand disjoint pieces of it to different threads.
+    fn place_run_fast(
+        &mut self,
+        func_id: FuncId,
+        rest: &[Val],
+        n: i64,
+    ) -> Result<Option<Val>, VmError> {
+        use crate::eir::kernel_exec::{KArg, KVal};
+
+        // Which arguments are buffers, and which of those are written?
+        let kinds = crate::eir::wgsl::infer_arg_kinds(&self.module, func_id, DType::F32);
+        if kinds.len() != rest.len() {
+            return Ok(None);
+        }
+
+        // A buffer appearing twice would need two borrows of the same slot.
+        let mut seen: Vec<usize> = Vec::new();
+        for val in rest {
+            if val.is_ptr() && matches!(self.heap.get(val.as_ptr()), Some(Obj::Buffer(_))) {
+                if seen.contains(&val.as_ptr()) {
+                    return Ok(None);
+                }
+                seen.push(val.as_ptr());
+            }
+        }
+
+        // Take each buffer out of the heap so it can be borrowed mutably.
+        let mut taken: Vec<(usize, Buffer, bool)> = Vec::new();
+        let mut scalars: Vec<(usize, KVal)> = Vec::new();
+        for (i, val) in rest.iter().enumerate() {
+            let writable = matches!(
+                kinds[i],
+                crate::eir::wgsl::ArgKind::Buffer { writable: true, .. }
+            );
+            match self.heap.get(val.as_ptr()) {
+                Some(Obj::Buffer(b)) if val.is_ptr() => {
+                    taken.push((i, b.clone(), writable));
+                }
+                _ => {
+                    let v = if val.is_int() {
+                        KVal::I(val.as_int())
+                    } else if val.is_float() {
+                        KVal::F(val.as_float())
+                    } else {
+                        return Ok(None);
+                    };
+                    scalars.push((i, v));
+                }
+            }
+        }
+
+        let parallel = self.place_mode == crate::eir::place::Mode::Par;
+        let module = self.module.clone();
+
+        // Keep the buffers in one place and hand out borrows by argument
+        // position. Splitting inputs from outputs is what lets the parallel
+        // driver carve every output into per-thread slices while sharing the
+        // inputs whole.
+        let mut buffers: Vec<(usize, Buffer, bool)> = taken;
+        let outcome = {
+            let (writable, readable): (Vec<_>, Vec<_>) =
+                buffers.iter_mut().partition(|(_, _, w)| *w);
+            let inputs: Vec<(usize, &Buffer)> =
+                readable.into_iter().map(|(i, b, _)| (*i, &*b)).collect();
+            let mut outputs: Vec<(usize, &mut Buffer)> =
+                writable.into_iter().map(|(i, b, _)| (*i, b)).collect();
+
+            if parallel {
+                crate::eir::kernel_exec::run_parallel(
+                    &module,
+                    func_id,
+                    &scalars,
+                    &inputs,
+                    &mut outputs,
+                    rest.len(),
+                    n,
+                )
+            } else {
+                crate::eir::kernel_exec::run_sequential(
+                    &module,
+                    func_id,
+                    &scalars,
+                    &inputs,
+                    &mut outputs,
+                    rest.len(),
+                    n,
+                )
+            }
+        };
+        let outcome = outcome.map(|_| buffers);
+
+        let buffers = match outcome {
+            Ok(b) => b,
+            Err(e) => {
+                return Err(VmError::new(VmErrorKind::BuiltinType(e.0)).with_span(self.current_span))
+            }
+        };
+
+        // Put the results back where the program can see them.
+        for (i, buf, _) in buffers {
+            let val = rest[i];
+            if let Some(slot) = self.heap.get_mut(val.as_ptr()) {
+                *slot = Obj::Buffer(buf);
+            }
+        }
+        Ok(Some(Val::UNIT))
+    }
+
+    /// Heap slot, byte length, and element type of a buffer value.
+    fn buffer_info(&self, val: Val) -> Option<(usize, u64, DType)> {
+        match self.get_obj(val) {
+            Some(Obj::Buffer(b)) => Some((val.as_ptr(), b.byte_len() as u64, b.dtype())),
+            _ => None,
+        }
     }
 
     fn get_obj(&self, val: Val) -> Option<&Obj> {
@@ -670,6 +1380,37 @@ impl Vm {
     ///   escaping continuation, e.g. the function-passing `State`).
     /// - `None` (tail resume): leave the frame already on top as the return
     ///   target (the reader's non-escaping tail-resume path).
+    /// The continuation a program parked, if it did, and what it wants.
+    ///
+    /// Taking it clears the slot: a parked continuation has one host, and
+    /// leaving it visible after handing it over invites resuming twice.
+    pub fn take_parked(&mut self) -> Option<(Val, Val)> {
+        self.parked.take()
+    }
+
+    /// Call a Loon value — a closure or a parked continuation — from Rust.
+    ///
+    /// This is what an asynchronous host needs. A handler that hands `resume`
+    /// outward and returns leaves a live continuation in this VM's heap; the
+    /// host can go away, do something slow, and finish the computation later
+    /// by calling it through here.
+    ///
+    /// The VM has to outlive the run that parked it, which is the one real
+    /// constraint: the continuation is a heap object, so dropping the VM drops
+    /// the rest of the program with it.
+    pub fn call_value(&mut self, f: Val, args: &[Val]) -> Result<Val, VmError> {
+        match self.get_obj(f).cloned() {
+            Some(Obj::Continuation { .. }) => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                let depth = self.frames.len();
+                self.resume_continuation(f, v, None)?;
+                self.execute(depth)
+            }
+            Some(Obj::Closure(fid, caps)) => self.run_call_with_captures(fid, args, caps),
+            _ => Err(VmError::new(VmErrorKind::NotCallable).with_span(self.current_span)),
+        }
+    }
+
     fn resume_continuation(&mut self, k: Val, v: Val, base: Option<u32>) -> Result<(), VmError> {
         let (saved, func, block, ip, mut regs, captures, perform_dst, prompt_handlers) =
             match self.get_obj(k) {
@@ -751,7 +1492,9 @@ impl Vm {
             self.func = frame.func;
             self.block = frame.block;
             self.ip = frame.ip;
-            self.regs[ret_reg as usize] = val;
+            if ret_reg != RET_DISCARD {
+                self.regs[ret_reg as usize] = val;
+            }
             // A resumed segment may have left ephemeral handlers scoped to a
             // prompt frame that is now gone; drop them so they cannot shadow a
             // later handle for the same effect.
@@ -1452,9 +2195,167 @@ impl Vm {
                     Some(Obj::Set(items)) => items.len() as i64,
                     Some(Obj::Str(s)) => s.len() as i64,
                     Some(Obj::Tuple(items)) => items.len() as i64,
+                    // A buffer has a length like any other sequence. Falling
+                    // through to 0 here made `[len buf]` a confident lie.
+                    Some(Obj::Buffer(b)) => b.len() as i64,
                     _ => 0,
                 };
                 Ok(Val::int(len))
+            }
+            // ── Dense buffers ──
+            Built::BufNew | Built::BufNewI32 | Built::BufNewF64 => {
+                let dtype = match built {
+                    Built::BufNewI32 => DType::I32,
+                    Built::BufNewF64 => DType::F64,
+                    _ => DType::F32,
+                };
+                let src = args.first().copied().unwrap_or(Val::UNIT);
+                let items: Vec<Val> = match self.get_obj(src) {
+                    Some(Obj::Vec(v)) => v.iter().copied().collect(),
+                    Some(Obj::Tuple(v)) => v.clone(),
+                    _ => {
+                        return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                            "{} expects a vector of numbers, got {}",
+                            match built {
+                                Built::BufNewI32 => "buf-i32",
+                                Built::BufNewF64 => "buf-f64",
+                                _ => "buf",
+                            },
+                            self.val_to_string(src)
+                        ))))
+                    }
+                };
+                let mut buf = Buffer::zeros(dtype, items.len());
+                for (i, v) in items.iter().enumerate() {
+                    if !buf.set(i, *v) {
+                        return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                            "buffer element {i} is not a number: {}",
+                            self.val_to_string(*v)
+                        ))));
+                    }
+                }
+                Ok(self.alloc(Obj::Buffer(buf)))
+            }
+            Built::BufZeros | Built::BufZerosI32 => {
+                let dtype = if matches!(built, Built::BufZerosI32) {
+                    DType::I32
+                } else {
+                    DType::F32
+                };
+                let n = args.first().copied().unwrap_or(Val::UNIT);
+                if !n.is_int() || n.as_int() < 0 {
+                    return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "buffer length must be a non-negative integer, got {}",
+                        self.val_to_string(n)
+                    ))));
+                }
+                Ok(self.alloc(Obj::Buffer(Buffer::zeros(dtype, n.as_int() as usize))))
+            }
+            Built::BufLen => {
+                let b = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_obj(b) {
+                    Some(Obj::Buffer(buf)) => Ok(Val::int(buf.len() as i64)),
+                    _ => Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "buf-len expects a buffer, got {}",
+                        self.val_to_string(b)
+                    )))),
+                }
+            }
+            Built::BufDtype => {
+                let b = args.first().copied().unwrap_or(Val::UNIT);
+                match self.get_obj(b) {
+                    Some(Obj::Buffer(buf)) => {
+                        let name = buf.dtype().name();
+                        Ok(self.alloc_str_owned(name.to_string()))
+                    }
+                    _ => Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "buf-dtype expects a buffer, got {}",
+                        self.val_to_string(b)
+                    )))),
+                }
+            }
+            Built::BufToVec => {
+                let b = args.first().copied().unwrap_or(Val::UNIT);
+                let items: Vec<Val> = match self.get_obj(b) {
+                    Some(Obj::Buffer(buf)) => (0..buf.len()).filter_map(|i| buf.get(i)).collect(),
+                    _ => {
+                        return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                            "buf->vec expects a buffer, got {}",
+                            self.val_to_string(b)
+                        ))))
+                    }
+                };
+                Ok(self.alloc(Obj::Vec(items.into_iter().collect())))
+            }
+            Built::BufAt => {
+                let b = args.first().copied().unwrap_or(Val::UNIT);
+                let i = args.get(1).copied().unwrap_or(Val::UNIT);
+                let Some(Obj::Buffer(buf)) = self.get_obj(b) else {
+                    return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "at expects a buffer, got {}",
+                        self.val_to_string(b)
+                    ))));
+                };
+                if !i.is_int() {
+                    return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "at expects an integer index, got {}",
+                        self.val_to_string(i)
+                    ))));
+                }
+                let idx = i.as_int();
+                let len = buf.len();
+                match usize::try_from(idx).ok().and_then(|u| buf.get(u)) {
+                    Some(v) => Ok(v),
+                    None => Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "at: index {idx} is outside a buffer of length {len}"
+                    )))),
+                }
+            }
+            Built::BufPut => {
+                // Writes through the buffer in place. Every other Loon
+                // collection is persistent; a buffer is not, because copying
+                // one per element write is exactly the cost buffers exist to
+                // avoid. The ownership pass is what keeps this honest — it
+                // reports a written-through parameter as `InOut`.
+                let b = args.first().copied().unwrap_or(Val::UNIT);
+                let i = args.get(1).copied().unwrap_or(Val::UNIT);
+                let x = args.get(2).copied().unwrap_or(Val::UNIT);
+                if !b.is_ptr() || !matches!(self.heap.get(b.as_ptr()), Some(Obj::Buffer(_))) {
+                    return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "put expects a buffer, got {}",
+                        self.val_to_string(b)
+                    ))));
+                }
+                if !i.is_int() {
+                    return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "put expects an integer index, got {}",
+                        self.val_to_string(i)
+                    ))));
+                }
+                let idx = i.as_int();
+                let ptr = b.as_ptr();
+                let len = match self.heap.get(ptr) {
+                    Some(Obj::Buffer(buf)) => buf.len(),
+                    _ => 0,
+                };
+                let ok = usize::try_from(idx)
+                    .ok()
+                    .map(|u| match self.heap.get_mut(ptr) {
+                        Some(Obj::Buffer(buf)) => buf.set(u, x),
+                        _ => false,
+                    })
+                    .unwrap_or(false);
+                if !ok {
+                    let shown = self.val_to_string(x);
+                    return Err(VmError::new(VmErrorKind::BuiltinType(
+                        if idx < 0 || idx as usize >= len {
+                            format!("put: index {idx} is outside a buffer of length {len}")
+                        } else {
+                            format!("put: {shown} is not a number")
+                        },
+                    )));
+                }
+                Ok(b)
             }
             Built::SeqLen => {
                 let v = args.first().copied().unwrap_or(Val::UNIT);
@@ -1667,17 +2568,46 @@ impl Vm {
                 }
             }
             Built::Sum => {
+                // Ints stay ints; any float promotes the whole sum, matching
+                // the interpreter and the `Vec Num → Num` the registry
+                // declares. This used to filter to integers and silently drop
+                // everything else, so summing a vector of floats answered 0 —
+                // which is the shape of wrong answer that is worst, because it
+                // looks like an empty sum rather than a failure.
                 let coll = args.first().copied().unwrap_or(Val::UNIT);
-                match self.get_obj(coll) {
-                    Some(Obj::Vec(items)) => {
-                        let sum: i64 = items
-                            .iter()
-                            .filter(|v| v.is_int())
-                            .map(|v| v.as_int())
-                            .sum();
-                        Ok(Val::int(sum))
+                let Some(Obj::Vec(items)) = self.get_obj(coll) else {
+                    return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                        "sum requires a vector, got {}",
+                        self.val_to_string(coll)
+                    )))
+                    .with_span(self.current_span));
+                };
+                let items: Vec<Val> = items.iter().copied().collect();
+                let any_float = items.iter().any(|v| v.is_float());
+                for v in &items {
+                    if !v.is_int() && !v.is_float() {
+                        let shown = self.val_to_string(*v);
+                        return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                            "sum requires a vector of numbers; found {shown}"
+                        )))
+                        .with_span(self.current_span));
                     }
-                    _ => Ok(Val::int(0)),
+                }
+                if any_float {
+                    let total: f64 = items
+                        .iter()
+                        .map(|v| {
+                            if v.is_float() {
+                                v.as_float()
+                            } else {
+                                v.as_int() as f64
+                            }
+                        })
+                        .sum();
+                    Ok(Val::float(total))
+                } else {
+                    let total: i64 = items.iter().map(|v| v.as_int()).sum();
+                    Ok(Val::int(total))
                 }
             }
             Built::Min | Built::Max => {
@@ -3254,6 +4184,142 @@ impl Vm {
             // (value-or-"" lookup). The interpreter has no such ops — it hard
             // errors — so they were dropped for cross-backend conformance;
             // `Process.env` is the Option-returning form both backends share.
+            // ── Placement ──
+            //
+            // Reached only when no handler took the operation, so this is the
+            // default answer to "where does this run": right here, one work
+            // item at a time. A program that never mentions placement gets
+            // this; installing a handler is what changes the answer, and the
+            // program itself does not move.
+            ("Place", "run") => self.place_run_serial(args)?,
+            ("Place", "read") => {
+                // The one path from device-side data back to the host. It is
+                // an operation rather than a plain accessor so that a
+                // residency handler can see every synchronization point
+                // without the programmer having marked any of them — which is
+                // what the `Preload`/`PreloadMut` types in the Rust offload
+                // work exist to reconstruct.
+                let b = args.first().copied().unwrap_or(Val::UNIT);
+                let (bytes, dtype) = match self.buffer_info(b) {
+                    Some((_, bytes, dtype)) => (bytes, dtype),
+                    None => {
+                        return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                            "Place.read expects a buffer, got {}",
+                            self.val_to_string(b)
+                        )))
+                        .with_span(self.current_span))
+                    }
+                };
+                let id = b.as_ptr();
+
+                // On a device, a read costs a transfer only when the device
+                // holds something the host has not seen. On the CPU there is
+                // one memory, so the read is free — and saying so keeps the
+                // two modes comparable.
+                let must_transfer = match self.place_mode {
+                    crate::eir::place::Mode::Cpu | crate::eir::place::Mode::Par => true,
+                    crate::eir::place::Mode::Device | crate::eir::place::Mode::Gpu => {
+                        self.place_device.is_dirty(id)
+                    }
+                };
+                // The transfer happens *before* the values are read, which is
+                // the whole content of the word "synchronization". Reading
+                // first would return the host's stale copy and report a
+                // download that changed nothing.
+                if must_transfer {
+                    self.place_device.clear_dirty(id);
+                    self.gpu_download_into(id, b)?;
+                    self.place_stats.record(crate::eir::place::PlaceEvent {
+                        kind: crate::eir::place::EventKind::Download,
+                        kernel: None,
+                        arg: None,
+                        dtype: Some(dtype),
+                        bytes,
+                        items: 0,
+                        device: self.place_mode.name(),
+                    });
+                }
+
+                let items: Vec<Val> = match self.get_obj(b) {
+                    Some(Obj::Buffer(buf)) => {
+                        let n = buf.len();
+                        (0..n).filter_map(|i| buf.get(i)).collect()
+                    }
+                    _ => {
+                        return Err(VmError::new(VmErrorKind::BuiltinType(format!(
+                            "Place.read expects a buffer, got {}",
+                            self.val_to_string(b)
+                        )))
+                        .with_span(self.current_span))
+                    }
+                };
+                self.alloc(Obj::Vec(items.into_iter().collect()))
+            }
+            ("Place", "pin") | ("Place", "unpin") => {
+                // Pinning says "this buffer will be wanted again, keep it".
+                // It is the whole vocabulary a residency policy needs, and it
+                // is available to any handler — no compiler pass required.
+                //
+                // Accepts a buffer or a vector of them, so a handler can pin a
+                // kernel's entire argument list in one operation.
+                let target = args.first().copied().unwrap_or(Val::UNIT);
+                if self.place_mode.has_device_memory() {
+                    let pinning = op == "pin";
+                    let ids: Vec<usize> = match self.get_obj(target) {
+                        Some(Obj::Vec(v)) => v
+                            .iter()
+                            .filter(|x| x.is_ptr())
+                            .filter(|x| matches!(self.heap.get(x.as_ptr()), Some(Obj::Buffer(_))))
+                            .map(|x| x.as_ptr())
+                            .collect(),
+                        Some(Obj::Buffer(_)) => vec![target.as_ptr()],
+                        _ => Vec::new(),
+                    };
+                    for id in ids {
+                        if pinning {
+                            self.place_device.pin(id);
+                        } else {
+                            self.place_device.unpin(id);
+                        }
+                    }
+                }
+                target
+            }
+            ("Place", "stats") => {
+                let s = &self.place_stats;
+                let pairs = [
+                    ("launches", s.launches as i64),
+                    ("work-items", s.work_items as i64),
+                    ("uploads", s.uploads as i64),
+                    ("downloads", s.downloads as i64),
+                    ("bytes-in", s.bytes_in as i64),
+                    ("bytes-out", s.bytes_out as i64),
+                    ("resident-hits", s.resident_hits as i64),
+                    (
+                        "resident-buffers",
+                        self.place_device.resident_count() as i64,
+                    ),
+                ];
+                let mut map = ImMap::new();
+                for (k, v) in pairs {
+                    let key = self.intern_sym(k);
+                    map.insert(key, Val::int(v));
+                }
+                self.alloc(Obj::Map(map))
+            }
+
+            // ── Parking ──
+            //
+            // Keep the continuation and what it is waiting for. The handler
+            // that performed this returns without resuming, so the computation
+            // unwinds from here and the host is left holding the rest of it.
+            ("Host", "park") => {
+                let k = args.first().copied().unwrap_or(Val::UNIT);
+                let request = args.get(1).copied().unwrap_or(Val::UNIT);
+                self.parked = Some((k, request));
+                Val::UNIT
+            }
+
             // Real TCP/HTTP sockets (see eir/net.rs). A blocking one-at-a-time
             // server: listen a port, accept a request, send the response.
             ("Net", "listen") => {
@@ -3293,6 +4359,11 @@ impl Vm {
     }
 
     // ── Value display ──────────────────────────────────────────────────
+
+    /// Render a value the way `println` would, for hosts outside this module.
+    pub fn val_to_string_public(&self, val: Val) -> String {
+        self.val_to_string(val)
+    }
 
     fn val_to_string(&self, val: Val) -> String {
         self.val_to_string_inner(val, false)
@@ -3382,6 +4453,14 @@ impl Vm {
                         .and_then(|f| f.name.as_deref())
                         .unwrap_or("anon");
                     format!("<fn:{name}>")
+                }
+                // A buffer prints as its shape, not its contents: it is a
+                // handle to bulk data that may live on another device, and
+                // `Place.read` is how a program asks for the values. Printing
+                // the heap slot instead would leak an allocation number into
+                // output that is supposed to be reproducible.
+                Some(Obj::Buffer(b)) => {
+                    format!("#buf<{} x {}>", b.dtype().name(), b.len())
                 }
                 _ => format!("<obj:{}>", val.as_ptr()),
             }
@@ -3580,6 +4659,156 @@ pub fn eval_eir_with_base_dir(src: &str, base_dir: &std::path::Path) -> Result<V
     eval_eir_impl(src, crate::check::Checker::with_base_dir(base_dir))
 }
 
+/// A program that can stop in the middle and be finished later.
+///
+/// The VM outlives each step, because a parked continuation is a heap object:
+/// dropping the VM would drop the rest of the program with it. That is the
+/// only thing a synchronous language needs in order to sit under an
+/// asynchronous host — not an asynchronous interpreter, just one that is still
+/// there when the answer arrives.
+pub struct Session {
+    vm: Vm,
+    pending: Option<Val>,
+    /// Output produced by steps so far. `Vm::run` hands its output out in the
+    /// result, so a session collects it rather than losing it between steps.
+    output: Vec<String>,
+    /// The value of the most recent completed step.
+    value: Val,
+}
+
+/// Where a step of a `Session` stopped.
+pub enum Step {
+    /// The program finished.
+    Done(VmResult),
+    /// The program parked, waiting for something the host has to supply.
+    /// `request` is whatever the parking handler passed along to describe it.
+    Parked { request: Val },
+}
+
+impl Session {
+    /// Prepare a program, without running it.
+    pub fn new(
+        src: &str,
+        base_dir: &std::path::Path,
+        mode: crate::eir::place::Mode,
+    ) -> Result<Session, VmError> {
+        let mut checker = crate::check::Checker::with_base_dir(base_dir);
+        let exprs = crate::parser::parse(src).map_err(|e| VmError {
+            kind: VmErrorKind::Trap,
+            span: Some(e.span),
+            context: Some(format!("parse error: {}", e.message)),
+        })?;
+        let errors = checker.check_program(&exprs);
+        if let Some(e) = module_error(&errors) {
+            return Err(e);
+        }
+        let module = crate::eir::lower::lower(&checker);
+        let mut vm = Vm::new(module);
+        vm.place_mode = mode;
+        Ok(Session {
+            vm,
+            pending: None,
+            output: Vec::new(),
+            value: Val::UNIT,
+        })
+    }
+
+    /// Run until the program finishes or parks.
+    pub fn start(&mut self) -> Result<Step, VmError> {
+        let result = self.vm.run()?;
+        Ok(self.classify(result))
+    }
+
+    /// Finish a parked step by supplying the value it was waiting for.
+    pub fn resume(&mut self, k: Val, value: Val) -> Result<Step, VmError> {
+        let val = self.vm.call_value(k, &[value])?;
+        let result = VmResult {
+            value: val,
+            output: std::mem::take(&mut self.vm.output),
+            heap_stats: self.vm.heap_stats.clone(),
+        };
+        Ok(self.classify(result))
+    }
+
+    fn classify(&mut self, mut result: VmResult) -> Step {
+        self.output.append(&mut result.output);
+        self.value = result.value;
+        match self.vm.take_parked() {
+            Some((k, request)) => {
+                self.pending = Some(k);
+                Step::Parked { request }
+            }
+            None => {
+                self.pending = None;
+                Step::Done(result)
+            }
+        }
+    }
+
+    /// The value the last step produced. After a resumed step this is the value
+    /// of the *continuation* — the rest of the suspended computation — which is
+    /// where a deferred answer ends up.
+    pub fn value(&self) -> Val {
+        self.value
+    }
+
+    /// Render a value the way `println` would.
+    pub fn show(&self, v: Val) -> String {
+        self.vm.val_to_string_public(v)
+    }
+
+    /// The continuation the last `Parked` step is waiting on.
+    pub fn pending(&self) -> Option<Val> {
+        self.pending
+    }
+
+    /// The placement accounting so far.
+    pub fn stats(&self) -> &crate::eir::place::PlaceStats {
+        &self.vm.place_stats
+    }
+
+    /// Anything printed so far, taken out.
+    pub fn take_output(&mut self) -> Vec<String> {
+        let mut out = std::mem::take(&mut self.output);
+        out.append(&mut std::mem::take(&mut self.vm.output));
+        out
+    }
+
+    /// Build a Loon vector of numbers, for resuming a read.
+    pub fn vec_of_floats(&mut self, xs: &[f32]) -> Val {
+        let items: ImVec = xs.iter().map(|x| Val::float(*x as f64)).collect();
+        self.vm.alloc(Obj::Vec(items))
+    }
+}
+
+/// Run with an explicit placement mode, returning the placement accounting
+/// alongside the result.
+///
+/// The counters are the interesting output for an offloaded program: how many
+/// times bytes crossed the boundary, and how many crossings a residency policy
+/// avoided.
+pub fn eval_eir_placed(
+    src: &str,
+    base_dir: &std::path::Path,
+    mode: crate::eir::place::Mode,
+) -> Result<(VmResult, crate::eir::place::PlaceStats), VmError> {
+    let mut checker = crate::check::Checker::with_base_dir(base_dir);
+    let exprs = crate::parser::parse(src).map_err(|e| VmError {
+        kind: VmErrorKind::Trap,
+        span: Some(e.span),
+        context: Some(format!("parse error: {}", e.message)),
+    })?;
+    let errors = checker.check_program(&exprs);
+    if let Some(e) = module_error(&errors) {
+        return Err(e);
+    }
+    let module = crate::eir::lower::lower(&checker);
+    let mut vm = Vm::new(module);
+    vm.place_mode = mode;
+    let result = vm.run()?;
+    Ok((result, vm.place_stats.clone()))
+}
+
 fn eval_eir_impl(src: &str, mut checker: crate::check::Checker) -> Result<VmResult, VmError> {
     let exprs = crate::parser::parse(src).map_err(|e| VmError {
         kind: VmErrorKind::Trap,
@@ -3711,6 +4940,7 @@ mod tests {
             id: FuncId(id),
             name: Some("callee".to_string()),
             params: vec![],
+            param_modes: Vec::new(),
             ret: Ty::Any,
             evidence: vec![],
             captures: vec![],
@@ -3729,6 +4959,7 @@ mod tests {
             id: FuncId(1),
             name: Some("caller".to_string()),
             params: vec![],
+            param_modes: Vec::new(),
             ret: Ty::Any,
             evidence: vec![],
             captures: vec![],
@@ -3758,6 +4989,7 @@ mod tests {
                     id: FuncId(2),
                     name: Some("__main".to_string()),
                     params: vec![],
+                    param_modes: Vec::new(),
                     ret: Ty::Any,
                     evidence: vec![],
                     captures: vec![],
@@ -3803,6 +5035,7 @@ mod tests {
             id: FuncId(0),
             name: Some("callee".to_string()),
             params: vec![],
+            param_modes: Vec::new(),
             ret: Ty::Any,
             evidence: vec![],
             captures: vec![],
@@ -3826,6 +5059,7 @@ mod tests {
                     id: FuncId(1),
                     name: Some("__main".to_string()),
                     params: vec![],
+                    param_modes: Vec::new(),
                     ret: Ty::Any,
                     evidence: vec![],
                     captures: vec![],
