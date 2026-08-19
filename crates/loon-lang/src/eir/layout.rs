@@ -262,8 +262,13 @@ pub fn golden_buffer_f32() -> (DType, Vec<f32>) {
             f32::INFINITY,
             f32::NEG_INFINITY,
             f32::from_bits(0x7FC0_0001), // NaN with payload
-            3.14159265,
-            -2.71828,
+            // Two ordinary values with a full mantissa, to catch a backend
+            // that round-trips the special cases and mangles the mundane ones.
+            // Deliberately not near any named constant: these are arbitrary
+            // bit patterns, and writing them as a truncated pi would suggest
+            // they meant something.
+            1.234_567_9,
+            -98_765.43,
         ],
     )
 }
