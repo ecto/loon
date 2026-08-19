@@ -21,8 +21,8 @@
 ; the computation comes back when the continuation is called rather than from
 ; the call that parked.
 ;
-;   loon run os/demo-park.oo
-[use place]
+;   loon run samples/place/demo-park.oo
+[use lib]
 
 [effect Slow
   [fetch [Int] Int]]

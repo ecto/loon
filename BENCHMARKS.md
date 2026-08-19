@@ -13,7 +13,7 @@ the transfer counts do not move at all.
 
 A chain of launches over one 4096-element buffer, on the GPU. The program is
 identical in both columns — the only difference is whether `place/resident`
-(nine lines, in `os/place.oo`) is wrapped around it.
+(nine lines, in `samples/place/lib.oo`) is wrapped around it.
 
 | launches | no policy | place/resident | speedup |
 |---------:|----------:|---------------:|--------:|

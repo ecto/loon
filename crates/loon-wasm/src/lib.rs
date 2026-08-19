@@ -105,7 +105,7 @@ pub fn eval_placed(source: &str, place: &str) -> Result<String, String> {
 //
 // The session below is what keeps that possible — a parked continuation lives
 // in the VM's heap, so the VM has to still be there when the answer shows up.
-// See `os/demo-park.oo`, and note where the deferring handler has to sit.
+// See `samples/place/demo-park.oo`, and note where the deferring handler has to sit.
 
 thread_local! {
     static SESSION: RefCell<Option<loon_lang::eir::vm::Session>> =

@@ -4,8 +4,8 @@
 ; thing that changes between the runs below is which handler is wrapped around
 ; the same thunk — and the answer is identical every time.
 ;
-;   loon run os/demo-place.oo
-[use place]
+;   loon run samples/place/demo-handlers.oo
+[use lib]
 
 ; A two-kernel chain. Chains are where placement policy earns its keep: the
 ; intermediate never needs to come back to the host, and only a handler is in

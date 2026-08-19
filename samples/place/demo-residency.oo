@@ -10,12 +10,12 @@
 ; two runs; the only difference is whether `place/resident` is wrapped around
 ; it. Run with:
 ;
-;   loon run os/demo-residency.oo --place device
+;   loon run samples/place/demo-residency.oo --place device
 ;
 ; `--place device` gives buffers a separate memory, so transfers are real and
 ; counted. On `--place cpu` there is one memory and nothing to move — the same
 ; program, the same answer, no transfers at all.
-[use place]
+[use lib]
 
 [kernel step [i b] [put b i [+ 1.0 [at b i]]]]
 

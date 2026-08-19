@@ -23,9 +23,20 @@ enum Command {
         #[arg(long)]
         release: bool,
     },
+    /// Compile a Loon file to a bare-metal boot image (EIR, no host runtime)
+    Image {
+        file: PathBuf,
+        /// Where to write the image (default: <file>.img next to the source)
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// Run a Loon file (interpreter)
     Run {
         file: PathBuf,
+        /// Skip the static checker and go straight to the VM. The VM still
+        /// fails loudly at runtime; this only drops the up-front pass.
+        #[arg(long)]
+        unchecked: bool,
         /// Run via WASM compilation + wasmtime instead of interpreter
         #[arg(long)]
         wasm: bool,
@@ -166,6 +177,7 @@ fn main() {
     match cli.command {
         Command::Run {
             ref file,
+            unchecked,
             wasm,
             legacy,
             native,
@@ -208,7 +220,7 @@ fn main() {
             } else if legacy {
                 run_file_legacy(file);
             } else {
-                run_file(file, record.as_deref(), place_mode, place_stats);
+                run_file(file, record.as_deref(), unchecked, place_mode, place_stats);
             }
         }
         Command::Replay {
@@ -218,6 +230,7 @@ fn main() {
         Command::Check { ref file, json } => check_file(file, json),
         Command::Card { json } => print_card(json),
         Command::Build { ref file, release } => build_file(file, release),
+        Command::Image { ref file, ref out } => build_image(file, out.as_deref()),
         Command::Repl => repl::run_repl(),
         Command::New { ref name } => new_project(name),
         Command::Test { ref file } => test_file(file),
@@ -300,6 +313,7 @@ fn precheck_source(path: &std::path::Path, source: &str) {
 fn run_file(
     path: &PathBuf,
     record: Option<&std::path::Path>,
+    unchecked: bool,
     place_mode: loon_lang::eir::place::Mode,
     show_place_stats: bool,
 ) {
@@ -311,7 +325,9 @@ fn run_file(
         }
     };
 
-    precheck_source(path, &source);
+    if !unchecked {
+        precheck_source(path, &source);
+    }
     let base_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let result = match record {
         Some(trace_path) => {
@@ -1103,6 +1119,59 @@ fn print_card(json: bool) {
     } else {
         println!("{card}");
     }
+}
+
+/// Compile to a boot image: EIR with the frontend stripped off.
+///
+/// The unikernel cannot parse or check, so everything that can fail statically
+/// has to fail here instead.
+fn build_image(path: &PathBuf, out: Option<&std::path::Path>) {
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{} reading {}: {e}", "error".red().bold(), path.display());
+            std::process::exit(1);
+        }
+    };
+
+    precheck_source(path, &source);
+
+    let exprs = match loon_lang::parser::parse(&source) {
+        Ok(exprs) => exprs,
+        Err(e) => {
+            eprintln!("{}: parse error: {}", "error".red().bold(), e.message);
+            std::process::exit(1);
+        }
+    };
+    let base_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let mut checker = loon_lang::check::Checker::with_base_dir(base_dir);
+    checker.check_program(&exprs);
+    let module = loon_lang::eir::lower::lower(&checker);
+    let image = loon_lang::eir::image::encode(&module);
+
+    let out_path = match out {
+        Some(p) => p.to_path_buf(),
+        None => path.with_extension("img"),
+    };
+    if let Some(dir) = out_path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = std::fs::write(&out_path, &image) {
+        eprintln!(
+            "{} writing {}: {e}",
+            "error".red().bold(),
+            out_path.display()
+        );
+        std::process::exit(1);
+    }
+    println!(
+        "  {} {} ({} bytes, {} functions, {} strings)",
+        "Imaged".green().bold(),
+        out_path.display(),
+        image.len(),
+        module.funcs.len(),
+        module.strings.len(),
+    );
 }
 
 fn build_file(path: &PathBuf, release: bool) {

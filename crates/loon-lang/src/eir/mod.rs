@@ -7,6 +7,7 @@ pub mod backend;
 pub mod device;
 #[cfg(feature = "gpu")]
 pub mod gpu;
+pub mod image;
 pub mod kernel_exec;
 pub mod layout;
 pub mod lower;

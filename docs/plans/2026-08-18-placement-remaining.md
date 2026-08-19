@@ -23,7 +23,7 @@ code.
 - **Real GPU execution** (`eir::gpu`, feature `gpu`) — wgpu, with resident
   device buffers so the transfer accounting describes the hardware.
 - **Record and replay** — a run on the GPU replays on a build with no GPU.
-- **Handlers** (`os/place.oo`) — trace, dry-run, counted, resident,
+- **Handlers** (`samples/place/lib.oo`) — trace, dry-run, counted, resident,
   resident-only.
 - **Reductions** (`samples/place/reduce.oo`) — no new feature needed: a work
   item sums its own chunk into its own slot, which is still "write at your own
@@ -78,7 +78,7 @@ effect path in the VM". It did not: escaping continuations already were one.
 What is left is only to point the demo page at it. That means writing the
 sample with the deferring handler outermost — parking unwinds to the `handle`,
 so anything after it runs immediately with the placeholder (see
-`os/demo-park.oo`, and the test named for it). Uploads and dispatches need
+`samples/place/demo-park.oo`, and the test named for it). Uploads and dispatches need
 nothing, because `writeBuffer` and `submit` are already synchronous; only the
 readback ever has to wait.
 ### The DOM exports

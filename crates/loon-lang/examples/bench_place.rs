@@ -148,7 +148,7 @@ fn main() {
     // This is the shape of the gap a recent Rust offload paper measures at up
     // to 400x between its convenient and explicit interfaces. There it is
     // closed by annotations at every call site plus an LLVM pass; here by the
-    // handler in os/place.oo.
+    // handler in samples/place/lib.oo.
     // Only the real device is timed. The modelled one moves no actual bytes,
     // so its wall clock would be measuring the interpreter and calling it a
     // transfer cost.

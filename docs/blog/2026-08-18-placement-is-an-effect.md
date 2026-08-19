@@ -44,7 +44,7 @@ We have a way to spell that.
 
 ## Nine lines
 
-Here is the residency policy. It is in `os/place.oo`. It is not privileged, it is not in the compiler, and you could have written it.
+Here is the residency policy. It is in `samples/place/lib.oo`. It is not privileged, it is not in the compiler, and you could have written it.
 
 ```
 [fn place/resident [thunk]
@@ -63,7 +63,7 @@ Read it slowly, because it is doing the whole job. It catches every launch, tell
 Wrap it around a program and:
 
 ```
-loon run os/demo-residency.oo --place gpu
+loon run samples/place/demo-residency.oo --place gpu
 
 eight launches over one buffer
   answer #[8 8 8 8]
@@ -191,7 +191,7 @@ work: continued with 21
 host: finished with 42
 ```
 
-That's `os/demo-park.oo`, and it is the entire mechanism an asynchronous host needs. A browser can't answer `Place.read` immediately — reading a GPU buffer back is a promise — but it doesn't have to answer immediately. It can take the continuation, go away, and come back when the bytes arrive. Uploads and dispatches need none of this, because `writeBuffer` and `submit` are already synchronous.
+That's `samples/place/demo-park.oo`, and it is the entire mechanism an asynchronous host needs. A browser can't answer `Place.read` immediately — reading a GPU buffer back is a promise — but it doesn't have to answer immediately. It can take the continuation, go away, and come back when the bytes arrive. Uploads and dispatches need none of this, because `writeBuffer` and `submit` are already synchronous.
 
 What's left there is plumbing: a VM that outlives one call, since the continuation lives in its heap, and an export for the page to resume through. Not semantics. I had assumed the hard part was the language and the easy part was the wiring, and it was the other way round — which is what I get for writing down what I thought was true instead of trying it.
 
@@ -236,7 +236,7 @@ I don't have a fourth one yet. But I've stopped being surprised when something t
 Try it:
 
 ```
-loon run os/demo-place.oo                    # one program, four handlers
-loon run os/demo-residency.oo --place device # the transfer gap
+loon run samples/place/demo-handlers.oo                    # one program, four handlers
+loon run samples/place/demo-residency.oo --place device # the transfer gap
 loon run samples/place/saxpy.oo --place gpu  # on real hardware
 ```

@@ -41,7 +41,12 @@ cargo test --workspace          # Run all tests
 cargo run -p loon-cli -- run samples/hello.oo   # Run a sample
 cargo run -p loon-cli -- fmt samples/           # Format files
 cargo run -p loon-cli -- new test-proj          # Creates pkg.oo + src/main.oo
+cargo run -p loon-cli -- image prog.oo         # Compile to a boot image (consumed by fxos)
 ```
+
+The OS built on Loon lives in its own repo: https://github.com/ecto/fxos.
+`loon image` + `eir/image.rs` are the ABI it consumes; `tests/boot_image.rs`
+pins that format.
 
 ## Key Patterns
 
