@@ -257,6 +257,42 @@ export function invoke_callback(id) {
 }
 
 /**
+ * Finish a parked step by supplying the numbers the host went to fetch.
+ * @param {Float32Array} values
+ * @returns {any}
+ */
+export function place_resume(values) {
+    const ptr0 = passArrayF32ToWasm0(values, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.place_resume(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
+ * Start a program, running until it finishes or parks.
+ *
+ * Returns `{done, output, request}`. `done` false means it parked and is
+ * waiting for `place_resume`.
+ * @param {string} source
+ * @param {string} place
+ * @returns {any}
+ */
+export function place_start(source, place) {
+    const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(place, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.place_start(ptr0, len0, ptr1, len1);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
  * Reset the Loon runtime state (callbacks, etc.) for hot reload.
  */
 export function reset_runtime() {
@@ -552,6 +588,13 @@ function handleError(f, args) {
 
 function isLikeNone(x) {
     return x === undefined || x === null;
+}
+
+function passArrayF32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getFloat32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passStringToWasm0(arg, malloc, realloc) {

@@ -97,6 +97,19 @@ export function init_gpu_bridge(bridge: Function): void;
 export function invoke_callback(id: number): void;
 
 /**
+ * Finish a parked step by supplying the numbers the host went to fetch.
+ */
+export function place_resume(values: Float32Array): any;
+
+/**
+ * Start a program, running until it finishes or parks.
+ *
+ * Returns `{done, output, request}`. `done` false means it parked and is
+ * waiting for `place_resume`.
+ */
+export function place_start(source: string, place: string): any;
+
+/**
  * Reset the Loon runtime state (callbacks, etc.) for hot reload.
  */
 export function reset_runtime(): void;
@@ -118,6 +131,8 @@ export interface InitOutput {
     readonly init_dom_bridge: (a: any) => void;
     readonly init_gpu_bridge: (a: any) => void;
     readonly invoke_callback: (a: number) => void;
+    readonly place_resume: (a: number, b: number) => [number, number, number];
+    readonly place_start: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly clear_effect_log: () => void;
     readonly reset_runtime: () => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;

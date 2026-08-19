@@ -96,6 +96,83 @@ pub fn eval_placed(source: &str, place: &str) -> Result<String, String> {
     Ok(out)
 }
 
+// ── Suspending a program the host cannot answer synchronously ──────────────
+//
+// A browser cannot answer `Place.read` immediately, because reading a GPU
+// buffer back is a promise. It does not have to: a handler that hands `resume`
+// to `Host.park` and returns unwinds the computation, and the page can finish
+// it once the bytes arrive.
+//
+// The session below is what keeps that possible — a parked continuation lives
+// in the VM's heap, so the VM has to still be there when the answer shows up.
+// See `os/demo-park.oo`, and note where the deferring handler has to sit.
+
+thread_local! {
+    static SESSION: RefCell<Option<loon_lang::eir::vm::Session>> =
+        const { RefCell::new(None) };
+}
+
+/// Start a program, running until it finishes or parks.
+///
+/// Returns `{done, output, request}`. `done` false means it parked and is
+/// waiting for `place_resume`.
+#[wasm_bindgen]
+pub fn place_start(source: &str, place: &str) -> Result<JsValue, String> {
+    let mode = loon_lang::eir::place::Mode::parse(place)
+        .ok_or_else(|| format!("unknown placement mode '{place}'"))?;
+    let mut session = loon_lang::eir::vm::Session::new(source, std::path::Path::new("."), mode)
+        .map_err(|e| e.to_string())?;
+    let step = session.start().map_err(|e| e.to_string())?;
+    let js = step_to_js(&mut session, step);
+    SESSION.with(|s| *s.borrow_mut() = Some(session));
+    Ok(js)
+}
+
+/// Finish a parked step by supplying the numbers the host went to fetch.
+#[wasm_bindgen]
+pub fn place_resume(values: &[f32]) -> Result<JsValue, String> {
+    SESSION.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        let session = guard
+            .as_mut()
+            .ok_or_else(|| "no program is running".to_string())?;
+        let k = session
+            .pending()
+            .ok_or_else(|| "nothing is parked".to_string())?;
+        let data = session.vec_of_floats(values);
+        let step = session.resume(k, data).map_err(|e| e.to_string())?;
+        Ok(step_to_js(session, step))
+    })
+}
+
+fn step_to_js(
+    session: &mut loon_lang::eir::vm::Session,
+    step: loon_lang::eir::vm::Step,
+) -> JsValue {
+    let o = js_sys::Object::new();
+    let (done, request) = match step {
+        loon_lang::eir::vm::Step::Done(_) => (true, JsValue::NULL),
+        loon_lang::eir::vm::Step::Parked { request } => {
+            (false, JsValue::from_str(&session.show(request)))
+        }
+    };
+    let out = session.take_output().join("\n");
+    let _ = js_sys::Reflect::set(&o, &JsValue::from_str("done"), &JsValue::from_bool(done));
+    let _ = js_sys::Reflect::set(&o, &JsValue::from_str("output"), &JsValue::from_str(&out));
+    let _ = js_sys::Reflect::set(&o, &JsValue::from_str("request"), &request);
+    let _ = js_sys::Reflect::set(
+        &o,
+        &JsValue::from_str("value"),
+        &JsValue::from_str(&session.show(session.value())),
+    );
+    let _ = js_sys::Reflect::set(
+        &o,
+        &JsValue::from_str("stats"),
+        &JsValue::from_str(&session.stats().summary()),
+    );
+    o.into()
+}
+
 /// Evaluate a Loon program and return the result as a string.
 // The DOM-driving exports (`eval_ui`, `invoke_callback`) stay on the legacy
 // tree-walking interpreter: the DOM bridge is written against `Value` and

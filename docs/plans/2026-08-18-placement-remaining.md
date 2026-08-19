@@ -56,33 +56,31 @@ These are not gaps. They are the rules the design rests on, enforced.
 
 ### Reaching a GPU without cross-origin isolation
 
-The browser GPU path needs `SharedArrayBuffer`, which needs COOP/COEP headers
-(`vercel.json` sets them for `/place.html` and `/place-worker.js`). On a page
-without isolation the bridge reports that and the other placements still work.
+Two paths now exist, and the second one no longer needs isolation.
 
-An earlier version of this document said removing that requirement would need
-"an asynchronous effect path in the VM". That was wrong, and `os/demo-park.oo`
-is the correction: a handler clause that hands `resume` outward and returns
-unwinds the computation without ending it, and the continuation stays live for
-whoever caught it. The VM needs no changes at all — this is what reified,
-escaping continuations already are.
+**The worker path**, which is what `web/public/place.html` uses today: the VM
+runs in a Web Worker and blocks on `Atomics.wait`, which needs
+`SharedArrayBuffer`, which needs COOP/COEP headers (`vercel.json` sets them).
+Verified on a real GPU.
 
-So the browser could answer `Place.read` asynchronously: park the continuation,
-let the page await `mapAsync`, resume with the bytes. Uploads and dispatches
-need nothing, because `writeBuffer` and `submit` are synchronous. No worker, no
-`SharedArrayBuffer`, no headers.
+**The parking path**, which needs none of that. A handler that hands `resume`
+to `Host.park` and returns unwinds the computation, and the page finishes it
+when the bytes arrive. `eir::vm::Session` keeps the VM alive between steps, and
+`place_start` / `place_resume` expose it to JavaScript. Confirmed in a browser
+with `crossOriginIsolated === false`:
 
-What that still needs is plumbing rather than semantics:
+    start:  done=false                              ← parked at Place.read
+    resume: done=true out="read #[2 4 6]" value=12  ← finished with host data
 
-- A `Vm` that outlives one `eval_placed` call, since the continuation lives in
-  its heap. Today the VM is created and dropped per run.
-- A public way to invoke a continuation value from Rust, and a wasm export for
-  the page to call when the bytes land.
-- A `Host.park`-style builtin to hold the parked continuation and the request.
+An earlier version of this document said this would need "an asynchronous
+effect path in the VM". It did not: escaping continuations already were one.
 
-Worth doing, and a smaller job than it looked. The worker approach already
-works, so this buys portability to hosts that will not set headers, not
-capability.
+What is left is only to point the demo page at it. That means writing the
+sample with the deferring handler outermost — parking unwinds to the `handle`,
+so anything after it runs immediately with the placeholder (see
+`os/demo-park.oo`, and the test named for it). Uploads and dispatches need
+nothing, because `writeBuffer` and `submit` are already synchronous; only the
+readback ever has to wait.
 ### The DOM exports
 
 `eval_ui` and `invoke_callback` remain on the legacy tree-walking interpreter.
