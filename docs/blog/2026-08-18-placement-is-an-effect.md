@@ -160,18 +160,24 @@ Every accounting number, no execution. And strace-for-GPU is the same shape as s
 
 Metal on this laptop, today. Vulkan on a Linux box and DX12 on Windows are the same code path through wgpu, and I have not run either, so take them as "should" rather than "does."
 
-The browser needs care, because there are two halves to it and they are in different states.
+And the browser, which I want to describe carefully because getting there was the strangest part.
 
-Programs do run in a tab. `web/public/place.html` loads the wasm build, and the buttons pick a placement:
+Programs run in a tab, on the actual GPU:
 
 ```
-placed on device: 4 launches over 32 work items;
-                  9 uploads (288 B), 2 downloads (64 B), 3 resident hits
+placed on gpu: 4 launches over 32 work items;
+               9 uploads (288 B), 3 downloads (96 B), 3 resident hits
 ```
 
-That is the residency handler, written against no hardware at all, deciding what a browser copies. Kernels and buffers only exist on the EIR VM, so the wasm crate grew an `eval_placed` export that runs on it; the DOM-driving exports stay on the old tree-walking interpreter, because the guide's examples use builtins the EIR VM doesn't implement and I would rather add an entry point than break documented pages.
+That is WebGPU, driven by the same WGSL a desktop build hands to wgpu, with the residency handler deciding what gets copied.
 
-WebGPU is the half that isn't done. WGSL is its shading language and naga validates every kernel we emit, so the shaders are known-good there — but reaching an actual GPU from a tab needs wgpu's asynchronous device setup, which this build doesn't do. `--place gpu` in the browser refuses and says why. So: the programs run, the shaders would run, and the wire between them is missing.
+Here is the strange part. WebGPU is asynchronous — you get a device from a promise and read a buffer back through `mapAsync`. Loon's VM is synchronous all the way down; `Place.read` is an effect operation that returns a value, not a future. Those two facts cannot both hold on one thread.
+
+So they hold on two. The VM runs in a Web Worker, and every device call posts a request to the main thread and then blocks on `Atomics.wait` until the answer lands in a `SharedArrayBuffer`. The main thread, where the promises live, does the WebGPU work and wakes the worker. The blocking is real, and it is the whole trick: it lets an asynchronous API sit underneath a synchronous language without either one pretending to be the other.
+
+None of that reached the VM. It sees an `eir::device::Device` — six operations: name, ensure-resident, is-resident, dispatch, download, evict — and wgpu implements it on a laptop while a JavaScript bridge implements it in a tab. Which is the same move placement makes at the language level, one floor down: the thing that varies goes behind an interface, and the code above does not change when the answer does.
+
+The cost is a requirement for cross-origin isolation, since `SharedArrayBuffer` needs COOP/COEP headers. Without them the page says so and the other placements still work. Getting rid of that would mean an asynchronous effect path in the VM — `Place.read` suspending and resuming rather than blocking a thread. The continuations are already there for it. That is a project, not a patch.
 
 Every kernel in the repo is parsed and type-checked by naga in CI, on machines with no GPU. That's the automated cross-target validation the paper says is still missing — they found a host/device divergence in slice lowering by hand, `(ptr, len)` on two targets and `[i64; 2]` on a third. We have the same class of hazard: NaN-boxing constants that used to be copy-pasted into three backends under a comment asking the next person to keep them in sync. They now live in one file, and a conformance test compiles the same literals on every backend and compares raw bits.
 

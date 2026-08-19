@@ -24,10 +24,9 @@ export function enable_effect_log(enabled: boolean): void;
  * interpreter-backed exports below cannot run them at all.
  *
  * `place` is `cpu`, `par`, `device`, or `gpu`. In a browser, `cpu` is the
- * real answer and `device` models a discrete memory so transfer counts can
- * be shown; `par` has no threads to use here and behaves as `cpu`; `gpu`
- * reports that this build has no GPU support, because reaching WebGPU needs
- * wgpu's async device initialization, which this crate does not do yet.
+ * real answer and `device` models a discrete memory so transfer counts can be
+ * shown; `par` has no threads to use here and behaves as `cpu`; `gpu` needs a
+ * bridge installed with `init_gpu_bridge`, and says so if there is none.
  *
  * Returns the program's printed output followed by its placement accounting,
  * so a page can show what crossed the boundary.
@@ -62,6 +61,11 @@ export function eval_with_output(source: string): string;
 export function get_effect_log(): string;
 
 /**
+ * Whether a GPU bridge has been installed.
+ */
+export function has_gpu_bridge(): boolean;
+
+/**
  * Infer the type of the last named binding (fn/let) in the source.
  */
 export function infer_type(source: string): string;
@@ -72,6 +76,20 @@ export function infer_type(source: string): string;
  * Must be called before eval_ui.
  */
 export function init_dom_bridge(bridge: Function): void;
+
+/**
+ * Install the GPU bridge: a JS function taking `(op, payload)` and returning
+ * synchronously.
+ *
+ * The operations are `name`, `upload`, `dispatch`, `download`, and `evict`.
+ * How the JS side becomes synchronous is up to it — the demo runs the VM in a
+ * worker and blocks on `Atomics.wait` while the main thread drives WebGPU.
+ *
+ * With a bridge installed, `--place gpu` works in a browser. Without one it
+ * says there is nowhere to run, which is better than quietly running on the
+ * CPU and reporting GPU numbers.
+ */
+export function init_gpu_bridge(bridge: Function): void;
 
 /**
  * Invoke a stored Loon callback by ID (called from JS event handlers).
@@ -95,8 +113,10 @@ export interface InitOutput {
     readonly eval_ui_checked: (a: number, b: number) => [number, number];
     readonly eval_with_output: (a: number, b: number) => [number, number, number, number];
     readonly get_effect_log: () => [number, number];
+    readonly has_gpu_bridge: () => number;
     readonly infer_type: (a: number, b: number) => [number, number, number, number];
     readonly init_dom_bridge: (a: any) => void;
+    readonly init_gpu_bridge: (a: any) => void;
     readonly invoke_callback: (a: number) => void;
     readonly clear_effect_log: () => void;
     readonly reset_runtime: () => void;

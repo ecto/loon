@@ -1,5 +1,7 @@
 use wasm_bindgen::prelude::*;
 
+mod gpu_bridge;
+
 use loon_lang::interp::dom_builtins;
 use loon_lang::interp::Value;
 use std::cell::RefCell;
@@ -42,6 +44,28 @@ fn call_js_bridge(op: &str, args: &[Value]) -> Result<Value, loon_lang::interp::
     })
 }
 
+/// Install the GPU bridge: a JS function taking `(op, payload)` and returning
+/// synchronously.
+///
+/// The operations are `name`, `upload`, `dispatch`, `download`, and `evict`.
+/// How the JS side becomes synchronous is up to it — the demo runs the VM in a
+/// worker and blocks on `Atomics.wait` while the main thread drives WebGPU.
+///
+/// With a bridge installed, `--place gpu` works in a browser. Without one it
+/// says there is nowhere to run, which is better than quietly running on the
+/// CPU and reporting GPU numbers.
+#[wasm_bindgen]
+pub fn init_gpu_bridge(bridge: &js_sys::Function) {
+    gpu_bridge::set_bridge(bridge.clone());
+    loon_lang::eir::device::install(std::rc::Rc::new(gpu_bridge::BridgeGpu::new()));
+}
+
+/// Whether a GPU bridge has been installed.
+#[wasm_bindgen]
+pub fn has_gpu_bridge() -> bool {
+    gpu_bridge::has_bridge()
+}
+
 /// Run a Loon program on the EIR VM, with a placement mode.
 ///
 /// This is the entry point a browser needs for placed programs: kernels,
@@ -49,10 +73,9 @@ fn call_js_bridge(op: &str, args: &[Value]) -> Result<Value, loon_lang::interp::
 /// interpreter-backed exports below cannot run them at all.
 ///
 /// `place` is `cpu`, `par`, `device`, or `gpu`. In a browser, `cpu` is the
-/// real answer and `device` models a discrete memory so transfer counts can
-/// be shown; `par` has no threads to use here and behaves as `cpu`; `gpu`
-/// reports that this build has no GPU support, because reaching WebGPU needs
-/// wgpu's async device initialization, which this crate does not do yet.
+/// real answer and `device` models a discrete memory so transfer counts can be
+/// shown; `par` has no threads to use here and behaves as `cpu`; `gpu` needs a
+/// bridge installed with `init_gpu_bridge`, and says so if there is none.
 ///
 /// Returns the program's printed output followed by its placement accounting,
 /// so a page can show what crossed the boundary.

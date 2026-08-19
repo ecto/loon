@@ -49,17 +49,21 @@ change between them.</p>
   <button data-mode="gpu">--place gpu</button>
 </div>
 <pre id="out">loading the wasm build…</pre>
+<p class="note" id="note"></p>
+
 <p class="note">
-  <code>cpu</code> is the real answer here. <code>device</code> models a separate
-  memory so you can see transfers counted. <code>par</code> has no threads to use
-  in a browser and behaves as <code>cpu</code>. <code>gpu</code> is expected to
-  refuse: reaching WebGPU needs wgpu's asynchronous device setup, which this
-  build does not do yet — the shaders are validated in CI, but the runtime has
-  not been wired up.
+  <code>cpu</code> and <code>par</code> run inline on this thread — one memory,
+  so nothing is transferred. <code>device</code> models a separate memory to
+  show transfers counted. <code>gpu</code> is real WebGPU: Loon's VM is
+  synchronous and WebGPU is not, so the VM runs in a worker and blocks on
+  <code>Atomics.wait</code> while this thread drives the device. It needs
+  cross-origin isolation (COOP/COEP) for <code>SharedArrayBuffer</code>; without
+  it the other placements still work and this one says why.
 </p>
 
 <script type="module">
 import init, { eval_placed } from '/loon_wasm.js';
+import { attachGpuBridge } from '/place-gpu.js';
 
 const program = `[kernel saxpy [i a x y out]
   [put out i [+ [* a [at x i]] [at y i]]]]
@@ -83,23 +87,71 @@ const program = `[kernel saxpy [i a x y out]
 
 document.getElementById('src').textContent = program;
 const out = document.getElementById('out');
+const note = document.getElementById('note');
 const buttons = [...document.querySelectorAll('button')];
 
-try {
-  await init();
-  out.textContent = 'ready — pick a placement.';
-  buttons.forEach(b => b.disabled = false);
-} catch (e) {
-  out.textContent = 'could not load the wasm build: ' + e;
+// The GPU needs a worker: WebGPU is asynchronous and the VM is not, so the VM
+// blocks on Atomics.wait off the main thread while WebGPU work happens here.
+// Everything else can run inline.
+let worker = null;
+let gpuName = null;
+let gpuError = null;
+let nextId = 0;
+const pending = new Map();
+
+async function setupGpu() {
+  if (!crossOriginIsolated) {
+    throw new Error(
+      'this page is not cross-origin isolated, so SharedArrayBuffer is unavailable ' +
+        '(needs COOP/COEP headers)',
+    );
+  }
+  const w = new Worker('/place-worker.js', { type: 'module' });
+  w.addEventListener('message', (e) => {
+    if (e.data?.kind !== 'result') return;
+    const resolve = pending.get(e.data.id);
+    pending.delete(e.data.id);
+    resolve?.(e.data);
+  });
+  const { name } = await attachGpuBridge(w);
+  worker = w;
+  gpuName = name;
 }
 
+function runOnWorker(place) {
+  const id = nextId++;
+  return new Promise((resolve) => {
+    pending.set(id, resolve);
+    worker.postMessage({ kind: 'run', id, program, place });
+  });
+}
+
+await init();
+try {
+  await setupGpu();
+  note.textContent = `GPU bridge ready — ${gpuName}. cpu, par, and device run inline; ` +
+    `gpu runs in a worker that blocks on Atomics.wait while this thread drives WebGPU.`;
+} catch (e) {
+  gpuError = String(e.message ?? e);
+  note.textContent = `No GPU here: ${gpuError} — the other placements still work.`;
+}
+out.textContent = 'ready — pick a placement.';
+buttons.forEach((b) => (b.disabled = false));
+
 for (const b of buttons) {
-  b.addEventListener('click', () => {
+  b.addEventListener('click', async () => {
     const mode = b.dataset.mode;
+    out.textContent = `running on ${mode}…`;
     try {
-      out.textContent = eval_placed(program, mode);
+      if (mode === 'gpu') {
+        if (!worker) throw new Error(gpuError ?? 'no GPU bridge');
+        const r = await runOnWorker(mode);
+        out.textContent = r.out;
+      } else {
+        out.textContent = eval_placed(program, mode);
+      }
     } catch (e) {
-      out.textContent = String(e);
+      out.textContent = String(e.message ?? e);
     }
   });
 }

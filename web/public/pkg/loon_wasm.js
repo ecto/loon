@@ -49,10 +49,9 @@ export function enable_effect_log(enabled) {
  * interpreter-backed exports below cannot run them at all.
  *
  * `place` is `cpu`, `par`, `device`, or `gpu`. In a browser, `cpu` is the
- * real answer and `device` models a discrete memory so transfer counts can
- * be shown; `par` has no threads to use here and behaves as `cpu`; `gpu`
- * reports that this build has no GPU support, because reaching WebGPU needs
- * wgpu's async device initialization, which this crate does not do yet.
+ * real answer and `device` models a discrete memory so transfer counts can be
+ * shown; `par` has no threads to use here and behaves as `cpu`; `gpu` needs a
+ * bridge installed with `init_gpu_bridge`, and says so if there is none.
  *
  * Returns the program's printed output followed by its placement accounting,
  * so a page can show what crossed the boundary.
@@ -188,6 +187,15 @@ export function get_effect_log() {
 }
 
 /**
+ * Whether a GPU bridge has been installed.
+ * @returns {boolean}
+ */
+export function has_gpu_bridge() {
+    const ret = wasm.has_gpu_bridge();
+    return ret !== 0;
+}
+
+/**
  * Infer the type of the last named binding (fn/let) in the source.
  * @param {string} source
  * @returns {string}
@@ -221,6 +229,23 @@ export function infer_type(source) {
  */
 export function init_dom_bridge(bridge) {
     wasm.init_dom_bridge(bridge);
+}
+
+/**
+ * Install the GPU bridge: a JS function taking `(op, payload)` and returning
+ * synchronously.
+ *
+ * The operations are `name`, `upload`, `dispatch`, `download`, and `evict`.
+ * How the JS side becomes synchronous is up to it — the demo runs the VM in a
+ * worker and blocks on `Atomics.wait` while the main thread drives WebGPU.
+ *
+ * With a bridge installed, `--place gpu` works in a browser. Without one it
+ * says there is nowhere to run, which is better than quietly running on the
+ * CPU and reporting GPU numbers.
+ * @param {Function} bridge
+ */
+export function init_gpu_bridge(bridge) {
+    wasm.init_gpu_bridge(bridge);
 }
 
 /**
@@ -286,6 +311,10 @@ function __wbg_get_imports() {
             const ret = arg0.call(arg1, arg2, arg3);
             return ret;
         }, arguments); },
+        __wbg_get_b3ed3ad4be2bc8ac: function() { return handleError(function (arg0, arg1) {
+            const ret = Reflect.get(arg0, arg1);
+            return ret;
+        }, arguments); },
         __wbg_instanceof_Window_ed49b2db8df90359: function(arg0) {
             let result;
             try {
@@ -296,6 +325,14 @@ function __wbg_get_imports() {
             const ret = result;
             return ret;
         },
+        __wbg_length_32ed9a279acd054c: function(arg0) {
+            const ret = arg0.length;
+            return ret;
+        },
+        __wbg_length_9a7876c9728a0979: function(arg0) {
+            const ret = arg0.length;
+            return ret;
+        },
         __wbg_new_361308b2356cecd0: function() {
             const ret = new Object();
             return ret;
@@ -304,8 +341,20 @@ function __wbg_get_imports() {
             const ret = new Array();
             return ret;
         },
+        __wbg_new_dd2b680c8bf6ae29: function(arg0) {
+            const ret = new Uint8Array(arg0);
+            return ret;
+        },
         __wbg_new_no_args_1c7c842f08d00ebb: function(arg0, arg1) {
             const ret = new Function(getStringFromWasm0(arg0, arg1));
+            return ret;
+        },
+        __wbg_new_with_length_63f2683cc2521026: function(arg0) {
+            const ret = new Float32Array(arg0 >>> 0);
+            return ret;
+        },
+        __wbg_new_with_length_a2c39cbe88fd8ff1: function(arg0) {
+            const ret = new Uint8Array(arg0 >>> 0);
             return ret;
         },
         __wbg_now_a3af9a2f4bbaa4d1: function() {
@@ -320,6 +369,9 @@ function __wbg_get_imports() {
             const ret = arg0.performance;
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
         },
+        __wbg_prototypesetcall_bdcdcc5842e4d77d: function(arg0, arg1, arg2) {
+            Uint8Array.prototype.set.call(getArrayU8FromWasm0(arg0, arg1), arg2);
+        },
         __wbg_push_8ffdcb2063340ba5: function(arg0, arg1) {
             const ret = arg0.push(arg1);
             return ret;
@@ -328,6 +380,12 @@ function __wbg_get_imports() {
             const ret = Reflect.set(arg0, arg1, arg2);
             return ret;
         }, arguments); },
+        __wbg_set_cc56eefd2dd91957: function(arg0, arg1, arg2) {
+            arg0.set(getArrayU8FromWasm0(arg1, arg2));
+        },
+        __wbg_set_f8edeec46569cc70: function(arg0, arg1, arg2) {
+            arg0.set(getArrayF32FromWasm0(arg1, arg2));
+        },
         __wbg_static_accessor_GLOBAL_12837167ad935116: function() {
             const ret = typeof global === 'undefined' ? null : global;
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
@@ -444,12 +502,30 @@ function debugString(val) {
     return className;
 }
 
+function getArrayF32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getFloat32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
+function getArrayU8FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
+}
+
 let cachedDataViewMemory0 = null;
 function getDataViewMemory0() {
     if (cachedDataViewMemory0 === null || cachedDataViewMemory0.buffer.detached === true || (cachedDataViewMemory0.buffer.detached === undefined && cachedDataViewMemory0.buffer !== wasm.memory.buffer)) {
         cachedDataViewMemory0 = new DataView(wasm.memory.buffer);
     }
     return cachedDataViewMemory0;
+}
+
+let cachedFloat32ArrayMemory0 = null;
+function getFloat32ArrayMemory0() {
+    if (cachedFloat32ArrayMemory0 === null || cachedFloat32ArrayMemory0.byteLength === 0) {
+        cachedFloat32ArrayMemory0 = new Float32Array(wasm.memory.buffer);
+    }
+    return cachedFloat32ArrayMemory0;
 }
 
 function getStringFromWasm0(ptr, len) {
@@ -555,6 +631,7 @@ function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     wasmModule = module;
     cachedDataViewMemory0 = null;
+    cachedFloat32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     wasm.__wbindgen_start();
     return wasm;

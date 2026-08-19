@@ -28,9 +28,14 @@ code.
 - **Reductions** (`samples/place/reduce.oo`) — no new feature needed: a work
   item sums its own chunk into its own slot, which is still "write at your own
   index", and the partials are combined on the host.
-- **Placed programs in a browser** — `crates/loon-wasm` exports `eval_placed`;
-  `web/public/place.html` runs cpu, par, and device placement in a tab with
-  transfer accounting, and the residency handler works there.
+- **Placed programs in a browser, including on the GPU** — `crates/loon-wasm`
+  exports `eval_placed`; `web/public/place.html` runs cpu, par, device, and
+  **real WebGPU** in a tab, all four agreeing on the answer. Because Loon's VM
+  is synchronous and WebGPU is not, the VM runs in a worker and blocks on
+  `Atomics.wait` while the main thread drives the device.
+- **`eir::device::Device`** — the six operations a placement backend provides.
+  wgpu implements it natively; `loon-wasm` implements it by proxying to
+  JavaScript. The VM does not know which it has.
 
 ## Decided, and deliberately restrictive
 
@@ -49,23 +54,17 @@ These are not gaps. They are the rules the design rests on, enforced.
 
 ## Not done
 
-### WebGPU behind the browser
+### Reaching a GPU without cross-origin isolation
 
-Programs run in a tab; the GPU behind them does not. wgpu's WebGPU backend needs
-asynchronous device initialization — `request_adapter` and `request_device`
-return futures a browser resolves on its event loop — and readback is only
-available through `map_async`. `eir::gpu` blocks on both with `pollster`, which
-cannot block on wasm. `--place gpu` in a browser refuses and says so.
+The browser GPU path needs `SharedArrayBuffer`, which needs COOP/COEP headers
+(`vercel.json` sets them for `/place.html` and `/place-worker.js`). On a page
+without isolation the bridge reports that and the other placements still work.
 
-Closing this needs one of two architectural changes, neither of them small and
-neither of them really about placement:
-
-1. An asynchronous effect path in the VM, so `Place.read` can suspend and
-   resume when the browser delivers the mapped buffer. The VM's `builtin_effect`
-   is synchronous throughout.
-2. Running the VM in a Web Worker and blocking on `Atomics.wait` against a
-   `SharedArrayBuffer` while the main thread performs the async work. Needs
-   COOP/COEP headers and a message protocol.
+Removing that requirement would mean an asynchronous effect path in the VM, so
+`Place.read` could suspend and resume when the browser delivers a mapped buffer
+rather than blocking a worker thread. The VM has the machinery — continuations
+are reified and multi-shot — but `builtin_effect` is synchronous throughout, so
+it is a real project rather than a small change.
 
 ### The DOM exports
 

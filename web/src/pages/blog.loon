@@ -136,7 +136,7 @@
           [li-el
             "Kernels compile to WGSL and every one in the repo is validated by naga in CI, on machines with no GPU."]
           [li-el
-            "Placed programs run in a browser: web/public/place.html picks a placement in a tab and shows what crossed the boundary. Reaching a GPU from there still needs wgpu's asynchronous device setup, so --place gpu refuses and says why."]
+            "Placed programs run in a browser, including on the GPU: web/public/place.html picks a placement in a tab and shows what crossed the boundary. WebGPU is asynchronous and the VM is not, so the VM runs in a worker and blocks on Atomics.wait while the main thread drives the device."]
           [li-el
             "Reductions, with no new language feature: each work item sums its own chunk into its own slot, so the write-at-your-own-index rule holds throughout (samples/place/reduce.oo)."]
           [li-el
