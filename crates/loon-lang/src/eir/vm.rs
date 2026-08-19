@@ -426,6 +426,11 @@ pub struct Vm {
     pub place_mode: crate::eir::place::Mode,
     /// Device-side residency, when running in device mode.
     place_device: crate::eir::place::Device,
+    /// A continuation handed out by `Host.park`, with what it is waiting for.
+    ///
+    /// Set when a program suspends; the host reads it, does whatever it could
+    /// not do synchronously, and resumes through `Vm::call_value`.
+    parked: Option<(Val, Val)>,
     /// The device kernels are dispatched to, opened on first use and kept for
     /// the rest of the run.
     ///
@@ -539,6 +544,7 @@ impl Vm {
             place_stats: crate::eir::place::PlaceStats::default(),
             place_mode: crate::eir::place::Mode::default(),
             place_device: crate::eir::place::Device::default(),
+            parked: None,
             device: None,
             recorder: None,
             replay: None,
@@ -1374,6 +1380,37 @@ impl Vm {
     ///   escaping continuation, e.g. the function-passing `State`).
     /// - `None` (tail resume): leave the frame already on top as the return
     ///   target (the reader's non-escaping tail-resume path).
+    /// The continuation a program parked, if it did, and what it wants.
+    ///
+    /// Taking it clears the slot: a parked continuation has one host, and
+    /// leaving it visible after handing it over invites resuming twice.
+    pub fn take_parked(&mut self) -> Option<(Val, Val)> {
+        self.parked.take()
+    }
+
+    /// Call a Loon value — a closure or a parked continuation — from Rust.
+    ///
+    /// This is what an asynchronous host needs. A handler that hands `resume`
+    /// outward and returns leaves a live continuation in this VM's heap; the
+    /// host can go away, do something slow, and finish the computation later
+    /// by calling it through here.
+    ///
+    /// The VM has to outlive the run that parked it, which is the one real
+    /// constraint: the continuation is a heap object, so dropping the VM drops
+    /// the rest of the program with it.
+    pub fn call_value(&mut self, f: Val, args: &[Val]) -> Result<Val, VmError> {
+        match self.get_obj(f).cloned() {
+            Some(Obj::Continuation { .. }) => {
+                let v = args.first().copied().unwrap_or(Val::UNIT);
+                let depth = self.frames.len();
+                self.resume_continuation(f, v, None)?;
+                self.execute(depth)
+            }
+            Some(Obj::Closure(fid, caps)) => self.run_call_with_captures(fid, args, caps),
+            _ => Err(VmError::new(VmErrorKind::NotCallable).with_span(self.current_span)),
+        }
+    }
+
     fn resume_continuation(&mut self, k: Val, v: Val, base: Option<u32>) -> Result<(), VmError> {
         let (saved, func, block, ip, mut regs, captures, perform_dst, prompt_handlers) =
             match self.get_obj(k) {
@@ -4271,6 +4308,18 @@ impl Vm {
                 self.alloc(Obj::Map(map))
             }
 
+            // ── Parking ──
+            //
+            // Keep the continuation and what it is waiting for. The handler
+            // that performed this returns without resuming, so the computation
+            // unwinds from here and the host is left holding the rest of it.
+            ("Host", "park") => {
+                let k = args.first().copied().unwrap_or(Val::UNIT);
+                let request = args.get(1).copied().unwrap_or(Val::UNIT);
+                self.parked = Some((k, request));
+                Val::UNIT
+            }
+
             // Real TCP/HTTP sockets (see eir/net.rs). A blocking one-at-a-time
             // server: listen a port, accept a request, send the response.
             ("Net", "listen") => {
@@ -4310,6 +4359,11 @@ impl Vm {
     }
 
     // ── Value display ──────────────────────────────────────────────────
+
+    /// Render a value the way `println` would, for hosts outside this module.
+    pub fn val_to_string_public(&self, val: Val) -> String {
+        self.val_to_string(val)
+    }
 
     fn val_to_string(&self, val: Val) -> String {
         self.val_to_string_inner(val, false)
@@ -4603,6 +4657,128 @@ pub fn eval_eir(src: &str) -> Result<VmResult, VmError> {
 /// Like `eval_eir`, but resolves `[use ...]` modules relative to `base_dir`.
 pub fn eval_eir_with_base_dir(src: &str, base_dir: &std::path::Path) -> Result<VmResult, VmError> {
     eval_eir_impl(src, crate::check::Checker::with_base_dir(base_dir))
+}
+
+/// A program that can stop in the middle and be finished later.
+///
+/// The VM outlives each step, because a parked continuation is a heap object:
+/// dropping the VM would drop the rest of the program with it. That is the
+/// only thing a synchronous language needs in order to sit under an
+/// asynchronous host — not an asynchronous interpreter, just one that is still
+/// there when the answer arrives.
+pub struct Session {
+    vm: Vm,
+    pending: Option<Val>,
+    /// Output produced by steps so far. `Vm::run` hands its output out in the
+    /// result, so a session collects it rather than losing it between steps.
+    output: Vec<String>,
+    /// The value of the most recent completed step.
+    value: Val,
+}
+
+/// Where a step of a `Session` stopped.
+pub enum Step {
+    /// The program finished.
+    Done(VmResult),
+    /// The program parked, waiting for something the host has to supply.
+    /// `request` is whatever the parking handler passed along to describe it.
+    Parked { request: Val },
+}
+
+impl Session {
+    /// Prepare a program, without running it.
+    pub fn new(
+        src: &str,
+        base_dir: &std::path::Path,
+        mode: crate::eir::place::Mode,
+    ) -> Result<Session, VmError> {
+        let mut checker = crate::check::Checker::with_base_dir(base_dir);
+        let exprs = crate::parser::parse(src).map_err(|e| VmError {
+            kind: VmErrorKind::Trap,
+            span: Some(e.span),
+            context: Some(format!("parse error: {}", e.message)),
+        })?;
+        let errors = checker.check_program(&exprs);
+        if let Some(e) = module_error(&errors) {
+            return Err(e);
+        }
+        let module = crate::eir::lower::lower(&checker);
+        let mut vm = Vm::new(module);
+        vm.place_mode = mode;
+        Ok(Session {
+            vm,
+            pending: None,
+            output: Vec::new(),
+            value: Val::UNIT,
+        })
+    }
+
+    /// Run until the program finishes or parks.
+    pub fn start(&mut self) -> Result<Step, VmError> {
+        let result = self.vm.run()?;
+        Ok(self.classify(result))
+    }
+
+    /// Finish a parked step by supplying the value it was waiting for.
+    pub fn resume(&mut self, k: Val, value: Val) -> Result<Step, VmError> {
+        let val = self.vm.call_value(k, &[value])?;
+        let result = VmResult {
+            value: val,
+            output: std::mem::take(&mut self.vm.output),
+            heap_stats: self.vm.heap_stats.clone(),
+        };
+        Ok(self.classify(result))
+    }
+
+    fn classify(&mut self, mut result: VmResult) -> Step {
+        self.output.append(&mut result.output);
+        self.value = result.value;
+        match self.vm.take_parked() {
+            Some((k, request)) => {
+                self.pending = Some(k);
+                Step::Parked { request }
+            }
+            None => {
+                self.pending = None;
+                Step::Done(result)
+            }
+        }
+    }
+
+    /// The value the last step produced. After a resumed step this is the value
+    /// of the *continuation* — the rest of the suspended computation — which is
+    /// where a deferred answer ends up.
+    pub fn value(&self) -> Val {
+        self.value
+    }
+
+    /// Render a value the way `println` would.
+    pub fn show(&self, v: Val) -> String {
+        self.vm.val_to_string_public(v)
+    }
+
+    /// The continuation the last `Parked` step is waiting on.
+    pub fn pending(&self) -> Option<Val> {
+        self.pending
+    }
+
+    /// The placement accounting so far.
+    pub fn stats(&self) -> &crate::eir::place::PlaceStats {
+        &self.vm.place_stats
+    }
+
+    /// Anything printed so far, taken out.
+    pub fn take_output(&mut self) -> Vec<String> {
+        let mut out = std::mem::take(&mut self.output);
+        out.append(&mut std::mem::take(&mut self.vm.output));
+        out
+    }
+
+    /// Build a Loon vector of numbers, for resuming a read.
+    pub fn vec_of_floats(&mut self, xs: &[f32]) -> Val {
+        let items: ImVec = xs.iter().map(|x| Val::float(*x as f64)).collect();
+        self.vm.alloc(Obj::Vec(items))
+    }
 }
 
 /// Run with an explicit placement mode, returning the placement accounting

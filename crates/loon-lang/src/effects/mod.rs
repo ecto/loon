@@ -163,6 +163,17 @@ impl EffectRegistry {
                 op("stats", &[]),
             ],
         });
+        // Host effect — the seam an asynchronous embedder needs.
+        //
+        // `Host.park` takes a continuation and keeps it. The handler that
+        // performs it returns without resuming, so the computation unwinds and
+        // the host decides when the rest of it runs. That is the whole
+        // mechanism behind answering an operation that cannot be answered yet,
+        // like reading back a GPU buffer in a browser.
+        reg.register(EffectDecl {
+            name: "Host".to_string(),
+            operations: vec![op("park", &["continuation", "request"])],
+        });
         reg.register(EffectDecl {
             name: "Embed".to_string(),
             operations: vec![op("encode", &["text"])],

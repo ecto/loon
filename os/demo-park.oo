@@ -13,6 +13,14 @@
 ; Nothing here is special-cased in the VM. This is what reified, escaping
 ; continuations already are.
 ;
+; One thing to know before using this, because it decides where the handler
+; goes: parking unwinds to the `handle`, so whatever follows the handle runs
+; *immediately*, with whatever the clause returned — not with the real answer.
+; The suspended part is the only thing that waits. So a handler that defers an
+; answer belongs outermost, with nothing meaningful after it, and the value of
+; the computation comes back when the continuation is called rather than from
+; the call that parked.
+;
 ;   loon run os/demo-park.oo
 [use place]
 
