@@ -392,3 +392,42 @@ fn on_the_cpu_the_residency_demo_moves_nothing() {
     assert_eq!(stats.uploads, 0, "the CPU has nothing to upload to");
     assert_eq!(stats.launches, 16);
 }
+
+#[test]
+fn a_computation_can_be_parked_and_finished_later() {
+    // The mechanism an asynchronous host needs, and it is already here: a
+    // handler clause that hands `resume` outward and returns unwinds the
+    // computation without ending it. Whoever holds the continuation decides
+    // when — and whether — the rest of it runs.
+    //
+    // This is what makes "the browser cannot answer a GPU read immediately"
+    // a solvable problem rather than a blocking one. No VM support was added
+    // for it; reified escaping continuations are what handlers already are.
+    let out = run_demo("demo-park.oo");
+    assert_eq!(
+        out,
+        vec![
+            "  work: starting",
+            "  host: computation parked; the rest of it is mine now",
+            "  host: ...doing something slow...",
+            "  work: continued with 21",
+            "  host: finished with 42",
+            "done",
+        ],
+        "the work should stop, unwind, and then continue where it left off"
+    );
+}
+
+#[test]
+fn a_parked_continuation_survives_its_handler_returning() {
+    // The ordering is the claim: "work: continued" appears *after* the host
+    // has already printed, which is only possible if the computation really
+    // unwound and was restarted from the outside.
+    let out = run_demo("demo-park.oo").join("\n");
+    let parked = out.find("computation parked").expect("parked");
+    let continued = out.find("work: continued").expect("continued");
+    assert!(
+        parked < continued,
+        "the continuation must resume after the handler returned:\n{out}"
+    );
+}

@@ -177,7 +177,23 @@ So they hold on two. The VM runs in a Web Worker, and every device call posts a 
 
 None of that reached the VM. It sees an `eir::device::Device` — six operations: name, ensure-resident, is-resident, dispatch, download, evict — and wgpu implements it on a laptop while a JavaScript bridge implements it in a tab. Which is the same move placement makes at the language level, one floor down: the thing that varies goes behind an interface, and the code above does not change when the answer does.
 
-The cost is a requirement for cross-origin isolation, since `SharedArrayBuffer` needs COOP/COEP headers. Without them the page says so and the other placements still work. Getting rid of that would mean an asynchronous effect path in the VM — `Place.read` suspending and resuming rather than blocking a thread. The continuations are already there for it. That is a project, not a patch.
+The cost is a requirement for cross-origin isolation, since `SharedArrayBuffer` needs COOP/COEP headers. Without them the page says so and the other placements still work.
+
+I said in a first draft that getting rid of that would need an asynchronous effect path in the VM. Then I tried it, and it turns out the VM already has one — it just isn't called that.
+
+A handler clause does not have to call `resume`. If it hands `resume` somewhere else and returns, the handled computation *unwinds*, and the continuation is still live in whoever caught it. Call it later and the program picks up mid-expression, exactly where it stopped:
+
+```
+work: starting
+host: computation parked; the rest of it is mine now
+host: ...doing something slow...
+work: continued with 21
+host: finished with 42
+```
+
+That's `os/demo-park.oo`, and it is the entire mechanism an asynchronous host needs. A browser can't answer `Place.read` immediately — reading a GPU buffer back is a promise — but it doesn't have to answer immediately. It can take the continuation, go away, and come back when the bytes arrive. Uploads and dispatches need none of this, because `writeBuffer` and `submit` are already synchronous.
+
+What's left there is plumbing: a VM that outlives one call, since the continuation lives in its heap, and an export for the page to resume through. Not semantics. I had assumed the hard part was the language and the easy part was the wiring, and it was the other way round — which is what I get for writing down what I thought was true instead of trying it.
 
 Every kernel in the repo is parsed and type-checked by naga in CI, on machines with no GPU. That's the automated cross-target validation the paper says is still missing — they found a host/device divergence in slice lowering by hand, `(ptr, len)` on two targets and `[i64; 2]` on a third. We have the same class of hazard: NaN-boxing constants that used to be copy-pasted into three backends under a comment asking the next person to keep them in sync. They now live in one file, and a conformance test compiles the same literals on every backend and compares raw bits.
 

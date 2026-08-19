@@ -60,12 +60,29 @@ The browser GPU path needs `SharedArrayBuffer`, which needs COOP/COEP headers
 (`vercel.json` sets them for `/place.html` and `/place-worker.js`). On a page
 without isolation the bridge reports that and the other placements still work.
 
-Removing that requirement would mean an asynchronous effect path in the VM, so
-`Place.read` could suspend and resume when the browser delivers a mapped buffer
-rather than blocking a worker thread. The VM has the machinery — continuations
-are reified and multi-shot — but `builtin_effect` is synchronous throughout, so
-it is a real project rather than a small change.
+An earlier version of this document said removing that requirement would need
+"an asynchronous effect path in the VM". That was wrong, and `os/demo-park.oo`
+is the correction: a handler clause that hands `resume` outward and returns
+unwinds the computation without ending it, and the continuation stays live for
+whoever caught it. The VM needs no changes at all — this is what reified,
+escaping continuations already are.
 
+So the browser could answer `Place.read` asynchronously: park the continuation,
+let the page await `mapAsync`, resume with the bytes. Uploads and dispatches
+need nothing, because `writeBuffer` and `submit` are synchronous. No worker, no
+`SharedArrayBuffer`, no headers.
+
+What that still needs is plumbing rather than semantics:
+
+- A `Vm` that outlives one `eval_placed` call, since the continuation lives in
+  its heap. Today the VM is created and dropped per run.
+- A public way to invoke a continuation value from Rust, and a wasm export for
+  the page to call when the bytes land.
+- A `Host.park`-style builtin to hold the parked continuation and the request.
+
+Worth doing, and a smaller job than it looked. The worker approach already
+works, so this buys portability to hosts that will not set headers, not
+capability.
 ### The DOM exports
 
 `eval_ui` and `invoke_callback` remain on the legacy tree-walking interpreter.
