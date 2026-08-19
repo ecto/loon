@@ -70,9 +70,48 @@ it is a real project rather than a small change.
 
 `eval_ui` and `invoke_callback` remain on the legacy tree-walking interpreter.
 Its bridge is written against `Value`/`InterpError` rather than the EIR's
-`Val`/`VmResult`, and the guide's examples use builtins such as `push!` that the
-EIR VM does not implement. `eval_program` and `eval_with_output` were left with
-them rather than regressing documented pages; `eval_placed` was added alongside.
+`Val`/`VmResult`. `eval_program` and `eval_with_output` were left with them
+rather than regressing documented pages; `eval_placed` was added alongside.
+
+The deeper blocker is the one below, found while looking into this.
+
+### The mutators, which need a decision rather than an implementation
+
+`set!` and `push!` are documented — `web/src/pages/guide/collections.loon`,
+`guide/ownership.loon`, `ref/builtins.loon`, `DESIGN.md` — and **neither exists
+on the EIR VM**, which is the default backend. On the interpreter they behave
+like this:
+
+    [let mut v #[1 2 3]]
+    [push! v 4]
+    [println v]        ; #[1 2 3]  — unchanged
+    [println [push! v 9]]  ; #[1 2 3 9]
+
+So `push!` does not mutate. It returns a new vector, and the `!` promises
+something it does not do. The guide's own example asserts otherwise:
+
+    [let items [mut #[]]]
+    [push! items 1]
+    [push! items 2]
+    [println items]  ; #[1 2]   ← documented
+
+That prints `#[]` on the interpreter and fails to type check on the EIR VM. The
+documented behaviour is currently true of no backend.
+
+This was not implemented on the EIR VM as part of the placement work because
+the right fix is a language decision, not a port:
+
+1. **Make `!` mean mutation.** `push!` writes through the binding, matching the
+   name, the guide, and what `put` already does for buffers. The ownership pass
+   already classifies both as mutable borrows, so the analysis is in place. The
+   question is what happens to a closure that captured the old value.
+2. **Make `!` mean "returns a changed copy"** and fix the guide and the name.
+   Smaller change, but then `set!` and `push!` do not agree with each other,
+   since `set!` really does rebind.
+
+Either way both need to exist on the default backend. Implementing the current
+interpreter behaviour verbatim would spread a naming problem to a second
+backend, so it is left for whoever decides which of the two Loon means.
 
 ### Atomics
 
