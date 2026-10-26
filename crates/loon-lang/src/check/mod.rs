@@ -4733,7 +4733,10 @@ impl Checker {
                             if s == "when" {
                                 self.push_scope();
                                 self.bind_pattern_vars(pattern, &scrutinee_ty);
-                                let _guard_ty = self.infer(&guard_form[1]);
+                                // `[when]` without a condition is reported by the interpreter.
+                                if let Some(cond) = guard_form.get(1) {
+                                    let _guard_ty = self.infer(cond);
+                                }
                                 let body_ty = self.infer(&arms[i + 2]);
                                 self.pop_scope();
                                 if let Err(e) = unify(&mut self.subst, &result_ty, &body_ty) {

@@ -103,6 +103,19 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+        // Each bracket recurses; overflowing the native stack would abort an
+        // in-process host, so absurd nesting is a parse error instead.
+        if crate::interp::stack_guard::exhausted() {
+            let end = self.source.len();
+            let span = self
+                .tokens
+                .get(self.pos)
+                .map_or(Span::new(end, end), |(_, sp)| *sp);
+            return Err(ParseError {
+                message: "expression nested too deeply".to_string(),
+                span,
+            });
+        }
         let expr = self.parse_expr_inner()?;
         // Postfix ? operator: desugar expr? into
         // [match expr [Ok __v] => __v [Err __e] => [Fail.fail __e]]

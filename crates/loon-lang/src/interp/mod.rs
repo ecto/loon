@@ -8,6 +8,7 @@ mod env;
 pub mod html_bridge;
 pub mod machine;
 pub mod net;
+pub(crate) mod stack_guard;
 mod value;
 
 pub use env::Env;
@@ -122,6 +123,17 @@ thread_local! {
     static RAND_STATE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
+/// The future for a spawned thread, or an error if the OS refused the thread
+/// (`std::thread::spawn` would panic and abort an in-process host).
+fn spawn_result(
+    spawned: std::io::Result<std::thread::JoinHandle<()>>,
+    slot: std::sync::Arc<(std::sync::Mutex<Option<Value>>, std::sync::Condvar)>,
+) -> IResult {
+    spawned
+        .map(|_| Value::AsyncSlot(slot))
+        .map_err(|e| err(format!("Async.spawn: cannot start a thread: {e}")))
+}
+
 /// Try to handle an effect with a built-in handler (for IO at the top level).
 pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult> {
     // Compile-time sandbox: deny effectful ops a procedural macro did not
@@ -217,7 +229,7 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
                     Value::Fn(lf) => {
                         let lf = lf.deep_clone();
                         let env = get_global_env().unwrap_or_default().deep_clone();
-                        std::thread::Builder::new()
+                        let spawned = std::thread::Builder::new()
                             .stack_size(64 * 1024 * 1024) // 64MB stack for deep recursion
                             .spawn(move || {
                                 let mut env = env;
@@ -227,14 +239,13 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
                                 let (lock, cvar) = &*slot2;
                                 *lock.lock().unwrap() = Some(result);
                                 cvar.notify_one();
-                            })
-                            .expect("failed to spawn thread");
-                        Some(Ok(Value::AsyncSlot(slot)))
+                            });
+                        Some(spawn_result(spawned, slot))
                     }
                     Value::Builtin(name, f) => {
                         let name = name.clone();
                         let f = f.clone();
-                        std::thread::spawn(move || {
+                        let spawned = std::thread::Builder::new().spawn(move || {
                             let result = match f(&name, &[]) {
                                 Ok(val) => val,
                                 Err(e) => {
@@ -246,7 +257,7 @@ pub(crate) fn try_builtin_handler(performed: &PerformedEffect) -> Option<IResult
                             *lock.lock().unwrap() = Some(result);
                             cvar.notify_one();
                         });
-                        Some(Ok(Value::AsyncSlot(slot)))
+                        Some(spawn_result(spawned, slot))
                     }
                     _ => Some(Err(err("Async.spawn requires a callable thunk"))),
                 }
@@ -930,7 +941,26 @@ pub(crate) fn access_field(val: &Value, field: &str, span: Span) -> IResult {
     Err(err_at(format!("no field '{field}' on value"), span))
 }
 
+fn stack_overflow_msg() -> String {
+    CALL_STACK.with(|s| {
+        let s = s.borrow();
+        match s.last() {
+            Some(frame) => format!(
+                "stack overflow: recursion too deep in '{}' ({} calls deep)",
+                frame.fn_name,
+                s.len()
+            ),
+            None => "stack overflow: expression nested too deeply".to_string(),
+        }
+    })
+}
+
 pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
+    // Overflowing the native stack aborts the host process (no unwinding),
+    // so running low on it is an error instead (see `stack_guard`).
+    if stack_guard::exhausted() {
+        return Err(err_at(stack_overflow_msg(), expr.span));
+    }
     match &expr.kind {
         ExprKind::Int(n) => Ok(Value::Int(*n)),
         ExprKind::Float(n) => Ok(Value::Float(*n)),
@@ -1035,11 +1065,10 @@ pub fn eval(expr: &Expr, env: &mut Env) -> IResult {
                             let source_text = SOURCE_TEXT.with(|s| {
                                 s.borrow().as_ref().and_then(|src| {
                                     let sp = expr_to_inspect.span;
-                                    if sp.end <= src.len() {
-                                        Some(src[sp.start..sp.end].to_string())
-                                    } else {
-                                        None
-                                    }
+                                    // `get`, not indexing: a stale source
+                                    // text may not cover (or may split a
+                                    // char at) this span.
+                                    src.get(sp.start..sp.end).map(str::to_string)
                                 })
                             });
                             let label = source_text.unwrap_or_else(|| format!("{val}"));
@@ -1386,7 +1415,14 @@ fn eval_match(args: &[Expr], env: &mut Env) -> IResult {
                                 for (k, v) in &bindings {
                                     env.set(k.clone(), v.clone());
                                 }
-                                let guard_val = eval(&guard_form[1], env)?;
+                                let Some(cond) = guard_form.get(1) else {
+                                    env.pop_scope();
+                                    return Err(err_at(
+                                        "match guard [when] needs a condition",
+                                        arms[i + 1].span,
+                                    ));
+                                };
+                                let guard_val = eval(cond, env)?;
                                 if guard_val.is_truthy() {
                                     let result = eval(&arms[i + 2], env);
                                     env.pop_scope();
@@ -2318,7 +2354,14 @@ fn eval_tail_match(args: &[Expr], env: &mut Env) -> TResult {
                                 for (k, v) in &bindings {
                                     env.set(k.clone(), v.clone());
                                 }
-                                let guard_val = eval(&guard_form[1], env)?;
+                                let Some(cond) = guard_form.get(1) else {
+                                    env.pop_scope();
+                                    return Err(err_at(
+                                        "match guard [when] needs a condition",
+                                        arms[i + 1].span,
+                                    ));
+                                };
+                                let guard_val = eval(cond, env)?;
                                 if guard_val.is_truthy() {
                                     let result = eval_tail(&arms[i + 2], env);
                                     env.pop_scope();

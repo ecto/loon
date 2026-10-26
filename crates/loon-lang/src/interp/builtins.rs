@@ -97,17 +97,99 @@ pub fn capture_output<F: FnOnce() -> R, R>(f: F) -> (R, String) {
     (result, output)
 }
 
+/// How many arguments a builtin accepts: an exact count (`2`), a minimum
+/// (`2..`), or an inclusive range (`1..=2`).
+pub(crate) trait Arity {
+    fn bounds(&self) -> (usize, Option<usize>);
+}
+
+impl Arity for usize {
+    fn bounds(&self) -> (usize, Option<usize>) {
+        (*self, Some(*self))
+    }
+}
+
+impl Arity for std::ops::RangeFrom<usize> {
+    fn bounds(&self) -> (usize, Option<usize>) {
+        (self.start, None)
+    }
+}
+
+impl Arity for std::ops::RangeInclusive<usize> {
+    fn bounds(&self) -> (usize, Option<usize>) {
+        (*self.start(), Some(*self.end()))
+    }
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 {
+        "argument"
+    } else {
+        "arguments"
+    }
+}
+
+/// `Err` when `name` got fewer arguments than its arity's minimum.
+///
+/// Only the minimum is enforced. Extra arguments are ignored, as they always
+/// have been and as the EIR VM does: a pipe step is thread-last partial
+/// application, so `[pipe 5 [- 10 3]]` calls `[- 10 3 5]` and means `7`
+/// (pinned by `backend_parity::pipe-operator-partials`). The maximum only
+/// shapes the error message.
+pub(crate) fn check_arity(name: &str, arity: &impl Arity, got: usize) -> Result<(), InterpError> {
+    let (min, max) = arity.bounds();
+    if got >= min {
+        return Ok(());
+    }
+    let wanted = match max {
+        Some(max) if max == min => format!("{min} {}", plural(min)),
+        Some(max) => format!("{min} to {max} arguments"),
+        None => format!("at least {min} {}", plural(min)),
+    };
+    Err(err(format!("{name} requires {wanted}, got {got}")))
+}
+
+/// Wrap a builtin body so a call with too few arguments is an `InterpError`,
+/// never an out-of-bounds panic on `args`. A panic here would
+/// abort any host that evaluates documents in-process (e.g. vcad.app, which
+/// recompiles the open loon document on every edit), so every builtin —
+/// including the partial applications they return — goes through this.
+pub(crate) fn guarded(
+    name: &str,
+    arity: impl Arity + Send + Sync + 'static,
+    f: impl Fn(&str, &[Value]) -> IResult + Send + Sync + 'static,
+) -> super::value::BuiltinFn {
+    let name = name.to_string();
+    Arc::new(move |called: &str, args: &[Value]| {
+        check_arity(&name, &arity, args.len())?;
+        f(called, args)
+    })
+}
+
+/// A partially applied builtin taking exactly one more argument.
+fn partial(name: &str, f: impl Fn(&str, &[Value]) -> IResult + Send + Sync + 'static) -> Value {
+    Value::Builtin(name.to_string(), guarded(name, 1, f))
+}
+
+/// Most elements (or string bytes) one builtin call may build. Hosts evaluate
+/// documents in-process, and an allocation failure aborts the whole process,
+/// so oversized requests are errors instead.
+const MAX_BUILT_LEN: usize = 1 << 24;
+
 pub fn register_builtins(env: &mut Env) {
+    // Every builtin declares its arity; `guarded` checks the minimum before
+    // the body runs, so a body may index `args` up to that minimum (and must
+    // use `args.get` beyond it).
     macro_rules! builtin {
-        ($env:expr, $name:expr, $f:expr) => {
+        ($env:expr, $name:expr, $arity:expr, $f:expr) => {
             $env.set(
                 $name.to_string(),
-                Value::Builtin($name.to_string(), Arc::new($f)),
+                Value::Builtin($name.to_string(), guarded($name, $arity, $f)),
             );
         };
     }
 
-    builtin!(env, "signature", |_, args: &[Value]| {
+    builtin!(env, "signature", 1, |_, args: &[Value]| {
         if args.len() != 1 {
             return Err(err("signature requires exactly 1 argument (a function)"));
         }
@@ -147,14 +229,14 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "+", |_, args: &[Value]| {
+    builtin!(env, "+", 2.., |_, args: &[Value]| {
         if args.len() < 2 {
             return Err(err("+ requires at least 2 arguments"));
         }
         let mut acc = args[0].clone();
         for arg in &args[1..] {
             acc = match (&acc, arg) {
-                (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+                (Value::Int(a), Value::Int(b)) => Value::Int(a.wrapping_add(*b)),
                 (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
                 (Value::Float(a), Value::Int(b)) => Value::Float(a + *b as f64),
                 (Value::Int(a), Value::Float(b)) => Value::Float(*a as f64 + b),
@@ -164,9 +246,9 @@ pub fn register_builtins(env: &mut Env) {
         Ok(acc)
     });
 
-    builtin!(env, "-", |_, args: &[Value]| {
+    builtin!(env, "-", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
-            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a - b)),
+            (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_sub(*b))),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
             (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a - *b as f64)),
             (Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 - b)),
@@ -174,14 +256,14 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "*", |_, args: &[Value]| {
+    builtin!(env, "*", 2.., |_, args: &[Value]| {
         if args.len() < 2 {
             return Err(err("* requires at least 2 arguments"));
         }
         let mut acc = args[0].clone();
         for arg in &args[1..] {
             acc = match (&acc, arg) {
-                (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
+                (Value::Int(a), Value::Int(b)) => Value::Int(a.wrapping_mul(*b)),
                 (Value::Float(a), Value::Float(b)) => Value::Float(a * b),
                 (Value::Float(a), Value::Int(b)) => Value::Float(a * *b as f64),
                 (Value::Int(a), Value::Float(b)) => Value::Float(*a as f64 * b),
@@ -191,13 +273,13 @@ pub fn register_builtins(env: &mut Env) {
         Ok(acc)
     });
 
-    builtin!(env, "/", |_, args: &[Value]| {
+    builtin!(env, "/", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => {
                 if *b == 0 {
                     return Err(err("division by zero"));
                 }
-                Ok(Value::Int(a / b))
+                Ok(Value::Int(a.wrapping_div(*b)))
             }
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
             (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a / *b as f64)),
@@ -206,19 +288,19 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "%", |_, args: &[Value]| {
+    builtin!(env, "%", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => {
                 if *b == 0 {
                     return Err(err("modulo by zero"));
                 }
-                Ok(Value::Int(a % b))
+                Ok(Value::Int(a.wrapping_rem(*b)))
             }
             _ => Err(err("% requires integers")),
         }
     });
 
-    builtin!(env, ">", |_, args: &[Value]| {
+    builtin!(env, ">", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a > b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a > b)),
@@ -229,7 +311,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "<", |_, args: &[Value]| {
+    builtin!(env, "<", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a < b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a < b)),
@@ -240,16 +322,16 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "=", |_, args: &[Value]| {
+    builtin!(env, "=", 2, |_, args: &[Value]| {
         Ok(Value::Bool(args[0] == args[1]))
     });
 
     // != mirrors the EIR VM's BinOp::Ne (the VM had it; the interp didn't).
-    builtin!(env, "!=", |_, args: &[Value]| {
+    builtin!(env, "!=", 2, |_, args: &[Value]| {
         Ok(Value::Bool(args[0] != args[1]))
     });
 
-    builtin!(env, ">=", |_, args: &[Value]| {
+    builtin!(env, ">=", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a >= b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a >= b)),
@@ -260,7 +342,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "<=", |_, args: &[Value]| {
+    builtin!(env, "<=", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a <= b)),
             (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a <= b)),
@@ -271,11 +353,11 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "not", |_, args: &[Value]| {
+    builtin!(env, "not", 1, |_, args: &[Value]| {
         Ok(Value::Bool(!args[0].is_truthy()))
     });
 
-    builtin!(env, "or", |_, args: &[Value]| {
+    builtin!(env, "or", 0.., |_, args: &[Value]| {
         for arg in args {
             if arg.is_truthy() {
                 return Ok(arg.clone());
@@ -284,7 +366,7 @@ pub fn register_builtins(env: &mut Env) {
         Ok(args.last().cloned().unwrap_or(Value::Bool(false)))
     });
 
-    builtin!(env, "and", |_, args: &[Value]| {
+    builtin!(env, "and", 0.., |_, args: &[Value]| {
         for arg in args {
             if !arg.is_truthy() {
                 return Ok(arg.clone());
@@ -295,12 +377,12 @@ pub fn register_builtins(env: &mut Env) {
 
     // --- String builtins ---
 
-    builtin!(env, "str", |_, args: &[Value]| {
+    builtin!(env, "str", 0.., |_, args: &[Value]| {
         let s: String = args.iter().map(|v| v.display_str()).collect();
         Ok(Value::Str(s.into()))
     });
 
-    builtin!(env, "println", |_, args: &[Value]| {
+    builtin!(env, "println", 0.., |_, args: &[Value]| {
         if let Some(msg) = super::compile_sandbox_denial("IO", "println") {
             return Err(err(msg));
         }
@@ -321,7 +403,7 @@ pub fn register_builtins(env: &mut Env) {
         Ok(Value::Unit)
     });
 
-    builtin!(env, "print", |_, args: &[Value]| {
+    builtin!(env, "print", 0.., |_, args: &[Value]| {
         if let Some(msg) = super::compile_sandbox_denial("IO", "println") {
             return Err(err(msg));
         }
@@ -347,7 +429,7 @@ pub fn register_builtins(env: &mut Env) {
         Ok(Value::Unit)
     });
 
-    builtin!(env, "split", |_, args: &[Value]| {
+    builtin!(env, "split", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Str(s), Value::Str(delims)) => {
                 let words: imbl::Vector<Value> = s
@@ -360,7 +442,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "join", |_, args: &[Value]| {
+    builtin!(env, "join", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Str(sep), Value::Vec(v)) | (Value::Vec(v), Value::Str(sep)) => {
                 let parts: Vec<String> = v.iter().map(|x| x.display_str()).collect();
@@ -370,28 +452,28 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "trim", |_, args: &[Value]| {
+    builtin!(env, "trim", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Str(s) => Ok(Value::Str(s.trim().into())),
             _ => Err(err("trim requires a string")),
         }
     });
 
-    builtin!(env, "starts-with?", |_, args: &[Value]| {
+    builtin!(env, "starts-with?", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Str(s), Value::Str(prefix)) => Ok(Value::Bool(s.starts_with(&**prefix))),
             _ => Err(err("starts-with? requires two strings")),
         }
     });
 
-    builtin!(env, "ends-with?", |_, args: &[Value]| {
+    builtin!(env, "ends-with?", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Str(s), Value::Str(suffix)) => Ok(Value::Bool(s.ends_with(&**suffix))),
             _ => Err(err("ends-with? requires two strings")),
         }
     });
 
-    builtin!(env, "replace", |_, args: &[Value]| {
+    builtin!(env, "replace", 3, |_, args: &[Value]| {
         match (&args[0], &args[1], &args[2]) {
             (Value::Str(s), Value::Str(from), Value::Str(to)) => {
                 Ok(Value::Str(s.replace(&**from, &**to).into()))
@@ -400,14 +482,14 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "uppercase", |_, args: &[Value]| {
+    builtin!(env, "uppercase", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Str(s) => Ok(Value::Str(s.to_uppercase().into())),
             _ => Err(err("uppercase requires a string")),
         }
     });
 
-    builtin!(env, "lowercase", |_, args: &[Value]| {
+    builtin!(env, "lowercase", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Str(s) => Ok(Value::Str(s.to_lowercase().into())),
             _ => Err(err("lowercase requires a string")),
@@ -416,7 +498,7 @@ pub fn register_builtins(env: &mut Env) {
 
     // --- Collection builtins ---
 
-    builtin!(env, "len", |_, args: &[Value]| {
+    builtin!(env, "len", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) => Ok(Value::Int(v.len() as i64)),
             Value::Str(s) => Ok(Value::Int(if s.is_ascii() {
@@ -436,7 +518,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "nth", |_, args: &[Value]| {
+    builtin!(env, "nth", 2..=3, |_, args: &[Value]| {
         if let Value::Int(i) = &args[1] {
             let idx = *i as usize;
             match &args[0] {
@@ -471,7 +553,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "map", |_, args: &[Value]| {
+    builtin!(env, "map", 1..=2, |_, args: &[Value]| {
         fn map_vec(func: &Value, v: &imbl::Vector<Value>) -> IResult {
             let mut result = imbl::Vector::new();
             for item in v {
@@ -499,9 +581,9 @@ pub fn register_builtins(env: &mut Env) {
             }
             (func, None) if func.is_callable() => {
                 let func_clone = func.clone();
-                Ok(Value::Builtin(
-                    "map-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| match &inner_args[0] {
+                Ok(partial(
+                    "map-partial",
+                    move |_, inner_args: &[Value]| match &inner_args[0] {
                         Value::Vec(v) => map_vec(&func_clone, v),
                         Value::Json(j) => {
                             if let serde_json::Value::Array(arr) = j.as_ref() {
@@ -511,14 +593,14 @@ pub fn register_builtins(env: &mut Env) {
                             }
                         }
                         _ => Err(err("map requires a vector")),
-                    }),
+                    },
                 ))
             }
             _ => Err(err("map requires a function and vector")),
         }
     });
 
-    builtin!(env, "filter", |_, args: &[Value]| {
+    builtin!(env, "filter", 1..=2, |_, args: &[Value]| {
         fn filter_vec(func: &Value, v: &imbl::Vector<Value>) -> IResult {
             let mut result = imbl::Vector::new();
             for item in v {
@@ -550,9 +632,9 @@ pub fn register_builtins(env: &mut Env) {
             }
             (func, None) if func.is_callable() => {
                 let func_clone = func.clone();
-                Ok(Value::Builtin(
-                    "filter-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| match &inner_args[0] {
+                Ok(partial(
+                    "filter-partial",
+                    move |_, inner_args: &[Value]| match &inner_args[0] {
                         Value::Vec(v) => filter_vec(&func_clone, v),
                         Value::Json(j) => {
                             if let serde_json::Value::Array(arr) = j.as_ref() {
@@ -562,14 +644,14 @@ pub fn register_builtins(env: &mut Env) {
                             }
                         }
                         _ => Err(err("filter requires a vector")),
-                    }),
+                    },
                 ))
             }
             _ => Err(err("filter requires a function and vector")),
         }
     });
 
-    builtin!(env, "fold", |_, args: &[Value]| {
+    builtin!(env, "fold", 2..=3, |_, args: &[Value]| {
         fn do_fold(v: &imbl::Vector<Value>, init: &Value, func: &Value) -> IResult {
             let mut acc = init.clone();
             for item in v {
@@ -584,22 +666,19 @@ pub fn register_builtins(env: &mut Env) {
             [init, func] => {
                 let init_clone = init.clone();
                 let func_clone = func.clone();
-                Ok(Value::Builtin(
-                    "fold-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| {
-                        if let Value::Vec(v) = &inner_args[0] {
-                            do_fold(v, &init_clone, &func_clone)
-                        } else {
-                            Err(err("fold requires a vector"))
-                        }
-                    }),
-                ))
+                Ok(partial("fold-partial", move |_, inner_args: &[Value]| {
+                    if let Value::Vec(v) = &inner_args[0] {
+                        do_fold(v, &init_clone, &func_clone)
+                    } else {
+                        Err(err("fold requires a vector"))
+                    }
+                }))
             }
             _ => Err(err("fold requires init, function, and vector")),
         }
     });
 
-    builtin!(env, "conj", |_, args: &[Value]| {
+    builtin!(env, "conj", 1.., |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) => {
                 let mut new = v.clone();
@@ -619,7 +698,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "get", |_, args: &[Value]| {
+    builtin!(env, "get", 2..=3, |_, args: &[Value]| {
         let default = || {
             if args.len() > 2 {
                 args[2].clone()
@@ -669,7 +748,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "assoc", |_, args: &[Value]| {
+    builtin!(env, "assoc", 3, |_, args: &[Value]| {
         if let Value::Map(m) = &args[0] {
             let key = &args[1];
             let val = &args[2];
@@ -679,7 +758,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "update", |_, args: &[Value]| {
+    builtin!(env, "update", 3, |_, args: &[Value]| {
         if let Value::Map(m) = &args[0] {
             let key = &args[1];
             let func = &args[2];
@@ -691,9 +770,17 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "range", |_, args: &[Value]| {
+    builtin!(env, "range", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Int(start), Value::Int(end)) => {
+                // A mid-edit `[range 0 10000000000]` must not exhaust memory
+                // (an allocation failure aborts the host process).
+                let len = (*end as i128 - *start as i128).max(0);
+                if len > MAX_BUILT_LEN as i128 {
+                    return Err(err(format!(
+                        "range {start}..{end} is too large ({len} elements, limit {MAX_BUILT_LEN})"
+                    )));
+                }
                 let v: imbl::Vector<Value> = (*start..*end).map(Value::Int).collect();
                 Ok(Value::Vec(v))
             }
@@ -701,7 +788,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "contains?", |_, args: &[Value]| {
+    builtin!(env, "contains?", 2, |_, args: &[Value]| {
         match &args[0] {
             Value::Set(s) => Ok(Value::Bool(s.contains(&args[1]))),
             Value::Map(m) => Ok(Value::Bool(m.contains_key(&args[1]))),
@@ -726,7 +813,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "empty?", |_, args: &[Value]| {
+    builtin!(env, "empty?", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) => Ok(Value::Bool(v.is_empty())),
             Value::Str(s) => Ok(Value::Bool(s.is_empty())),
@@ -742,20 +829,26 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "sort-by", |_, args: &[Value]| {
+    builtin!(env, "sort-by", 2..=3, |_, args: &[Value]| {
         fn do_sort(func: &Value, desc: bool, v: &imbl::Vector<Value>) -> IResult {
-            let mut sorted: Vec<Value> = v.iter().cloned().collect();
-            sorted.sort_by(|a, b| {
-                let ka = apply_value(func, std::slice::from_ref(a)).unwrap_or(Value::Int(0));
-                let kb = apply_value(func, std::slice::from_ref(b)).unwrap_or(Value::Int(0));
-                let ord = value_cmp(&ka, &kb);
+            // Compute each key once, up front: a key fn that errors now
+            // surfaces its error, and an impure one can't make the comparator
+            // inconsistent (std's sort may panic on a non-total order).
+            let mut keyed = Vec::with_capacity(v.len());
+            for item in v {
+                keyed.push((apply_value(func, std::slice::from_ref(item))?, item.clone()));
+            }
+            keyed.sort_by(|(ka, _), (kb, _)| {
+                let ord = value_cmp(ka, kb);
                 if desc {
                     ord.reverse()
                 } else {
                     ord
                 }
             });
-            Ok(Value::Vec(sorted.into_iter().collect()))
+            Ok(Value::Vec(
+                keyed.into_iter().map(|(_, item)| item).collect(),
+            ))
         }
 
         match args {
@@ -767,66 +860,60 @@ pub fn register_builtins(env: &mut Env) {
             [func, order] => {
                 let func_clone = func.clone();
                 let desc = matches!(order, Value::Keyword(k) if &**k == "desc");
-                Ok(Value::Builtin(
-                    "sort-by-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| {
+                Ok(partial(
+                    "sort-by-partial",
+                    move |_, inner_args: &[Value]| {
                         if let Value::Vec(v) = &inner_args[0] {
                             do_sort(&func_clone, desc, v)
                         } else {
                             Err(err("sort-by requires a vector"))
                         }
-                    }),
+                    },
                 ))
             }
             _ => Err(err("sort-by requires a function and optional order")),
         }
     });
 
-    builtin!(env, "take", |_, args: &[Value]| {
+    builtin!(env, "take", 1..=2, |_, args: &[Value]| {
         match (&args[0], args.get(1)) {
             (Value::Int(n), Some(Value::Vec(v))) => {
                 Ok(Value::Vec(v.iter().take(*n as usize).cloned().collect()))
             }
             (Value::Int(n), None) => {
                 let n = *n;
-                Ok(Value::Builtin(
-                    "take-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| {
-                        if let Value::Vec(v) = &inner_args[0] {
-                            Ok(Value::Vec(v.iter().take(n as usize).cloned().collect()))
-                        } else {
-                            Err(err("take requires a vector"))
-                        }
-                    }),
-                ))
+                Ok(partial("take-partial", move |_, inner_args: &[Value]| {
+                    if let Value::Vec(v) = &inner_args[0] {
+                        Ok(Value::Vec(v.iter().take(n as usize).cloned().collect()))
+                    } else {
+                        Err(err("take requires a vector"))
+                    }
+                }))
             }
             _ => Err(err("take requires a count and vector")),
         }
     });
 
-    builtin!(env, "drop", |_, args: &[Value]| {
+    builtin!(env, "drop", 1..=2, |_, args: &[Value]| {
         match (&args[0], args.get(1)) {
             (Value::Int(n), Some(Value::Vec(v))) => {
                 Ok(Value::Vec(v.iter().skip(*n as usize).cloned().collect()))
             }
             (Value::Int(n), None) => {
                 let n = *n;
-                Ok(Value::Builtin(
-                    "drop-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| {
-                        if let Value::Vec(v) = &inner_args[0] {
-                            Ok(Value::Vec(v.iter().skip(n as usize).cloned().collect()))
-                        } else {
-                            Err(err("drop requires a vector"))
-                        }
-                    }),
-                ))
+                Ok(partial("drop-partial", move |_, inner_args: &[Value]| {
+                    if let Value::Vec(v) = &inner_args[0] {
+                        Ok(Value::Vec(v.iter().skip(n as usize).cloned().collect()))
+                    } else {
+                        Err(err("drop requires a vector"))
+                    }
+                }))
             }
             _ => Err(err("drop requires a count and vector")),
         }
     });
 
-    builtin!(env, "each", |_, args: &[Value]| {
+    builtin!(env, "each", 1..=2, |_, args: &[Value]| {
         fn each_vec(func: &Value, v: &imbl::Vector<Value>) -> IResult {
             for item in v {
                 apply_value(func, std::slice::from_ref(item))?;
@@ -852,9 +939,9 @@ pub fn register_builtins(env: &mut Env) {
             }
             (func, None) if func.is_callable() => {
                 let func_clone = func.clone();
-                Ok(Value::Builtin(
-                    "each-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| match &inner_args[0] {
+                Ok(partial(
+                    "each-partial",
+                    move |_, inner_args: &[Value]| match &inner_args[0] {
                         Value::Vec(v) => each_vec(&func_clone, v),
                         Value::Json(j) => {
                             if let serde_json::Value::Array(arr) = j.as_ref() {
@@ -864,14 +951,14 @@ pub fn register_builtins(env: &mut Env) {
                             }
                         }
                         _ => Err(err("each requires a vector")),
-                    }),
+                    },
                 ))
             }
             _ => Err(err("each requires a function and vector")),
         }
     });
 
-    builtin!(env, "entries", |_, args: &[Value]| {
+    builtin!(env, "entries", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Map(pairs) => {
                 let v: imbl::Vector<Value> = pairs
@@ -884,9 +971,11 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "collect", |_, args: &[Value]| { Ok(args[0].clone()) });
+    builtin!(env, "collect", 1, |_, args: &[Value]| {
+        Ok(args[0].clone())
+    });
 
-    builtin!(env, "push!", |_, args: &[Value]| {
+    builtin!(env, "push!", 1.., |_, args: &[Value]| {
         if let Value::Vec(v) = &args[0] {
             let mut new = v.clone();
             for a in &args[1..] {
@@ -904,7 +993,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "assert-eq", |_, args: &[Value]| {
+    builtin!(env, "assert-eq", 2, |_, args: &[Value]| {
         if args[0] == args[1] {
             Ok(Value::Unit)
         } else {
@@ -915,13 +1004,13 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "HashMap.new", |_, _args: &[Value]| {
+    builtin!(env, "HashMap.new", 0, |_, _args: &[Value]| {
         Ok(Value::Map(OrdMap::new()))
     });
 
     // --- New v0.2 builtins ---
 
-    builtin!(env, "zip", |_, args: &[Value]| {
+    builtin!(env, "zip", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Vec(a), Value::Vec(b)) => {
                 let pairs: imbl::Vector<Value> = a
@@ -935,7 +1024,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "flatten", |_, args: &[Value]| {
+    builtin!(env, "flatten", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) => {
                 let mut result = imbl::Vector::new();
@@ -952,8 +1041,12 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "chunk", |_, args: &[Value]| {
+    builtin!(env, "chunk", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
+            (Value::Int(n), Value::Vec(_)) if *n <= 0 => {
+                // A zero-size chunk never shrinks `remaining`: an endless loop.
+                Err(err(format!("chunk size must be positive, got {n}")))
+            }
             (Value::Int(n), Value::Vec(v)) => {
                 let n = *n as usize;
                 let mut chunks = imbl::Vector::new();
@@ -969,7 +1062,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "reverse", |_, args: &[Value]| {
+    builtin!(env, "reverse", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) => {
                 let rev: imbl::Vector<Value> = v.iter().rev().cloned().collect();
@@ -980,7 +1073,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "find", |_, args: &[Value]| {
+    builtin!(env, "find", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (func, Value::Vec(v)) if func.is_callable() => {
                 for item in v {
@@ -995,7 +1088,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "any?", |_, args: &[Value]| {
+    builtin!(env, "any?", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (func, Value::Vec(v)) if func.is_callable() => {
                 for item in v {
@@ -1010,7 +1103,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "all?", |_, args: &[Value]| {
+    builtin!(env, "all?", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (func, Value::Vec(v)) if func.is_callable() => {
                 for item in v {
@@ -1027,7 +1120,7 @@ pub fn register_builtins(env: &mut Env) {
 
     // --- Type predicates ---
 
-    builtin!(env, "name", |_, args: &[Value]| {
+    builtin!(env, "name", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Keyword(k) => Ok(Value::Str(k.clone())),
             Value::Str(s) => Ok(Value::Str(s.clone())),
@@ -1035,7 +1128,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "keyword", |_, args: &[Value]| {
+    builtin!(env, "keyword", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Str(s) => Ok(Value::Keyword(s.clone())),
             Value::Keyword(k) => Ok(Value::Keyword(k.clone())),
@@ -1043,7 +1136,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "keywordize-keys", |_, args: &[Value]| {
+    builtin!(env, "keywordize-keys", 1, |_, args: &[Value]| {
         if let Value::Map(pairs) = &args[0] {
             Ok(Value::Map(
                 pairs
@@ -1062,17 +1155,17 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "map?", |_, args: &[Value]| {
+    builtin!(env, "map?", 1, |_, args: &[Value]| {
         Ok(Value::Bool(matches!(&args[0], Value::Map(_))))
     });
 
-    builtin!(env, "vec?", |_, args: &[Value]| {
+    builtin!(env, "vec?", 1, |_, args: &[Value]| {
         Ok(Value::Bool(matches!(&args[0], Value::Vec(_))))
     });
 
     // --- Cons (prepend to vec) ---
 
-    builtin!(env, "cons", |_, args: &[Value]| {
+    builtin!(env, "cons", 2, |_, args: &[Value]| {
         match &args[1] {
             Value::Vec(v) => {
                 let mut new = v.clone();
@@ -1085,7 +1178,7 @@ pub fn register_builtins(env: &mut Env) {
 
     // --- Map builtins ---
 
-    builtin!(env, "keys", |_, args: &[Value]| {
+    builtin!(env, "keys", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Map(pairs) => {
                 let ks: imbl::Vector<Value> = pairs.iter().map(|(k, _)| k.clone()).collect();
@@ -1095,7 +1188,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "values", |_, args: &[Value]| {
+    builtin!(env, "values", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Map(pairs) => {
                 let vs: imbl::Vector<Value> = pairs.iter().map(|(_, v)| v.clone()).collect();
@@ -1105,7 +1198,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "merge", |_, args: &[Value]| {
+    builtin!(env, "merge", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             // Left-biased union, matching the EIR VM (the semantic reference):
             // keys already in `a` keep their position AND value; keys only in
@@ -1116,7 +1209,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "remove", |_, args: &[Value]| {
+    builtin!(env, "remove", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Map(m), key) => Ok(Value::Map(m.without(key))),
             _ => Err(err("remove requires a map and key")),
@@ -1125,7 +1218,7 @@ pub fn register_builtins(env: &mut Env) {
 
     // --- Number parsing ---
 
-    builtin!(env, "int", |_, args: &[Value]| {
+    builtin!(env, "int", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Str(s) => s
                 .trim()
@@ -1138,7 +1231,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "float", |_, args: &[Value]| {
+    builtin!(env, "float", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Str(s) => s
                 .trim()
@@ -1153,7 +1246,7 @@ pub fn register_builtins(env: &mut Env) {
 
     // --- String ops ---
 
-    builtin!(env, "char-at", |_, args: &[Value]| {
+    builtin!(env, "char-at", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Str(s), Value::Int(i)) => {
                 let idx = *i as usize;
@@ -1186,7 +1279,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "substring", |_, args: &[Value]| {
+    builtin!(env, "substring", 3, |_, args: &[Value]| {
         match (&args[0], &args[1], &args[2]) {
             (Value::Str(s), Value::Int(start), Value::Int(end)) => {
                 let start = *start as usize;
@@ -1220,7 +1313,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "index-of", |_, args: &[Value]| {
+    builtin!(env, "index-of", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Str(haystack), Value::Str(needle)) => match haystack.find(&**needle) {
                 Some(pos) => Ok(Value::Int(pos as i64)),
@@ -1239,7 +1332,7 @@ pub fn register_builtins(env: &mut Env) {
 
     // --- Collection ops ---
 
-    builtin!(env, "group-by", |_, args: &[Value]| {
+    builtin!(env, "group-by", 1..=2, |_, args: &[Value]| {
         fn do_group_by(func: &Value, v: &imbl::Vector<Value>) -> IResult {
             let mut groups: Vec<(Value, imbl::Vector<Value>)> = Vec::new();
             for item in v {
@@ -1260,22 +1353,22 @@ pub fn register_builtins(env: &mut Env) {
             (func, Some(Value::Vec(v))) if func.is_callable() => do_group_by(func, v),
             (func, None) if func.is_callable() => {
                 let func_clone = func.clone();
-                Ok(Value::Builtin(
-                    "group-by-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| {
+                Ok(partial(
+                    "group-by-partial",
+                    move |_, inner_args: &[Value]| {
                         if let Value::Vec(v) = &inner_args[0] {
                             do_group_by(&func_clone, v)
                         } else {
                             Err(err("group-by requires a vector"))
                         }
-                    }),
+                    },
                 ))
             }
             _ => Err(err("group-by requires a function and vector")),
         }
     });
 
-    builtin!(env, "flat-map", |_, args: &[Value]| {
+    builtin!(env, "flat-map", 1..=2, |_, args: &[Value]| {
         fn do_flat_map(func: &Value, v: &imbl::Vector<Value>) -> IResult {
             let mut result = imbl::Vector::new();
             for item in v {
@@ -1292,22 +1385,22 @@ pub fn register_builtins(env: &mut Env) {
             (func, Some(Value::Vec(v))) if func.is_callable() => do_flat_map(func, v),
             (func, None) if func.is_callable() => {
                 let func_clone = func.clone();
-                Ok(Value::Builtin(
-                    "flat-map-partial".to_string(),
-                    Arc::new(move |_, inner_args: &[Value]| {
+                Ok(partial(
+                    "flat-map-partial",
+                    move |_, inner_args: &[Value]| {
                         if let Value::Vec(v) = &inner_args[0] {
                             do_flat_map(&func_clone, v)
                         } else {
                             Err(err("flat-map requires a vector"))
                         }
-                    }),
+                    },
                 ))
             }
             _ => Err(err("flat-map requires a function and vector")),
         }
     });
 
-    builtin!(env, "sort", |_, args: &[Value]| {
+    builtin!(env, "sort", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) => {
                 let mut sorted: Vec<Value> = v.iter().cloned().collect();
@@ -1318,7 +1411,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "min", |_, args: &[Value]| {
+    builtin!(env, "min", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) if !v.is_empty() => {
                 let mut result = &v[0];
@@ -1334,7 +1427,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "max", |_, args: &[Value]| {
+    builtin!(env, "max", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) if !v.is_empty() => {
                 let mut result = &v[0];
@@ -1350,7 +1443,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "sum", |_, args: &[Value]| {
+    builtin!(env, "sum", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) => {
                 if v.is_empty() {
@@ -1359,7 +1452,7 @@ pub fn register_builtins(env: &mut Env) {
                 let mut acc = v[0].clone();
                 for item in v.iter().skip(1) {
                     acc = match (&acc, item) {
-                        (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+                        (Value::Int(a), Value::Int(b)) => Value::Int(a.wrapping_add(*b)),
                         (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
                         (Value::Float(a), Value::Int(b)) => Value::Float(a + *b as f64),
                         (Value::Int(a), Value::Float(b)) => Value::Float(*a as f64 + b),
@@ -1372,7 +1465,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "sqrt", |_, args: &[Value]| {
+    builtin!(env, "sqrt", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Float(f) => Ok(Value::Float(f.sqrt())),
             Value::Int(n) => Ok(Value::Float((*n as f64).sqrt())),
@@ -1380,7 +1473,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "pow", |_, args: &[Value]| {
+    builtin!(env, "pow", 2, |_, args: &[Value]| {
         if args.len() < 2 {
             return Err(err("pow requires base and exponent"));
         }
@@ -1400,7 +1493,7 @@ pub fn register_builtins(env: &mut Env) {
     // Core math (issue #19).
     macro_rules! math_to_float {
         ($name:expr, $f:expr) => {
-            builtin!(env, $name, |_, args: &[Value]| {
+            builtin!(env, $name, 1, |_, args: &[Value]| {
                 let x = match &args[0] {
                     Value::Float(f) => *f,
                     Value::Int(n) => *n as f64,
@@ -1423,7 +1516,7 @@ pub fn register_builtins(env: &mut Env) {
 
     macro_rules! math_to_int {
         ($name:expr, $f:expr) => {
-            builtin!(env, $name, |_, args: &[Value]| {
+            builtin!(env, $name, 1, |_, args: &[Value]| {
                 match &args[0] {
                     Value::Int(n) => Ok(Value::Int(*n)),
                     Value::Float(x) => {
@@ -1439,7 +1532,7 @@ pub fn register_builtins(env: &mut Env) {
     math_to_int!("ceil", f64::ceil);
     math_to_int!("round", f64::round);
 
-    builtin!(env, "atan2", |_, args: &[Value]| {
+    builtin!(env, "atan2", 2, |_, args: &[Value]| {
         let num = |v: &Value| match v {
             Value::Float(f) => Ok(*f),
             Value::Int(n) => Ok(*n as f64),
@@ -1452,7 +1545,7 @@ pub fn register_builtins(env: &mut Env) {
     env.set("e".to_string(), Value::Float(std::f64::consts::E));
 
     // String → number parsing (issue #18): Option-returning, unlike int/float.
-    builtin!(env, "parse-int", |_, args: &[Value]| {
+    builtin!(env, "parse-int", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Str(s) => Ok(match s.trim().parse::<i64>() {
                 Ok(n) => Value::Adt("Some".to_string(), vec![Value::Int(n)]),
@@ -1461,7 +1554,7 @@ pub fn register_builtins(env: &mut Env) {
             _ => Err(err("parse-int requires a string")),
         }
     });
-    builtin!(env, "parse-float", |_, args: &[Value]| {
+    builtin!(env, "parse-float", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Str(s) => Ok(match s.trim().parse::<f64>() {
                 Ok(n) => Value::Adt("Some".to_string(), vec![Value::Float(n)]),
@@ -1472,7 +1565,7 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     // String helpers (issue #23).
-    builtin!(env, "capitalize", |_, args: &[Value]| {
+    builtin!(env, "capitalize", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Str(s) => {
                 let mut chars = s.chars();
@@ -1485,44 +1578,58 @@ pub fn register_builtins(env: &mut Env) {
             _ => Err(err("capitalize requires a string")),
         }
     });
-    builtin!(env, "repeat", |_, args: &[Value]| {
+    builtin!(env, "repeat", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
-            (Value::Str(s), Value::Int(n)) => Ok(Value::Str(s.repeat((*n).max(0) as usize).into())),
+            (Value::Str(s), Value::Int(n)) => {
+                let n = (*n).max(0) as usize;
+                if s.len().saturating_mul(n) > MAX_BUILT_LEN {
+                    return Err(err(format!(
+                        "repeat: result too large ({} x {n} bytes, limit {MAX_BUILT_LEN})",
+                        s.len()
+                    )));
+                }
+                Ok(Value::Str(s.repeat(n).into()))
+            }
             _ => Err(err("repeat requires a string and a count")),
         }
     });
-    fn pad(s: &str, width: i64, padding: &str, left: bool) -> String {
+    fn pad(s: &str, width: i64, padding: &str, left: bool) -> Result<String, InterpError> {
         let len = s.chars().count();
         let want = width.max(0) as usize;
         if len >= want || padding.is_empty() {
-            return s.to_string();
+            return Ok(s.to_string());
+        }
+        if want > MAX_BUILT_LEN {
+            return Err(err(format!(
+                "pad: width {want} too large (limit {MAX_BUILT_LEN})"
+            )));
         }
         let fill: String = padding.chars().cycle().take(want - len).collect();
-        if left {
+        Ok(if left {
             fill + s
         } else {
             s.to_string() + &fill
-        }
+        })
     }
-    builtin!(env, "pad-left", |_, args: &[Value]| {
+    builtin!(env, "pad-left", 3, |_, args: &[Value]| {
         match (&args[0], &args[1], &args[2]) {
             (Value::Str(s), Value::Int(w), Value::Str(p)) => {
-                Ok(Value::Str(pad(s, *w, p, true).into()))
+                Ok(Value::Str(pad(s, *w, p, true)?.into()))
             }
             _ => Err(err("pad-left requires a string, width, and pad string")),
         }
     });
-    builtin!(env, "pad-right", |_, args: &[Value]| {
+    builtin!(env, "pad-right", 3, |_, args: &[Value]| {
         match (&args[0], &args[1], &args[2]) {
             (Value::Str(s), Value::Int(w), Value::Str(p)) => {
-                Ok(Value::Str(pad(s, *w, p, false).into()))
+                Ok(Value::Str(pad(s, *w, p, false)?.into()))
             }
             _ => Err(err("pad-right requires a string, width, and pad string")),
         }
     });
 
     // slice: [slice coll start end) on vectors and strings.
-    builtin!(env, "slice", |_, args: &[Value]| {
+    builtin!(env, "slice", 3, |_, args: &[Value]| {
         let (start, end) = match (&args[1], &args[2]) {
             (Value::Int(s), Value::Int(e)) => (*s, *e),
             _ => return Err(err("slice requires integer start and end")),
@@ -1546,7 +1653,7 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     // concat: concatenate two vectors or strings.
-    builtin!(env, "concat", |_, args: &[Value]| {
+    builtin!(env, "concat", 2, |_, args: &[Value]| {
         match (&args[0], &args[1]) {
             (Value::Vec(a), Value::Vec(b)) => {
                 let mut out = a.clone();
@@ -1558,29 +1665,29 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "abs", |_, args: &[Value]| {
+    builtin!(env, "abs", 1, |_, args: &[Value]| {
         match &args[0] {
-            Value::Int(n) => Ok(Value::Int(n.abs())),
+            Value::Int(n) => Ok(Value::Int(n.wrapping_abs())),
             Value::Float(f) => Ok(Value::Float(f.abs())),
             _ => Err(err("abs requires a number")),
         }
     });
 
-    builtin!(env, "first", |_, args: &[Value]| {
+    builtin!(env, "first", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) => Ok(v.front().cloned().unwrap_or(Value::Unit)),
             _ => Err(err("first requires a vector")),
         }
     });
 
-    builtin!(env, "last", |_, args: &[Value]| {
+    builtin!(env, "last", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) => Ok(v.back().cloned().unwrap_or(Value::Unit)),
             _ => Err(err("last requires a vector")),
         }
     });
 
-    builtin!(env, "some?", |_, args: &[Value]| {
+    builtin!(env, "some?", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Unit => Ok(Value::Bool(false)),
             Value::Adt(tag, _) if tag == "None" => Ok(Value::Bool(false)),
@@ -1588,7 +1695,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "none?", |_, args: &[Value]| {
+    builtin!(env, "none?", 1, |_, args: &[Value]| {
         // Complement of some?: true for the "says nothing" values None and ().
         match &args[0] {
             Value::Unit => Ok(Value::Bool(true)),
@@ -1597,7 +1704,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "nil?", |_, args: &[Value]| {
+    builtin!(env, "nil?", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Unit => Ok(Value::Bool(true)),
             Value::Adt(tag, _) if tag == "None" => Ok(Value::Bool(true)),
@@ -1605,7 +1712,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "type-of", |_, args: &[Value]| {
+    builtin!(env, "type-of", 1, |_, args: &[Value]| {
         let t = match &args[0] {
             Value::Int(_) => "Int",
             Value::Float(_) => "Float",
@@ -1626,7 +1733,7 @@ pub fn register_builtins(env: &mut Env) {
 
     // --- Conversion ---
 
-    builtin!(env, "into-map", |_, args: &[Value]| {
+    builtin!(env, "into-map", 1, |_, args: &[Value]| {
         match &args[0] {
             Value::Vec(v) => {
                 let mut m = OrdMap::new();
@@ -1646,7 +1753,7 @@ pub fn register_builtins(env: &mut Env) {
 
     // --- Channel builtins ---
 
-    builtin!(env, "channel", |_, _args: &[Value]| {
+    builtin!(env, "channel", 0, |_, _args: &[Value]| {
         let id = NEXT_CHAN.with(|c| {
             let id = c.get();
             c.set(id + 1);
@@ -1661,7 +1768,7 @@ pub fn register_builtins(env: &mut Env) {
         ]))
     });
 
-    builtin!(env, "send", |_, args: &[Value]| {
+    builtin!(env, "send", 1..=2, |_, args: &[Value]| {
         if let Value::ChannelTx(id) = &args[0] {
             let id = *id;
             let val = args.get(1).cloned().unwrap_or(Value::Unit);
@@ -1683,7 +1790,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "recv", |_, args: &[Value]| {
+    builtin!(env, "recv", 1, |_, args: &[Value]| {
         if let Value::ChannelRx(id) = &args[0] {
             let id = *id;
             if is_shared(id) {
@@ -1707,7 +1814,7 @@ pub fn register_builtins(env: &mut Env) {
         }
     });
 
-    builtin!(env, "try-recv", |_, args: &[Value]| {
+    builtin!(env, "try-recv", 1, |_, args: &[Value]| {
         if let Value::ChannelRx(id) = &args[0] {
             let id = *id;
             if is_shared(id) {
@@ -1734,7 +1841,7 @@ pub fn register_builtins(env: &mut Env) {
     // ── Physics builtins ─────────────────────────────────────────────
 
     // unit: [unit value :keyword] → applies scale and returns Float
-    builtin!(env, "unit", |_, args: &[Value]| {
+    builtin!(env, "unit", 2, |_, args: &[Value]| {
         if args.len() != 2 {
             return Err(err("unit requires exactly 2 arguments: value and :unit"));
         }
@@ -1778,7 +1885,7 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     // magnitude: extracts numeric value from a Dim (identity at runtime — types are erased)
-    builtin!(env, "magnitude", |_, args: &[Value]| {
+    builtin!(env, "magnitude", 1, |_, args: &[Value]| {
         if args.len() != 1 {
             return Err(err("magnitude requires exactly 1 argument"));
         }
@@ -1790,7 +1897,7 @@ pub fn register_builtins(env: &mut Env) {
     });
 
     // scalar: explicit entry into Dim world (identity at runtime)
-    builtin!(env, "scalar", |_, args: &[Value]| {
+    builtin!(env, "scalar", 1, |_, args: &[Value]| {
         if args.len() != 1 {
             return Err(err("scalar requires exactly 1 argument"));
         }
@@ -1836,12 +1943,35 @@ pub fn apply_value(func: &Value, args: &[Value]) -> IResult {
     }
 }
 
+/// Ordering used by `sort`, `sort-by`, `min` and `max`.
+///
+/// It must be a total order: since Rust 1.81 `sort_by` may panic when the
+/// comparator isn't one, and a panic aborts hosts that evaluate in-process.
+/// Values of different kinds order by kind; ints and floats compare
+/// numerically (an int before an equal float), floats by `total_cmp` (so NaN
+/// has a place); kinds with no natural order compare equal among themselves.
 pub fn value_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    fn rank(v: &Value) -> u8 {
+        match v {
+            Value::Unit => 0,
+            Value::Bool(_) => 1,
+            Value::Int(_) | Value::Float(_) => 2,
+            Value::Str(_) => 3,
+            Value::Keyword(_) => 4,
+            _ => 5,
+        }
+    }
     match (a, b) {
         (Value::Int(a), Value::Int(b)) => a.cmp(b),
-        (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Float(a), Value::Float(b)) => a.total_cmp(b),
+        // int -> f64 is monotone, so this plus the int-first tie-break stays
+        // transitive even where the conversion rounds.
+        (Value::Int(a), Value::Float(b)) => (*a as f64).total_cmp(b).then(Ordering::Less),
+        (Value::Float(a), Value::Int(b)) => a.total_cmp(&(*b as f64)).then(Ordering::Greater),
+        (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
         (Value::Str(a), Value::Str(b)) => a.cmp(b),
         (Value::Keyword(a), Value::Keyword(b)) => a.cmp(b),
-        _ => std::cmp::Ordering::Equal,
+        _ => rank(a).cmp(&rank(b)),
     }
 }

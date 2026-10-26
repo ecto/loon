@@ -438,11 +438,13 @@ impl fmt::Display for Value {
             Value::Json(j) => match j.as_ref() {
                 serde_json::Value::String(s) => write!(f, "\"{s}\""),
                 serde_json::Value::Null => write!(f, "()"),
-                other => write!(
-                    f,
-                    "<json {}>",
-                    &other.to_string()[..64.min(other.to_string().len())]
-                ),
+                other => {
+                    // Truncate to 64 chars, not bytes: a byte cut can split
+                    // a multibyte char and panic.
+                    let s = other.to_string();
+                    let end = s.char_indices().nth(64).map_or(s.len(), |(i, _)| i);
+                    write!(f, "<json {}>", &s[..end])
+                }
             },
             Value::Unit => write!(f, "()"),
         }
