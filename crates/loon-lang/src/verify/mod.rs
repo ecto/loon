@@ -79,7 +79,9 @@ impl Defs {
     pub fn from_exprs(exprs: &[Expr]) -> Result<Defs, String> {
         let mut d = Defs::default();
         for e in exprs {
-            let ExprKind::List(items) = &e.kind else { continue };
+            let ExprKind::List(items) = &e.kind else {
+                continue;
+            };
             match head_sym(e) {
                 Some("type") => d.add_type(items)?,
                 Some("fn") => d.add_fn(items)?,
@@ -116,7 +118,11 @@ impl Defs {
             match &it.kind {
                 // A bare symbol used in some field is a type param, else a nullary ctor.
                 ExprKind::Symbol(s) if fields_syms.contains(s) => {}
-                ExprKind::Symbol(s) => ctors.push(CtorInfo { name: s.clone(), recursive: vec![], fields: vec![] }),
+                ExprKind::Symbol(s) => ctors.push(CtorInfo {
+                    name: s.clone(),
+                    recursive: vec![],
+                    fields: vec![],
+                }),
                 ExprKind::List(v) => {
                     let Some(ExprKind::Symbol(c)) = v.first().map(|e| &e.kind) else {
                         return Err(format!("type {name}: malformed constructor `{it}`"));
@@ -129,7 +135,11 @@ impl Defs {
                             s.contains(name)
                         })
                         .collect();
-                    ctors.push(CtorInfo { name: c.clone(), recursive, fields: v[1..].to_vec() });
+                    ctors.push(CtorInfo {
+                        name: c.clone(),
+                        recursive,
+                        fields: v[1..].to_vec(),
+                    });
                 }
                 _ => return Err(format!("type {name}: unexpected `{it}`")),
             }
@@ -149,7 +159,9 @@ impl Defs {
             return Ok(()); // anonymous or multi-clause: not unfoldable
         };
         if items.len() != 4 {
-            return Err(format!("fn {name}: reference definitions must have a single body expression"));
+            return Err(format!(
+                "fn {name}: reference definitions must have a single body expression"
+            ));
         }
         let params: Vec<String> = ps
             .iter()
@@ -160,13 +172,22 @@ impl Defs {
             .collect::<Result<_, _>>()?;
         let body = items[3].clone();
         let scrutinee = match &body.kind {
-            ExprKind::List(v) if head_sym(&body) == Some("match") && v.len() >= 2 => match &v[1].kind {
-                ExprKind::Symbol(s) => params.iter().position(|p| p == s),
-                _ => None,
-            },
+            ExprKind::List(v) if head_sym(&body) == Some("match") && v.len() >= 2 => {
+                match &v[1].kind {
+                    ExprKind::Symbol(s) => params.iter().position(|p| p == s),
+                    _ => None,
+                }
+            }
             _ => None,
         };
-        self.fns.insert(name.clone(), FnDef { params, body, scrutinee });
+        self.fns.insert(
+            name.clone(),
+            FnDef {
+                params,
+                body,
+                scrutinee,
+            },
+        );
         self.fn_order.push(name.clone());
         Ok(())
     }
@@ -193,7 +214,9 @@ pub struct Law {
 
 /// Parse `[law NAME [PARAMS...] [= LHS RHS]]`.
 pub fn parse_law(e: &Expr, origin: Origin, file: &str) -> Option<Result<Law, String>> {
-    let ExprKind::List(items) = &e.kind else { return None };
+    let ExprKind::List(items) = &e.kind else {
+        return None;
+    };
     if head_sym(e) != Some("law") {
         return None;
     }
@@ -232,7 +255,9 @@ pub fn parse_law(e: &Expr, origin: Origin, file: &str) -> Option<Result<Law, Str
 /// Rule names a proof cites (excluding `ih`).
 pub fn cited(steps: &[Expr], out: &mut Vec<String>) {
     for s in steps {
-        let ExprKind::List(items) = &s.kind else { continue };
+        let ExprKind::List(items) = &s.kind else {
+            continue;
+        };
         match head_sym(s) {
             Some("rewrite") => {
                 if let Some(ExprKind::Symbol(n)) = items.get(1).map(|e| &e.kind) {
@@ -281,7 +306,9 @@ const META: [&str; 3] = ["\0a", "\0b", "\0c"];
 fn alpha_match(pat: &Expr, t: &Expr, params: &[String], b: &mut HashMap<String, String>) -> bool {
     if let ExprKind::Symbol(m) = &pat.kind {
         if META.contains(&m.as_str()) {
-            let ExprKind::Symbol(s) = &t.kind else { return false };
+            let ExprKind::Symbol(s) = &t.kind else {
+                return false;
+            };
             if !params.contains(s) {
                 return false;
             }
@@ -307,16 +334,20 @@ fn alpha_match(pat: &Expr, t: &Expr, params: &[String], b: &mut HashMap<String, 
 /// orientation)?
 fn law_has_shape(law: &Law, shapes: &[(Expr, Expr)]) -> bool {
     shapes.iter().any(|(l, r)| {
-        [(&law.lhs, &law.rhs), (&law.rhs, &law.lhs)].iter().any(|(x, y)| {
-            let mut b = HashMap::new();
-            alpha_match(l, x, &law.params, &mut b) && alpha_match(r, y, &law.params, &mut b)
-        })
+        [(&law.lhs, &law.rhs), (&law.rhs, &law.lhs)]
+            .iter()
+            .any(|(x, y)| {
+                let mut b = HashMap::new();
+                alpha_match(l, x, &law.params, &mut b) && alpha_match(r, y, &law.params, &mut b)
+            })
     })
 }
 
 pub fn parse_ac(e: &Expr, laws: &[Law], defs: &Defs) -> Result<AcDecl, String> {
     use kernel::{list, sym};
-    let ExprKind::List(items) = &e.kind else { unreachable!() };
+    let ExprKind::List(items) = &e.kind else {
+        unreachable!()
+    };
     let names: Vec<Option<&str>> = items
         .iter()
         .map(|x| match &x.kind {
@@ -324,8 +355,11 @@ pub fn parse_ac(e: &Expr, laws: &[Law], defs: &Defs) -> Result<AcDecl, String> {
             _ => None,
         })
         .collect();
-    let bad = || format!("malformed `{e}`; expected [ac OP ASSOC-LAW COMM-LAW] or [ac OP ASSOC-LAW COMM-LAW :unit UNIT UNIT-LAW]");
-    let with_unit = items.len() == 7 && matches!(&items[4].kind, ExprKind::Keyword(k) if k == "unit");
+    let bad = || {
+        format!("malformed `{e}`; expected [ac OP ASSOC-LAW COMM-LAW] or [ac OP ASSOC-LAW COMM-LAW :unit UNIT UNIT-LAW]")
+    };
+    let with_unit =
+        items.len() == 7 && matches!(&items[4].kind, ExprKind::Keyword(k) if k == "unit");
     if !(items.len() == 4 || with_unit) {
         return Err(bad());
     }
@@ -333,7 +367,9 @@ pub fn parse_ac(e: &Expr, laws: &[Law], defs: &Defs) -> Result<AcDecl, String> {
         return Err(bad());
     };
     if defs.fns.get(op).map(|f| f.params.len()) != Some(2) {
-        return Err(format!("ac {op}: `{op}` is not a two-argument fn of defs.oo"));
+        return Err(format!(
+            "ac {op}: `{op}` is not a two-argument fn of defs.oo"
+        ));
     }
     let law = |n: &str| {
         laws.iter()
@@ -342,34 +378,60 @@ pub fn parse_ac(e: &Expr, laws: &[Law], defs: &Defs) -> Result<AcDecl, String> {
     };
     let app = |a: Expr, b: Expr| list(vec![sym(op), a, b]);
     let [a, b, c] = META.map(sym);
-    let assoc_shape = (app(app(a.clone(), b.clone()), c.clone()), app(a.clone(), app(b.clone(), c)));
+    let assoc_shape = (
+        app(app(a.clone(), b.clone()), c.clone()),
+        app(a.clone(), app(b.clone(), c)),
+    );
     if !law_has_shape(law(assoc)?, &[assoc_shape]) {
-        return Err(format!("ac {op}: `{assoc}` is not [= [{op} [{op} a b] c] [{op} a [{op} b c]]]"));
+        return Err(format!(
+            "ac {op}: `{assoc}` is not [= [{op} [{op} a b] c] [{op} a [{op} b c]]]"
+        ));
     }
     let comm_shape = (app(a.clone(), b.clone()), app(b, a.clone()));
     if !law_has_shape(law(comm)?, &[comm_shape]) {
-        return Err(format!("ac {op}: `{comm}` is not [= [{op} a b] [{op} b a]]"));
+        return Err(format!(
+            "ac {op}: `{comm}` is not [= [{op} a b] [{op} b a]]"
+        ));
     }
     let (mut unit, mut unit_law) = (None, None);
     if with_unit {
         let u = items[5].clone();
         let ok = match &u.kind {
             ExprKind::Int(_) => true,
-            ExprKind::Symbol(s) => defs.types.values().flatten().any(|k| &k.name == s && k.fields.is_empty()),
+            ExprKind::Symbol(s) => defs
+                .types
+                .values()
+                .flatten()
+                .any(|k| &k.name == s && k.fields.is_empty()),
             _ => false,
         };
         if !ok {
-            return Err(format!("ac {op}: unit `{u}` is not a nullary constructor or literal"));
+            return Err(format!(
+                "ac {op}: unit `{u}` is not a nullary constructor or literal"
+            ));
         }
-        let Some(ul) = names[6] else { return Err(bad()) };
-        let shapes = [(app(a.clone(), u.clone()), a.clone()), (app(u.clone(), a.clone()), a.clone())];
+        let Some(ul) = names[6] else {
+            return Err(bad());
+        };
+        let shapes = [
+            (app(a.clone(), u.clone()), a.clone()),
+            (app(u.clone(), a.clone()), a.clone()),
+        ];
         if !law_has_shape(law(ul)?, &shapes) {
-            return Err(format!("ac {op}: `{ul}` is not [= [{op} n {u}] n] or [= [{op} {u} n] n]"));
+            return Err(format!(
+                "ac {op}: `{ul}` is not [= [{op} n {u}] n] or [= [{op} {u} n] n]"
+            ));
         }
         unit = Some(u);
         unit_law = Some(ul.to_string());
     }
-    Ok(AcDecl { op: op.into(), assoc: assoc.into(), comm: comm.into(), unit, unit_law })
+    Ok(AcDecl {
+        op: op.into(),
+        assoc: assoc.into(),
+        comm: comm.into(),
+        unit,
+        unit_law,
+    })
 }
 
 /// `op` plus every fn of defs.oo whose body transitively mentions it: a goal
@@ -405,7 +467,10 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Options { bound: 6, seed: 0x5EED }
+        Options {
+            bound: 6,
+            seed: 0x5EED,
+        }
     }
 }
 
@@ -435,7 +500,8 @@ fn read_forms(path: &Path, required: bool) -> Result<Vec<Expr>, String> {
         Err(_) if !required => return Ok(vec![]),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
-    crate::parser::parse(&src).map_err(|e| format!("{}: parse error: {}", path.display(), e.message))
+    crate::parser::parse(&src)
+        .map_err(|e| format!("{}: parse error: {}", path.display(), e.message))
 }
 
 fn oo_files(dir: &Path) -> Vec<std::path::PathBuf> {
@@ -553,7 +619,9 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
     for path in oo_files(&dir.join("proofs")) {
         let file = path.display().to_string();
         for e in read_forms(&path, true)? {
-            let ExprKind::List(items) = &e.kind else { continue };
+            let ExprKind::List(items) = &e.kind else {
+                continue;
+            };
             if head_sym(&e) != Some("proof") {
                 continue;
             }
@@ -563,10 +631,12 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
             };
             match laws.iter().find(|l| &l.name == name) {
                 None => errors.push(format!("{file}: proof for unknown law `{name}`")),
-                Some(l) if l.origin == Origin::Builtins => {
-                    errors.push(format!("{file}: `{name}` is a bridge law; bridge laws are bounded-only"))
+                Some(l) if l.origin == Origin::Builtins => errors.push(format!(
+                    "{file}: `{name}` is a bridge law; bridge laws are bounded-only"
+                )),
+                Some(_) if proofs.contains_key(name) => {
+                    errors.push(format!("{file}: duplicate proof `{name}`"))
                 }
-                Some(_) if proofs.contains_key(name) => errors.push(format!("{file}: duplicate proof `{name}`")),
                 Some(_) => {
                     proofs.insert(name.clone(), items[2..].to_vec());
                 }
@@ -608,16 +678,23 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
     let mut param_types: HashMap<String, HashMap<String, kernel::Ty>> = HashMap::new();
     for law in &laws {
         let kinds = bounded::param_kinds(&prelude, &law.params, &law.lhs, &law.rhs, &defs);
-        let inferred = infer::law_param_types(&defs, &defs.fn_order, &law.params, &law.lhs, &law.rhs);
+        let inferred =
+            infer::law_param_types(&defs, &defs.fn_order, &law.params, &law.lhs, &law.rhs);
         let types = law
             .params
             .iter()
             .zip(&kinds)
             .filter_map(|(p, k)| match k {
-                bounded::Kind::List(t, _, _) => Some((p.clone(), kernel::Ty::app(t, vec![kernel::Ty::named("Int")]))),
+                bounded::Kind::List(t, _, _) => Some((
+                    p.clone(),
+                    kernel::Ty::app(t, vec![kernel::Ty::named("Int")]),
+                )),
                 bounded::Kind::Adt(t, _) => {
                     let n = defs.type_params.get(t).map_or(0, |v| v.len());
-                    Some((p.clone(), kernel::Ty::app(t, vec![kernel::Ty::named("Int"); n])))
+                    Some((
+                        p.clone(),
+                        kernel::Ty::app(t, vec![kernel::Ty::named("Int"); n]),
+                    ))
                 }
                 bounded::Kind::Typed(t, _) => Some((p.clone(), checker_ty(t))),
                 _ => None,
@@ -634,7 +711,16 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
             None => types,
         };
         param_types.insert(law.name.clone(), types);
-        let b = bounded::check_law(&prelude, &law.params, &kinds, &law.lhs, &law.rhs, &defs, opts.bound, opts.seed);
+        let b = bounded::check_law(
+            &prelude,
+            &law.params,
+            &kinds,
+            &law.lhs,
+            &law.rhs,
+            &defs,
+            opts.bound,
+            opts.seed,
+        );
         let status = match (&b.counterexample, law.origin) {
             (Some(_), _) => "falsified",
             (None, Origin::Builtins) if b.error.is_none() => "bounded",
@@ -673,10 +759,17 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
             }
         }
         let reach = reaching(&d.op, &defs);
-        let names: Vec<String> = proofs.keys().filter(|n| !excl.contains(*n)).cloned().collect();
+        let names: Vec<String> = proofs
+            .keys()
+            .filter(|n| !excl.contains(*n))
+            .cloned()
+            .collect();
         for n in names {
             let mut syms = HashSet::new();
-            for l in laws.iter().filter(|l| l.name == n || deps[&n].contains(&l.name)) {
+            for l in laws
+                .iter()
+                .filter(|l| l.name == n || deps[&n].contains(&l.name))
+            {
                 kernel::symbols(&l.lhs, &mut syms);
                 kernel::symbols(&l.rhs, &mut syms);
             }
@@ -725,7 +818,14 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
     names.sort_by_key(|n| laws.iter().position(|l| &l.name == *n));
     for n in names {
         if !state.contains_key(n.as_str()) {
-            dfs(n, &deps, &mut state, &mut Vec::new(), &mut cyclic, &mut order);
+            dfs(
+                n,
+                &deps,
+                &mut state,
+                &mut Vec::new(),
+                &mut cyclic,
+                &mut order,
+            );
         }
     }
 
@@ -754,7 +854,14 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
                 Outcome::Stuck { .. } => return None,
             };
             let l = laws.iter().find(|l| l.name == cite)?;
-            Some((Rule { params: l.params.clone(), lhs: l.lhs.clone(), rhs: l.rhs.clone() }, adm))
+            Some((
+                Rule {
+                    params: l.params.clone(),
+                    lhs: l.lhs.clone(),
+                    rhs: l.rhs.clone(),
+                },
+                adm,
+            ))
         };
         let goal = kernel::Goal {
             law_name: name,
@@ -770,9 +877,15 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
         for &i in ac_for.get(name).into_iter().flatten() {
             let d = &ac_decls[i];
             let st: Vec<Option<&Outcome>> = d.laws().iter().map(|l| outcome.get(l)).collect();
-            if st.iter().all(|o| matches!(o, Some(Outcome::Proven | Outcome::Admitted))) {
+            if st
+                .iter()
+                .all(|o| matches!(o, Some(Outcome::Proven | Outcome::Admitted)))
+            {
                 ac_tainted |= st.iter().any(|o| matches!(o, Some(Outcome::Admitted)));
-                pdefs.ac.push(AcOp { op: d.op.clone(), unit: d.unit.clone() });
+                pdefs.ac.push(AcOp {
+                    op: d.op.clone(),
+                    unit: d.unit.clone(),
+                });
             }
         }
         let o = match kernel::check_proof(&goal, &proofs[name], &pdefs, &lemmas) {
@@ -800,13 +913,24 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
                 rep.stuck = Some((case.clone(), term.clone(), reason.clone()));
             }
             (None, Origin::Laws) if rep.status == "unknown" && !proofs.contains_key(&rep.name) => {
-                rep.note = Some(rep.note.take().map_or("no proof".into(), |n| format!("no proof; {n}")));
+                rep.note = Some(
+                    rep.note
+                        .take()
+                        .map_or("no proof".into(), |n| format!("no proof; {n}")),
+                );
             }
             _ => {}
         }
     }
 
-    Ok(Report { run: now_rfc3339(), defs_hash, sound, laws: reports, errors, defs })
+    Ok(Report {
+        run: now_rfc3339(),
+        defs_hash,
+        sound,
+        laws: reports,
+        errors,
+        defs,
+    })
 }
 
 // ─── Reporting ─────────────────────────────────────────────────────────────
@@ -852,7 +976,10 @@ impl Report {
                     m.insert("rhs".into(), bounded::value_json(rv, &self.defs));
                 }
                 if let Some((case, term, reason)) = &l.stuck {
-                    m.insert("stuck".into(), json!({ "case": case, "term": term, "reason": reason }));
+                    m.insert(
+                        "stuck".into(),
+                        json!({ "case": case, "term": term, "reason": reason }),
+                    );
                 }
                 if l.checked > 0 {
                     m.insert("inputs".into(), J::from(l.checked));
@@ -881,7 +1008,11 @@ impl Report {
 
     pub fn to_text(&self) -> String {
         let mut s = String::new();
-        for (title, origin) in [("laws", Origin::Laws), ("bridge (bounded only)", Origin::Builtins), ("canary", Origin::Canary)] {
+        for (title, origin) in [
+            ("laws", Origin::Laws),
+            ("bridge (bounded only)", Origin::Builtins),
+            ("canary", Origin::Canary),
+        ] {
             let ls: Vec<_> = self.laws.iter().filter(|l| l.origin == origin).collect();
             if ls.is_empty() {
                 continue;
@@ -891,10 +1022,15 @@ impl Report {
                 s.push_str(&format!("  {:<10} {}", l.status, l.name));
                 if let Some((asg, lv, rv)) = &l.counterexample {
                     let a: Vec<String> = asg.iter().map(|(k, v)| format!("{k}={v}")).collect();
-                    s.push_str(&format!("\n    counterexample {}\n    lhs = {lv}\n    rhs = {rv}", a.join(" ")));
+                    s.push_str(&format!(
+                        "\n    counterexample {}\n    lhs = {lv}\n    rhs = {rv}",
+                        a.join(" ")
+                    ));
                 }
                 if let Some((case, term, reason)) = &l.stuck {
-                    s.push_str(&format!("  case {case}: stuck at\n    L = {term}\n    {reason}"));
+                    s.push_str(&format!(
+                        "  case {case}: stuck at\n    L = {term}\n    {reason}"
+                    ));
                 }
                 if let Some(n) = &l.note {
                     s.push_str(&format!("  ({n})"));

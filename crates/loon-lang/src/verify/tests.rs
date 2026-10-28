@@ -22,11 +22,27 @@ fn defs() -> Defs {
     Defs::from_exprs(&crate::parser::parse(DEFS).unwrap()).unwrap()
 }
 
-fn prove(defs: &Defs, params: &[&str], lhs: &str, rhs: &str, steps: &str, lemmas: &kernel::Lemmas) -> Outcome {
+fn prove(
+    defs: &Defs,
+    params: &[&str],
+    lhs: &str,
+    rhs: &str,
+    steps: &str,
+    lemmas: &kernel::Lemmas,
+) -> Outcome {
     let params: Vec<String> = params.iter().map(|s| s.to_string()).collect();
-    let types: HashMap<String, kernel::Ty> = params.iter().map(|p| (p.clone(), kernel::Ty::named("List"))).collect();
+    let types: HashMap<String, kernel::Ty> = params
+        .iter()
+        .map(|p| (p.clone(), kernel::Ty::named("List")))
+        .collect();
     let (l, r) = (p(lhs), p(rhs));
-    let goal = Goal { law_name: "t", params: &params, param_types: &types, lhs: &l, rhs: &r };
+    let goal = Goal {
+        law_name: "t",
+        params: &params,
+        param_types: &types,
+        lhs: &l,
+        rhs: &r,
+    };
     let steps = crate::parser::parse(steps).unwrap();
     check_proof(&goal, &steps, defs, lemmas)
 }
@@ -50,7 +66,10 @@ fn unfold_normalizes_nil_case() {
     let t = kernel::unfold(&p("[append Nil ys]"), "append", &d, &mut used).unwrap();
     assert!(term_eq(&kernel::normalize(&t, &d), &p("ys")));
     let t = kernel::unfold(&p("[append [Cons a b] ys]"), "append", &d, &mut used).unwrap();
-    assert!(term_eq(&kernel::normalize(&t, &d), &p("[Cons a [append b ys]]")));
+    assert!(term_eq(
+        &kernel::normalize(&t, &d),
+        &p("[Cons a [append b ys]]")
+    ));
 }
 
 #[test]
@@ -62,11 +81,19 @@ fn unfold_refuses_non_total() {
 #[test]
 fn rewrite_with_rule() {
     let d = defs();
-    let ih = Rule { params: vec![], lhs: p("[append rest Nil]"), rhs: p("rest") };
+    let ih = Rule {
+        params: vec![],
+        lhs: p("[append rest Nil]"),
+        rhs: p("rest"),
+    };
     let t = kernel::rewrite(&p("[Cons x [append rest Nil]]"), &ih, 0, &d).unwrap();
     assert!(term_eq(&t, &p("[Cons x rest]")));
     // :at selects the Nth preorder match
-    let r = Rule { params: vec!["a".into()], lhs: p("[f a]"), rhs: p("a") };
+    let r = Rule {
+        params: vec!["a".into()],
+        lhs: p("[f a]"),
+        rhs: p("a"),
+    };
     let t = kernel::rewrite(&p("[g [f 1] [f 2]]"), &r, 1, &d).unwrap();
     assert!(term_eq(&t, &p("[g [f 1] 2]")));
     assert!(kernel::rewrite(&p("[g 1]"), &r, 0, &d).is_err());
@@ -109,18 +136,50 @@ fn stuck_reports_term() {
 #[test]
 fn missing_case_is_stuck() {
     let d = defs();
-    let o = prove(&d, &["xs"], "[append xs Nil]", "xs", "[induction xs [Nil [unfold append]]]", &none);
+    let o = prove(
+        &d,
+        &["xs"],
+        "[append xs Nil]",
+        "xs",
+        "[induction xs [Nil [unfold append]]]",
+        &none,
+    );
     assert!(matches!(o, Outcome::Stuck { ref reason, .. } if reason.contains("missing case Cons")));
 }
 
 #[test]
 fn admit_taints() {
     let d = defs();
-    let o = prove(&d, &["xs"], "[append xs Nil]", "xs", "[induction xs [Nil [unfold append]] [Cons [admit]]]", &none);
+    let o = prove(
+        &d,
+        &["xs"],
+        "[append xs Nil]",
+        "xs",
+        "[induction xs [Nil [unfold append]] [Cons [admit]]]",
+        &none,
+    );
     assert_eq!(o, Outcome::Admitted);
     // Citing an admitted lemma taints too.
-    let lem = |n: &str| (n == "an").then(|| (Rule { params: vec!["xs".into()], lhs: p("[append xs Nil]"), rhs: p("xs") }, true));
-    let o = prove(&d, &["ys"], "[append [append ys Nil] Nil]", "ys", "[rewrite an] [rewrite an]", &lem);
+    let lem = |n: &str| {
+        (n == "an").then(|| {
+            (
+                Rule {
+                    params: vec!["xs".into()],
+                    lhs: p("[append xs Nil]"),
+                    rhs: p("xs"),
+                },
+                true,
+            )
+        })
+    };
+    let o = prove(
+        &d,
+        &["ys"],
+        "[append [append ys Nil] Nil]",
+        "ys",
+        "[rewrite an] [rewrite an]",
+        &lem,
+    );
     assert_eq!(o, Outcome::Admitted);
 }
 
@@ -130,23 +189,47 @@ fn ih_only_inside_induction() {
     let o = prove(&d, &["xs"], "[append xs Nil]", "xs", "[rewrite ih]", &none);
     assert!(matches!(o, Outcome::Stuck { .. }));
     // `cases` gives no ih
-    let o = prove(&d, &["xs"], "[append xs Nil]", "xs", "[cases xs [Nil] [Cons [unfold append] [rewrite ih]]]", &none);
+    let o = prove(
+        &d,
+        &["xs"],
+        "[append xs Nil]",
+        "xs",
+        "[cases xs [Nil] [Cons [unfold append] [rewrite ih]]]",
+        &none,
+    );
     assert!(matches!(o, Outcome::Stuck { .. }));
 }
 
 #[test]
 fn induction_refuses_non_total_goal() {
     let d = defs();
-    let o = prove(&d, &["xs"], "[spin xs]", "[spin xs]", "[induction xs [Nil] [Cons]]", &none);
-    assert!(matches!(o, Outcome::Stuck { ref reason, .. } if reason.contains("structurally recursive")));
+    let o = prove(
+        &d,
+        &["xs"],
+        "[spin xs]",
+        "[spin xs]",
+        "[induction xs [Nil] [Cons]]",
+        &none,
+    );
+    assert!(
+        matches!(o, Outcome::Stuck { ref reason, .. } if reason.contains("structurally recursive"))
+    );
 }
 
 #[test]
 fn canary_cannot_be_proven() {
     let d = defs();
-    for steps in ["", "[refl]", "[induction xs [Nil] [Cons [rewrite ih]]]", "[unfold reverse] [unfold append]"] {
+    for steps in [
+        "",
+        "[refl]",
+        "[induction xs [Nil] [Cons [rewrite ih]]]",
+        "[unfold reverse] [unfold append]",
+    ] {
         let o = prove(&d, &["xs"], "[reverse xs]", "xs", steps, &none);
-        assert!(matches!(o, Outcome::Stuck { .. }), "steps {steps:?} gave {o:?}");
+        assert!(
+            matches!(o, Outcome::Stuck { .. }),
+            "steps {steps:?} gave {o:?}"
+        );
     }
     let o = prove(&d, &[], "1", "2", "", &none);
     assert!(matches!(o, Outcome::Stuck { .. }));
@@ -214,8 +297,14 @@ fn cycle_rejected() {
         "cycle",
         &[
             ("defs.oo", DEFS),
-            ("laws/l.oo", "[law a [xs] [= [append xs Nil] xs]]\n[law b [xs] [= xs [append xs Nil]]]"),
-            ("proofs/p.oo", "[proof a [rewrite b :rev]]\n[proof b [rewrite a :rev]]"),
+            (
+                "laws/l.oo",
+                "[law a [xs] [= [append xs Nil] xs]]\n[law b [xs] [= xs [append xs Nil]]]",
+            ),
+            (
+                "proofs/p.oo",
+                "[proof a [rewrite b :rev]]\n[proof b [rewrite a :rev]]",
+            ),
         ],
     );
     let r = run_dir(&dir, &Options::default()).unwrap();
@@ -265,10 +354,20 @@ fn plus_canonical_form() {
 #[test]
 fn plus_normalization_does_not_prove_falsehoods() {
     let d = defs();
-    let r = prove(&d, &["xs"], "[+ 1 [length xs]]", "[length xs]", "[refl]", &none);
+    let r = prove(
+        &d,
+        &["xs"],
+        "[+ 1 [length xs]]",
+        "[length xs]",
+        "[refl]",
+        &none,
+    );
     assert!(!matches!(r, Outcome::Proven), "1 + n = n must not close");
     let r = prove(&d, &["xs"], "[+ a b]", "[+ a c]", "[refl]", &none);
-    assert!(!matches!(r, Outcome::Proven), "a + b = a + c must not close");
+    assert!(
+        !matches!(r, Outcome::Proven),
+        "a + b = a + c must not close"
+    );
 }
 
 // --- nat agent: bounded generation for non-list ADTs ---
@@ -292,7 +391,10 @@ fn bounded_enumerates_nat() {
 [law mul-is-add [m n] [= [mul m n] [add m n]]]
 "#,
             ),
-            ("proofs/p.oo", "[proof add-zero-right [induction n [Z] [S [unfold add] [rewrite ih]]]]"),
+            (
+                "proofs/p.oo",
+                "[proof add-zero-right [induction n [Z] [S [unfold add] [rewrite ih]]]]",
+            ),
         ],
     );
     let r = run_dir(&dir, &Options::default()).unwrap();
@@ -300,7 +402,11 @@ fn bounded_enumerates_nat() {
     assert_eq!(status(&r, "add-zero-right").status, "proven");
     // `p` is only a non-scrutinized argument; it must still be generated as a Nat.
     let d = status(&r, "mul-dist");
-    assert!(!d.note.as_deref().unwrap_or("").contains("bounded"), "{:?}", d.note);
+    assert!(
+        !d.note.as_deref().unwrap_or("").contains("bounded"),
+        "{:?}",
+        d.note
+    );
     assert!(d.checked > 10);
     let w = status(&r, "mul-is-add");
     assert_eq!(w.status, "falsified");
@@ -358,11 +464,25 @@ fn ty(s: &str) -> kernel::Ty {
     }
 }
 
-fn prove_typed(defs: &Defs, params: &[(&str, &str)], lhs: &str, rhs: &str, steps: &str, lemmas: &kernel::Lemmas) -> Outcome {
+fn prove_typed(
+    defs: &Defs,
+    params: &[(&str, &str)],
+    lhs: &str,
+    rhs: &str,
+    steps: &str,
+    lemmas: &kernel::Lemmas,
+) -> Outcome {
     let names: Vec<String> = params.iter().map(|(n, _)| n.to_string()).collect();
-    let types: HashMap<String, kernel::Ty> = params.iter().map(|(n, t)| (n.to_string(), ty(t))).collect();
+    let types: HashMap<String, kernel::Ty> =
+        params.iter().map(|(n, t)| (n.to_string(), ty(t))).collect();
     let (l, r) = (p(lhs), p(rhs));
-    let goal = Goal { law_name: "t", params: &names, param_types: &types, lhs: &l, rhs: &r };
+    let goal = Goal {
+        law_name: "t",
+        params: &names,
+        param_types: &types,
+        lhs: &l,
+        rhs: &r,
+    };
     let steps = crate::parser::parse(steps).unwrap();
     check_proof(&goal, &steps, defs, lemmas)
 }
@@ -411,7 +531,10 @@ fn reduce_match_nested_patterns_and_wildcard() {
     assert_eq!(n(&m.replace('S', "[Cons 1 Nil]")), "[miss]");
     assert_eq!(n(&m.replace('S', "Nil")), "[miss]");
     // Undecided inner pattern: must not fall through to `_`.
-    assert_eq!(n(&m.replace('S', "[Cons 1 t]")), m.replace('S', "[Cons 1 t]"));
+    assert_eq!(
+        n(&m.replace('S', "[Cons 1 t]")),
+        m.replace('S', "[Cons 1 t]")
+    );
 }
 
 #[test]
@@ -433,7 +556,11 @@ fn cases_on_constructor_field_with_inferred_type() {
     let d = cdefs();
     let o = prove_typed(
         &d,
-        &[("c1", "[List Instr]"), ("c2", "[List Instr]"), ("s", "[List Int]")],
+        &[
+            ("c1", "[List Instr]"),
+            ("c2", "[List Instr]"),
+            ("s", "[List Int]"),
+        ],
         "[exec [append c1 c2] s]",
         "[exec c2 [exec c1 s]]",
         EXEC_APPEND_PROOF,
@@ -449,9 +576,19 @@ fn cases_on_constructor_field_with_inferred_type() {
         EXEC_APPEND_PROOF,
         &none,
     );
-    assert!(matches!(o, Outcome::Stuck { ref reason, .. } if reason.contains("type of `x`")), "{o:?}");
+    assert!(
+        matches!(o, Outcome::Stuck { ref reason, .. } if reason.contains("type of `x`")),
+        "{o:?}"
+    );
     // `cases` on an Int is refused.
-    let o = prove_typed(&d, &[("s", "[List Int]")], "s", "s", "[cases s [Nil] [Cons [cases x [A] [B]]]]", &none);
+    let o = prove_typed(
+        &d,
+        &[("s", "[List Int]")],
+        "s",
+        "s",
+        "[cases s [Nil] [Cons [cases x [A] [B]]]]",
+        &none,
+    );
     assert!(matches!(o, Outcome::Stuck { .. }), "{o:?}");
 }
 
@@ -462,7 +599,11 @@ fn halting_exec_does_not_distribute() {
     let d = cdefs();
     let o = prove_typed(
         &d,
-        &[("c1", "[List Instr]"), ("c2", "[List Instr]"), ("s", "[List Int]")],
+        &[
+            ("c1", "[List Instr]"),
+            ("c2", "[List Instr]"),
+            ("s", "[List Int]"),
+        ],
         "[exec-halt [append c1 c2] s]",
         "[exec-halt c2 [exec-halt c1 s]]",
         &EXEC_APPEND_PROOF.replace("exec", "exec-halt"),
@@ -488,7 +629,10 @@ fn two_hypotheses_for_two_recursive_fields() {
     assert_eq!(goal(ok), Outcome::Proven);
     // Plain `ih` is ambiguous with two hypotheses.
     let o = goal("[induction e [Lit] [Add [unfold compile] [rewrite exec-append] [rewrite ih]]]");
-    assert!(matches!(o, Outcome::Stuck { ref reason, .. } if reason.contains("ambiguous")), "{o:?}");
+    assert!(
+        matches!(o, Outcome::Stuck { ref reason, .. } if reason.contains("ambiguous")),
+        "{o:?}"
+    );
     // The stuck report lists the hypotheses in scope.
     let o = goal("[induction e [Lit] [Add [unfold compile]]]");
     match o {
@@ -504,7 +648,10 @@ fn two_hypotheses_for_two_recursive_fields() {
     assert!(matches!(o, Outcome::Stuck { .. }), "{o:?}");
     // Unknown hypothesis names are refused, not looked up as laws.
     let o = goal("[induction e [Lit] [Add [rewrite ih-zz]]]");
-    assert!(matches!(o, Outcome::Stuck { ref reason, .. } if reason.contains("ih-zz")), "{o:?}");
+    assert!(
+        matches!(o, Outcome::Stuck { ref reason, .. } if reason.contains("ih-zz")),
+        "{o:?}"
+    );
 }
 
 #[test]
@@ -538,8 +685,18 @@ fn no_hypothesis_for_indirectly_recursive_fields() {
     // Rose's field `(List Rose)` mentions Rose but is a list, not a Rose:
     // induction on Rose must not offer a hypothesis about it.
     let d = cdefs();
-    let o = prove_typed(&d, &[("t", "Rose")], "[f t]", "[g t]", "[induction t [Node [rewrite ih]]]", &none);
-    assert!(matches!(o, Outcome::Stuck { ref reason, .. } if reason.contains("no induction hypothesis")), "{o:?}");
+    let o = prove_typed(
+        &d,
+        &[("t", "Rose")],
+        "[f t]",
+        "[g t]",
+        "[induction t [Node [rewrite ih]]]",
+        &none,
+    );
+    assert!(
+        matches!(o, Outcome::Stuck { ref reason, .. } if reason.contains("no induction hypothesis")),
+        "{o:?}"
+    );
 }
 
 #[test]
@@ -553,14 +710,40 @@ fn infer_law_param_types() {
         &p("[exec c2 [exec c1 s]]"),
     )
     .unwrap();
-    let ts: Vec<String> = ts.iter().map(|t| format!("{:?}", super::infer::to_ty(t))).collect();
-    assert!(ts[0].contains("\"List\"") && ts[0].contains("\"Instr\""), "{ts:?}");
-    assert!(ts[2].contains("\"List\"") && ts[2].contains("\"Int\""), "{ts:?}");
+    let ts: Vec<String> = ts
+        .iter()
+        .map(|t| format!("{:?}", super::infer::to_ty(t)))
+        .collect();
+    assert!(
+        ts[0].contains("\"List\"") && ts[0].contains("\"Instr\""),
+        "{ts:?}"
+    );
+    assert!(
+        ts[2].contains("\"List\"") && ts[2].contains("\"Int\""),
+        "{ts:?}"
+    );
     // compile uses append at Instr; a plain list law stays polymorphic.
-    let ts = super::infer::law_param_types(&d, &d.fn_order, &["xs".into()], &p("[append xs Nil]"), &p("xs")).unwrap();
-    assert_eq!(super::infer::to_ty(&ts[0]), kernel::Ty::app("List", vec![kernel::Ty::unknown()]));
+    let ts = super::infer::law_param_types(
+        &d,
+        &d.fn_order,
+        &["xs".into()],
+        &p("[append xs Nil]"),
+        &p("xs"),
+    )
+    .unwrap();
+    assert_eq!(
+        super::infer::to_ty(&ts[0]),
+        kernel::Ty::app("List", vec![kernel::Ty::unknown()])
+    );
     // Ill-typed laws do not infer.
-    assert!(super::infer::law_param_types(&d, &d.fn_order, &["e".into()], &p("[eval e]"), &p("[Cons 1 Nil]")).is_none());
+    assert!(super::infer::law_param_types(
+        &d,
+        &d.fn_order,
+        &["e".into()],
+        &p("[eval e]"),
+        &p("[Cons 1 Nil]")
+    )
+    .is_none());
 }
 
 #[test]
@@ -569,11 +752,17 @@ fn typed_generator_enumerates_any_adt() {
     let d = cdefs();
     let expr = Type::Con("Expr".into(), vec![]);
     assert!(super::bounded::typed_values(&expr, 0, &d, 0).is_empty());
-    let one: Vec<String> = super::bounded::typed_values(&expr, 1, &d, 0).iter().map(|e| e.to_string()).collect();
+    let one: Vec<String> = super::bounded::typed_values(&expr, 1, &d, 0)
+        .iter()
+        .map(|e| e.to_string())
+        .collect();
     assert_eq!(one, vec!["[Lit 0]", "[Lit 1]", "[Lit 2]"]);
     assert_eq!(super::bounded::typed_values(&expr, 3, &d, 0).len(), 9); // Add of two Lits
     let code = Type::Con("List".into(), vec![Type::Con("Instr".into(), vec![])]);
-    let c1: Vec<String> = super::bounded::typed_values(&code, 1, &d, 0).iter().map(|e| e.to_string()).collect();
+    let c1: Vec<String> = super::bounded::typed_values(&code, 1, &d, 0)
+        .iter()
+        .map(|e| e.to_string())
+        .collect();
     assert_eq!(c1, vec!["[Cons IAdd Nil]"]);
 }
 
@@ -598,7 +787,12 @@ fn pipeline_falsifies_false_compiler_law() {
     // the true law survives the bounded check on instruction lists
     let t = status(&r, "exec-append");
     let bounded_err = t.note.as_deref().is_some_and(|n| n.contains("bounded"));
-    assert!(t.counterexample.is_none() && !bounded_err && t.checked > 100, "{:?} {}", t.note, t.checked);
+    assert!(
+        t.counterexample.is_none() && !bounded_err && t.checked > 100,
+        "{:?} {}",
+        t.note,
+        t.checked
+    );
 }
 
 // ─── AC normalization of declared operators ────────────────────────────────
@@ -611,7 +805,10 @@ const NAT_DEFS: &str = r#"
 
 fn nat_ac(unit: bool) -> Defs {
     let mut d = Defs::from_exprs(&crate::parser::parse(NAT_DEFS).unwrap()).unwrap();
-    d.ac.push(AcOp { op: "add".into(), unit: unit.then(|| kernel::sym("Z")) });
+    d.ac.push(AcOp {
+        op: "add".into(),
+        unit: unit.then(|| kernel::sym("Z")),
+    });
     d
 }
 
@@ -623,11 +820,23 @@ fn prove_nat(d: &Defs, params: &[&str], lhs: &str, rhs: &str, steps: &str) -> Ou
 #[test]
 fn ac_closes_permuted_nesting() {
     let d = nat_ac(false);
-    let o = prove_nat(&d, &["a", "b", "c"], "[add [add a b] c]", "[add c [add b a]]", "");
+    let o = prove_nat(
+        &d,
+        &["a", "b", "c"],
+        "[add [add a b] c]",
+        "[add c [add b a]]",
+        "",
+    );
     assert_eq!(o, Outcome::Proven);
     // not without the declaration
     let plain = Defs::from_exprs(&crate::parser::parse(NAT_DEFS).unwrap()).unwrap();
-    let o = prove_nat(&plain, &["a", "b", "c"], "[add [add a b] c]", "[add c [add b a]]", "");
+    let o = prove_nat(
+        &plain,
+        &["a", "b", "c"],
+        "[add [add a b] c]",
+        "[add c [add b a]]",
+        "",
+    );
     assert!(matches!(o, Outcome::Stuck { .. }));
 }
 
@@ -635,7 +844,10 @@ fn ac_closes_permuted_nesting() {
 fn ac_does_not_prove_falsehoods() {
     let d = nat_ac(true);
     let o = prove_nat(&d, &["a", "b", "c"], "[add a b]", "[add a c]", "[refl]");
-    assert!(!matches!(o, Outcome::Proven), "a + b = a + c must not close");
+    assert!(
+        !matches!(o, Outcome::Proven),
+        "a + b = a + c must not close"
+    );
     let o = prove_nat(&d, &["a", "b"], "[mul a b]", "[add a b]", "");
     assert!(!matches!(o, Outcome::Proven));
     let o = prove_nat(&d, &["a"], "[add a a]", "a", "");
@@ -673,7 +885,12 @@ const AC_PROOFS_GOOD: &str = r#"
 fn ac_dir(tag: &str, laws: &str, proofs: &str) -> Report {
     let dir = tmp_dir(
         tag,
-        &[("defs.oo", NAT_DEFS), ("canary.oo", "[law canary [] [= 1 2]]"), ("laws/n.oo", laws), ("proofs/p.oo", proofs)],
+        &[
+            ("defs.oo", NAT_DEFS),
+            ("canary.oo", "[law canary [] [= 1 2]]"),
+            ("laws/n.oo", laws),
+            ("proofs/p.oo", proofs),
+        ],
     );
     run_dir(&dir, &Options::default()).unwrap()
 }
@@ -686,7 +903,12 @@ fn ac_active_after_its_laws_are_proven() {
     let r = ac_dir("ac-on", AC_LAWS, &proofs);
     assert!(r.errors.is_empty(), "{:?}", r.errors);
     assert_eq!(status(&r, "add-comm").status, "proven");
-    assert_eq!(status(&r, "add-rotate").status, "proven", "{:?}", status(&r, "add-rotate").stuck);
+    assert_eq!(
+        status(&r, "add-rotate").status,
+        "proven",
+        "{:?}",
+        status(&r, "add-rotate").stuck
+    );
 }
 
 #[test]
@@ -709,10 +931,22 @@ fn ac_not_active_in_proofs_of_its_own_laws() {
 #[test]
 fn ac_malformed_decl_rejected() {
     for (decl, frag) in [
-        ("[ac add add-comm add-comm]", "add-comm` is not [= [add [add"),
-        ("[ac add add-assoc add-assoc]", "add-assoc` is not [= [add a b]"),
-        ("[ac add add-assoc add-comm :unit Z add-succ-right]", "add-succ-right` is not"),
-        ("[ac add add-assoc add-comm :unit S add-zero-right]", "unit `S`"),
+        (
+            "[ac add add-comm add-comm]",
+            "add-comm` is not [= [add [add",
+        ),
+        (
+            "[ac add add-assoc add-assoc]",
+            "add-assoc` is not [= [add a b]",
+        ),
+        (
+            "[ac add add-assoc add-comm :unit Z add-succ-right]",
+            "add-succ-right` is not",
+        ),
+        (
+            "[ac add add-assoc add-comm :unit S add-zero-right]",
+            "unit `S`",
+        ),
         ("[ac add add-assoc nope]", "`nope` is not a law"),
         ("[ac Z add-assoc add-comm]", "not a two-argument fn"),
         ("[ac add add-assoc]", "malformed"),
@@ -720,13 +954,23 @@ fn ac_malformed_decl_rejected() {
         let laws = AC_LAWS.replace("[ac add add-assoc add-comm :unit Z add-zero-right]", decl);
         let proofs = format!("{AC_PROOFS_GOOD}\n[proof add-comm [induction m [Z [unfold add] [rewrite add-zero-right :rev]] [S [unfold add] [rewrite ih] [rewrite add-succ-right :rev]]]]");
         let r = ac_dir("ac-bad", &laws, &proofs);
-        assert!(r.errors.iter().any(|e| e.contains(frag)), "{decl}: {:?}", r.errors);
+        assert!(
+            r.errors.iter().any(|e| e.contains(frag)),
+            "{decl}: {:?}",
+            r.errors
+        );
         assert_eq!(status(&r, "add-rotate").status, "unknown", "{decl}");
     }
     // A comm law with the same shape but over a different op is rejected too.
-    let laws = format!("{AC_LAWS}\n[law mul-comm [m n] [= [mul m n] [mul n m]]]\n[ac add add-assoc mul-comm]");
+    let laws = format!(
+        "{AC_LAWS}\n[law mul-comm [m n] [= [mul m n] [mul n m]]]\n[ac add add-assoc mul-comm]"
+    );
     let r = ac_dir("ac-bad2", &laws, AC_PROOFS_GOOD);
-    assert!(r.errors.iter().any(|e| e.contains("mul-comm` is not")), "{:?}", r.errors);
+    assert!(
+        r.errors.iter().any(|e| e.contains("mul-comm` is not")),
+        "{:?}",
+        r.errors
+    );
 }
 
 #[test]

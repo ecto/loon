@@ -688,7 +688,8 @@ fn tutorial_may_diverge() -> Tutorial {
             },
             TutorialStep::Try {
                 prompt: "Write a total length function over a vector.".to_string(),
-                hint: "Try: [fn len [xs] [match xs #[] 0 #[_ & rest] [+ 1 [len rest]]]]".to_string(),
+                hint: "Try: [fn len [xs] [match xs #[] 0 #[_ & rest] [+ 1 [len rest]]]]"
+                    .to_string(),
                 expected_output: None,
             },
         ],

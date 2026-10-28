@@ -340,9 +340,10 @@ pub fn program_facts(exprs: &[Expr]) -> ProgramFacts {
     let mut defs: Vec<(String, &[Expr])> = Vec::new();
     for e in exprs {
         if let ExprKind::List(items) = &e.kind {
-            if let (Some(ExprKind::Symbol(h)), Some(ExprKind::Symbol(n))) =
-                (items.first().map(|x| &x.kind), items.get(1).map(|x| &x.kind))
-            {
+            if let (Some(ExprKind::Symbol(h)), Some(ExprKind::Symbol(n))) = (
+                items.first().map(|x| &x.kind),
+                items.get(1).map(|x| &x.kind),
+            ) {
                 if h == "fn" && items.len() >= 3 {
                     defs.push((n.clone(), &items[2..]));
                 }
@@ -359,7 +360,9 @@ pub fn program_facts(exprs: &[Expr]) -> ProgramFacts {
         }
         edges.insert(
             n.clone(),
-            refs.into_iter().filter(|r| names.contains(r) && r != n).collect(),
+            refs.into_iter()
+                .filter(|r| names.contains(r) && r != n)
+                .collect(),
         );
     }
     let reach = |from: &str| -> HashSet<String> {

@@ -56,8 +56,7 @@ pub fn term_eq(a: &Expr, b: &Expr) -> bool {
         }
         (Map(x), Map(y)) => {
             x.len() == y.len()
-                && x
-                    .iter()
+                && x.iter()
                     .zip(y)
                     .all(|((k1, v1), (k2, v2))| term_eq(k1, k2) && term_eq(v1, v2))
         }
@@ -144,7 +143,11 @@ pub fn pattern_vars(p: &Expr, defs: &Defs, out: &mut Vec<String>) {
 fn fn_binders(items: &[Expr]) -> Option<(usize, Vec<String>)> {
     let idx = match items.get(1).map(|e| &e.kind) {
         Some(ExprKind::List(_)) => 1,
-        Some(ExprKind::Symbol(_)) if matches!(items.get(2).map(|e| &e.kind), Some(ExprKind::List(_))) => 2,
+        Some(ExprKind::Symbol(_))
+            if matches!(items.get(2).map(|e| &e.kind), Some(ExprKind::List(_))) =>
+        {
+            2
+        }
         _ => return None,
     };
     let ExprKind::List(ps) = &items[idx].kind else {
@@ -386,7 +389,11 @@ fn normalize_plus(e: &Expr) -> Option<Expr> {
     let mut acc = terms.pop()?;
     while let Some(t) = terms.pop() {
         acc = Expr::new(
-            ExprKind::List(vec![Expr::new(ExprKind::Symbol("+".into()), e.span), t, acc]),
+            ExprKind::List(vec![
+                Expr::new(ExprKind::Symbol("+".into()), e.span),
+                t,
+                acc,
+            ]),
             e.span,
         );
     }
@@ -416,7 +423,9 @@ fn normalize_ac(e: &Expr, defs: &Defs) -> Option<Expr> {
         return normalize_plus(e);
     }
     let ac = defs.ac.iter().find(|a| a.op == h)?;
-    let ExprKind::List(items) = &e.kind else { return None };
+    let ExprKind::List(items) = &e.kind else {
+        return None;
+    };
     if items.len() != 3 {
         return None;
     }
@@ -457,12 +466,7 @@ fn instantiate(f: &FnDef, args: &[Expr], defs: &Defs, used: &mut HashSet<String>
         symbols(a, used);
     }
     let body = freshen_binders(&f.body, defs, used);
-    let map: HashMap<String, Expr> = f
-        .params
-        .iter()
-        .cloned()
-        .zip(args.iter().cloned())
-        .collect();
+    let map: HashMap<String, Expr> = f.params.iter().cloned().zip(args.iter().cloned()).collect();
     subst(&body, &map, defs)
 }
 
@@ -506,9 +510,14 @@ pub fn eval_normalize(e: &Expr, defs: &Defs, used: &mut HashSet<String>, fuel: &
         return e;
     }
     if let Some(name) = head_sym(&e) {
-        if defs.total.contains(name) && defs.fns[name].scrutinee.is_some() && is_redex(&e, name, defs) {
+        if defs.total.contains(name)
+            && defs.fns[name].scrutinee.is_some()
+            && is_redex(&e, name, defs)
+        {
             *fuel -= 1;
-            let ExprKind::List(items) = &e.kind else { unreachable!() };
+            let ExprKind::List(items) = &e.kind else {
+                unreachable!()
+            };
             let r = instantiate(&defs.fns[name], &items[1..], defs, used);
             return eval_normalize(&r, defs, used, fuel);
         }
@@ -530,7 +539,12 @@ pub fn total_fns(defs: &Defs) -> HashSet<String> {
     total
 }
 
-fn check_total(name: &str, defs: &Defs, state: &mut HashMap<String, u8>, total: &mut HashSet<String>) -> bool {
+fn check_total(
+    name: &str,
+    defs: &Defs,
+    state: &mut HashMap<String, u8>,
+    total: &mut HashSet<String>,
+) -> bool {
     match state.get(name) {
         Some(2) => return total.contains(name),
         Some(1) => return false, // mutual recursion
@@ -567,10 +581,9 @@ fn structural(f: &FnDef, name: &str, defs: &Defs) -> bool {
     // Some fixed parameter index i such that every self-call's i-th arg is a
     // strict subterm of parameter i.
     (0..f.params.len()).any(|i| {
-        calls.iter().all(|args| {
-            args.len() == f.params.len()
-                && matches!(&args[i], Some(p) if *p == i)
-        })
+        calls
+            .iter()
+            .all(|args| args.len() == f.params.len() && matches!(&args[i], Some(p) if *p == i))
     })
 }
 
@@ -598,14 +611,20 @@ fn collect_self_calls(
                     })
                     .collect(),
             );
-            items[1..].iter().all(|a| collect_self_calls(a, name, env, defs, calls))
+            items[1..]
+                .iter()
+                .all(|a| collect_self_calls(a, name, env, defs, calls))
         }
         ExprKind::List(items) if head_sym(e) == Some("match") && items.len() >= 2 => {
             if !collect_self_calls(&items[1], name, env, defs, calls) {
                 return false;
             }
             let scrut_param = match &items[1].kind {
-                ExprKind::Symbol(s) => f.params.iter().position(|p| p == s).filter(|_| !env.contains_key(s)),
+                ExprKind::Symbol(s) => f
+                    .params
+                    .iter()
+                    .position(|p| p == s)
+                    .filter(|_| !env.contains_key(s)),
                 _ => None,
             };
             // A scrutinee that is itself a tracked subterm stays tracked.
@@ -643,12 +662,19 @@ fn collect_self_calls(
             if let Some(b) = items.get(1) {
                 symbols(b, &mut bs);
             }
-            if bs.iter().any(|b| f.params.contains(b) || env.contains_key(b)) {
+            if bs
+                .iter()
+                .any(|b| f.params.contains(b) || env.contains_key(b))
+            {
                 return false;
             }
-            items.iter().all(|c| collect_self_calls(c, name, env, defs, calls))
+            items
+                .iter()
+                .all(|c| collect_self_calls(c, name, env, defs, calls))
         }
-        _ => children(e).into_iter().all(|c| collect_self_calls(c, name, env, defs, calls)),
+        _ => children(e)
+            .into_iter()
+            .all(|c| collect_self_calls(c, name, env, defs, calls)),
     }
 }
 
@@ -665,13 +691,21 @@ pub struct Rule {
 /// First-order matching. At an application of an active user AC operator
 /// the two operands are also tried swapped (matching modulo commutativity),
 /// since a pattern's variables sort by name rather than by what they bind.
-fn match_term(pat: &Expr, t: &Expr, vars: &[String], b: &mut HashMap<String, Expr>, defs: &Defs) -> bool {
+fn match_term(
+    pat: &Expr,
+    t: &Expr,
+    vars: &[String],
+    b: &mut HashMap<String, Expr>,
+    defs: &Defs,
+) -> bool {
     let saved = b.clone();
     if match_plain(pat, t, vars, b, defs) {
         return true;
     }
     *b = saved;
-    let (ExprKind::List(ps), ExprKind::List(ts)) = (&pat.kind, &t.kind) else { return false };
+    let (ExprKind::List(ps), ExprKind::List(ts)) = (&pat.kind, &t.kind) else {
+        return false;
+    };
     let is_ac = |e: &Expr| head_sym(e).is_some_and(|h| defs.ac.iter().any(|a| a.op == h));
     if ps.len() != 3 || ts.len() != 3 || !is_ac(pat) || head_sym(pat) != head_sym(t) {
         return false;
@@ -684,7 +718,13 @@ fn match_term(pat: &Expr, t: &Expr, vars: &[String], b: &mut HashMap<String, Exp
     false
 }
 
-fn match_plain(pat: &Expr, t: &Expr, vars: &[String], b: &mut HashMap<String, Expr>, defs: &Defs) -> bool {
+fn match_plain(
+    pat: &Expr,
+    t: &Expr,
+    vars: &[String],
+    b: &mut HashMap<String, Expr>,
+    defs: &Defs,
+) -> bool {
     if let ExprKind::Symbol(s) = &pat.kind {
         if vars.contains(s) {
             if let Some(prev) = b.get(s) {
@@ -707,12 +747,20 @@ fn match_plain(pat: &Expr, t: &Expr, vars: &[String], b: &mut HashMap<String, Ex
             return false;
         }
     }
-    pc.iter().zip(tc).all(|(p, x)| match_term(p, x, vars, b, defs))
+    pc.iter()
+        .zip(tc)
+        .all(|(p, x)| match_term(p, x, vars, b, defs))
 }
 
 /// Preorder walk replacing the `target`-th match of `rule`. Returns the new
 /// term if a replacement happened.
-fn rewrite_nth(t: &Expr, rule: &Rule, target: usize, seen: &mut usize, defs: &Defs) -> Option<Expr> {
+fn rewrite_nth(
+    t: &Expr,
+    rule: &Rule,
+    target: usize,
+    seen: &mut usize,
+    defs: &Defs,
+) -> Option<Expr> {
     let mut b = HashMap::new();
     if match_term(&rule.lhs, t, &rule.params, &mut b, defs) {
         if *seen == target {
@@ -754,26 +802,45 @@ pub fn rewrite(t: &Expr, rule: &Rule, at: usize, defs: &Defs) -> Result<Expr, St
 /// Replace the leftmost-outermost redex of `name` (an application whose
 /// scrutinized argument is a constructor); failing that, the leftmost-outermost
 /// application at all.
-pub fn unfold(t: &Expr, name: &str, defs: &Defs, used: &mut HashSet<String>) -> Result<Expr, String> {
+pub fn unfold(
+    t: &Expr,
+    name: &str,
+    defs: &Defs,
+    used: &mut HashSet<String>,
+) -> Result<Expr, String> {
     let f = defs
         .fns
         .get(name)
         .ok_or_else(|| format!("`{name}` is not defined in defs.oo"))?;
     if !defs.total.contains(name) {
-        return Err(format!("`{name}` is not structurally recursive; cannot unfold"));
+        return Err(format!(
+            "`{name}` is not structurally recursive; cannot unfold"
+        ));
     }
     let arity = f.params.len();
-    let is_app = |e: &Expr| matches!(&e.kind, ExprKind::List(v) if v.len() == arity + 1) && head_sym(e) == Some(name);
+    let is_app = |e: &Expr| {
+        matches!(&e.kind, ExprKind::List(v) if v.len() == arity + 1) && head_sym(e) == Some(name)
+    };
     for pred in [true, false] {
         let mut done = false;
-        let out = replace_first(t, &mut |e| {
-            let hit = if pred { is_redex(e, name, defs) } else { is_app(e) };
-            if !hit {
-                return None;
-            }
-            let ExprKind::List(items) = &e.kind else { return None };
-            Some(instantiate(f, &items[1..], defs, used))
-        }, &mut done);
+        let out = replace_first(
+            t,
+            &mut |e| {
+                let hit = if pred {
+                    is_redex(e, name, defs)
+                } else {
+                    is_app(e)
+                };
+                if !hit {
+                    return None;
+                }
+                let ExprKind::List(items) = &e.kind else {
+                    return None;
+                };
+                Some(instantiate(f, &items[1..], defs, used))
+            },
+            &mut done,
+        );
         if done {
             return Ok(out);
         }
@@ -798,7 +865,11 @@ fn replace_first(t: &Expr, f: &mut dyn FnMut(&Expr) -> Option<Expr>, done: &mut 
 pub enum Outcome {
     Proven,
     Admitted,
-    Stuck { case: String, term: String, reason: String },
+    Stuck {
+        case: String,
+        term: String,
+        reason: String,
+    },
 }
 
 /// A type as far as the kernel needs it: a head name plus argument types.
@@ -812,11 +883,17 @@ pub struct Ty {
 
 impl Ty {
     pub fn named(n: &str) -> Ty {
-        Ty { name: n.to_string(), args: vec![] }
+        Ty {
+            name: n.to_string(),
+            args: vec![],
+        }
     }
 
     pub fn app(n: &str, args: Vec<Ty>) -> Ty {
-        Ty { name: n.to_string(), args }
+        Ty {
+            name: n.to_string(),
+            args,
+        }
     }
 
     pub fn unknown() -> Ty {
@@ -838,7 +915,10 @@ pub fn field_tys(defs: &Defs, ty: &Ty, fields: &[Expr]) -> Vec<Option<Ty>> {
                 let Some(ExprKind::Symbol(h)) = v.first().map(|e| &e.kind) else {
                     return None;
                 };
-                let args = v[1..].iter().map(|a| conv(a, params, ty).unwrap_or_else(Ty::unknown)).collect();
+                let args = v[1..]
+                    .iter()
+                    .map(|a| conv(a, params, ty).unwrap_or_else(Ty::unknown))
+                    .collect();
                 Some(Ty::app(h, args))
             }
             _ => None,
@@ -853,7 +933,9 @@ pub fn field_tys(defs: &Defs, ty: &Ty, fields: &[Expr]) -> Vec<Option<Ty>> {
 fn is_self_field(f: &Expr, name: &str) -> bool {
     match &f.kind {
         ExprKind::Symbol(s) => s == name,
-        ExprKind::List(v) | ExprKind::Tuple(v) => matches!(v.first().map(|e| &e.kind), Some(ExprKind::Symbol(h)) if h == name),
+        ExprKind::List(v) | ExprKind::Tuple(v) => {
+            matches!(v.first().map(|e| &e.kind), Some(ExprKind::Symbol(h)) if h == name)
+        }
         _ => false,
     }
 }
@@ -891,7 +973,11 @@ struct State {
 }
 
 pub fn check_proof(goal: &Goal, steps: &[Expr], defs: &Defs, lemmas: &Lemmas) -> Outcome {
-    let mut ctx = Ctx { defs, lemmas, admitted: false };
+    let mut ctx = Ctx {
+        defs,
+        lemmas,
+        admitted: false,
+    };
     let st = State {
         l: normalize(goal.lhs, defs),
         r: normalize(goal.rhs, defs),
@@ -997,7 +1083,12 @@ fn run_steps(ctx: &mut Ctx, mut st: State, steps: &[Expr]) -> Result<(), Outcome
                                 _ => return Err(stuck(&st, "`:at` needs a non-negative integer")),
                             }
                         }
-                        _ => return Err(stuck(&st, format!("unknown rewrite option `{}`", items[j]))),
+                        _ => {
+                            return Err(stuck(
+                                &st,
+                                format!("unknown rewrite option `{}`", items[j]),
+                            ))
+                        }
                     }
                     j += 1;
                 }
@@ -1011,11 +1102,22 @@ fn run_steps(ctx: &mut Ctx, mut st: State, steps: &[Expr]) -> Result<(), Outcome
                     rule
                 };
                 // Rules are matched in the same canonical form as the goal.
-                let (lhs, rhs) = (normalize(&rule.lhs, ctx.defs), normalize(&rule.rhs, ctx.defs));
+                let (lhs, rhs) = (
+                    normalize(&rule.lhs, ctx.defs),
+                    normalize(&rule.rhs, ctx.defs),
+                );
                 let rule = if rev {
-                    Rule { params: rule.params, lhs: rhs, rhs: lhs }
+                    Rule {
+                        params: rule.params,
+                        lhs: rhs,
+                        rhs: lhs,
+                    }
                 } else {
-                    Rule { params: rule.params, lhs, rhs }
+                    Rule {
+                        params: rule.params,
+                        lhs,
+                        rhs,
+                    }
                 };
                 st.l = rewrite(&st.l, &rule, at, ctx.defs)
                     .map(|l| normalize(&l, ctx.defs))
@@ -1033,7 +1135,10 @@ fn run_steps(ctx: &mut Ctx, mut st: State, steps: &[Expr]) -> Result<(), Outcome
             }
             "induction" | "cases" => {
                 if i + 1 != steps.len() {
-                    return Err(stuck(&st, format!("steps after `{op}` are not allowed; put them in its cases")));
+                    return Err(stuck(
+                        &st,
+                        format!("steps after `{op}` are not allowed; put them in its cases"),
+                    ));
                 }
                 return split(ctx, st, items, op == "induction");
             }
@@ -1053,13 +1158,19 @@ fn split(ctx: &mut Ctx, st: State, items: &[Expr], induction: bool) -> Result<()
     };
     let var = var.clone();
     if induction && !st.params.contains(&var) {
-        return Err(stuck(&st, format!("`{var}` is not a law parameter of this goal")));
+        return Err(stuck(
+            &st,
+            format!("`{var}` is not a law parameter of this goal"),
+        ));
     }
     let Some(ty) = st.types.get(&var).cloned() else {
         return Err(stuck(&st, format!("type of `{var}` is not a known ADT")));
     };
     let Some(ctors) = ctx.defs.types.get(&ty.name) else {
-        return Err(stuck(&st, format!("`{}` is not an ADT declared in defs.oo", ty.name)));
+        return Err(stuck(
+            &st,
+            format!("`{}` is not an ADT declared in defs.oo", ty.name),
+        ));
     };
     let ty_name = ty.name.clone();
     if induction {
@@ -1070,7 +1181,10 @@ fn split(ctx: &mut Ctx, st: State, items: &[Expr], induction: bool) -> Result<()
             .iter()
             .find(|s| ctx.defs.fns.contains_key(s.as_str()) && !ctx.defs.total.contains(s.as_str()))
         {
-            return Err(stuck(&st, format!("induction needs total functions; `{bad}` is not structurally recursive")));
+            return Err(stuck(
+                &st,
+                format!("induction needs total functions; `{bad}` is not structurally recursive"),
+            ));
         }
     }
     let cases: Vec<&Expr> = items[2..].iter().collect();
@@ -1086,7 +1200,10 @@ fn split(ctx: &mut Ctx, st: State, items: &[Expr], induction: bool) -> Result<()
         // Fields that are structural subterms of the same ADT.
         let mut rec_fields = Vec::new();
         for (k, rec) in ctor.recursive.iter().enumerate() {
-            let is_self = ctor.fields.get(k).is_some_and(|f| is_self_field(f, &ty_name));
+            let is_self = ctor
+                .fields
+                .get(k)
+                .is_some_and(|f| is_self_field(f, &ty_name));
             let base = if *rec { "rest" } else { "x" };
             let n = fresh_name(base, &mut used);
             if let Some(Some(t)) = ftys.get(k) {
@@ -1147,12 +1264,18 @@ fn split(ctx: &mut Ctx, st: State, items: &[Expr], induction: bool) -> Result<()
             params,
             types,
             ihs,
-            case: if st.case == "root" { ctor.name.clone() } else { format!("{}/{}", st.case, ctor.name) },
+            case: if st.case == "root" {
+                ctor.name.clone()
+            } else {
+                format!("{}/{}", st.case, ctor.name)
+            },
         };
         let Some(case) = case else {
             return Err(stuck(&child, format!("missing case {}", ctor.name)));
         };
-        let ExprKind::List(cs) = &case.kind else { unreachable!() };
+        let ExprKind::List(cs) = &case.kind else {
+            unreachable!()
+        };
         run_steps(ctx, child, &cs[1..])?;
     }
     if let Some(extra) = cases.iter().find(|c| {
@@ -1160,7 +1283,10 @@ fn split(ctx: &mut Ctx, st: State, items: &[Expr], induction: bool) -> Result<()
             .iter()
             .any(|k| head_sym(c).is_some_and(|h| h.eq_ignore_ascii_case(&k.name)))
     }) {
-        return Err(stuck(&st, format!("case `{extra}` is not a constructor of {ty_name}")));
+        return Err(stuck(
+            &st,
+            format!("case `{extra}` is not a constructor of {ty_name}"),
+        ));
     }
     Ok(())
 }

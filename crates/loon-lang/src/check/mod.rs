@@ -7652,7 +7652,11 @@ mod tests {
              [fn od [n] [if [= n 0] false [ev [- n 1]]]]",
         );
         for f in ["collatz", "spin", "ev", "od"] {
-            assert!(!c.is_total(f), "{f} should be Div: {:?}", c.fn_effects.get(f));
+            assert!(
+                !c.is_total(f),
+                "{f} should be Div: {:?}",
+                c.fn_effects.get(f)
+            );
         }
     }
 

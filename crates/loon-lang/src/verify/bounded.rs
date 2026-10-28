@@ -78,14 +78,26 @@ fn mangle_children(e: &mut Expr, defs: &Defs) {
 
 /// Infer each law parameter's kind by checking `[fn [params] #[lhs rhs]]`
 /// against the evaluation prelude.
-pub fn param_kinds(prelude_src: &str, params: &[String], lhs: &Expr, rhs: &Expr, defs: &Defs) -> Vec<Kind> {
+pub fn param_kinds(
+    prelude_src: &str,
+    params: &[String],
+    lhs: &Expr,
+    rhs: &Expr,
+    defs: &Defs,
+) -> Vec<Kind> {
     // Prefer verify's own inference (generalizes top-level fns); fall back
     // to the language checker when it cannot type the law.
     if let Some(ts) = super::infer::law_param_types(defs, &defs.fn_order, params, lhs, rhs) {
-        return ts.iter().map(|t| kind_of(&super::infer::to_checker(t), defs)).collect();
+        return ts
+            .iter()
+            .map(|t| kind_of(&super::infer::to_checker(t), defs))
+            .collect();
     }
     let Ok(prefix) = crate::parser::parse(prelude_src) else {
-        return params.iter().map(|_| Kind::Unsupported("prelude parse error".into())).collect();
+        return params
+            .iter()
+            .map(|_| Kind::Unsupported("prelude parse error".into()))
+            .collect();
     };
     // Only the fns the law reaches: the checker does not generalize top-level
     // fns, so an unrelated use (`append` on instructions in `compile`) would
@@ -96,7 +108,10 @@ pub fn param_kinds(prelude_src: &str, params: &[String], lhs: &Expr, rhs: &Expr,
     let lam = list(vec![
         sym("fn"),
         list(params.iter().map(|p| sym(p)).collect()),
-        Expr::new(ExprKind::Vec(vec![mangle(lhs, defs), mangle(rhs, defs)]), Span::ZERO),
+        Expr::new(
+            ExprKind::Vec(vec![mangle(lhs, defs), mangle(rhs, defs)]),
+            Span::ZERO,
+        ),
     ]);
     // Round-trip through text so the checker sees fresh node ids and spans.
     let lam = crate::parser::parse(&format!("{lam}"))
@@ -106,7 +121,10 @@ pub fn param_kinds(prelude_src: &str, params: &[String], lhs: &Expr, rhs: &Expr,
     let ty = checker.infer(&lam);
     let ty = checker.resolve(&ty);
     let Type::Fn(ps, _, _) = ty else {
-        return params.iter().map(|_| Kind::Unsupported("could not infer types".into())).collect();
+        return params
+            .iter()
+            .map(|_| Kind::Unsupported("could not infer types".into()))
+            .collect();
     };
     let scrut: Vec<Option<String>> = params
         .iter()
@@ -140,7 +158,12 @@ fn scrutinized_adts<'a>(scrut: &'a [Option<String>], defs: &Defs) -> Vec<&'a Str
     let mut v: Vec<&String> = scrut
         .iter()
         .flatten()
-        .filter(|t| !matches!(kind_of(&Type::Con((*t).clone(), vec![]), defs), Kind::List(..)))
+        .filter(|t| {
+            !matches!(
+                kind_of(&Type::Con((*t).clone(), vec![]), defs),
+                Kind::List(..)
+            )
+        })
         .collect();
     v.sort();
     v
@@ -148,9 +171,13 @@ fn scrutinized_adts<'a>(scrut: &'a [Option<String>], defs: &Defs) -> Vec<&'a Str
 
 /// Does `p` appear as a direct argument of a reference fn application?
 fn fn_arg(p: &str, e: &Expr, defs: &Defs) -> bool {
-    let ExprKind::List(items) = &e.kind else { return false };
+    let ExprKind::List(items) = &e.kind else {
+        return false;
+    };
     if head_sym(e).is_some_and(|h| defs.fns.contains_key(h))
-        && items[1..].iter().any(|a| matches!(&a.kind, ExprKind::Symbol(s) if s == p))
+        && items[1..]
+            .iter()
+            .any(|a| matches!(&a.kind, ExprKind::Symbol(s) if s == p))
     {
         return true;
     }
@@ -199,7 +226,8 @@ fn scrutinized_type(p: &str, e: &Expr, defs: &Defs) -> Option<String> {
     if let (Some(h), ExprKind::List(items)) = (head_sym(e), &e.kind) {
         if let Some(f) = defs.fns.get(h) {
             if let Some(i) = f.scrutinee {
-                if matches!(items.get(i + 1).map(|a| &a.kind), Some(ExprKind::Symbol(s)) if s == p) {
+                if matches!(items.get(i + 1).map(|a| &a.kind), Some(ExprKind::Symbol(s)) if s == p)
+                {
                     if let ExprKind::List(m) = &f.body.kind {
                         for pat in m[2..].iter().step_by(2) {
                             let c = match &pat.kind {
@@ -234,7 +262,9 @@ fn kind_of(t: &Type, defs: &Defs) -> Kind {
         Type::Fn(ps, r, _) if ps.len() == 1 && is_intish(&ps[0]) && is_intish(r) => Kind::Fn1,
         Type::Con(name, args) if defs.types.contains_key(name) => {
             if args.iter().any(|a| !is_intish(a)) {
-                let gs: Vec<Vec<Expr>> = (0..=TYPED_MAX_SIZE).map(|n| typed_values(t, n, defs, 0)).collect();
+                let gs: Vec<Vec<Expr>> = (0..=TYPED_MAX_SIZE)
+                    .map(|n| typed_values(t, n, defs, 0))
+                    .collect();
                 if gs.iter().all(|g| g.is_empty()) {
                     return Kind::Unsupported(format!("{name} of non-Int elements"));
                 }
@@ -249,10 +279,15 @@ fn kind_of(t: &Type, defs: &Defs) -> Kind {
                 (2, Some(n), Some(c)) => Kind::List(name.clone(), n.name.clone(), c.name.clone()),
                 _ if nil.is_some() => Kind::Adt(
                     name.clone(),
-                    ctors.iter().map(|c| (c.name.clone(), c.recursive.clone())).collect(),
+                    ctors
+                        .iter()
+                        .map(|c| (c.name.clone(), c.recursive.clone()))
+                        .collect(),
                 ),
                 _ => {
-                    let gs: Vec<Vec<Expr>> = (0..=TYPED_MAX_SIZE).map(|n| typed_values(t, n, defs, 0)).collect();
+                    let gs: Vec<Vec<Expr>> = (0..=TYPED_MAX_SIZE)
+                        .map(|n| typed_values(t, n, defs, 0))
+                        .collect();
                     Kind::Typed(t.clone(), gs)
                 }
             }
@@ -272,8 +307,23 @@ pub fn typed_values(t: &Type, n: usize, defs: &Defs, depth: usize) -> Vec<Expr> 
         return vec![];
     }
     match t {
-        Type::Int | Type::Var(_) => if n == 0 { ELEMS.iter().map(|e| super::kernel::int(*e)).collect() } else { vec![] },
-        Type::Bool => if n == 0 { vec![Expr::new(ExprKind::Bool(false), Span::ZERO), Expr::new(ExprKind::Bool(true), Span::ZERO)] } else { vec![] },
+        Type::Int | Type::Var(_) => {
+            if n == 0 {
+                ELEMS.iter().map(|e| super::kernel::int(*e)).collect()
+            } else {
+                vec![]
+            }
+        }
+        Type::Bool => {
+            if n == 0 {
+                vec![
+                    Expr::new(ExprKind::Bool(false), Span::ZERO),
+                    Expr::new(ExprKind::Bool(true), Span::ZERO),
+                ]
+            } else {
+                vec![]
+            }
+        }
         Type::Con(name, args) if defs.types.contains_key(name) => {
             let params = defs.type_params.get(name).cloned().unwrap_or_default();
             fn conv(f: &Expr, params: &[String], args: &[Type]) -> Option<Type> {
@@ -287,7 +337,10 @@ pub fn typed_values(t: &Type, n: usize, defs: &Defs, depth: usize) -> Vec<Expr> 
                     ExprKind::List(v) | ExprKind::Tuple(v) => match v.first().map(|e| &e.kind) {
                         Some(ExprKind::Symbol(h)) => Some(Type::Con(
                             h.clone(),
-                            v[1..].iter().map(|a| conv(a, params, args)).collect::<Option<Vec<_>>>()?,
+                            v[1..]
+                                .iter()
+                                .map(|a| conv(a, params, args))
+                                .collect::<Option<Vec<_>>>()?,
                         )),
                         _ => None,
                     },
@@ -305,7 +358,12 @@ pub fn typed_values(t: &Type, n: usize, defs: &Defs, depth: usize) -> Vec<Expr> 
                 if n == 0 {
                     continue;
                 }
-                let Some(ftys) = c.fields.iter().map(|f| conv(f, &params, args)).collect::<Option<Vec<_>>>() else {
+                let Some(ftys) = c
+                    .fields
+                    .iter()
+                    .map(|f| conv(f, &params, args))
+                    .collect::<Option<Vec<_>>>()
+                else {
                     continue;
                 };
                 // Distribute n-1 over the fields, in field order.
@@ -314,7 +372,11 @@ pub fn typed_values(t: &Type, n: usize, defs: &Defs, depth: usize) -> Vec<Expr> 
                     let last = fi + 1 == ftys.len();
                     let mut next = Vec::new();
                     'outer: for (vals, left) in &partial {
-                        let sizes: Vec<usize> = if last { vec![*left] } else { (0..=*left).collect() };
+                        let sizes: Vec<usize> = if last {
+                            vec![*left]
+                        } else {
+                            (0..=*left).collect()
+                        };
                         for sz in sizes {
                             for v in typed_values(ft, sz, defs, depth + 1) {
                                 let mut v2 = vals.clone();
@@ -385,7 +447,11 @@ fn groups(kind: &Kind, bound: usize, rng: &mut u64) -> Vec<Vec<Expr>> {
                         let mut nl = Vec::new();
                         for (c, left) in combos.iter().zip(&left_opts) {
                             if *rec {
-                                let sizes: Vec<usize> = if last_rec { vec![*left] } else { (1..=*left).collect() };
+                                let sizes: Vec<usize> = if last_rec {
+                                    vec![*left]
+                                } else {
+                                    (1..=*left).collect()
+                                };
                                 for s in sizes {
                                     for v in by_size.get(s).into_iter().flatten() {
                                         let mut c2 = c.clone();
@@ -430,7 +496,11 @@ fn groups(kind: &Kind, bound: usize, rng: &mut u64) -> Vec<Vec<Expr>> {
             out.push(vec![super::kernel::int(0)]);
             for k in 1..=bound as i64 {
                 let r = (splitmix(rng) % 41) as i64 - 20;
-                out.push(vec![super::kernel::int(k), super::kernel::int(-k), super::kernel::int(r)]);
+                out.push(vec![
+                    super::kernel::int(k),
+                    super::kernel::int(-k),
+                    super::kernel::int(r),
+                ]);
             }
         }
         Kind::Bool => {
@@ -480,7 +550,13 @@ fn inputs(kinds: &[Kind], bound: usize, seed: u64) -> Vec<Vec<Expr>> {
     out
 }
 
-fn compositions(gs: &[Vec<Vec<Expr>>], left: usize, i: usize, sizes: &mut Vec<usize>, f: &mut dyn FnMut(&[usize])) {
+fn compositions(
+    gs: &[Vec<Vec<Expr>>],
+    left: usize,
+    i: usize,
+    sizes: &mut Vec<usize>,
+    f: &mut dyn FnMut(&[usize]),
+) {
     if i == gs.len() {
         if left == 0 {
             f(sizes);
@@ -493,7 +569,13 @@ fn compositions(gs: &[Vec<Vec<Expr>>], left: usize, i: usize, sizes: &mut Vec<us
     }
 }
 
-fn product(gs: &[Vec<Vec<Expr>>], sizes: &[usize], i: usize, cur: &mut Vec<Expr>, out: &mut Vec<Vec<Expr>>) {
+fn product(
+    gs: &[Vec<Vec<Expr>>],
+    sizes: &[usize],
+    i: usize,
+    cur: &mut Vec<Expr>,
+    out: &mut Vec<Vec<Expr>>,
+) {
     if out.len() >= MAX_INPUTS {
         return;
     }
@@ -520,7 +602,11 @@ pub fn check_law(
     bound: usize,
     seed: u64,
 ) -> Bounded {
-    if let Some((p, Kind::Unsupported(why))) = params.iter().zip(kinds).find(|(_, k)| matches!(k, Kind::Unsupported(_))) {
+    if let Some((p, Kind::Unsupported(why))) = params
+        .iter()
+        .zip(kinds)
+        .find(|(_, k)| matches!(k, Kind::Unsupported(_)))
+    {
         return Bounded {
             error: Some(format!("cannot generate `{p}`: {why}")),
             ..Default::default()
@@ -537,7 +623,8 @@ pub fn check_law(
         let name = format!("__law-chunk-{ci}");
         src.push_str(&format!("\n[fn {name} [] [str"));
         for input in chunk {
-            let m: HashMap<String, Expr> = params.iter().cloned().zip(input.iter().cloned()).collect();
+            let m: HashMap<String, Expr> =
+                params.iter().cloned().zip(input.iter().cloned()).collect();
             src.push_str(&format!(
                 "\n  {} \"|\" {} \"|\"",
                 subst(&ml, &m, defs),
@@ -553,7 +640,8 @@ pub fn check_law(
     }
     src.push_str("]]\n");
     let run = || -> Result<String, crate::eir::vm::VmError> {
-        let mut sess = crate::eir::vm::Session::new(&src, std::path::Path::new("."), Default::default())?;
+        let mut sess =
+            crate::eir::vm::Session::new(&src, std::path::Path::new("."), Default::default())?;
         sess.start()?;
         Ok(sess.show(sess.value()))
     };
@@ -570,7 +658,11 @@ pub fn check_law(
     let lines = &lines[..lines.len().saturating_sub(1)];
     if lines.len() != ins.len() * 2 {
         return Bounded {
-            error: Some(format!("expected {} values, got {}", ins.len() * 2, lines.len())),
+            error: Some(format!(
+                "expected {} values, got {}",
+                ins.len() * 2,
+                lines.len()
+            )),
             ..Default::default()
         };
     }
@@ -579,7 +671,11 @@ pub fn check_law(
         if l != r {
             return Bounded {
                 checked: i + 1,
-                counterexample: Some((params.iter().cloned().zip(input.iter().cloned()).collect(), l.clone(), r.clone())),
+                counterexample: Some((
+                    params.iter().cloned().zip(input.iter().cloned()).collect(),
+                    l.clone(),
+                    r.clone(),
+                )),
                 error: None,
             };
         }
@@ -597,7 +693,9 @@ pub fn to_json(e: &Expr, defs: &Defs) -> serde_json::Value {
     match &e.kind {
         ExprKind::Int(n) => J::from(*n),
         ExprKind::Bool(b) => J::Bool(*b),
-        ExprKind::Symbol(s) if defs.is_ctor(s) && is_nil(s, defs) && is_list_type(s, defs) => J::Array(vec![]),
+        ExprKind::Symbol(s) if defs.is_ctor(s) && is_nil(s, defs) && is_list_type(s, defs) => {
+            J::Array(vec![])
+        }
         ExprKind::Vec(v) => J::Array(v.iter().map(|x| to_json(x, defs)).collect()),
         ExprKind::List(v) if v.len() == 3 && head_sym(e).is_some_and(|h| is_cons(h, defs)) => {
             let mut arr = vec![to_json(&v[1], defs)];
@@ -616,12 +714,17 @@ fn is_list_type(ctor: &str, defs: &Defs) -> bool {
     defs.types.values().any(|cs| {
         cs.iter().any(|c| c.name == ctor)
             && cs.len() == 2
-            && cs.iter().any(|c| c.recursive.len() == 2 && !c.recursive[0] && c.recursive[1])
+            && cs
+                .iter()
+                .any(|c| c.recursive.len() == 2 && !c.recursive[0] && c.recursive[1])
     })
 }
 
 fn is_nil(s: &str, defs: &Defs) -> bool {
-    defs.types.values().flatten().any(|c| c.name == s && c.recursive.is_empty())
+    defs.types
+        .values()
+        .flatten()
+        .any(|c| c.name == s && c.recursive.is_empty())
 }
 
 fn is_cons(s: &str, defs: &Defs) -> bool {

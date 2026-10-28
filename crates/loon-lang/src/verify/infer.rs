@@ -92,7 +92,11 @@ impl Inf<'_> {
         let params = self.defs.type_params.get(&ty).cloned().unwrap_or_default();
         let inst: Vec<T> = params.iter().map(|_| self.fresh()).collect();
         let info = self.defs.types[&ty].iter().find(|k| k.name == c)?.clone();
-        let fields = info.fields.iter().map(|f| self.field(f, &params, &inst)).collect::<Option<Vec<_>>>()?;
+        let fields = info
+            .fields
+            .iter()
+            .map(|f| self.field(f, &params, &inst))
+            .collect::<Option<Vec<_>>>()?;
         Some((fields, T::Con(ty, inst)))
     }
 
@@ -103,8 +107,13 @@ impl Inf<'_> {
                 None => T::Con(s.clone(), vec![]),
             }),
             ExprKind::List(v) | ExprKind::Tuple(v) => {
-                let Some(ExprKind::Symbol(h)) = v.first().map(|e| &e.kind) else { return None };
-                let args = v[1..].iter().map(|a| self.field(a, params, inst)).collect::<Option<Vec<_>>>()?;
+                let Some(ExprKind::Symbol(h)) = v.first().map(|e| &e.kind) else {
+                    return None;
+                };
+                let args = v[1..]
+                    .iter()
+                    .map(|a| self.field(a, params, inst))
+                    .collect::<Option<Vec<_>>>()?;
                 Some(T::Con(h.clone(), args))
             }
             _ => None,
@@ -142,7 +151,12 @@ impl Inf<'_> {
         }
     }
 
-    fn expr(&mut self, e: &Expr, env: &HashMap<String, T>, current: Option<(&str, &T)>) -> Option<T> {
+    fn expr(
+        &mut self,
+        e: &Expr,
+        env: &HashMap<String, T>,
+        current: Option<(&str, &T)>,
+    ) -> Option<T> {
         let int = T::Con("Int".into(), vec![]);
         match &e.kind {
             ExprKind::Int(_) => Some(int),
@@ -179,14 +193,18 @@ impl Inf<'_> {
                         Some(out)
                     }
                     Some("fn") => {
-                        let ExprKind::List(ps) = &items.get(1)?.kind else { return None };
+                        let ExprKind::List(ps) = &items.get(1)?.kind else {
+                            return None;
+                        };
                         if items.len() != 3 {
                             return None;
                         }
                         let mut inner = env.clone();
                         let mut pts = Vec::new();
                         for p in ps {
-                            let ExprKind::Symbol(s) = &p.kind else { return None };
+                            let ExprKind::Symbol(s) = &p.kind else {
+                                return None;
+                            };
                             let t = self.fresh();
                             inner.insert(s.clone(), t.clone());
                             pts.push(t);
@@ -249,10 +267,22 @@ impl Inf<'_> {
 
 /// Infer the types of `params` in the law `lhs = rhs`. `fn_order` lists the
 /// reference fns in definition order. `None` if anything fails to type.
-pub fn law_param_types(defs: &Defs, fn_order: &[String], params: &[String], lhs: &Expr, rhs: &Expr) -> Option<Vec<T>> {
-    let mut inf = Inf { defs, subst: Vec::new(), schemes: HashMap::new() };
+pub fn law_param_types(
+    defs: &Defs,
+    fn_order: &[String],
+    params: &[String],
+    lhs: &Expr,
+    rhs: &Expr,
+) -> Option<Vec<T>> {
+    let mut inf = Inf {
+        defs,
+        subst: Vec::new(),
+        schemes: HashMap::new(),
+    };
     for name in fn_order {
-        let Some(f) = defs.fns.get(name) else { continue };
+        let Some(f) = defs.fns.get(name) else {
+            continue;
+        };
         let mut env = HashMap::new();
         let mut pts = Vec::new();
         for p in &f.params {
@@ -263,7 +293,9 @@ pub fn law_param_types(defs: &Defs, fn_order: &[String], params: &[String], lhs:
         let r = inf.fresh();
         pts.push(r.clone());
         let ft = T::Con(ARROW.into(), pts);
-        let Some(bt) = inf.expr(&f.body, &env, Some((name, &ft))) else { continue };
+        let Some(bt) = inf.expr(&f.body, &env, Some((name, &ft))) else {
+            continue;
+        };
         if inf.unify(&bt, &r).is_none() {
             continue;
         }
