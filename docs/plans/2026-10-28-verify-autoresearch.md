@@ -175,6 +175,46 @@ Semantics, per goal `[= L R]`:
   *earlier in dependency order*. Citing an `admitted` law makes the citing
   proof `admitted`. Cycles are rejected.
 
+Conditional laws (hypotheses):
+
+```
+law      := [law NAME [PARAMS...] [= L R]]
+          | [law NAME [PARAMS...] :given [[= A1 B1] [= A2 B2] ...] [= L R]]
+RULE     := ...
+          | hN                         ; the law's own N-th hypothesis (1-based)
+          | hN.K                       ; K-th constructor component of hN (also hN.K.J)
+```
+
+Reads "for all PARAMS, A1 = B1 ∧ ... → L = R". Rules:
+
+- Inside the law's own proof, `hN` is a ground rewrite rule: its free
+  symbols are the law's params as fixed values, never pattern variables, so
+  `[= [f xs] ys]` rewrites exactly `[f xs]`. `induction`/`cases`
+  substitute into hypotheses exactly as into the goal. `hN` is cited only in
+  its own proof; elsewhere `hN` is "no hypothesis in scope". Stuck reports
+  list hypotheses in scope.
+- Constructor injectivity: if `hN`'s sides, evaluation-normalized, are the
+  same constructor with the same arity, its K-th argument pair is `hN.K`
+  (recursively). Distinct constructors yield nothing (no ex falso yet).
+- Citing a conditional law (or the `ih` of one) matches its LHS as usual;
+  each hypothesis instantiated under the match is an obligation `[= A B]`
+  discharged on the spot by, in order: (a) both sides evaluation-normalize
+  to the same term; (b) it is an instance of an in-scope `hN`/`hN.K`,
+  either orientation; (c) it is an instance of an already-settled
+  unconditional law, either orientation (an admitted one taints). Params
+  the LHS leaves unbound may be bound only by (b); still unbound in the RHS
+  is an error. Otherwise the step is stuck with the obligation printed.
+  No nested proof blocks for obligations in this rung, and (c) only uses
+  laws already settled when the citing proof runs (it adds no dependency
+  edge), and never conditional ones.
+- Induction on a conditional law: `ih` is the whole law at the recursive
+  field, hypotheses generalized over the other params together with the
+  conclusion; they become obligations wherever `ih` is cited.
+- Bounded evaluation skips inputs that violate a hypothesis and counts them
+  as `inputs_vacuous`; only inputs satisfying every hypothesis can falsify.
+  If every input is vacuous the law is `unknown` with a note and is not
+  sent to the kernel: never proven by vacuity.
+
 AC declarations (a top-level form in `laws/*.oo`):
 
 ```

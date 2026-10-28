@@ -40,6 +40,8 @@ pub struct Bounded {
     /// (assignment, lhs value, rhs value)
     pub counterexample: Option<(Vec<(String, Expr)>, String, String)>,
     pub error: Option<String>,
+    /// Inputs skipped because they violate a hypothesis.
+    pub vacuous: usize,
 }
 
 /// Rename reference fns to `vref-NAME`, and `builtin-NAME` to `NAME`.
@@ -81,13 +83,15 @@ fn mangle_children(e: &mut Expr, defs: &Defs) {
 pub fn param_kinds(
     prelude_src: &str,
     params: &[String],
-    lhs: &Expr,
-    rhs: &Expr,
+    eqs: &[(&Expr, &Expr)],
     defs: &Defs,
 ) -> Vec<Kind> {
+    // `eqs[0]` is the conclusion; any further equations are hypotheses.
+    let (lhs, rhs) = eqs[0];
     // Prefer verify's own inference (generalizes top-level fns); fall back
-    // to the language checker when it cannot type the law.
-    if let Some(ts) = super::infer::law_param_types(defs, &defs.fn_order, params, lhs, rhs) {
+    // to the language checker when it cannot type the law (which then sees
+    // only the conclusion).
+    if let Some(ts) = super::infer::law_param_types_eqs(defs, &defs.fn_order, params, eqs) {
         return ts
             .iter()
             .map(|t| kind_of(&super::infer::to_checker(t), defs))
@@ -598,6 +602,7 @@ pub fn check_law(
     kinds: &[Kind],
     lhs: &Expr,
     rhs: &Expr,
+    hyps: &[(Expr, Expr)],
     defs: &Defs,
     bound: usize,
     seed: u64,
@@ -614,6 +619,13 @@ pub fn check_law(
     }
     let ins = inputs(kinds, bound, seed);
     let (ml, mr) = (mangle(lhs, defs), mangle(rhs, defs));
+    // Per input: each hypothesis's two sides, then the conclusion's.
+    let mut pairs: Vec<(Expr, Expr)> = hyps
+        .iter()
+        .map(|(a, b)| (mangle(a, defs), mangle(b, defs)))
+        .collect();
+    pairs.push((ml, mr));
+    let width = pairs.len() * 2;
     // Each chunk returns its printed values joined by `|` (values here are
     // ints, bools, vectors and ADTs, none of which print a `|`). The result
     // comes back as main's value, so nothing is written to stdout.
@@ -625,11 +637,13 @@ pub fn check_law(
         for input in chunk {
             let m: HashMap<String, Expr> =
                 params.iter().cloned().zip(input.iter().cloned()).collect();
-            src.push_str(&format!(
-                "\n  {} \"|\" {} \"|\"",
-                subst(&ml, &m, defs),
-                subst(&mr, &m, defs)
-            ));
+            for (a, b) in &pairs {
+                src.push_str(&format!(
+                    "\n  {} \"|\" {} \"|\"",
+                    subst(a, &m, defs),
+                    subst(b, &m, defs)
+                ));
+            }
         }
         src.push_str("]]");
         chunk_names.push(name);
@@ -656,32 +670,42 @@ pub fn check_law(
     };
     let lines: Vec<String> = out.split('|').map(str::to_string).collect();
     let lines = &lines[..lines.len().saturating_sub(1)];
-    if lines.len() != ins.len() * 2 {
+    if lines.len() != ins.len() * width {
         return Bounded {
             error: Some(format!(
                 "expected {} values, got {}",
-                ins.len() * 2,
+                ins.len() * width,
                 lines.len()
             )),
             ..Default::default()
         };
     }
+    // An input violating a hypothesis is vacuous: skipped, counted apart.
+    let (mut checked, mut vacuous) = (0, 0);
     for (i, input) in ins.iter().enumerate() {
-        let (l, r) = (&lines[2 * i], &lines[2 * i + 1]);
+        let vals = &lines[width * i..width * (i + 1)];
+        if vals[..width - 2].chunks(2).any(|p| p[0] != p[1]) {
+            vacuous += 1;
+            continue;
+        }
+        checked += 1;
+        let (l, r) = (&vals[width - 2], &vals[width - 1]);
         if l != r {
             return Bounded {
-                checked: i + 1,
+                checked,
                 counterexample: Some((
                     params.iter().cloned().zip(input.iter().cloned()).collect(),
                     l.clone(),
                     r.clone(),
                 )),
                 error: None,
+                vacuous,
             };
         }
     }
     Bounded {
-        checked: ins.len(),
+        checked,
+        vacuous,
         ..Default::default()
     }
 }

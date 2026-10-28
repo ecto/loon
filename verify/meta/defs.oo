@@ -1,0 +1,177 @@
+; Meta-model of the proof kernel's term language (rung 2 of
+; docs/plans/2026-10-28-self-verifying-kernel.md). Frozen: its hash is in
+; every report. First-order terms only: no binders, so substitution is
+; capture-free by construction.
+;
+; Conventions forced by the kernel and the VM (see verify/defs.oo):
+; one constructor pattern level per `match` (the VM does not bind variables
+; in nested constructor patterns), so pairs and wrappers are taken apart by
+; an inner `match`.
+
+[type List T [Cons T (List T)] Nil]
+[type Nat [S Nat] Z]
+[type B T F]
+[type Pair X Y [Pair X Y]]
+[type Option X [Some X] None]
+
+; Symbols are naturals.
+[type Sym [Sym Nat]]
+
+; Variable, constructor application, function application.
+[type Term [V Sym] [C Sym (List Term)] [A Sym (List Term)]]
+
+; A substitution is an association list; the first binding of a symbol wins.
+[type Subst [Subst (List (Pair Sym Term))]]
+
+[fn if-b [b u w]
+  [match b
+    T u
+    F w]]
+
+[fn and-b [a b]
+  [match a
+    T b
+    F F]]
+
+[fn nat-eq [m n]
+  [match m
+    Z     [match n
+            Z     T
+            [S b] F]
+    [S a] [match n
+            Z     F
+            [S b] [nat-eq a b]]]]
+
+[fn sym-eq [a b]
+  [match a
+    [Sym m] [match b
+              [Sym n] [nat-eq m n]]]]
+
+[fn append [xs ys]
+  [match xs
+    Nil           ys
+    [Cons x rest] [Cons x [append rest ys]]]]
+
+; The binding of `x` in `bs`, if any.
+[fn lookup [x bs]
+  [match bs
+    Nil           None
+    [Cons p rest] [match p
+                    [Pair y u] [if-b [sym-eq x y] [Some u] [lookup x rest]]]]]
+
+; `lookup` with the variable itself as the default: what `subst` does at a
+; variable. A separate fn so that `subst` never matches on an Option.
+[fn apply-var [x bs]
+  [match bs
+    Nil           [V x]
+    [Cons p rest] [match p
+                    [Pair y u] [if-b [sym-eq x y] u [apply-var x rest]]]]]
+
+; Substitution, by nested structural recursion through the (List Term)
+; field: `subst` and `subst-list` are one mutually recursive group.
+[fn subst [t s]
+  [match t
+    [V x]    [match s
+               [Subst bs] [apply-var x bs]]
+    [C f ts] [C f [subst-list ts s]]
+    [A f ts] [A f [subst-list ts s]]]]
+
+[fn subst-list [ts s]
+  [match ts
+    Nil           Nil
+    [Cons t rest] [Cons [subst t s] [subst-list rest s]]]]
+
+; Apply `s` to every right-hand side of `bs`.
+[fn map-rhs [bs s]
+  [match bs
+    Nil           Nil
+    [Cons p rest] [match p
+                    [Pair y u] [Cons [Pair y [subst u s]] [map-rhs rest s]]]]]
+
+; compose s1 s2 = s2 after s1: s1's bindings with s2 applied, then all of
+; s2's (shadowed where s1 already binds the symbol).
+[fn compose [s1 s2]
+  [match s1
+    [Subst bs1] [match s2
+                  [Subst bs2] [Subst [append [map-rhs bs1 s2] bs2]]]]]
+
+; Structural term equality.
+[fn term-eq [a b]
+  [match a
+    [V x]    [match b
+               [V y]    [sym-eq x y]
+               [C g us] F
+               [A g us] F]
+    [C f ts] [match b
+               [V y]    F
+               [C g us] [and-b [sym-eq f g] [terms-eq ts us]]
+               [A g us] F]
+    [A f ts] [match b
+               [V y]    F
+               [C g us] F
+               [A g us] [and-b [sym-eq f g] [terms-eq ts us]]]]]
+
+[fn terms-eq [ts us]
+  [match ts
+    Nil           [match us
+                    Nil         T
+                    [Cons u ur] F]
+    [Cons t rest] [match us
+                    Nil         F
+                    [Cons u ur] [and-b [term-eq t u] [terms-eq rest ur]]]]]
+
+; Add x := u to bs, failing if bs binds x to something else.
+[fn add-binding [x u bs]
+  [match [lookup x bs]
+    None     [Some [Cons [Pair x u] bs]]
+    [Some w] [if-b [term-eq u w] [Some bs] None]]]
+
+; Consistent union of two binding lists.
+[fn union [bs1 bs2]
+  [match bs1
+    Nil           [Some bs2]
+    [Cons p rest] [match p
+                    [Pair x u] [match [union rest bs2]
+                                 None     None
+                                 [Some r] [add-binding x u r]]]]]
+
+[fn merge [o1 o2]
+  [match o1
+    None      None
+    [Some s1] [match o2
+                None      None
+                [Some s2] [match s1
+                            [Subst b1] [match s2
+                                         [Subst b2] [match [union b1 b2]
+                                                      None     None
+                                                      [Some b] [Some [Subst b]]]]]]]]
+
+; First-order matching of pattern `p` against `t`. A repeated pattern
+; variable must match equal terms (non-linear patterns are supported).
+[fn matcht [p t]
+  [match p
+    [V x]    [Some [Subst [Cons [Pair x t] Nil]]]
+    [C f ps] [match t
+               [V y]    None
+               [C g ts] [if-b [sym-eq f g] [match-list ps ts] None]
+               [A g ts] None]
+    [A f ps] [match t
+               [V y]    None
+               [C g ts] None
+               [A g ts] [if-b [sym-eq f g] [match-list ps ts] None]]]]
+
+[fn match-list [ps ts]
+  [match ps
+    Nil         [match ts
+                  Nil         [Some [Subst Nil]]
+                  [Cons u ur] None]
+    [Cons q qs] [match ts
+                  Nil         None
+                  [Cons u ur] [merge [matcht q u] [match-list qs ur]]]]]
+
+; Match soundness stated without hypotheses: substituting the match result
+; back into the pattern gives the term; on failure, the term itself.
+[fn apply-match [p t]
+  [match [matcht p t]
+    [Some s] [subst p s]
+    None     t]]

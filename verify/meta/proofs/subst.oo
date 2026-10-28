@@ -1,0 +1,64 @@
+; Proof objects for verify/meta/laws/subst.oo.
+
+[proof nat-eq-refl
+  [induction n
+    [Z]
+    [S [unfold nat-eq] [rewrite ih]]]]
+
+[proof sym-eq-refl
+  [cases x
+    [Sym [unfold sym-eq] [rewrite nat-eq-refl]]]]
+
+[proof subst-if
+  [cases b
+    [T]
+    [F]]]
+
+; Nested induction: a Term's arguments are a (List Term), so the term law
+; and the list law are proven together. In the C and A cases `ih-rest` is
+; the list law at the argument list; in the Cons case `ih-x` is the term law
+; at the head and `ih-rest` the list law at the tail.
+[proof subst-empty :mutual subst-list-empty
+  [induction t
+    [V]
+    [C [unfold subst] [rewrite ih-rest]]
+    [A [unfold subst] [rewrite ih-rest]]]]
+
+[proof subst-list-empty :mutual subst-empty
+  [induction ts
+    [Nil]
+    [Cons [unfold subst-list] [rewrite ih-x] [rewrite ih-rest]]]]
+
+[proof subst-apply-var
+  [induction bs1
+    [Nil]
+    [Cons [cases x1
+            [Pair [unfold apply-var] [rewrite subst-if] [rewrite ih]]]]]]
+
+[proof subst-compose :mutual subst-list-compose
+  [induction t
+    [V [cases s1
+         [Subst [cases s2
+                  [Subst [unfold subst] [rewrite subst-apply-var]]]]]]
+    [C [unfold subst] [unfold subst] [rewrite ih-rest]]
+    [A [unfold subst] [unfold subst] [rewrite ih-rest]]]]
+
+[proof subst-list-compose :mutual subst-compose
+  [induction ts
+    [Nil]
+    [Cons [unfold subst-list] [unfold subst-list] [rewrite ih-x] [rewrite ih-rest]]]]
+
+[proof apply-match-var
+  [unfold apply-match] [unfold matcht] [unfold subst] [unfold apply-var]
+  [rewrite sym-eq-refl]]
+
+; Out of reach this rung (see the plan doc): after the constructor test the
+; goal needs "sym-eq f g = T implies f = g" and "match-list ps ts = Some s
+; implies subst-list ps s = ts", both implications, which need `:given`
+; hypotheses plus case analysis on a non-variable scrutinee.
+[proof apply-match
+  [induction p
+    [V [unfold apply-match] [unfold matcht] [unfold subst] [unfold apply-var]
+       [rewrite sym-eq-refl]]
+    [C [unfold apply-match] [unfold matcht] [cases t [V] [C] [A]]]
+    [A [unfold apply-match] [unfold matcht] [cases t [V] [C] [A]]]]]

@@ -1,0 +1,21 @@
+; Conditional laws: `:given` hypotheses over the law's params.
+
+[law cons-inj [x xs ys]
+  :given [[= [Cons x xs] [Cons x ys]]]
+  [= xs ys]]
+
+[law append-cancel-left [xs ys zs]
+  :given [[= [append xs ys] [append xs zs]]]
+  [= ys zs]]
+
+[law rev-inj [xs ys]
+  :given [[= [reverse xs] [reverse ys]]]
+  [= xs ys]]
+
+[law rev-inj-append [xs ys zs]
+  :given [[= [reverse xs] [reverse ys]]]
+  [= [append xs zs] [append ys zs]]]
+
+[law add-cancel-left [m n p]
+  :given [[= [add m n] [add m p]]]
+  [= n p]]

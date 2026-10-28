@@ -155,7 +155,7 @@ impl Inf<'_> {
         &mut self,
         e: &Expr,
         env: &HashMap<String, T>,
-        current: Option<(&str, &T)>,
+        current: &HashMap<String, T>,
     ) -> Option<T> {
         let int = T::Con("Int".into(), vec![]);
         match &e.kind {
@@ -165,10 +165,8 @@ impl Inf<'_> {
                 if let Some(t) = env.get(s) {
                     return Some(t.clone());
                 }
-                if let Some((n, t)) = current {
-                    if n == s {
-                        return Some(t.clone());
-                    }
+                if let Some(t) = current.get(s) {
+                    return Some(t.clone());
                 }
                 if self.defs.is_ctor(s) {
                     let (fs, r) = self.ctor(s)?;
@@ -274,42 +272,67 @@ pub fn law_param_types(
     lhs: &Expr,
     rhs: &Expr,
 ) -> Option<Vec<T>> {
+    law_param_types_eqs(defs, fn_order, params, &[(lhs, rhs)])
+}
+
+/// `law_param_types` for a law with hypotheses: every equation (conclusion
+/// and `:given` hypotheses) is typed in one environment, both sides unified.
+pub fn law_param_types_eqs(
+    defs: &Defs,
+    fn_order: &[String],
+    params: &[String],
+    eqs: &[(&Expr, &Expr)],
+) -> Option<Vec<T>> {
     let mut inf = Inf {
         defs,
         subst: Vec::new(),
         schemes: HashMap::new(),
     };
-    for name in fn_order {
-        let Some(f) = defs.fns.get(name) else {
-            continue;
-        };
-        let mut env = HashMap::new();
-        let mut pts = Vec::new();
-        for p in &f.params {
-            let t = inf.fresh();
-            env.insert(p.clone(), t.clone());
-            pts.push(t);
+    // Mutually recursive groups (callees first) are typed together: every
+    // member is monomorphic inside the group and generalized after it. A
+    // group with a member that fails to type gets no schemes.
+    for group in super::kernel::fn_sccs(defs, fn_order) {
+        let mut current: HashMap<String, T> = HashMap::new();
+        let mut sigs = Vec::new();
+        for name in &group {
+            let f = &defs.fns[name];
+            let mut env = HashMap::new();
+            let mut pts = Vec::new();
+            for p in &f.params {
+                let t = inf.fresh();
+                env.insert(p.clone(), t.clone());
+                pts.push(t);
+            }
+            let r = inf.fresh();
+            pts.push(r.clone());
+            let ft = T::Con(ARROW.into(), pts);
+            current.insert(name.clone(), ft.clone());
+            sigs.push((name, env, r, ft));
         }
-        let r = inf.fresh();
-        pts.push(r.clone());
-        let ft = T::Con(ARROW.into(), pts);
-        let Some(bt) = inf.expr(&f.body, &env, Some((name, &ft))) else {
-            continue;
-        };
-        if inf.unify(&bt, &r).is_none() {
+        let ok = sigs.iter().all(|(name, env, r, _)| {
+            inf.expr(&defs.fns[*name].body, env, &current)
+                .and_then(|bt| inf.unify(&bt, r))
+                .is_some()
+        });
+        if !ok {
             continue;
         }
-        let sc = inf.generalize(&ft);
-        inf.schemes.insert(name.clone(), sc);
+        for (name, _, _, ft) in &sigs {
+            let sc = inf.generalize(ft);
+            inf.schemes.insert((*name).clone(), sc);
+        }
     }
     let mut env = HashMap::new();
     let pts: Vec<T> = params.iter().map(|_| inf.fresh()).collect();
     for (p, t) in params.iter().zip(&pts) {
         env.insert(p.clone(), t.clone());
     }
-    let l = inf.expr(lhs, &env, None)?;
-    let r = inf.expr(rhs, &env, None)?;
-    inf.unify(&l, &r)?;
+    for (lhs, rhs) in eqs {
+        let l = inf.expr(lhs, &env, &HashMap::new())?;
+        let r = inf.expr(rhs, &env, &HashMap::new())?;
+        inf.unify(&l, &r)?;
+    }
+
     Some(pts.iter().map(|t| inf.resolve(t)).collect())
 }
 

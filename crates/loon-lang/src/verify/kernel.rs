@@ -527,82 +527,200 @@ pub fn eval_normalize(e: &Expr, defs: &Defs, used: &mut HashSet<String>, fuel: &
 
 // ─── Totality (structural recursion) ───────────────────────────────────────
 
-/// Compute the set of total functions: structurally recursive on one fixed
-/// parameter, calling only total definitions, with no mutual recursion.
+/// Fns of defs.oo mentioned in `f`'s body (other than names its params shadow).
+fn callees(f: &FnDef, defs: &Defs) -> Vec<String> {
+    let mut s = HashSet::new();
+    symbols(&f.body, &mut s);
+    let mut v: Vec<String> = s
+        .into_iter()
+        .filter(|c| defs.fns.contains_key(c) && !f.params.contains(c))
+        .collect();
+    v.sort();
+    v
+}
+
+/// Strongly connected components of the call graph of defs.oo, callees
+/// first (Tarjan). Members of a component are listed in `order` order.
+pub fn fn_sccs(defs: &Defs, order: &[String]) -> Vec<Vec<String>> {
+    struct T<'a> {
+        defs: &'a Defs,
+        index: HashMap<String, usize>,
+        low: HashMap<String, usize>,
+        stack: Vec<String>,
+        on: HashSet<String>,
+        out: Vec<Vec<String>>,
+    }
+    fn visit(t: &mut T, v: &str) {
+        let i = t.index.len();
+        t.index.insert(v.to_string(), i);
+        t.low.insert(v.to_string(), i);
+        t.stack.push(v.to_string());
+        t.on.insert(v.to_string());
+        for w in callees(&t.defs.fns[v], t.defs) {
+            if !t.index.contains_key(&w) {
+                visit(t, &w);
+                let lw = t.low[&w];
+                let lv = t.low.get_mut(v).unwrap();
+                *lv = (*lv).min(lw);
+            } else if t.on.contains(&w) {
+                let iw = t.index[&w];
+                let lv = t.low.get_mut(v).unwrap();
+                *lv = (*lv).min(iw);
+            }
+        }
+        if t.low[v] == t.index[v] {
+            let mut comp = Vec::new();
+            while let Some(w) = t.stack.pop() {
+                t.on.remove(&w);
+                let done = w == v;
+                comp.push(w);
+                if done {
+                    break;
+                }
+            }
+            t.out.push(comp);
+        }
+    }
+    let mut t = T {
+        defs,
+        index: HashMap::new(),
+        low: HashMap::new(),
+        stack: Vec::new(),
+        on: HashSet::new(),
+        out: Vec::new(),
+    };
+    let mut roots: Vec<String> = order
+        .iter()
+        .filter(|n| defs.fns.contains_key(*n))
+        .cloned()
+        .collect();
+    let mut rest: Vec<String> = defs
+        .fns
+        .keys()
+        .filter(|n| !roots.contains(n))
+        .cloned()
+        .collect();
+    rest.sort();
+    roots.extend(rest);
+    for r in &roots {
+        if !t.index.contains_key(r) {
+            visit(&mut t, r);
+        }
+    }
+    let pos = |n: &String| roots.iter().position(|r| r == n);
+    for comp in t.out.iter_mut() {
+        comp.sort_by_key(pos);
+    }
+    t.out
+}
+
+/// Compute the set of total functions. Each strongly connected component
+/// of the call graph (a single fn, or a group of mutually recursive fns) is
+/// total when every fn it calls outside itself is total and it is
+/// structurally recursive as a group (`structural_group`).
 pub fn total_fns(defs: &Defs) -> HashSet<String> {
-    let mut total = HashSet::new();
-    let mut state: HashMap<String, u8> = HashMap::new(); // 1 visiting, 2 done
-    let names: Vec<String> = defs.fns.keys().cloned().collect();
-    for n in names {
-        check_total(&n, defs, &mut state, &mut total);
+    let mut total: HashSet<String> = HashSet::new();
+    for group in fn_sccs(defs, &defs.fn_order) {
+        let ext_ok = group.iter().all(|n| {
+            callees(&defs.fns[n], defs)
+                .iter()
+                .all(|c| group.contains(c) || total.contains(c))
+        });
+        if ext_ok && structural_group(&group, defs) {
+            total.extend(group);
+        }
     }
     total
 }
 
-fn check_total(
-    name: &str,
-    defs: &Defs,
-    state: &mut HashMap<String, u8>,
-    total: &mut HashSet<String>,
-) -> bool {
-    match state.get(name) {
-        Some(2) => return total.contains(name),
-        Some(1) => return false, // mutual recursion
-        _ => {}
-    }
-    state.insert(name.to_string(), 1);
-    let f = &defs.fns[name];
-    let mut callees = HashSet::new();
-    symbols(&f.body, &mut callees);
-    let mut ok = callees
-        .iter()
-        .filter(|c| c.as_str() != name && defs.fns.contains_key(c.as_str()))
-        .filter(|c| !f.params.contains(c))
-        .all(|c| check_total(c, defs, state, total));
-    ok = ok && structural(f, name, defs);
-    state.insert(name.to_string(), 2);
-    if ok {
-        total.insert(name.to_string());
-    }
-    ok
-}
-
-fn structural(f: &FnDef, name: &str, defs: &Defs) -> bool {
-    if f.params.iter().any(|p| p == name) {
-        return false;
-    }
-    let mut calls = Vec::new();
-    if !collect_self_calls(&f.body, name, &HashMap::new(), defs, &mut calls) {
-        return false;
+/// The structural rule for a recursive group (one fn, or several mutually
+/// recursive fns, e.g. `subst` on a term and `subst-list` on its argument
+/// list). The group is accepted when there is a choice of one *measure*
+/// parameter per member such that every call from member f to member g
+/// passes, in g's measure position, a pattern-bound strict subterm of f's
+/// measure parameter (a variable bound by a constructor pattern of a `match`
+/// on that parameter, or on such a variable, transitively).
+///
+/// Soundness: values are finite constructor trees and a strict subterm has
+/// strictly fewer constructor nodes, so along any chain of calls inside the
+/// group the size of the measure argument strictly decreases; every chain
+/// is finite, and calls leaving the group go to fns already known total.
+/// For a single fn this is exactly "every self-call passes a strict subterm
+/// of one fixed parameter".
+fn structural_group(group: &[String], defs: &Defs) -> bool {
+    let mut calls: Vec<(usize, usize, Vec<Option<usize>>)> = Vec::new();
+    for (i, n) in group.iter().enumerate() {
+        let f = &defs.fns[n];
+        if f.params.iter().any(|p| group.contains(p)) {
+            return false;
+        }
+        let mut cs = Vec::new();
+        if !collect_group_calls(&f.body, f, group, &HashMap::new(), defs, &mut cs) {
+            return false;
+        }
+        for (callee, args) in cs {
+            let j = group.iter().position(|g| *g == callee).unwrap();
+            if args.len() != defs.fns[&callee].params.len() {
+                return false;
+            }
+            calls.push((i, j, args));
+        }
     }
     if calls.is_empty() {
         return true;
     }
-    // Some fixed parameter index i such that every self-call's i-th arg is a
-    // strict subterm of parameter i.
-    (0..f.params.len()).any(|i| {
-        calls
-            .iter()
-            .all(|args| args.len() == f.params.len() && matches!(&args[i], Some(p) if *p == i))
-    })
+    let arities: Vec<usize> = group.iter().map(|n| defs.fns[n].params.len()).collect();
+    if arities.contains(&0) {
+        return false;
+    }
+    // Try every measure assignment (odometer), up to a small cap.
+    let combos = arities
+        .iter()
+        .try_fold(1usize, |acc, a| acc.checked_mul(*a));
+    if combos.is_none_or(|c| c > 1 << 16) {
+        return false;
+    }
+    let mut d = vec![0usize; group.len()];
+    loop {
+        if calls.iter().all(|(i, j, args)| args[d[*j]] == Some(d[*i])) {
+            return true;
+        }
+        let mut k = 0;
+        loop {
+            if k == d.len() {
+                return false;
+            }
+            d[k] += 1;
+            if d[k] < arities[k] {
+                break;
+            }
+            d[k] = 0;
+            k += 1;
+        }
+    }
 }
 
-/// Walk `e`, tracking which variables are strict subterms of which param
-/// (`env`: var -> param index). Each self-call records, per argument, the
-/// param it is a strict subterm of. Returns false on a non-call self-reference
-/// or on rebinding that would make tracking unsound.
-fn collect_self_calls(
+/// Walk `e` (part of `f`'s body), tracking which variables are strict
+/// subterms of which param of `f` (`env`: var -> param index). Each call to
+/// a member of `group` records the callee and, per argument, the param it
+/// is a strict subterm of. Returns false on a non-call reference to a group
+/// member or on rebinding that would make tracking unsound.
+fn collect_group_calls(
     e: &Expr,
-    name: &str,
+    f: &FnDef,
+    group: &[String],
     env: &HashMap<String, usize>,
     defs: &Defs,
-    calls: &mut Vec<Vec<Option<usize>>>,
+    calls: &mut Vec<(String, Vec<Option<usize>>)>,
 ) -> bool {
-    let f = &defs.fns[name];
+    let rec = |c: &Expr, env: &HashMap<String, usize>, calls: &mut Vec<_>| {
+        collect_group_calls(c, f, group, env, defs, calls)
+    };
     match &e.kind {
-        ExprKind::Symbol(s) => s != name,
-        ExprKind::List(items) if head_sym(e) == Some(name) => {
-            calls.push(
+        ExprKind::Symbol(s) => !group.contains(s),
+        ExprKind::List(items) if head_sym(e).is_some_and(|h| group.iter().any(|g| g == h)) => {
+            calls.push((
+                head_sym(e).unwrap().to_string(),
                 items[1..]
                     .iter()
                     .map(|a| match &a.kind {
@@ -610,13 +728,11 @@ fn collect_self_calls(
                         _ => None,
                     })
                     .collect(),
-            );
-            items[1..]
-                .iter()
-                .all(|a| collect_self_calls(a, name, env, defs, calls))
+            ));
+            items[1..].iter().all(|a| rec(a, env, calls))
         }
         ExprKind::List(items) if head_sym(e) == Some("match") && items.len() >= 2 => {
-            if !collect_self_calls(&items[1], name, env, defs, calls) {
+            if !rec(&items[1], env, calls) {
                 return false;
             }
             let scrut_param = match &items[1].kind {
@@ -639,8 +755,8 @@ fn collect_self_calls(
                 let mut inner = env.clone();
                 for v in &bound {
                     inner.remove(v);
-                    if f.params.contains(v) {
-                        return false; // shadowing a param: refuse
+                    if f.params.contains(v) || group.contains(v) {
+                        return false; // shadowing a param or a group fn: refuse
                     }
                     if is_ctor_pat {
                         if let Some(i) = scrut_param.or(scrut_sub) {
@@ -649,7 +765,7 @@ fn collect_self_calls(
                     }
                 }
                 if let Some(b) = pair.get(1) {
-                    if !collect_self_calls(b, name, &inner, defs, calls) {
+                    if !rec(b, &inner, calls) {
                         return false;
                     }
                 }
@@ -668,24 +784,24 @@ fn collect_self_calls(
             {
                 return false;
             }
-            items
-                .iter()
-                .all(|c| collect_self_calls(c, name, env, defs, calls))
+            items.iter().all(|c| rec(c, env, calls))
         }
-        _ => children(e)
-            .into_iter()
-            .all(|c| collect_self_calls(c, name, env, defs, calls)),
+        _ => children(e).into_iter().all(|c| rec(c, env, calls)),
     }
 }
 
 // ─── Rewriting ─────────────────────────────────────────────────────────────
 
 /// A rewrite rule: universally quantified `params` act as pattern variables.
+/// `hyps` are the rule's conditions (a conditional law's `:given`): each,
+/// instantiated under the match, is an obligation discharged at the use site
+/// (see `discharge`). Unconditional rules have none.
 #[derive(Clone, Debug)]
 pub struct Rule {
     pub params: Vec<String>,
     pub lhs: Expr,
     pub rhs: Expr,
+    pub hyps: Vec<(Expr, Expr)>,
 }
 
 /// First-order matching. At an application of an active user AC operator
@@ -782,6 +898,48 @@ fn rewrite_nth(
         }
     });
     done.then_some(out)
+}
+
+type OnMatch<'a> = dyn FnMut(&HashMap<String, Expr>) -> Result<Expr, String> + 'a;
+
+/// Like `rewrite_nth`, but hands the match's bindings to `on_match`, which
+/// builds the replacement (or refuses it).
+fn rewrite_nth_by(
+    t: &Expr,
+    rule: &Rule,
+    target: usize,
+    seen: &mut usize,
+    defs: &Defs,
+    on_match: &mut OnMatch,
+) -> Option<Result<Expr, String>> {
+    let mut b = HashMap::new();
+    if match_term(&rule.lhs, t, &rule.params, &mut b, defs) {
+        if *seen == target {
+            return Some(on_match(&b));
+        }
+        *seen += 1;
+    }
+    let mut res: Option<Result<Expr, String>> = None;
+    let out = map_children(t, &mut |c| {
+        if res.is_some() {
+            return c.clone();
+        }
+        match rewrite_nth_by(c, rule, target, seen, defs, on_match) {
+            Some(Ok(r)) => {
+                res = Some(Ok(r.clone()));
+                r
+            }
+            Some(Err(e)) => {
+                res = Some(Err(e));
+                c.clone()
+            }
+            None => c.clone(),
+        }
+    });
+    match res {
+        Some(Ok(_)) => Some(Ok(out)),
+        r => r,
+    }
 }
 
 pub fn rewrite(t: &Expr, rule: &Rule, at: usize, defs: &Defs) -> Result<Expr, String> {
@@ -947,6 +1105,8 @@ pub struct Goal<'a> {
     pub param_types: &'a HashMap<String, Ty>,
     pub lhs: &'a Expr,
     pub rhs: &'a Expr,
+    /// The law's `:given` hypotheses, over its params.
+    pub hyps: &'a [(Expr, Expr)],
 }
 
 /// Look up a citable law by name: returns (rule, admitted?).
@@ -955,7 +1115,57 @@ pub type Lemmas<'a> = dyn Fn(&str) -> Option<(Rule, bool)> + 'a;
 struct Ctx<'a> {
     defs: &'a Defs,
     lemmas: &'a Lemmas<'a>,
+    /// Every citable law (name, rule, admitted?), for discharging obligations
+    /// by an instance of a proven law.
+    known: &'a [(String, Rule, bool)],
+    /// The other laws of this proof's `:mutual` group (empty if none).
+    partners: &'a [Mutual],
     admitted: bool,
+}
+
+/// Another law of a `:mutual` group, as a source of induction hypotheses.
+///
+/// Mutual induction: laws P1..Pk, each proven by a proof that is a single
+/// `[induction Vi ...]` on a param Vi of type Ti, are proven together. In
+/// the induction cases of Pi, every constructor field whose type is exactly
+/// Tj gets the hypothesis "Pj at that field" (Pj's other params stay
+/// quantified), cited as `ih-FIELD` (`ih-FIELD-PJ` when the field already
+/// has Pi's own hypothesis); fields of type Ti get Pi's own `ih` as usual.
+/// Soundness: by strong induction on the number of constructor nodes n,
+/// prove "every Pi holds at every value of size n": each case of each proof
+/// uses some Pj only at a constructor field of the value being split, which
+/// is strictly smaller. Hence all of P1..Pk hold, and only together: the
+/// driver (`verify/mod.rs`) makes no member citable until every member's
+/// proof has closed, and none if any is stuck.
+#[derive(Clone, Debug)]
+pub struct Mutual {
+    pub name: String,
+    pub params: Vec<String>,
+    /// The param the partner's proof does induction on, and its type.
+    pub var: String,
+    pub var_ty: Ty,
+    pub lhs: Expr,
+    pub rhs: Expr,
+}
+
+/// Is `t` fully known (no `?` anywhere)?
+fn ty_known(t: &Ty) -> bool {
+    t.name != "?" && t.args.iter().all(ty_known)
+}
+
+/// The variable of a proof that is exactly one `[induction V ...]` step.
+pub fn sole_induction_var(steps: &[Expr]) -> Option<String> {
+    let [step] = steps else { return None };
+    let ExprKind::List(items) = &step.kind else {
+        return None;
+    };
+    if head_sym(step) != Some("induction") {
+        return None;
+    }
+    match items.get(1).map(|e| &e.kind) {
+        Some(ExprKind::Symbol(v)) => Some(v.clone()),
+        _ => None,
+    }
 }
 
 #[derive(Clone)]
@@ -969,13 +1179,64 @@ struct State {
     /// Induction hypotheses in scope, keyed by the recursive field they are
     /// about. Cited as `ih-FIELD`; plain `ih` names the only one.
     ihs: Vec<(String, Rule)>,
+    /// The law's own hypotheses `h1`, `h2`, ..., with the splits so far
+    /// substituted in. Their variables are the law's params as fixed values,
+    /// never pattern variables. Constructor components are derived on demand
+    /// by `hyps_in_scope`.
+    hyps: Vec<(String, Expr, Expr)>,
     case: String,
 }
 
 pub fn check_proof(goal: &Goal, steps: &[Expr], defs: &Defs, lemmas: &Lemmas) -> Outcome {
+    check_proof_with(goal, steps, defs, lemmas, &[])
+}
+
+/// `check_proof`, with `known` the laws an obligation may be discharged by.
+pub fn check_proof_with(
+    goal: &Goal,
+    steps: &[Expr],
+    defs: &Defs,
+    lemmas: &Lemmas,
+    known: &[(String, Rule, bool)],
+) -> Outcome {
+    check_proof_mutual(goal, steps, defs, lemmas, known, &[])
+}
+
+/// `check_proof_with` for one law of a `:mutual` group (see `Mutual`):
+/// `partners` are the group's other laws. With partners, the proof must be
+/// a single `induction` on a law param of fully known type, and the law
+/// must have no hypotheses.
+pub fn check_proof_mutual(
+    goal: &Goal,
+    steps: &[Expr],
+    defs: &Defs,
+    lemmas: &Lemmas,
+    known: &[(String, Rule, bool)],
+    partners: &[Mutual],
+) -> Outcome {
+    if !partners.is_empty() {
+        let bad = |reason: String| Outcome::Stuck {
+            case: "root".into(),
+            term: format!("{}", goal.lhs),
+            reason,
+        };
+        let Some(v) = sole_induction_var(steps) else {
+            return bad("a :mutual proof must be exactly one [induction VAR ...] step".into());
+        };
+        if !goal.params.contains(&v) || !goal.param_types.get(&v).is_some_and(ty_known) {
+            return bad(format!(
+                ":mutual induction variable `{v}` must be a law param of known type"
+            ));
+        }
+        if !goal.hyps.is_empty() {
+            return bad(":mutual laws may not have :given hypotheses".into());
+        }
+    }
     let mut ctx = Ctx {
         defs,
         lemmas,
+        known,
+        partners,
         admitted: false,
     };
     let st = State {
@@ -984,6 +1245,12 @@ pub fn check_proof(goal: &Goal, steps: &[Expr], defs: &Defs, lemmas: &Lemmas) ->
         params: goal.params.to_vec(),
         types: goal.param_types.clone(),
         ihs: Vec::new(),
+        hyps: goal
+            .hyps
+            .iter()
+            .enumerate()
+            .map(|(i, (a, b))| (format!("h{}", i + 1), a.clone(), b.clone()))
+            .collect(),
         case: "root".into(),
     };
     let _ = goal.law_name;
@@ -996,8 +1263,9 @@ pub fn check_proof(goal: &Goal, steps: &[Expr], defs: &Defs, lemmas: &Lemmas) ->
 
 fn stuck(st: &State, reason: impl Into<String>) -> Outcome {
     let mut reason = reason.into();
-    if !st.ihs.is_empty() {
-        let names: Vec<String> = st.ihs.iter().map(|(f, _)| format!("ih-{f}")).collect();
+    let mut names: Vec<String> = st.ihs.iter().map(|(f, _)| format!("ih-{f}")).collect();
+    names.extend(st.hyps.iter().map(|(n, a, b)| format!("{n}: [= {a} {b}]")));
+    if !names.is_empty() {
         reason = format!("{reason} [hypotheses: {}]", names.join(" "));
     }
     Outcome::Stuck {
@@ -1027,6 +1295,227 @@ fn lookup_ih(st: &State, name: &str) -> Option<Result<Rule, Outcome>> {
     )
 }
 
+// ─── Hypotheses and obligations ────────────────────────────────────────────
+//
+// A conditional law `[law N [ps] :given [[= A1 B1] ...] [= L R]]` reads
+// "for all ps, A1 = B1 ∧ ... → L = R".
+//
+// Inside N's own proof each hypothesis is a ground rewrite rule `hK` (no
+// pattern variables: its free symbols are the law's params, i.e. fixed
+// unknown values), substituted by `induction`/`cases` exactly like the goal.
+// `hN` rewrites in the goal's canonical form (`normalize`). Constructor
+// injectivity: when a hypothesis's two sides, evaluation-normalized (total
+// fns applied to constructors unfolded; meaning-preserving), are the same
+// constructor applied to the same number of arguments, its K-th argument
+// pair is the hypothesis `hN.K` (recursively, `hN.K.J`). Distinct
+// constructors are not used (no reasoning by contradiction yet).
+//
+// Citing a conditional rule elsewhere (a law, or `ih` of a conditional law)
+// matches its LHS as usual; each hypothesis instantiated under the match is
+// an obligation, discharged right there (`discharge`). Rule params that the
+// LHS does not bind may be bound by discharging against an in-scope
+// hypothesis (`ih` of `[= ys zs]` given `[= [f ys] [f zs]]` picks `zs` from
+// the hypothesis); anything still unbound is an error.
+
+/// A cited rule's name. `h1.2` parses as a dot access; spell it back.
+fn rule_name(e: &Expr) -> Option<String> {
+    match &e.kind {
+        ExprKind::Symbol(s) => Some(s.clone()),
+        ExprKind::DotAccess(inner, f) => Some(format!("{}.{f}", rule_name(inner)?)),
+        _ => None,
+    }
+}
+
+/// Is `name` hypothesis syntax: `h` followed by `N(.K)*`?
+fn is_hyp_name(name: &str) -> bool {
+    name.strip_prefix('h').is_some_and(|r| {
+        !r.is_empty()
+            && r.split('.')
+                .all(|p| !p.is_empty() && p.bytes().all(|c| c.is_ascii_digit()))
+    })
+}
+
+/// The hypotheses in scope: each `hN` in canonical form, then its
+/// evaluation-normalized form under the same name (used only when
+/// discharging obligations, since lookup takes the first), then its
+/// constructor components (`hN.K`).
+fn hyps_in_scope(st: &State, defs: &Defs) -> Vec<(String, Expr, Expr)> {
+    fn add(out: &mut Vec<(String, Expr, Expr)>, n: String, a: Expr, b: Expr, defs: &Defs) {
+        if let (Some((ca, xa)), Some((cb, xb))) = (ctor_of(&a, defs), ctor_of(&b, defs)) {
+            if ca == cb && xa.len() == xb.len() {
+                let comps: Vec<(Expr, Expr)> = xa.iter().cloned().zip(xb.iter().cloned()).collect();
+                for (k, (x, y)) in comps.into_iter().enumerate() {
+                    add(out, format!("{n}.{}", k + 1), x, y, defs);
+                }
+            }
+        }
+        out.push((n, a, b));
+    }
+    let mut used = used_symbols(st);
+    let mut out = Vec::new();
+    for (n, a, b) in &st.hyps {
+        let (a, b) = (normalize(a, defs), normalize(b, defs));
+        out.push((n.clone(), a.clone(), b.clone()));
+        let mut fuel = 10_000;
+        let a = eval_normalize(&a, defs, &mut used, &mut fuel);
+        let b = eval_normalize(&b, defs, &mut used, &mut fuel);
+        add(&mut out, n.clone(), a, b, defs);
+    }
+
+    out
+}
+
+/// Does ground `pat` occur in `t` (up to the matcher's AC handling)?
+fn occurs(pat: &Expr, t: &Expr, defs: &Defs) -> bool {
+    match_term(pat, t, &[], &mut HashMap::new(), defs)
+        || children(t).into_iter().any(|c| occurs(pat, c, defs))
+}
+
+/// Resolve `hN` / `hN.K` to a ground rule. `None` if not hypothesis syntax.
+/// `hN` has a canonical and an evaluated form; the first with a side
+/// occurring in the goal is used (either is the same equation).
+fn lookup_hyp(st: &State, name: &str, defs: &Defs) -> Option<Result<Rule, Outcome>> {
+    if !is_hyp_name(name) {
+        return None;
+    }
+    let cands: Vec<_> = hyps_in_scope(st, defs)
+        .into_iter()
+        .filter(|(n, _, _)| n == name)
+        .collect();
+    let pick = cands
+        .iter()
+        .position(|(_, a, b)| occurs(a, &st.l, defs) || occurs(b, &st.l, defs))
+        .unwrap_or(0);
+    Some(
+        cands
+            .into_iter()
+            .nth(pick)
+            .map(|(_, a, b)| Rule {
+                params: vec![],
+                lhs: a,
+                rhs: b,
+                hyps: vec![],
+            })
+            .ok_or_else(|| stuck(st, format!("no hypothesis `{name}` in scope"))),
+    )
+}
+
+/// Discharge one obligation `[= a b]`, whose symbols in `free` are still
+/// unbound rule params (pattern variables, bound into `b2` on success).
+/// In order: (a) no free variables and both sides evaluate to the same
+/// normal form; (b) it is an instance of an in-scope hypothesis or one of
+/// its constructor components, either orientation (this is the only rule
+/// that may bind free variables); (c) no free variables and it is an
+/// instance of a known unconditional law, either orientation (citing an
+/// admitted law taints the proof). No nested proofs: anything else fails.
+fn discharge(
+    ctx: &mut Ctx,
+    hyps: &[(String, Expr, Expr)],
+    a: &Expr,
+    b: &Expr,
+    free: &[String],
+    b2: &mut HashMap<String, Expr>,
+) -> bool {
+    let defs = ctx.defs;
+    let (a, b) = (subst(a, b2, defs), subst(b, b2, defs));
+    let mut used = HashSet::new();
+    symbols(&a, &mut used);
+    symbols(&b, &mut used);
+    let mut fuel = 10_000;
+    let a = eval_normalize(&normalize(&a, defs), defs, &mut used, &mut fuel);
+    let b = eval_normalize(&normalize(&b, defs), defs, &mut used, &mut fuel);
+    let open: Vec<String> = free
+        .iter()
+        .filter(|v| used.contains(*v) && !b2.contains_key(*v))
+        .cloned()
+        .collect();
+    if open.is_empty() && term_eq(&a, &b) {
+        return true;
+    }
+    for (_, l, r) in hyps {
+        for (x, y) in [(l, r), (r, l)] {
+            let mut m = b2.clone();
+            if match_term(&a, x, &open, &mut m, defs) && match_term(&b, y, &open, &mut m, defs) {
+                *b2 = m;
+                return true;
+            }
+        }
+    }
+    if !open.is_empty() {
+        return false;
+    }
+    for (_, rule, adm) in ctx.known {
+        if !rule.hyps.is_empty() {
+            continue;
+        }
+        let (l, r) = (normalize(&rule.lhs, defs), normalize(&rule.rhs, defs));
+        for (x, y) in [(&l, &r), (&r, &l)] {
+            let mut m = HashMap::new();
+            if match_term(x, &a, &rule.params, &mut m, defs)
+                && match_term(y, &b, &rule.params, &mut m, defs)
+            {
+                ctx.admitted |= *adm;
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Rewrite with a conditional rule: the `at`-th match, then discharge each
+/// instantiated hypothesis in order.
+fn rewrite_cond(ctx: &mut Ctx, st: &State, rule: &Rule, at: usize) -> Result<Expr, String> {
+    let hyps = hyps_in_scope(st, ctx.defs);
+    let mut used = used_symbols(st);
+    for (a, b) in &rule.hyps {
+        symbols(a, &mut used);
+        symbols(b, &mut used);
+    }
+    symbols(&rule.lhs, &mut used);
+    symbols(&rule.rhs, &mut used);
+    let defs = ctx.defs;
+    let mut on_match = |bind: &HashMap<String, Expr>| -> Result<Expr, String> {
+        // Unbound params get fresh names so they cannot be confused with
+        // goal symbols of the same spelling.
+        let mut bind = bind.clone();
+        let mut fresh = Vec::new();
+        let mut back = HashMap::new();
+        for p in &rule.params {
+            if !bind.contains_key(p) {
+                let f = fresh_name(p, &mut used);
+                bind.insert(p.clone(), sym(&f));
+                back.insert(f.clone(), p.clone());
+                fresh.push(f);
+            }
+        }
+        let mut b2 = HashMap::new();
+        for (a, b) in &rule.hyps {
+            let (a, b) = (subst(a, &bind, defs), subst(b, &bind, defs));
+            if !discharge(ctx, &hyps, &a, &b, &fresh, &mut b2) {
+                let (a, b) = (subst(&a, &b2, defs), subst(&b, &b2, defs));
+                return Err(format!("obligation [= {a} {b}] not discharged"));
+            }
+        }
+        let mut rv = HashSet::new();
+        symbols(&rule.rhs, &mut rv);
+        for f in &fresh {
+            if !b2.contains_key(f) && rv.contains(&back[f]) {
+                return Err(format!(
+                    "rule would introduce unbound variable `{}`",
+                    back[f]
+                ));
+            }
+        }
+        let bind: HashMap<String, Expr> = bind
+            .into_iter()
+            .map(|(k, v)| (k, subst(&v, &b2, defs)))
+            .collect();
+        Ok(subst(&rule.rhs, &bind, defs))
+    };
+    rewrite_nth_by(&st.l, rule, at, &mut 0, defs, &mut on_match)
+        .unwrap_or_else(|| Err("rule does not match".to_string()))
+}
+
 fn closes(st: &State, defs: &Defs) -> bool {
     let mut used = HashSet::new();
     symbols(&st.l, &mut used);
@@ -1047,6 +1536,14 @@ fn used_symbols(st: &State) -> HashSet<String> {
         used.insert(f.clone());
         symbols(&ih.lhs, &mut used);
         symbols(&ih.rhs, &mut used);
+        for (a, b) in &ih.hyps {
+            symbols(a, &mut used);
+            symbols(b, &mut used);
+        }
+    }
+    for (_, a, b) in &st.hyps {
+        symbols(a, &mut used);
+        symbols(b, &mut used);
     }
     used
 }
@@ -1068,9 +1565,10 @@ fn run_steps(ctx: &mut Ctx, mut st: State, steps: &[Expr]) -> Result<(), Outcome
                     .map_err(|e| stuck(&st, format!("unfold {f}: {e}")))?;
             }
             "rewrite" => {
-                let Some(ExprKind::Symbol(name)) = items.get(1).map(|e| &e.kind) else {
+                let Some(name) = items.get(1).and_then(rule_name) else {
                     return Err(stuck(&st, "rewrite needs a rule name"));
                 };
+                let name = &name;
                 let (mut rev, mut at) = (false, 0usize);
                 let mut j = 2;
                 while j < items.len() {
@@ -1094,6 +1592,8 @@ fn run_steps(ctx: &mut Ctx, mut st: State, steps: &[Expr]) -> Result<(), Outcome
                 }
                 let rule = if let Some(ih) = lookup_ih(&st, name) {
                     ih?
+                } else if let Some(h) = lookup_hyp(&st, name, ctx.defs) {
+                    h?
                 } else {
                     let (rule, adm) = (ctx.lemmas)(name).ok_or_else(|| {
                         stuck(&st, format!("`{name}` is not a law proven earlier"))
@@ -1111,15 +1611,22 @@ fn run_steps(ctx: &mut Ctx, mut st: State, steps: &[Expr]) -> Result<(), Outcome
                         params: rule.params,
                         lhs: rhs,
                         rhs: lhs,
+                        hyps: rule.hyps,
                     }
                 } else {
                     Rule {
                         params: rule.params,
                         lhs,
                         rhs,
+                        hyps: rule.hyps,
                     }
                 };
-                st.l = rewrite(&st.l, &rule, at, ctx.defs)
+                let res = if rule.hyps.is_empty() {
+                    rewrite(&st.l, &rule, at, ctx.defs)
+                } else {
+                    rewrite_cond(ctx, &st, &rule, at)
+                };
+                st.l = res
                     .map(|l| normalize(&l, ctx.defs))
                     .map_err(|e| stuck(&st, format!("rewrite {name}: {e}")))?;
             }
@@ -1218,7 +1725,7 @@ fn split(ctx: &mut Ctx, st: State, items: &[Expr], induction: bool) -> Result<()
             sym(&ctor.name)
         } else {
             let mut v = vec![sym(&ctor.name)];
-            v.extend(fields);
+            v.extend(fields.iter().cloned());
             list(v)
         };
         let m = HashMap::from([(var.clone(), value)]);
@@ -1226,7 +1733,11 @@ fn split(ctx: &mut Ctx, st: State, items: &[Expr], induction: bool) -> Result<()
         // Induction: one hypothesis per recursive field, each quantified over
         // the remaining law params. Cases: hypotheses already in scope carry
         // over, specialized at the split value unless they quantify `var`.
-        let ihs: Vec<(String, Rule)> = if induction {
+        // For a conditional law, `ih` is the whole law at the smaller
+        // argument: its hypotheses (the current `h*`, at the recursive field)
+        // are generalized over the other params together with the conclusion,
+        // and become obligations wherever `ih` is cited.
+        let mut ihs: Vec<(String, Rule)> = if induction {
             rec_fields
                 .iter()
                 .map(|rf| {
@@ -1237,6 +1748,11 @@ fn split(ctx: &mut Ctx, st: State, items: &[Expr], induction: bool) -> Result<()
                             params: params.clone(),
                             lhs: subst(&st.l, &im, ctx.defs),
                             rhs: subst(&st.r, &im, ctx.defs),
+                            hyps: st
+                                .hyps
+                                .iter()
+                                .map(|(_, a, b)| (subst(a, &im, ctx.defs), subst(b, &im, ctx.defs)))
+                                .collect(),
                         },
                     )
                 })
@@ -1252,18 +1768,59 @@ fn split(ctx: &mut Ctx, st: State, items: &[Expr], induction: bool) -> Result<()
                             lhs: subst(&ih.lhs, &m, ctx.defs),
                             rhs: subst(&ih.rhs, &m, ctx.defs),
                             params: ih.params.clone(),
+                            hyps: ih
+                                .hyps
+                                .iter()
+                                .map(|(a, b)| (subst(a, &m, ctx.defs), subst(b, &m, ctx.defs)))
+                                .collect(),
                         }
                     };
                     (f.clone(), ih)
                 })
                 .collect()
         };
+        // The root induction of a `:mutual` proof: partner hypotheses.
+        if induction && st.case == "root" {
+            for (k, f) in fields.iter().enumerate() {
+                let (ExprKind::Symbol(fname), Some(Some(fty))) = (&f.kind, ftys.get(k)) else {
+                    continue;
+                };
+                for pt in ctx.partners.iter().filter(|pt| &pt.var_ty == fty) {
+                    let mut im = HashMap::from([(pt.var.clone(), sym(fname))]);
+                    let mut ps = Vec::new();
+                    for q in pt.params.iter().filter(|q| **q != pt.var) {
+                        let nq = fresh_name(q, &mut used);
+                        im.insert(q.clone(), sym(&nq));
+                        ps.push(nq);
+                    }
+                    let key = if ihs.iter().any(|(k, _)| k == fname) {
+                        format!("{fname}-{}", pt.name)
+                    } else {
+                        fname.clone()
+                    };
+                    ihs.push((
+                        key,
+                        Rule {
+                            params: ps,
+                            lhs: normalize(&subst(&pt.lhs, &im, ctx.defs), ctx.defs),
+                            rhs: normalize(&subst(&pt.rhs, &im, ctx.defs), ctx.defs),
+                            hyps: vec![],
+                        },
+                    ));
+                }
+            }
+        }
         let child = State {
             l: normalize(&subst(&st.l, &m, ctx.defs), ctx.defs),
             r: normalize(&subst(&st.r, &m, ctx.defs), ctx.defs),
             params,
             types,
             ihs,
+            hyps: st
+                .hyps
+                .iter()
+                .map(|(n, a, b)| (n.clone(), subst(a, &m, ctx.defs), subst(b, &m, ctx.defs)))
+                .collect(),
             case: if st.case == "root" {
                 ctor.name.clone()
             } else {

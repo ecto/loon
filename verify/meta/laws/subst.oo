@@ -1,0 +1,32 @@
+; Substitution lemmas over the kernel meta-model (verify/meta/defs.oo).
+
+[law nat-eq-refl [n] [= [nat-eq n n] T]]
+[law sym-eq-refl [x] [= [sym-eq x x] T]]
+
+[law subst-if [b u w s]
+  [= [subst [if-b b u w] s] [if-b b [subst u s] [subst w s]]]]
+
+; 1. The empty substitution is the identity (term and list versions).
+[law subst-empty [t] [= [subst t [Subst Nil]] t]]
+[law subst-list-empty [ts] [= [subst-list ts [Subst Nil]] ts]]
+
+; 2. Substitution composes (term and list versions), with the variable case
+;    as its own lemma.
+[law subst-apply-var [x bs1 bs2]
+  [= [subst [apply-var x bs1] [Subst bs2]]
+     [apply-var x [append [map-rhs bs1 [Subst bs2]] bs2]]]]
+
+[law subst-compose [t s1 s2]
+  [= [subst [subst t s1] s2] [subst t [compose s1 s2]]]]
+[law subst-list-compose [ts s1 s2]
+  [= [subst-list [subst-list ts s1] s2] [subst-list ts [compose s1 s2]]]]
+
+; 3. Match soundness, unconditionally; and the variable-pattern instance.
+[law apply-match-var [x t] [= [apply-match [V x] t] t]]
+[law apply-match [p t] [= [apply-match p t] t]]
+
+; false: matching binds the pattern's variables, it does not return the pattern
+[law apply-match-bogus [p t] [= [apply-match p t] p]]
+; false: composition is not commutative
+[law subst-compose-swapped [t s1 s2]
+  [= [subst [subst t s1] s2] [subst t [compose s2 s1]]]]

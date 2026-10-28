@@ -208,11 +208,14 @@ pub struct Law {
     pub params: Vec<String>,
     pub lhs: Expr,
     pub rhs: Expr,
+    /// `:given` hypotheses, each `[= A B]` over the params.
+    pub hyps: Vec<(Expr, Expr)>,
     pub origin: Origin,
     pub file: String,
 }
 
-/// Parse `[law NAME [PARAMS...] [= LHS RHS]]`.
+/// Parse `[law NAME [PARAMS...] [= LHS RHS]]` or the conditional form
+/// `[law NAME [PARAMS...] :given [[= A1 B1] ...] [= LHS RHS]]`.
 pub fn parse_law(e: &Expr, origin: Origin, file: &str) -> Option<Result<Law, String>> {
     let ExprKind::List(items) = &e.kind else {
         return None;
@@ -234,7 +237,32 @@ pub fn parse_law(e: &Expr, origin: Origin, file: &str) -> Option<Result<Law, Str
                 _ => Err(format!("{file}: law {name}: params must be symbols")),
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let eq = items.get(3).filter(|_| items.len() == 4);
+        let mut hyps = Vec::new();
+        let mut rest = &items[3.min(items.len())..];
+        if let Some(ExprKind::Keyword(k)) = rest.first().map(|e| &e.kind) {
+            if k != "given" {
+                return Err(format!("{file}: law {name}: unknown option `:{k}`"));
+            }
+            let Some(ExprKind::List(hs)) = rest.get(1).map(|e| &e.kind) else {
+                return Err(format!(
+                    "{file}: law {name}: `:given` needs a list of [= A B]"
+                ));
+            };
+            for h in hs {
+                match &h.kind {
+                    ExprKind::List(v) if v.len() == 3 && head_sym(h) == Some("=") => {
+                        hyps.push((v[1].clone(), v[2].clone()))
+                    }
+                    _ => {
+                        return Err(format!(
+                            "{file}: law {name}: hypothesis `{h}` is not [= A B]"
+                        ))
+                    }
+                }
+            }
+            rest = &rest[2.min(rest.len())..];
+        }
+        let eq = rest.first().filter(|_| rest.len() == 1);
         let Some(ExprKind::List(eqv)) = eq.map(|e| &e.kind) else {
             return Err(format!("{file}: law {name}: expected [= LHS RHS]"));
         };
@@ -246,6 +274,7 @@ pub fn parse_law(e: &Expr, origin: Origin, file: &str) -> Option<Result<Law, Str
             params,
             lhs: eqv[1].clone(),
             rhs: eqv[2].clone(),
+            hyps,
             origin,
             file: file.to_string(),
         })
@@ -483,6 +512,8 @@ pub struct LawReport {
     pub stuck: Option<(String, String, String)>,
     pub note: Option<String>,
     pub checked: usize,
+    /// Bounded inputs that violated a hypothesis (conditional laws only).
+    pub vacuous: usize,
 }
 
 pub struct Report {
@@ -586,6 +617,8 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
     let mut errors = Vec::new();
     let mut laws: Vec<Law> = Vec::new();
     let mut proofs: HashMap<String, Vec<Expr>> = HashMap::new();
+    // `[proof NAME :mutual OTHER ...]` / `:mutual [A B ...]` declarations.
+    let mut mutual_decl: HashMap<String, Vec<String>> = HashMap::new();
     let mut extra_fns: Vec<Expr> = Vec::new();
     let mut ac_forms: Vec<(Expr, String)> = Vec::new();
 
@@ -638,7 +671,29 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
                     errors.push(format!("{file}: duplicate proof `{name}`"))
                 }
                 Some(_) => {
-                    proofs.insert(name.clone(), items[2..].to_vec());
+                    let mut steps = &items[2..];
+                    if matches!(steps.first().map(|x| &x.kind), Some(ExprKind::Keyword(k)) if k == "mutual")
+                    {
+                        let names: Vec<String> = match steps.get(1).map(|x| &x.kind) {
+                            Some(ExprKind::Symbol(s)) => vec![s.clone()],
+                            Some(ExprKind::List(v)) => v
+                                .iter()
+                                .filter_map(|x| match &x.kind {
+                                    ExprKind::Symbol(s) => Some(s.clone()),
+                                    _ => None,
+                                })
+                                .collect(),
+                            _ => {
+                                errors.push(format!(
+                                    "{file}: proof {name}: `:mutual` needs a law name or a list of them"
+                                ));
+                                vec![]
+                            }
+                        };
+                        mutual_decl.insert(name.clone(), names);
+                        steps = &steps[2.min(steps.len())..];
+                    }
+                    proofs.insert(name.clone(), steps.to_vec());
                 }
             }
         }
@@ -677,9 +732,10 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
     let mut reports: Vec<LawReport> = Vec::new();
     let mut param_types: HashMap<String, HashMap<String, kernel::Ty>> = HashMap::new();
     for law in &laws {
-        let kinds = bounded::param_kinds(&prelude, &law.params, &law.lhs, &law.rhs, &defs);
-        let inferred =
-            infer::law_param_types(&defs, &defs.fn_order, &law.params, &law.lhs, &law.rhs);
+        let mut eqs: Vec<(&Expr, &Expr)> = vec![(&law.lhs, &law.rhs)];
+        eqs.extend(law.hyps.iter().map(|(a, b)| (a, b)));
+        let kinds = bounded::param_kinds(&prelude, &law.params, &eqs, &defs);
+        let inferred = infer::law_param_types_eqs(&defs, &defs.fn_order, &law.params, &eqs);
         let types = law
             .params
             .iter()
@@ -717,14 +773,24 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
             &kinds,
             &law.lhs,
             &law.rhs,
+            &law.hyps,
             &defs,
             opts.bound,
             opts.seed,
         );
         let status = match (&b.counterexample, law.origin) {
             (Some(_), _) => "falsified",
-            (None, Origin::Builtins) if b.error.is_none() => "bounded",
+            (None, Origin::Builtins) if b.error.is_none() && b.checked > 0 => "bounded",
             _ => "unknown",
+        };
+        let all_vacuous = b.error.is_none() && b.checked == 0 && b.vacuous > 0;
+        let note = if all_vacuous {
+            Some(format!(
+                "vacuous: all {} bounded inputs violate a hypothesis; not sent to the kernel",
+                b.vacuous
+            ))
+        } else {
+            b.error.map(|e| format!("bounded: {e}"))
         };
         reports.push(LawReport {
             name: law.name.clone(),
@@ -732,8 +798,9 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
             status,
             counterexample: b.counterexample,
             stuck: None,
-            note: b.error.map(|e| format!("bounded: {e}")),
+            note,
             checked: b.checked,
+            vacuous: b.vacuous,
         });
     }
 
@@ -784,6 +851,59 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
             }
         }
     }
+    // `:mutual` groups (kernel::Mutual): every member must name the same
+    // group. A member depends on whatever any member cites; a proof citing a
+    // member depends on every member (none is citable before all close).
+    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+    for (n, listed) in &mutual_decl {
+        let mut g: Vec<String> = listed.clone();
+        g.push(n.clone());
+        g.sort();
+        g.dedup();
+        let same = |m: &String| {
+            let mut h = mutual_decl.get(m).cloned().unwrap_or_default();
+            h.push(m.clone());
+            h.sort();
+            h.dedup();
+            h == g
+        };
+        if g.len() < 2 || !g.iter().all(|m| proofs.contains_key(m) && same(m)) {
+            errors.push(format!(
+                "proof {n}: `:mutual` group {g:?} is not declared identically by every member's proof"
+            ));
+            continue;
+        }
+        groups.insert(n.clone(), g);
+    }
+    let base = deps.clone();
+    for (n, g) in &groups {
+        let mut u: Vec<String> = Vec::new();
+        for c in g
+            .iter()
+            .flat_map(|m| base.get(m).cloned().unwrap_or_default())
+        {
+            if !g.contains(&c) && !u.contains(&c) {
+                u.push(c);
+            }
+        }
+        deps.insert(n.clone(), u);
+    }
+    for (n, ds) in deps.iter_mut() {
+        let own = groups.get(n).cloned().unwrap_or_default();
+        let extra: Vec<String> = ds
+            .iter()
+            .filter_map(|c| groups.get(c))
+            .flatten()
+            .filter(|m| !own.contains(m) && !ds.contains(m))
+            .cloned()
+            .collect();
+        for m in extra {
+            if !ds.contains(&m) {
+                ds.push(m);
+            }
+        }
+    }
+    let mut pending: HashMap<String, Outcome> = HashMap::new();
     let mut order = Vec::new();
     let mut state: HashMap<String, u8> = HashMap::new();
     let mut cyclic: HashSet<String> = HashSet::new();
@@ -836,6 +956,9 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
         if rep.status == "falsified" && law.origin != Origin::Canary {
             continue; // falsified laws are not sent to the kernel
         }
+        if !law.hyps.is_empty() && rep.checked == 0 && rep.vacuous > 0 {
+            continue; // never proven by vacuity
+        }
         if cyclic.contains(name) {
             outcome.insert(
                 name.clone(),
@@ -859,16 +982,39 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
                     params: l.params.clone(),
                     lhs: l.lhs.clone(),
                     rhs: l.rhs.clone(),
+                    hyps: l.hyps.clone(),
                 },
                 adm,
             ))
         };
+        // Laws an obligation may be discharged by: everything settled so far.
+        let known: Vec<(String, Rule, bool)> = laws
+            .iter()
+            .filter_map(|l| {
+                let adm = match outcome.get(&l.name)? {
+                    Outcome::Proven => false,
+                    Outcome::Admitted => true,
+                    Outcome::Stuck { .. } => return None,
+                };
+                Some((
+                    l.name.clone(),
+                    Rule {
+                        params: l.params.clone(),
+                        lhs: l.lhs.clone(),
+                        rhs: l.rhs.clone(),
+                        hyps: l.hyps.clone(),
+                    },
+                    adm,
+                ))
+            })
+            .collect();
         let goal = kernel::Goal {
             law_name: name,
             params: &law.params,
             param_types: &param_types[name],
             lhs: &law.lhs,
             rhs: &law.rhs,
+            hyps: &law.hyps,
         };
         // Activate each relevant `ac` decl whose laws are proven (or admitted,
         // which taints this proof).
@@ -888,11 +1034,77 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
                 });
             }
         }
-        let o = match kernel::check_proof(&goal, &proofs[name], &pdefs, &lemmas) {
+        let partners: Vec<kernel::Mutual> = groups
+            .get(name)
+            .into_iter()
+            .flatten()
+            .filter(|m| *m != name)
+            .filter_map(|m| {
+                let l = laws.iter().find(|l| &l.name == m)?;
+                let var = kernel::sole_induction_var(&proofs[m])?;
+                Some(kernel::Mutual {
+                    name: m.clone(),
+                    params: l.params.clone(),
+                    var_ty: param_types.get(m)?.get(&var)?.clone(),
+                    var,
+                    lhs: l.lhs.clone(),
+                    rhs: l.rhs.clone(),
+                })
+            })
+            .collect();
+        let o = match kernel::check_proof_mutual(
+            &goal,
+            &proofs[name],
+            &pdefs,
+            &lemmas,
+            &known,
+            &partners,
+        ) {
             Outcome::Proven if ac_tainted => Outcome::Admitted,
             o => o,
         };
-        outcome.insert(name.clone(), o);
+        let Some(g) = groups.get(name) else {
+            outcome.insert(name.clone(), o);
+            continue;
+        };
+        // A group settles when its last member has been checked: proven
+        // only if every member closed.
+        pending.insert(name.clone(), o);
+        if !g.iter().all(|m| pending.contains_key(m)) {
+            continue;
+        }
+        let failed = g
+            .iter()
+            .find(|m| matches!(pending[*m], Outcome::Stuck { .. }))
+            .cloned();
+        let adm = g.iter().any(|m| pending[m] == Outcome::Admitted);
+        for m in g {
+            let o = match (&failed, pending.remove(m).unwrap()) {
+                (_, o @ Outcome::Stuck { .. }) => o,
+                (Some(f), _) => Outcome::Stuck {
+                    case: "root".into(),
+                    term: format!("{}", laws.iter().find(|l| &l.name == m).unwrap().lhs),
+                    reason: format!("its :mutual partner `{f}` is not proven"),
+                },
+                (None, _) if adm => Outcome::Admitted,
+                (None, o) => o,
+            };
+            outcome.insert(m.clone(), o);
+        }
+    }
+
+    // Members of a group some member of which was never checked (falsified,
+    // or in a cycle) stay unproven.
+    for (m, o) in pending.drain() {
+        let o = match o {
+            o @ Outcome::Stuck { .. } => o,
+            _ => Outcome::Stuck {
+                case: "root".into(),
+                term: format!("{}", laws.iter().find(|l| l.name == m).unwrap().lhs),
+                reason: "a :mutual partner was not checked".into(),
+            },
+        };
+        outcome.insert(m, o);
     }
 
     let mut sound = true;
@@ -984,6 +1196,10 @@ impl Report {
                 if l.checked > 0 {
                     m.insert("inputs".into(), J::from(l.checked));
                 }
+                if l.vacuous > 0 {
+                    m.insert("inputs_vacuous".into(), J::from(l.vacuous));
+                }
+
                 if let Some(n) = &l.note {
                     m.insert("note".into(), J::String(n.clone()));
                 }

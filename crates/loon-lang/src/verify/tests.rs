@@ -42,6 +42,7 @@ fn prove(
         param_types: &types,
         lhs: &l,
         rhs: &r,
+        hyps: &[],
     };
     let steps = crate::parser::parse(steps).unwrap();
     check_proof(&goal, &steps, defs, lemmas)
@@ -85,6 +86,7 @@ fn rewrite_with_rule() {
         params: vec![],
         lhs: p("[append rest Nil]"),
         rhs: p("rest"),
+        hyps: vec![],
     };
     let t = kernel::rewrite(&p("[Cons x [append rest Nil]]"), &ih, 0, &d).unwrap();
     assert!(term_eq(&t, &p("[Cons x rest]")));
@@ -93,6 +95,7 @@ fn rewrite_with_rule() {
         params: vec!["a".into()],
         lhs: p("[f a]"),
         rhs: p("a"),
+        hyps: vec![],
     };
     let t = kernel::rewrite(&p("[g [f 1] [f 2]]"), &r, 1, &d).unwrap();
     assert!(term_eq(&t, &p("[g [f 1] 2]")));
@@ -167,6 +170,7 @@ fn admit_taints() {
                     params: vec!["xs".into()],
                     lhs: p("[append xs Nil]"),
                     rhs: p("xs"),
+                    hyps: vec![],
                 },
                 true,
             )
@@ -482,6 +486,7 @@ fn prove_typed(
         param_types: &types,
         lhs: &l,
         rhs: &r,
+        hyps: &[],
     };
     let steps = crate::parser::parse(steps).unwrap();
     check_proof(&goal, &steps, defs, lemmas)
@@ -494,6 +499,7 @@ fn exec_append_lemma(n: &str) -> Option<(Rule, bool)> {
                 params: vec!["c1".into(), "c2".into(), "s".into()],
                 lhs: p("[exec [append c1 c2] s]"),
                 rhs: p("[exec c2 [exec c1 s]]"),
+                hyps: vec![],
             },
             false,
         )
@@ -979,4 +985,656 @@ fn ac_citing_admitted_law_taints() {
     let r = ac_dir("ac-adm", AC_LAWS, &proofs);
     assert_eq!(status(&r, "add-comm").status, "admitted");
     assert_eq!(status(&r, "add-rotate").status, "admitted");
+}
+
+// ─── Conditional laws (`:given` hypotheses) ────────────────────────────────
+
+const COND_DEFS: &str = r#"
+[type List T [Cons T (List T)] Nil]
+[type Nat Z [S Nat]]
+[fn append [xs ys]
+  [match xs
+    Nil           ys
+    [Cons x rest] [Cons x [append rest ys]]]]
+[fn reverse [xs]
+  [match xs
+    Nil           Nil
+    [Cons x rest] [append [reverse rest] [Cons x Nil]]]]
+[fn length [xs]
+  [match xs
+    Nil           0
+    [Cons x rest] [+ 1 [length rest]]]]
+[fn add [m n]
+  [match m
+    Z     n
+    [S k] [S [add k n]]]]
+"#;
+
+fn cond_defs() -> Defs {
+    Defs::from_exprs(&crate::parser::parse(COND_DEFS).unwrap()).unwrap()
+}
+
+/// Prove `[= lhs rhs]` given `hyps` (list params), with `known` the laws an
+/// obligation may be discharged by.
+fn prove_h(
+    params: &[&str],
+    hyps: &[(&str, &str)],
+    lhs: &str,
+    rhs: &str,
+    steps: &str,
+    lemmas: &kernel::Lemmas,
+    known: &[(String, Rule, bool)],
+) -> Outcome {
+    let d = cond_defs();
+    let params: Vec<String> = params.iter().map(|s| s.to_string()).collect();
+    let types: HashMap<String, kernel::Ty> = params
+        .iter()
+        .map(|p| (p.clone(), ty("[List Int]")))
+        .collect();
+    let hyps: Vec<(Expr, Expr)> = hyps.iter().map(|(a, b)| (p(a), p(b))).collect();
+    let (l, r) = (p(lhs), p(rhs));
+    let goal = Goal {
+        law_name: "t",
+        params: &params,
+        param_types: &types,
+        lhs: &l,
+        rhs: &r,
+        hyps: &hyps,
+    };
+    let steps = crate::parser::parse(steps).unwrap();
+    kernel::check_proof_with(&goal, &steps, &d, lemmas, known)
+}
+
+fn rule(params: &[&str], hyps: &[(&str, &str)], lhs: &str, rhs: &str) -> Rule {
+    Rule {
+        params: params.iter().map(|s| s.to_string()).collect(),
+        lhs: p(lhs),
+        rhs: p(rhs),
+        hyps: hyps.iter().map(|(a, b)| (p(a), p(b))).collect(),
+    }
+}
+
+fn rev_inj(n: &str) -> Option<(Rule, bool)> {
+    (n == "rev-inj").then(|| {
+        (
+            rule(
+                &["xs", "ys"],
+                &[("[reverse xs]", "[reverse ys]")],
+                "xs",
+                "ys",
+            ),
+            false,
+        )
+    })
+}
+
+fn stuck_with(o: &Outcome, needle: &str) -> bool {
+    matches!(o, Outcome::Stuck { reason, .. } if reason.contains(needle))
+}
+
+#[test]
+fn hypothesis_usable_only_in_its_own_proof() {
+    // With the hypothesis: proven.
+    let o = prove_h(
+        &["xs", "ys"],
+        &[("xs", "ys")],
+        "[append xs Nil]",
+        "[append ys Nil]",
+        "[rewrite h1]",
+        &none,
+        &[],
+    );
+    assert_eq!(o, Outcome::Proven);
+    // Without (another law's proof): `h1` does not exist.
+    let o = prove_h(
+        &["xs", "ys"],
+        &[],
+        "[append xs Nil]",
+        "[append ys Nil]",
+        "[rewrite h1]",
+        &none,
+        &[],
+    );
+    assert!(stuck_with(&o, "no hypothesis `h1`"), "{o:?}");
+    // Through the pipeline: a proof citing another law's hypothesis.
+    let dir = tmp_dir(
+        "cond-scope",
+        &[
+            ("defs.oo", COND_DEFS),
+            (
+                "laws/l.oo",
+                "[law cons-inj [x xs ys] :given [[= [Cons x xs] [Cons x ys]]] [= xs ys]]
+                 [law borrow [xs ys] [= [append xs Nil] [append ys Nil]]]",
+            ),
+            (
+                "proofs/p.oo",
+                "[proof cons-inj [rewrite h1.2]] [proof borrow [rewrite h1]]",
+            ),
+        ],
+    );
+    let r = run_dir(&dir, &Options::default()).unwrap();
+    assert_eq!(status(&r, "cons-inj").status, "proven");
+    assert_ne!(status(&r, "borrow").status, "proven");
+}
+
+#[test]
+fn hypothesis_rewrites_only_its_exact_instance() {
+    // h1 is about `xs`, not a pattern: it must not rewrite [reverse ys].
+    let o = prove_h(
+        &["xs", "ys"],
+        &[("[reverse xs]", "Nil")],
+        "[reverse ys]",
+        "Nil",
+        "[rewrite h1]",
+        &none,
+        &[],
+    );
+    assert!(stuck_with(&o, "does not match"), "{o:?}");
+    // Induction substitutes into hypotheses like into the goal: in the Cons
+    // case h1 is about [Cons x rest], not xs.
+    let o = prove_h(
+        &["xs", "ys"],
+        &[("[append xs ys]", "ys")],
+        "[append xs ys]",
+        "ys",
+        "[cases xs [Nil] [Cons [rewrite h1]]]",
+        &none,
+        &[],
+    );
+    assert_eq!(o, Outcome::Proven, "{o:?}");
+}
+
+#[test]
+fn citing_conditional_law_needs_its_obligation() {
+    let o = prove_h(
+        &["a", "b"],
+        &[],
+        "a",
+        "b",
+        "[rewrite rev-inj]",
+        &rev_inj,
+        &[],
+    );
+    assert!(stuck_with(&o, "obligation [= [reverse a]"), "{o:?}");
+}
+
+#[test]
+fn obligation_discharged_by_hypothesis() {
+    let o = prove_h(
+        &["a", "b"],
+        &[("[reverse a]", "[reverse b]")],
+        "a",
+        "b",
+        "[rewrite rev-inj]",
+        &rev_inj,
+        &[],
+    );
+    assert_eq!(o, Outcome::Proven, "{o:?}");
+    // Either orientation of the hypothesis.
+    let o = prove_h(
+        &["a", "b"],
+        &[("[reverse b]", "[reverse a]")],
+        "a",
+        "b",
+        "[rewrite rev-inj]",
+        &rev_inj,
+        &[],
+    );
+    assert_eq!(o, Outcome::Proven, "{o:?}");
+}
+
+#[test]
+fn obligation_discharged_by_normalization_or_proven_law() {
+    let cond = |n: &str| match n {
+        "by-eval" => Some((
+            rule(&["xs"], &[("[append Nil xs]", "xs")], "[h xs]", "xs"),
+            false,
+        )),
+        "by-law" => Some((
+            rule(&["xs"], &[("[append xs Nil]", "xs")], "[h xs]", "xs"),
+            false,
+        )),
+        _ => None,
+    };
+    // (a) both sides evaluate to the same term
+    let o = prove_h(&["a"], &[], "[h a]", "a", "[rewrite by-eval]", &cond, &[]);
+    assert_eq!(o, Outcome::Proven, "{o:?}");
+    // needs induction, not evaluation: stuck without a known law
+    let o = prove_h(&["a"], &[], "[h a]", "a", "[rewrite by-law]", &cond, &[]);
+    assert!(stuck_with(&o, "obligation [= [append a Nil] a]"), "{o:?}");
+    // (c) an instance of a proven law
+    let known = vec![(
+        "append-nil".to_string(),
+        rule(&["xs"], &[], "[append xs Nil]", "xs"),
+        false,
+    )];
+    let o = prove_h(&["a"], &[], "[h a]", "a", "[rewrite by-law]", &cond, &known);
+    assert_eq!(o, Outcome::Proven, "{o:?}");
+    // ... and an admitted one taints
+    let known = vec![(
+        "append-nil".to_string(),
+        rule(&["xs"], &[], "[append xs Nil]", "xs"),
+        true,
+    )];
+    let o = prove_h(&["a"], &[], "[h a]", "a", "[rewrite by-law]", &cond, &known);
+    assert_eq!(o, Outcome::Admitted, "{o:?}");
+}
+
+#[test]
+fn constructor_injectivity_on_hypotheses() {
+    let o = prove_h(
+        &["xs", "ys"],
+        &[("[Cons a xs]", "[Cons b ys]")],
+        "xs",
+        "ys",
+        "[rewrite h1.2]",
+        &none,
+        &[],
+    );
+    assert_eq!(o, Outcome::Proven, "{o:?}");
+    // no third component; distinct constructors give no components
+    let o = prove_h(
+        &["xs", "ys"],
+        &[("[Cons a xs]", "[Cons b ys]")],
+        "xs",
+        "ys",
+        "[rewrite h1.3]",
+        &none,
+        &[],
+    );
+    assert!(stuck_with(&o, "no hypothesis `h1.3`"), "{o:?}");
+    let o = prove_h(
+        &["xs", "ys"],
+        &[("[Cons a xs]", "Nil")],
+        "xs",
+        "ys",
+        "[rewrite h1.2]",
+        &none,
+        &[],
+    );
+    assert!(stuck_with(&o, "no hypothesis `h1.2`"), "{o:?}");
+}
+
+#[test]
+fn ih_of_conditional_law_carries_obligations() {
+    let law =
+        "[law append-cancel-left [xs ys zs] :given [[= [append xs ys] [append xs zs]]] [= ys zs]]";
+    let dir = tmp_dir(
+        "cond-ih",
+        &[
+            ("defs.oo", COND_DEFS),
+            ("laws/l.oo", law),
+            (
+                "proofs/p.oo",
+                "[proof append-cancel-left [induction xs [Nil [rewrite h1]] [Cons [rewrite ih]]]]",
+            ),
+        ],
+    );
+    let r = run_dir(&dir, &Options::default()).unwrap();
+    assert_eq!(status(&r, "append-cancel-left").status, "proven");
+    // With the hypothesis dropped from the ih's reach (cases: no ih), stuck.
+    let o = prove_h(
+        &["xs", "ys", "zs"],
+        &[("[append xs ys]", "[append xs zs]")],
+        "ys",
+        "zs",
+        "[induction xs [Nil [rewrite h1]] [Cons [rewrite ih :at 0] [rewrite h1]]]",
+        &none,
+        &[],
+    );
+    assert!(matches!(o, Outcome::Stuck { .. }), "{o:?}");
+}
+
+#[test]
+fn vacuous_conditional_law_is_not_proven() {
+    let dir = tmp_dir(
+        "cond-vacuous",
+        &[
+            ("defs.oo", COND_DEFS),
+            (
+                "laws/l.oo",
+                "[law vac [xs] :given [[= [Cons 1 xs] Nil]] [= xs [Cons 2 Nil]]]",
+            ),
+            ("proofs/p.oo", "[proof vac [admit]]"),
+        ],
+    );
+    let r = run_dir(&dir, &Options::default()).unwrap();
+    let v = status(&r, "vac");
+    assert_eq!(v.status, "unknown");
+    assert_eq!(v.checked, 0);
+    assert!(v.vacuous > 0);
+    assert!(v.note.as_deref().unwrap().contains("vacuous"));
+    let j = r.to_json();
+    let jl = j["laws"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["name"] == "vac")
+        .unwrap();
+    assert!(jl["inputs_vacuous"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn false_conditional_law_falsified_and_unprovable() {
+    let law = "[law bogus [xs ys] :given [[= [length xs] [length ys]]] [= xs ys]]";
+    let dir = tmp_dir(
+        "cond-bogus",
+        &[
+            ("defs.oo", COND_DEFS),
+            ("laws/l.oo", law),
+            ("proofs/p.oo", "[proof bogus [rewrite h1]]"),
+        ],
+    );
+    let r = run_dir(&dir, &Options::default()).unwrap();
+    let b = status(&r, "bogus");
+    assert_eq!(b.status, "falsified");
+    assert!(b.vacuous > 0, "inputs with unequal lengths are vacuous");
+    // The kernel, run directly: h1 is about [length xs], not xs.
+    let o = prove_h(
+        &["xs", "ys"],
+        &[("[length xs]", "[length ys]")],
+        "xs",
+        "ys",
+        "[rewrite h1]",
+        &none,
+        &[],
+    );
+    assert!(stuck_with(&o, "does not match"), "{o:?}");
+}
+
+// ─── Nested recursion: mutual totality, mutual induction, the meta corpus ──
+
+const META_DEFS: &str = include_str!("../../../../verify/meta/defs.oo");
+
+fn meta_defs() -> Defs {
+    Defs::from_exprs(&crate::parser::parse(META_DEFS).unwrap()).unwrap()
+}
+
+#[test]
+fn totality_accepts_mutual_groups_that_decrease() {
+    let d = meta_defs();
+    for f in [
+        "subst",
+        "subst-list",
+        "matcht",
+        "match-list",
+        "term-eq",
+        "terms-eq",
+        "apply-match",
+        "compose",
+    ] {
+        assert!(d.total.contains(f), "{f} should be total");
+    }
+    let src = r#"
+[type Nat [S Nat] Z]
+[fn ev [n] [match n Z Z [S k] [od k]]]
+[fn od [n] [match n Z Z [S k] [ev k]]]
+[fn ev-bad [n] [match n Z Z [S k] [od-bad n]]]
+[fn od-bad [n] [match n Z Z [S k] [ev-bad k]]]
+[fn f [a b] [match a Z Z [S k] [g b k]]]
+[fn g [a b] [match b Z Z [S k] [f k a]]]
+[fn f-bad [a b] [match a Z Z [S k] [g-bad b k]]]
+[fn g-bad [a b] [match b Z Z [S k] [f-bad a k]]]
+[fn calls-bad [n] [ev-bad n]]
+"#;
+    let d = Defs::from_exprs(&crate::parser::parse(src).unwrap()).unwrap();
+    assert!(d.total.contains("ev") && d.total.contains("od"));
+    // od-bad passes n itself back: no strict decrease around the cycle.
+    assert!(!d.total.contains("ev-bad") && !d.total.contains("od-bad"));
+    // The measure may sit at a different position in each member...
+    assert!(d.total.contains("f") && d.total.contains("g"));
+    // ...but it must be one position per fn: here f's would have to be b.
+    assert!(!d.total.contains("f-bad") && !d.total.contains("g-bad"));
+    assert!(!d.total.contains("calls-bad"));
+}
+
+#[test]
+fn infer_types_mutually_recursive_fns() {
+    let d = meta_defs();
+    let ts = super::infer::law_param_types(
+        &d,
+        &d.fn_order,
+        &["t".into(), "s".into()],
+        &p("[subst t s]"),
+        &p("t"),
+    )
+    .unwrap();
+    let ts: Vec<kernel::Ty> = ts.iter().map(super::infer::to_ty).collect();
+    assert_eq!(
+        ts,
+        vec![kernel::Ty::named("Term"), kernel::Ty::named("Subst")]
+    );
+}
+
+#[test]
+fn typed_generator_enumerates_nested_generics() {
+    use crate::types::Type;
+    let d = meta_defs();
+    let subst = Type::Con("Subst".into(), vec![]);
+    let s6: Vec<String> = super::bounded::typed_values(&subst, 6, &d, 0)
+        .iter()
+        .map(|e| e.to_string())
+        .collect();
+    assert!(s6.contains(&"[Subst [Cons [Pair [Sym Z] [V [Sym Z]]] Nil]]".to_string()));
+    let term = Type::Con("Term".into(), vec![]);
+    let t2: Vec<String> = super::bounded::typed_values(&term, 2, &d, 0)
+        .iter()
+        .map(|e| e.to_string())
+        .collect();
+    assert!(t2.contains(&"[C [Sym Z] Nil]".to_string()));
+}
+
+/// Check one law of a mutual group in the kernel directly.
+fn prove_mutual(
+    d: &Defs,
+    (params, lhs, rhs): (&[(&str, &str)], &str, &str),
+    steps: &str,
+    partners: &[kernel::Mutual],
+) -> Outcome {
+    let names: Vec<String> = params.iter().map(|(n, _)| n.to_string()).collect();
+    let types: HashMap<String, kernel::Ty> =
+        params.iter().map(|(n, t)| (n.to_string(), ty(t))).collect();
+    let (l, r) = (p(lhs), p(rhs));
+    let goal = Goal {
+        law_name: "t",
+        params: &names,
+        param_types: &types,
+        lhs: &l,
+        rhs: &r,
+        hyps: &[],
+    };
+    let steps = crate::parser::parse(steps).unwrap();
+    kernel::check_proof_mutual(&goal, &steps, d, &none, &[], partners)
+}
+
+fn partner(
+    name: &str,
+    params: &[&str],
+    var: &str,
+    var_ty: &str,
+    l: &str,
+    r: &str,
+) -> kernel::Mutual {
+    kernel::Mutual {
+        name: name.into(),
+        params: params.iter().map(|s| s.to_string()).collect(),
+        var: var.into(),
+        var_ty: ty(var_ty),
+        lhs: p(l),
+        rhs: p(r),
+    }
+}
+
+#[test]
+fn mutual_induction_supplies_hypotheses_across_types() {
+    let d = meta_defs();
+    let term_law = partner("pt", &["t"], "t", "Term", "[subst t [Subst Nil]]", "t");
+    let list_law = partner(
+        "pl",
+        &["ts"],
+        "ts",
+        "[List Term]",
+        "[subst-list ts [Subst Nil]]",
+        "ts",
+    );
+    let o = prove_mutual(
+        &d,
+        (&[("t", "Term")], "[subst t [Subst Nil]]", "t"),
+        "[induction t [V] [C [unfold subst] [rewrite ih-rest]] [A [unfold subst] [rewrite ih-rest]]]",
+        std::slice::from_ref(&list_law),
+    );
+    assert_eq!(o, Outcome::Proven);
+    let o = prove_mutual(
+        &d,
+        (
+            &[("ts", "[List Term]")],
+            "[subst-list ts [Subst Nil]]",
+            "ts",
+        ),
+        "[induction ts [Nil] [Cons [unfold subst-list] [rewrite ih-x] [rewrite ih-rest]]]",
+        std::slice::from_ref(&term_law),
+    );
+    assert_eq!(o, Outcome::Proven);
+    // Without the partner there is no hypothesis for the (List Term) field.
+    let o = prove_mutual(
+        &d,
+        (&[("t", "Term")], "[subst t [Subst Nil]]", "t"),
+        "[induction t [V] [C [unfold subst] [rewrite ih-rest]] [A [unfold subst] [rewrite ih-rest]]]",
+        &[],
+    );
+    assert!(matches!(o, Outcome::Stuck { .. }));
+    // A mutual proof must be a single induction.
+    let o = prove_mutual(
+        &d,
+        (&[("t", "Term")], "[subst t [Subst Nil]]", "t"),
+        "[unfold subst]",
+        std::slice::from_ref(&list_law),
+    );
+    assert!(matches!(&o, Outcome::Stuck { reason, .. } if reason.contains("exactly one")));
+}
+
+#[test]
+fn mutual_induction_cannot_prove_a_false_pair() {
+    // subst t s = t and subst-list ts s = ts are both false. The list half
+    // closes relative to its partner (that is all a member proof shows), but
+    // the term half cannot: at a variable, subst consults s.
+    let d = meta_defs();
+    let term_law = partner("bt", &["t", "s"], "t", "Term", "[subst t s]", "t");
+    let list_law = partner(
+        "bl",
+        &["ts", "s"],
+        "ts",
+        "[List Term]",
+        "[subst-list ts s]",
+        "ts",
+    );
+    let o = prove_mutual(
+        &d,
+        (
+            &[("ts", "[List Term]"), ("s", "Subst")],
+            "[subst-list ts s]",
+            "ts",
+        ),
+        "[induction ts [Nil] [Cons [unfold subst-list] [rewrite ih-x] [rewrite ih-rest]]]",
+        std::slice::from_ref(&term_law),
+    );
+    assert_eq!(o, Outcome::Proven);
+    for steps in [
+        "[induction t [V] [C [unfold subst] [rewrite ih-rest]] [A [unfold subst] [rewrite ih-rest]]]",
+        "[induction t [V [unfold subst] [cases s [Subst]]] [C [unfold subst] [rewrite ih-rest]] [A [unfold subst] [rewrite ih-rest]]]",
+        "[induction t [V [rewrite ih-rest]] [C [unfold subst] [rewrite ih-rest]] [A [unfold subst] [rewrite ih-rest]]]",
+    ] {
+        let o = prove_mutual(
+            &d,
+            (&[("t", "Term"), ("s", "Subst")], "[subst t s]", "t"),
+            steps,
+            std::slice::from_ref(&list_law),
+        );
+        assert!(matches!(o, Outcome::Stuck { .. }), "{steps}: {o:?}");
+    }
+}
+
+const META_LAWS: &str = r#"
+[law subst-empty [t] [= [subst t [Subst Nil]] t]]
+[law subst-list-empty [ts] [= [subst-list ts [Subst Nil]] ts]]
+[law use-empty [f ts] [= [subst [C f ts] [Subst Nil]] [C f ts]]]
+"#;
+
+const META_LIST_PROOF: &str = "[proof subst-list-empty :mutual subst-empty
+  [induction ts [Nil] [Cons [unfold subst-list] [rewrite ih-x] [rewrite ih-rest]]]]";
+
+const META_USE_PROOF: &str = "[proof use-empty [rewrite subst-empty]]";
+
+fn meta_run(tag: &str, term_proof: &str, list_proof: &str) -> Report {
+    let proofs = format!("{term_proof}\n{list_proof}\n{META_USE_PROOF}");
+    let dir = tmp_dir(
+        tag,
+        &[
+            ("defs.oo", META_DEFS),
+            ("canary.oo", "[law canary-subst [t s] [= [subst t s] t]]"),
+            ("laws/l.oo", META_LAWS),
+            ("proofs/p.oo", &proofs),
+        ],
+    );
+    run_dir(&dir, &Options::default()).unwrap()
+}
+
+#[test]
+fn pipeline_mutual_group_proves_together() {
+    let r = meta_run(
+        "mutual-ok",
+        "[proof subst-empty :mutual subst-list-empty
+           [induction t [V] [C [unfold subst] [rewrite ih-rest]] [A [unfold subst] [rewrite ih-rest]]]]",
+        META_LIST_PROOF,
+    );
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert!(r.sound);
+    assert_eq!(status(&r, "subst-empty").status, "proven");
+    assert_eq!(status(&r, "subst-list-empty").status, "proven");
+    // Citable once the whole group has closed.
+    assert_eq!(status(&r, "use-empty").status, "proven");
+    // The bounded generator reaches Term and Subst values.
+    assert_eq!(status(&r, "canary-subst").status, "falsified");
+}
+
+#[test]
+fn pipeline_mutual_group_fails_together() {
+    // The term half is incomplete: the list half closes on its own, but
+    // neither is proven, and nothing citing them is either.
+    let r = meta_run(
+        "mutual-stuck",
+        "[proof subst-empty :mutual subst-list-empty
+           [induction t [V] [C [unfold subst]] [A [unfold subst] [rewrite ih-rest]]]]",
+        META_LIST_PROOF,
+    );
+    assert!(r.sound);
+    assert_eq!(status(&r, "subst-empty").status, "unknown");
+    let l = status(&r, "subst-list-empty");
+    assert_eq!(l.status, "unknown");
+    assert!(l
+        .stuck
+        .as_ref()
+        .unwrap()
+        .2
+        .contains("partner `subst-empty`"));
+    assert_eq!(status(&r, "use-empty").status, "unknown");
+    // A member may not cite its partner by name inside the group.
+    let r = meta_run(
+        "mutual-cite",
+        "[proof subst-empty :mutual subst-list-empty
+           [induction t [V] [C [unfold subst] [rewrite subst-list-empty]] [A [unfold subst] [rewrite ih-rest]]]]",
+        META_LIST_PROOF,
+    );
+    assert_eq!(status(&r, "subst-empty").status, "unknown");
+    assert_eq!(status(&r, "subst-list-empty").status, "unknown");
+    // Groups must be declared by every member.
+    let r = meta_run(
+        "mutual-asym",
+        "[proof subst-empty
+           [induction t [V] [C [unfold subst] [rewrite ih-rest]] [A [unfold subst] [rewrite ih-rest]]]]",
+        META_LIST_PROOF,
+    );
+    assert!(!r.errors.is_empty());
+    assert_eq!(status(&r, "subst-empty").status, "unknown");
+    assert_eq!(status(&r, "subst-list-empty").status, "unknown");
 }
