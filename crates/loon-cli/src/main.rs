@@ -139,6 +139,21 @@ enum Command {
     /// the trace and report FIXED (exit 0), REPRODUCED (exit 10), or
     /// DIVERGED (exit 11). With no arguments, verifies package cache
     /// integrity against lockfile hashes.
+    /// Check laws in a verify directory: bounded falsification, then the
+    /// rewrite kernel on proof objects. Prints a report (JSON with --json).
+    Prove {
+        /// Verify directory (default: verify/)
+        dir: Option<PathBuf>,
+        /// Emit a single JSON report
+        #[arg(long)]
+        json: bool,
+        /// Bounded-evaluation input size
+        #[arg(long, default_value = "6")]
+        bound: usize,
+        /// Seed for generated Int inputs
+        #[arg(long)]
+        seed: Option<u64>,
+    },
     Verify {
         /// Trace file written by `loon run --record`
         trace: Option<PathBuf>,
@@ -252,6 +267,12 @@ fn main() {
         Command::Update { ref source } => pkg_update(source.as_deref()),
         Command::Why { ref source } => pkg_why(source),
         Command::Audit { capabilities } => pkg_audit(capabilities),
+        Command::Prove {
+            ref dir,
+            json,
+            bound,
+            seed,
+        } => prove_dir(dir.as_deref(), json, bound, seed),
         Command::Verify {
             ref trace,
             ref file,
@@ -1358,6 +1379,32 @@ fn new_project(name: &str) {
     println!("  {} cd {name} && loon run src/main.oo", "->".dimmed());
 }
 
+fn prove_dir(dir: Option<&std::path::Path>, json: bool, bound: usize, seed: Option<u64>) {
+    let dir = dir.unwrap_or_else(|| std::path::Path::new("verify"));
+    let mut opts = loon_lang::verify::Options {
+        bound,
+        ..Default::default()
+    };
+    if let Some(s) = seed {
+        opts.seed = s;
+    }
+    let report = match loon_lang::verify::run_dir(dir, &opts) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{} {e}", "error".red().bold());
+            std::process::exit(1);
+        }
+    };
+    if json {
+        println!("{}", report.to_json());
+    } else {
+        print!("{}", report.to_text());
+    }
+    if !report.sound {
+        std::process::exit(2);
+    }
+}
+
 fn test_file(path: &PathBuf) {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -1640,6 +1687,7 @@ fn explain_error(code: &str) {
         "E0401" => Some(ErrorCode::E0401),
         "E0403" => Some(ErrorCode::E0403),
         "E0404" => Some(ErrorCode::E0404),
+        "E0405" => Some(ErrorCode::E0405),
         "E0500" => Some(ErrorCode::E0500),
         "E0501" => Some(ErrorCode::E0501),
         "E0502" => Some(ErrorCode::E0502),
@@ -1652,7 +1700,7 @@ fn explain_error(code: &str) {
         eprintln!("  E01xx: parse errors    (E0100-E0103)");
         eprintln!("  E02xx: type errors     (E0200-E0207)");
         eprintln!("  E03xx: ownership errors (E0300-E0302)");
-        eprintln!("  E04xx: effect errors   (E0400-E0401)");
+        eprintln!("  E04xx: effect errors   (E0400-E0405)");
         eprintln!("  E05xx: module errors   (E0500-E0502)");
         eprintln!("Legacy codes: E0001 -> E0300, E0002 -> E0301, E0003 -> E0302, E0010 -> E0200, E0020 -> E0400");
         std::process::exit(1);

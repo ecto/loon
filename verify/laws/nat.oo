@@ -1,0 +1,28 @@
+; Peano arithmetic over Nat (verify/defs.oo).
+
+[law add-zero-right [n] [= [add n Z] n]]
+[law add-succ-right [m n] [= [add m [S n]] [S [add m n]]]]
+[law add-comm [m n] [= [add m n] [add n m]]]
+[law add-assoc [m n p] [= [add [add m n] p] [add m [add n p]]]]
+[law mul-zero-right [n] [= [mul n Z] Z]]
+[law mul-succ-right [m n] [= [mul m [S n]] [add m [mul m n]]]]
+[law mul-comm [m n] [= [mul m n] [mul n m]]]
+[law mul-distrib-left [m n p] [= [mul m [add n p]] [add [mul m n] [mul m p]]]]
+[law mul-assoc [m n p] [= [mul [mul m n] p] [mul m [mul n p]]]]
+[law gauss [n] [= [mul [S [S Z]] [sum n]] [mul n [S n]]]]
+
+; false on purpose: the falsifier should find counterexamples
+[law mul-is-add-bogus [m n] [= [mul m n] [add m n]]]
+[law sum-is-square-bogus [n] [= [sum n] [mul n n]]]
+
+; helper on the way to mul-assoc
+[law mul-distrib-right [a b p] [= [mul [add a b] p] [add [mul a p] [mul b p]]]]
+
+; stretch: the sum of the first n odd numbers is n squared
+[law odds-square [n] [= [odds n] [mul n n]]]
+
+; Close goals modulo associativity/commutativity (and unit) of these operators.
+; The kernel checks each cited law's shape and only uses the normalization in
+; proofs that come after those laws are proven (never in their own proofs).
+[ac add add-assoc add-comm :unit Z add-zero-right]
+[ac mul mul-assoc mul-comm]

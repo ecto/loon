@@ -1,0 +1,15 @@
+; Compiler correctness (Hutton): exec distributes over append, then the
+; compiled code of e pushes eval e, by induction on e with one hypothesis per
+; subexpression, each instantiated at a different stack.
+
+[proof exec-append
+  [induction c1
+    [Nil  [unfold append]]
+    [Cons [unfold append] [unfold exec] [rewrite ih]]]]
+
+[proof compile-correct
+  [induction e
+    [Lit]
+    [Add [unfold compile]
+         [rewrite exec-append] [rewrite ih-rest]
+         [rewrite exec-append] [rewrite ih-rest1]]]]

@@ -15,3 +15,4 @@ pub mod pkg;
 pub mod prelude;
 pub mod syntax;
 pub mod types;
+pub mod verify;

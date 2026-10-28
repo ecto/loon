@@ -1,0 +1,82 @@
+; Reference prelude for `loon prove`. Frozen: its hash is in every report.
+
+[type List T [Cons T (List T)] Nil]
+
+[fn append [xs ys]
+  [match xs
+    Nil           ys
+    [Cons x rest] [Cons x [append rest ys]]]]
+
+[fn reverse [xs]
+  [match xs
+    Nil           Nil
+    [Cons x rest] [append [reverse rest] [Cons x Nil]]]]
+
+[fn length [xs]
+  [match xs
+    Nil           0
+    [Cons x rest] [+ 1 [length rest]]]]
+
+[fn map [f xs]
+  [match xs
+    Nil           Nil
+    [Cons x rest] [Cons [f x] [map f rest]]]]
+
+; Peano naturals (nat agent)
+[type Nat [S Nat] Z]
+
+[fn add [m n]
+  [match m
+    Z     n
+    [S k] [S [add k n]]]]
+
+[fn mul [m n]
+  [match m
+    Z     Z
+    [S k] [add n [mul k n]]]]
+
+[fn sum [n]
+  [match n
+    Z     Z
+    [S k] [add [S k] [sum k]]]]
+
+[fn odds [n]
+  [match n
+    Z     Z
+    [S k] [add [S [add k k]] [odds k]]]]      ; 1 + 3 + ... + (2n-1)
+
+; Hutton's arithmetic compiler (compiler agent). One instruction's effect is
+; `step`, so `exec` only matches on the code list: the VM does not bind
+; variables in nested constructor patterns, and the checker shares one
+; instantiation of `Cons` per function, so code and stack must not both be
+; matched with `Cons` in the same fn. An IAdd that underflows the stack is
+; skipped rather than halting execution, so exec distributes over append.
+[type Expr [Lit Int] [Add Expr Expr]]
+[type Instr [Push Int] IAdd]
+
+[fn eval [e]
+  [match e
+    [Lit n]   n
+    [Add a b] [+ [eval a] [eval b]]]]
+
+[fn compile [e]
+  [match e
+    [Lit n]   [Cons [Push n] Nil]
+    [Add a b] [append [compile a] [append [compile b] [Cons IAdd Nil]]]]]
+
+[fn add-top [stack]
+  [match stack
+    Nil        Nil
+    [Cons y s] [match s
+                 Nil        [Cons y Nil]
+                 [Cons x t] [Cons [+ x y] t]]]]
+
+[fn step [i stack]
+  [match i
+    [Push n] [Cons n stack]
+    IAdd     [add-top stack]]]
+
+[fn exec [code stack]
+  [match code
+    Nil           stack
+    [Cons i rest] [exec rest [step i stack]]]]

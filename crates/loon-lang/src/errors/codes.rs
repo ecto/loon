@@ -36,6 +36,7 @@ pub enum ErrorCode {
     E0402, // unknown effect operation
     E0403, // effect mismatch
     E0404, // effect not granted (pkg.oo capability violation)
+    E0405, // annotated total but may diverge (Div)
 
     // Module errors
     E0500, // unresolved module
@@ -76,6 +77,7 @@ impl ErrorCode {
             ErrorCode::E0402 => "E0402",
             ErrorCode::E0403 => "E0403",
             ErrorCode::E0404 => "E0404",
+            ErrorCode::E0405 => "E0405",
             ErrorCode::E0600 => "E0600",
             ErrorCode::E0601 => "E0601",
             ErrorCode::E0602 => "E0602",
@@ -108,7 +110,8 @@ impl ErrorCode {
             | ErrorCode::E0401
             | ErrorCode::E0402
             | ErrorCode::E0403
-            | ErrorCode::E0404 => "effect",
+            | ErrorCode::E0404
+            | ErrorCode::E0405 => "effect",
             ErrorCode::E0500 | ErrorCode::E0501 | ErrorCode::E0502 => "module",
             ErrorCode::E0600 | ErrorCode::E0601 | ErrorCode::E0602 => "placement",
             ErrorCode::W0100 => "warning",
@@ -139,6 +142,7 @@ impl ErrorCode {
             ErrorCode::E0402 => "unknown effect operation",
             ErrorCode::E0403 => "effect mismatch",
             ErrorCode::E0404 => "effect not granted",
+            ErrorCode::E0405 => "may not terminate",
             ErrorCode::E0600 => "not allowed inside a kernel",
             ErrorCode::E0601 => "kernel signature is not placeable",
             ErrorCode::E0602 => "kernel writes outside its own work item",

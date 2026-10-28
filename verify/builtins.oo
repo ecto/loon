@@ -1,0 +1,13 @@
+; Bridge laws: reference definitions (defs.oo) against the Rust builtins.
+; Bounded-only: never proven, reported with status `bounded`.
+; `builtin-NAME` names the builtin NAME (the reference fn shadows it otherwise).
+
+[fn to-vec [xs]
+  [match xs
+    Nil           #[]
+    [Cons x rest] [concat #[x] [to-vec rest]]]]
+
+[law reverse-builtin [xs] [= [to-vec [reverse xs]] [builtin-reverse [to-vec xs]]]]
+[law append-builtin [xs ys] [= [to-vec [append xs ys]] [builtin-concat [to-vec xs] [to-vec ys]]]]
+[law length-builtin [xs] [= [length xs] [builtin-len [to-vec xs]]]]
+[law map-builtin [f xs] [= [to-vec [map f xs]] [builtin-map f [to-vec xs]]]]

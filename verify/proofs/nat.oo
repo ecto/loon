@@ -1,0 +1,61 @@
+; Peano ladder.
+
+[proof add-zero-right
+  [induction n
+    [Z]
+    [S [unfold add] [rewrite ih]]]]
+
+[proof add-succ-right
+  [induction m
+    [Z [unfold add]]
+    [S [unfold add] [rewrite ih]]]]
+
+[proof add-comm
+  [induction m
+    [Z [unfold add] [rewrite add-zero-right :rev]]
+    [S [unfold add] [rewrite ih] [rewrite add-succ-right :rev]]]]
+
+[proof add-assoc
+  [induction m
+    [Z]
+    [S [unfold add] [unfold add] [rewrite ih]]]]
+
+[proof mul-zero-right
+  [induction n
+    [Z]
+    [S [unfold mul] [rewrite ih]]]]
+
+[proof mul-succ-right
+  [induction m
+    [Z]
+    [S [unfold mul] [rewrite ih]]]]
+
+[proof mul-comm
+  [induction n
+    [Z [rewrite mul-zero-right]]
+    [S [rewrite mul-succ-right] [rewrite ih]]]]
+
+[proof mul-distrib-left
+  [induction m
+    [Z]
+    [S [unfold mul] [rewrite ih]]]]
+
+[proof mul-distrib-right
+  [induction a
+    [Z]
+    [S [unfold add] [unfold mul] [rewrite ih]]]]
+
+[proof mul-assoc
+  [induction m
+    [Z]
+    [S [unfold mul] [rewrite mul-distrib-right] [rewrite ih]]]]
+
+[proof gauss
+  [induction n
+    [Z]
+    [S [unfold sum] [rewrite mul-distrib-left] [rewrite ih]]]]
+
+[proof odds-square
+  [induction n
+    [Z]
+    [S [unfold odds] [rewrite ih]]]]

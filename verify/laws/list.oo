@@ -1,0 +1,22 @@
+; List conjectures over the reference prelude (verify/defs.oo).
+
+[law append-nil [xs] [= [append xs Nil] xs]]
+
+[law append-assoc [xs ys zs]
+  [= [append [append xs ys] zs] [append xs [append ys zs]]]]
+
+[law rev-append [xs ys]
+  [= [reverse [append xs ys]] [append [reverse ys] [reverse xs]]]]
+
+[law rev-rev [xs] [= [reverse [reverse xs]] xs]]
+
+[law length-append [xs ys]
+  [= [length [append xs ys]] [+ [length xs] [length ys]]]]
+
+[law map-append [f xs ys]
+  [= [map f [append xs ys]] [append [map f xs] [map f ys]]]]
+
+; added by hand after the agents finished
+[law map-length [f xs] [= [length [map f xs]] [length xs]]]
+[law map-rev-bogus [f xs] [= [map f [reverse xs]] [reverse xs]]]
+[law rev-length [xs] [= [length [reverse xs]] [length xs]]]
