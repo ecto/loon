@@ -1,0 +1,288 @@
+; Meta-model of the proof kernel's term language (rung 2 of
+; docs/plans/2026-10-28-self-verifying-kernel.md). Frozen: its hash is in
+; every report. First-order terms only: no binders, so substitution is
+; capture-free by construction.
+;
+; Conventions forced by the kernel and the VM (see verify/defs.oo):
+; one constructor pattern level per `match` (the VM does not bind variables
+; in nested constructor patterns), so pairs and wrappers are taken apart by
+; an inner `match`.
+
+[type List T [Cons T (List T)] Nil]
+[type Nat [S Nat] Z]
+[type B T F]
+[type Pair X Y [Pair X Y]]
+[type Option X [Some X] None]
+
+; Symbols are naturals.
+[type Sym [Sym Nat]]
+
+; Variable, constructor application, function application.
+[type Term [V Sym] [C Sym (List Term)] [A Sym (List Term)]]
+
+; A substitution is an association list; the first binding of a symbol wins.
+[type Subst [Subst (List (Pair Sym Term))]]
+
+[fn if-b [b u w]
+  [match b
+    T u
+    F w]]
+
+[fn and-b [a b]
+  [match a
+    T b
+    F F]]
+
+[fn nat-eq [m n]
+  [match m
+    Z     [match n
+            Z     T
+            [S b] F]
+    [S a] [match n
+            Z     F
+            [S b] [nat-eq a b]]]]
+
+[fn sym-eq [a b]
+  [match a
+    [Sym m] [match b
+              [Sym n] [nat-eq m n]]]]
+
+[fn append [xs ys]
+  [match xs
+    Nil           ys
+    [Cons x rest] [Cons x [append rest ys]]]]
+
+; The binding of `x` in `bs`, if any.
+[fn lookup [x bs]
+  [match bs
+    Nil           None
+    [Cons p rest] [match p
+                    [Pair y u] [if-b [sym-eq x y] [Some u] [lookup x rest]]]]]
+
+; `lookup` with the variable itself as the default: what `subst` does at a
+; variable. A separate fn so that `subst` never matches on an Option.
+[fn apply-var [x bs]
+  [match bs
+    Nil           [V x]
+    [Cons p rest] [match p
+                    [Pair y u] [if-b [sym-eq x y] u [apply-var x rest]]]]]
+
+; Substitution, by nested structural recursion through the (List Term)
+; field: `subst` and `subst-list` are one mutually recursive group.
+[fn subst [t s]
+  [match t
+    [V x]    [match s
+               [Subst bs] [apply-var x bs]]
+    [C f ts] [C f [subst-list ts s]]
+    [A f ts] [A f [subst-list ts s]]]]
+
+[fn subst-list [ts s]
+  [match ts
+    Nil           Nil
+    [Cons t rest] [Cons [subst t s] [subst-list rest s]]]]
+
+; Apply `s` to every right-hand side of `bs`.
+[fn map-rhs [bs s]
+  [match bs
+    Nil           Nil
+    [Cons p rest] [match p
+                    [Pair y u] [Cons [Pair y [subst u s]] [map-rhs rest s]]]]]
+
+; compose s1 s2 = s2 after s1: s1's bindings with s2 applied, then all of
+; s2's (shadowed where s1 already binds the symbol).
+[fn compose [s1 s2]
+  [match s1
+    [Subst bs1] [match s2
+                  [Subst bs2] [Subst [append [map-rhs bs1 s2] bs2]]]]]
+
+; Structural term equality.
+[fn term-eq [a b]
+  [match a
+    [V x]    [match b
+               [V y]    [sym-eq x y]
+               [C g us] F
+               [A g us] F]
+    [C f ts] [match b
+               [V y]    F
+               [C g us] [and-b [sym-eq f g] [terms-eq ts us]]
+               [A g us] F]
+    [A f ts] [match b
+               [V y]    F
+               [C g us] F
+               [A g us] [and-b [sym-eq f g] [terms-eq ts us]]]]]
+
+[fn terms-eq [ts us]
+  [match ts
+    Nil           [match us
+                    Nil         T
+                    [Cons u ur] F]
+    [Cons t rest] [match us
+                    Nil         F
+                    [Cons u ur] [and-b [term-eq t u] [terms-eq rest ur]]]]]
+
+; Matching threads one binding list left to right, like the Rust kernel's
+; `match_term`: a variable already bound must meet a term equal to its
+; binding (non-linear patterns are supported), an unbound one is added.
+; Every fn here matches on a parameter at the top, so the kernel can
+; evaluate it inside hypotheses.
+
+; Bind x := u given `o`, the current lookup of x in bs.
+[fn bind-var [o x u bs]
+  [match o
+    None     [Some [Cons [Pair x u] bs]]
+    [Some w] [if-b [term-eq u w] [Some bs] None]]]
+
+; Match `p` against `t`, extending the bindings `bs`.
+[fn match-in [p t bs]
+  [match p
+    [V x]    [bind-var [lookup x bs] x t bs]
+    [C f ps] [match t
+               [V y]    None
+               [C g ts] [if-b [sym-eq f g] [match-list-in ps ts bs] None]
+               [A g ts] None]
+    [A f ps] [match t
+               [V y]    None
+               [C g ts] None
+               [A g ts] [if-b [sym-eq f g] [match-list-in ps ts bs] None]]]]
+
+[fn match-list-in [ps ts bs]
+  [match ps
+    Nil         [match ts
+                  Nil         [Some bs]
+                  [Cons u ur] None]
+    [Cons q qs] [match ts
+                  Nil         None
+                  [Cons u ur] [match [match-in q u bs]
+                                None       None
+                                [Some bs1] [match-list-in qs ur bs1]]]]]
+
+[fn wrap-subst [o]
+  [match o
+    None      None
+    [Some bs] [Some [Subst bs]]]]
+
+; First-order matching of pattern `p` against `t`, from no bindings.
+[fn matcht [p t] [wrap-subst [match-in p t Nil]]]
+
+[fn match-list [ps ts] [wrap-subst [match-list-in ps ts Nil]]]
+
+; `b` agrees with `b0` on every key of `ks`: `subst` reads both alike there.
+[fn agree [ks b0 b]
+  [match ks
+    Nil           T
+    [Cons p rest] [match p
+                    [Pair y u] [and-b [term-eq [apply-var y b] [apply-var y b0]]
+                                      [agree rest b0 b]]]]]
+
+; Match soundness stated without hypotheses: substituting the match result
+; back into the pattern gives the term; on failure, the term itself.
+[fn apply-match [p t]
+  [match [matcht p t]
+    [Some s] [subst p s]
+    None     t]]
+
+; ---------------------------------------------------------------------------
+; Rung 3: the evaluator model.
+;
+; A function is a symbol and a list of clauses. A clause's pattern is matched
+; against the whole call term `[A f args]`, so patterns are ordinary terms
+; (usually `[A f ps]`) and `matcht` does all the work.
+[type Clause [Clause Term Term]]
+[type Fn [Def Sym (List Clause)]]
+[type Prog [Prog (List Fn)]]
+
+[fn add [m n]
+  [match m
+    Z     n
+    [S k] [S [add k n]]]]
+
+[fn find-in [f fs]
+  [match fs
+    Nil           None
+    [Cons d rest] [match d
+                    [Def g cs] [if-b [sym-eq f g] [Some cs] [find-in f rest]]]]]
+
+; The clauses of `f` in `p`, if `p` defines it.
+[fn find-fn [p f]
+  [match p
+    [Prog fs] [find-in f fs]]]
+
+; Instantiate a clause body with a match result.
+[fn inst [o body]
+  [match o
+    None     None
+    [Some s] [Some [subst body s]]]]
+
+[fn or-else [o1 o2]
+  [match o1
+    None     o2
+    [Some x] [Some x]]]
+
+; The body of the first clause whose pattern matches `t`, instantiated.
+[fn first-match [cs t]
+  [match cs
+    Nil           None
+    [Cons c rest] [match c
+                    [Clause pat body] [or-else [inst [matcht pat t] body]
+                                               [first-match rest t]]]]]
+
+[fn rules-for [o t]
+  [match o
+    None      None
+    [Some cs] [first-match cs t]]]
+
+; A root reduction of `t` by `p`'s clauses, if any.
+[fn try-rules [p t]
+  [match t
+    [V x]    None
+    [C f ts] None
+    [A f ts] [rules-for [find-fn p f] t]]]
+
+[fn wrap-c [f o]
+  [match o
+    None      None
+    [Some ts] [Some [C f ts]]]]
+
+[fn wrap-a [f o]
+  [match o
+    None      None
+    [Some ts] [Some [A f ts]]]]
+
+[fn wrap-cons [t o]
+  [match o
+    None      None
+    [Some ts] [Some [Cons t ts]]]]
+
+[fn step-cons [t rest o1 o2]
+  [match o1
+    [Some t2] [Some [Cons t2 rest]]
+    None      [wrap-cons t o2]]]
+
+; One leftmost-outermost step: a call reduces at the root if a clause
+; matches, otherwise the first reducible argument (left to right) steps.
+; Variables and normal terms give None.
+[fn step [p t]
+  [match t
+    [V x]    None
+    [C f ts] [wrap-c f [step-list p ts]]
+    [A f ts] [or-else [try-rules p [A f ts]] [wrap-a f [step-list p ts]]]]]
+
+[fn step-list [p ts]
+  [match ts
+    Nil           None
+    [Cons t rest] [step-cons t rest [step p t] [step-list p rest]]]]
+
+; At most `n` steps; stops early at a normal form.
+[fn evaln [n p t]
+  [match n
+    Z     t
+    [S k] [match [step p t]
+            None      t
+            [Some t2] [evaln k p t2]]]]
+
+[fn is-none [o]
+  [match o
+    None     T
+    [Some x] F]]
+
+[fn normal? [p t] [is-none [step p t]]]

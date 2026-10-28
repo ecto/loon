@@ -1,0 +1,11 @@
+; Compiler correctness for Hutton's razor (verify/defs.oo: eval, compile, exec).
+
+[law exec-append [c1 c2 s]
+  [= [exec [append c1 c2] s] [exec c2 [exec c1 s]]]]
+
+[law compile-correct [e stack]
+  [= [exec [compile e] stack] [Cons [eval e] stack]]]
+
+; false: the compiled code pushes onto the existing stack, it does not replace it
+[law compile-drops-stack [e stack]
+  [= [exec [compile e] stack] [Cons [eval e] Nil]]]

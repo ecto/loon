@@ -1,0 +1,4 @@
+; Canaries: false laws. If the kernel ever accepts one, the run is unsound.
+
+[law canary [] [= T F]]
+[law canary-subst [t s] [= [subst t s] t]]

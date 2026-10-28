@@ -1,0 +1,225 @@
+; Proof objects for verify/meta/laws/subst.oo.
+
+[proof nat-eq-refl
+  [induction n
+    [Z]
+    [S [unfold nat-eq] [rewrite ih]]]]
+
+[proof sym-eq-refl
+  [cases x
+    [Sym [unfold sym-eq] [rewrite nat-eq-refl]]]]
+
+[proof subst-if
+  [cases b
+    [T]
+    [F]]]
+
+; Nested induction: a Term's arguments are a (List Term), so the term law
+; and the list law are proven together. In the C and A cases `ih-rest` is
+; the list law at the argument list; in the Cons case `ih-x` is the term law
+; at the head and `ih-rest` the list law at the tail.
+[proof subst-empty :mutual subst-list-empty
+  [induction t
+    [V]
+    [C [unfold subst] [rewrite ih-rest]]
+    [A [unfold subst] [rewrite ih-rest]]]]
+
+[proof subst-list-empty :mutual subst-empty
+  [induction ts
+    [Nil]
+    [Cons [unfold subst-list] [rewrite ih-x] [rewrite ih-rest]]]]
+
+[proof subst-apply-var
+  [induction bs1
+    [Nil]
+    [Cons [cases x1
+            [Pair [unfold apply-var] [rewrite subst-if] [rewrite ih]]]]]]
+
+[proof subst-compose :mutual subst-list-compose
+  [induction t
+    [V [cases s1
+         [Subst [cases s2
+                  [Subst [unfold subst] [rewrite subst-apply-var]]]]]]
+    [C [unfold subst] [unfold subst] [rewrite ih-rest]]
+    [A [unfold subst] [unfold subst] [rewrite ih-rest]]]]
+
+[proof subst-list-compose :mutual subst-compose
+  [induction ts
+    [Nil]
+    [Cons [unfold subst-list] [unfold subst-list] [rewrite ih-x] [rewrite ih-rest]]]]
+
+[proof nat-eq-sound
+  [induction m
+    [Z [cases n [Z] [S]]]
+    [S [cases n [Z] [S [rewrite ih]]]]]]
+
+[proof sym-eq-sound
+  [cases a [Sym [cases b [Sym [rewrite nat-eq-sound :at 2]]]]]]
+
+[proof nat-eq-comm
+  [induction m
+    [Z [cases n [Z] [S]]]
+    [S [cases n [Z] [S [unfold nat-eq] [rewrite ih]]]]]]
+
+[proof sym-eq-comm
+  [cases a [Sym [cases b [Sym [unfold sym-eq] [rewrite nat-eq-comm]]]]]]
+
+[proof term-eq-refl :mutual terms-eq-refl
+  [induction a
+    [V [unfold term-eq] [rewrite sym-eq-refl]]
+    [C [unfold term-eq] [rewrite sym-eq-refl] [rewrite ih-rest]]
+    [A [unfold term-eq] [rewrite sym-eq-refl] [rewrite ih-rest]]]]
+
+[proof terms-eq-refl :mutual term-eq-refl
+  [induction ts
+    [Nil]
+    [Cons [unfold terms-eq] [rewrite ih-x] [rewrite ih-rest]]]]
+
+[proof term-eq-sound :mutual terms-eq-sound
+  [induction a
+    [V [cases b
+         [V [rewrite sym-eq-sound :at 2]]
+         [C] [A]]]
+    [C [cases b
+         [V]
+         [C [cases [sym-eq x x1] :as he
+              [T [rewrite sym-eq-sound :at 2] [rewrite ih-rest]]
+              [F]]]
+         [A]]]
+    [A [cases b
+         [V] [C]
+         [A [cases [sym-eq x x1] :as he
+              [T [rewrite sym-eq-sound :at 2] [rewrite ih-rest]]
+              [F]]]]]]]
+
+[proof terms-eq-sound :mutual term-eq-sound
+  [induction ts
+    [Nil [cases us [Nil] [Cons]]]
+    [Cons [cases us
+            [Nil]
+            [Cons [cases [term-eq x x1] :as he
+                    [T [rewrite ih-x] [rewrite ih-rest]]
+                    [F]]]]]]]
+
+[proof lookup-apply-var
+  [induction bs
+    [Nil]
+    [Cons [cases x1
+            [Pair [unfold apply-var]
+                  [cases [sym-eq x x2] :as hs
+                    [T [rewrite h1.1]]
+                    [F [unfold if-b] [rewrite ih]]]]]]]]
+
+[proof agree-refl
+  [induction ks
+    [Nil]
+    [Cons [cases x
+            [Pair [unfold agree] [rewrite term-eq-refl] [rewrite ih]]]]]]
+
+[proof agree-lookup
+  [induction ks
+    [Nil]
+    [Cons [cases x1
+            [Pair [cases [sym-eq x x2] :as hs
+                    [T [cases [term-eq [apply-var x2 b] [apply-var x2 b0]] :as ht
+                         [T [rewrite sym-eq-sound :at 2]
+                            [rewrite term-eq-sound]
+                            [rewrite sym-eq-sound :rev :at 2]]
+                         [F]]]
+                    [F [cases [term-eq [apply-var x2 b] [apply-var x2 b0]] :as ht
+                         [T [rewrite ih]]
+                         [F]]]]]]]]]
+
+[proof agree-cons-fresh
+  [induction ks
+    [Nil]
+    [Cons [cases x1
+            [Pair [cases [sym-eq x x2] :as hs
+                    [T]
+                    [F [rewrite sym-eq-comm :in h2] [rewrite hs :in h2]
+                       [cases [term-eq [apply-var x2 b] [apply-var x2 b0]] :as ht
+                         [T [unfold agree] [rewrite ht] [unfold and-b] [rewrite ih]]
+                         [F]]]]]]]]]
+
+[proof match-in-mono :mutual match-list-in-mono
+  [induction p
+    [V [cases [lookup x bs] :as hl
+         [None [rewrite h1.1 :rev :in h2] [rewrite h1.1 :rev :in h2]
+               [rewrite h1.1 :rev :in h2]
+               [rewrite sym-eq-refl :in h2]
+               [cases [term-eq [apply-var x b] t] :as ht
+                 [T [rewrite agree-cons-fresh]]
+                 [F]]]
+         [Some [cases [term-eq t x1] :as ht
+                 [T [rewrite h1.1] [rewrite h1.1] [rewrite h2]]
+                 [F]]]]]
+    [C [cases t
+         [V]
+         [C [cases [sym-eq x x1] :as he [T [rewrite ih-rest]] [F]]]
+         [A]]]
+    [A [cases t
+         [V] [C]
+         [A [cases [sym-eq x x1] :as he [T [rewrite ih-rest]] [F]]]]]]]
+
+[proof match-list-in-mono :mutual match-in-mono
+  [induction ps
+    [Nil [cases ts
+           [Nil [rewrite h1.1] [rewrite h1.1] [rewrite h2]]
+           [Cons]]]
+    [Cons [cases ts
+            [Nil]
+            [Cons [cases [match-in x x1 bs] :as hq
+                    [None]
+                    [Some [cases [agree x2 x2 b] :as ha
+                            [T [rewrite ih-x]]
+                            [F [rewrite ih-rest :in ha]]]]]]]]]]
+
+[proof match-in-sound :mutual match-list-in-sound
+  [induction p
+    [V [cases [lookup x bs] :as hl
+         [None [rewrite h1.1 :rev :in h2] [rewrite h1.1 :rev :in h2]
+               [rewrite sym-eq-refl :in h2]
+               [cases [term-eq [apply-var x b] t] :as ht
+                 [T [unfold subst] [rewrite term-eq-sound]]
+                 [F]]]
+         [Some [cases [term-eq t x1] :as ht
+                 [T [rewrite h1.1 :rev :in h2] [rewrite h1.1 :rev :in h2]
+                    [unfold subst] [rewrite agree-lookup] [rewrite lookup-apply-var]
+                    [rewrite term-eq-sound :rev]]
+                 [F]]]]]
+    [C [cases t
+         [V]
+         [C [cases [sym-eq x x1] :as he
+              [T [unfold subst] [rewrite sym-eq-sound :at 2] [rewrite ih-rest]]
+              [F]]]
+         [A]]]
+    [A [cases t
+         [V] [C]
+         [A [cases [sym-eq x x1] :as he
+              [T [unfold subst] [rewrite sym-eq-sound :at 2] [rewrite ih-rest]]
+              [F]]]]]]]
+
+[proof match-list-in-sound :mutual match-in-sound
+  [induction ps
+    [Nil [cases ts [Nil] [Cons]]]
+    [Cons [cases ts
+            [Nil]
+            [Cons [cases [match-in x x1 bs] :as hq
+                    [None]
+                    [Some [cases [agree x2 x2 b] :as ha
+                            [T [unfold subst-list] [rewrite ih-x] [rewrite ih-rest]]
+                            [F [rewrite match-list-in-mono :in ha]]]]]]]]]]
+
+[proof apply-match-var
+  [unfold apply-match] [unfold matcht] [unfold match-in] [unfold lookup]
+  [unfold bind-var] [unfold wrap-subst] [unfold subst] [unfold apply-var]
+  [rewrite sym-eq-refl]]
+
+; Match soundness in general: split on the match result; a success is
+; sound by `match-in-sound` with the result itself as the substitution
+; (`agree-refl` discharges the agreement obligation).
+[proof apply-match
+  [unfold apply-match] [unfold matcht]
+  [cases [match-in p t Nil] :as hm
+    [None [unfold wrap-subst]]
+    [Some [unfold wrap-subst] [rewrite match-in-sound]]]]

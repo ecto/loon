@@ -109,9 +109,11 @@ fn sum_with_both_uses_checks_clean() {
     let (effects, errors) = check(SUM_WITH_BOTH_USES);
     assert!(errors.is_empty(), "must check cleanly, got: {errors:?}");
     let sum_with = effects.get("sum-with").unwrap();
+    // `sum-with` recurses on `[drop 1 v]`, not a matched subterm, so it
+    // carries `Div` (nontermination) — but nothing else of its own.
     assert!(
-        sum_with.labels.is_empty(),
-        "sum-with has no effects of its own, got: {}",
+        sum_with.labels.iter().all(|l| l == "Div"),
+        "sum-with has no effects of its own besides Div, got: {}",
         sum_with.render()
     );
     let main = effects.get("main").unwrap();
@@ -233,8 +235,9 @@ fn ctor_under_handler_runs_on_interp() {
 
 /// A recursive call INSIDE the handled body. The monomorphic self-reference
 /// aliases the function's own row with the body row; the handle boundary
-/// must not bake the handled label into the function's row, so a `#{}`
-/// (pure) annotation on the caller still checks.
+/// must not bake the handled label into the function's row, so a `#{Div}`
+/// annotation on the caller still checks (`weird` recurses on `[- n 1]`,
+/// which is not structural, so it is `Div`).
 const RECURSIVE_CALL_IN_HANDLE: &str = "\
 [effect A [a [] Int]]
 [fn weird [n]
@@ -242,7 +245,7 @@ const RECURSIVE_CALL_IN_HANDLE: &str = "\
     0
     [handle [+ [A.a] [weird [- n 1]]]
       [A.a] [resume 1]]]]
-[fn main [] #{}
+[fn main [] #{Div}
   [println [weird 3]]]";
 
 #[test]

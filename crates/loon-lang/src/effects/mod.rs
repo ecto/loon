@@ -102,6 +102,12 @@ impl EffectRegistry {
                 op("exec", &["command"]),
             ],
         });
+        // Possible nontermination. Inferred by the checker, never performed
+        // explicitly and never granted: it has no operations.
+        reg.register(EffectDecl {
+            name: "Div".to_string(),
+            operations: vec![],
+        });
         reg.register(EffectDecl {
             name: "Async".to_string(),
             operations: vec![

@@ -48,6 +48,7 @@ pub fn get_tutorial(code: ErrorCode) -> Option<Tutorial> {
         ErrorCode::E0402 => None,
         ErrorCode::E0403 => Some(tutorial_effect_mismatch()),
         ErrorCode::E0404 => None,
+        ErrorCode::E0405 => Some(tutorial_may_diverge()),
         ErrorCode::E0500 => Some(tutorial_unresolved_module()),
         ErrorCode::E0501 => Some(tutorial_private_symbol()),
         ErrorCode::E0502 => Some(tutorial_circular_dependency()),
@@ -650,6 +651,45 @@ fn tutorial_unhandled_effect() -> Tutorial {
             TutorialStep::Try {
                 prompt: "Write a pure function (no effects) that adds two numbers.".to_string(),
                 hint: "Try: [fn add [a b] [+ a b]] [add 3 4]".to_string(),
+                expected_output: None,
+            },
+        ],
+    }
+}
+
+fn tutorial_may_diverge() -> Tutorial {
+    Tutorial {
+        code: ErrorCode::E0405,
+        title: "Annotated total, but may not terminate".to_string(),
+        steps: vec![
+            TutorialStep::Text(
+                "Nontermination is an effect: `Div`. The checker infers it like \
+                 IO. Structural recursion (every recursive call is on a strict \
+                 subterm bound by a `match` pattern, e.g. `rest` in \
+                 `[Cons x rest]`) is total; any other recursion, `loop`, \
+                 mutual recursion, or a call to a `Div` function adds `Div`. \
+                 An explicit `#{}` claims the function is pure and total, so \
+                 an inferred `Div` is an error. `Div` is not a capability: it \
+                 is never granted in pkg.oo."
+                    .to_string(),
+            ),
+            TutorialStep::Demo {
+                code: r#"[fn collatz [n] / #{}
+  [if [<= n 1] 0 [+ 1 [collatz [if [= 0 [% n 2]] [/ n 2] [+ 1 [* 3 n]]]]]]]"#
+                    .to_string(),
+                explanation: "`n` is not a subterm of a matched constructor, so `Div` is inferred."
+                    .to_string(),
+            },
+            TutorialStep::Fix {
+                before: r#"[fn collatz [n] / #{} ...]"#.to_string(),
+                after: r#"[fn collatz [n] / #{Div} ...]"#.to_string(),
+                explanation: "Admit possible divergence, or rewrite as structural recursion."
+                    .to_string(),
+            },
+            TutorialStep::Try {
+                prompt: "Write a total length function over a vector.".to_string(),
+                hint: "Try: [fn len [xs] [match xs #[] 0 #[_ & rest] [+ 1 [len rest]]]]"
+                    .to_string(),
                 expected_output: None,
             },
         ],

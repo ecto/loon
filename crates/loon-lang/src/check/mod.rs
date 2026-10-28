@@ -1,5 +1,6 @@
 pub mod kernel;
 pub mod ownership;
+pub mod termination;
 
 use crate::ast::{Expr, ExprKind, NodeId};
 use crate::errors::codes::ErrorCode;
@@ -66,6 +67,10 @@ pub struct RefInfo {
     pub node_id: NodeId,
 }
 
+/// Effect label for possible nontermination. Not a capability: never
+/// grantable, never part of `AMBIENT_EFFECTS`.
+pub const DIV: &str = "Div";
+
 // ── Checker ──────────────────────────────────────────────────────────
 
 pub struct Checker {
@@ -130,6 +135,11 @@ pub struct Checker {
     /// after desugaring; this is what remembers that they promised to stay
     /// inside the placeable subset.
     pub kernels: HashSet<String>,
+    /// Top-level fns on a mutual-recursion cycle (they get `Div`).
+    mutual_rec: HashSet<String>,
+    /// Top-level fns that may diverge by a syntactic over-approximation;
+    /// used only for forward references, whose rows are not linked yet.
+    may_diverge: HashSet<String>,
 }
 
 /// Split a param list at a `&` marker: returns the fixed params and the
@@ -157,6 +167,8 @@ impl Checker {
             errors: Vec::new(),
             fn_param_modes: HashMap::new(),
             kernels: HashSet::new(),
+            mutual_rec: HashSet::new(),
+            may_diverge: HashSet::new(),
             constructors: HashMap::new(),
             type_constructors: HashMap::new(),
             type_of: HashMap::new(),
@@ -301,6 +313,25 @@ impl Checker {
         // Cannot fail: the ambient row is always open and `want`'s tail is
         // fresh, so there is no closed side and no shared tail.
         let _ = unify_effect_rows(&mut self.subst, &ambient, &want);
+    }
+
+    /// Is the named function total (its inferred row has no `Div`)?
+    ///
+    /// Valid after `check_program`. Returns false for unknown names. An
+    /// effect-polymorphic higher-order fn (open row tail) counts as total
+    /// relative to its arguments: `Div` from a callback shows up at the call
+    /// site, not here.
+    pub fn is_total(&self, name: &str) -> bool {
+        self.fn_effects
+            .get(name)
+            .is_some_and(|row| !row.labels.contains(DIV))
+    }
+
+    /// Add `Div` to the current row when `diverges`.
+    fn mark_div(&mut self, diverges: bool) {
+        if diverges {
+            self.perform_effect(DIV);
+        }
     }
 
     /// Absorb a callee's effect row into the ambient row of the current
@@ -3266,6 +3297,17 @@ impl Checker {
                     self.infer_fn_clause(&items[2], &items[3..]);
                     return Type::Unit;
                 }
+                // [law name [params] [= lhs rhs]] — check like a test clause.
+                // [proof name step*] is kernel data, not code.
+                "law"
+                    if items.len() >= 3
+                        && matches!(items[1].kind, ExprKind::Symbol(_))
+                        && matches!(items[2].kind, ExprKind::List(_)) =>
+                {
+                    self.infer_fn_clause(&items[2], &items[3..]);
+                    return Type::Unit;
+                }
+                "proof" => return Type::Unit,
                 "test" | "mut" => {
                     if items.len() > 1 {
                         return self.infer_list(&items[1..], span);
@@ -3394,6 +3436,10 @@ impl Checker {
                                     }
                                 }
                             }
+                        }
+                        // Async.loop calls its step fn forever.
+                        if effect == "Async" && op == "loop" {
+                            self.perform_effect(DIV);
                         }
                         // Return declared return type or fresh
                         return match &op_def.return_type {
@@ -3754,6 +3800,9 @@ impl Checker {
             }
             self.recur_params.pop();
             self.pop_scope();
+            // `recur` re-entering this lambda non-structurally may diverge.
+            let ps = termination::param_names(fixed_params);
+            self.mark_div(termination::recursion_diverges("", &ps, &args[1..]));
 
             let row = std::mem::replace(&mut self.current_fn_effects, saved_effects);
             return Type::Fn(param_types, Box::new(body_ty), row);
@@ -3796,6 +3845,9 @@ impl Checker {
             }
             self.multi_arity_schemes
                 .insert(name.clone(), clause_schemes);
+            // Multi-arity clauses dispatch by name; stay conservative.
+            let d = termination::fn_self_diverges(&name, args) || self.mutual_rec.contains(&name);
+            self.mark_div(d);
             // Store inferred effects and restore
             let inferred = std::mem::replace(&mut self.current_fn_effects, saved_effects);
             let inferred = self.subst.resolve_effect_row(&inferred);
@@ -3878,6 +3930,20 @@ impl Checker {
             for body_expr in &args[body_start..] {
                 body_ty = self.infer(body_expr);
             }
+            // Div: non-structural self recursion, mutual recursion, a
+            // forward reference to a may-diverge fn (its row is not linked
+            // yet), or an explicit `#{Div}` annotation.
+            let body = &args[body_start..];
+            let diverges = termination::recursion_diverges(
+                &name,
+                &termination::param_names(fixed_params),
+                body,
+            ) || self.mutual_rec.contains(&name)
+                || termination::referenced_symbols(body).iter().any(|r| {
+                    r != &name && self.may_diverge.contains(r) && !self.fn_effects.contains_key(r)
+                })
+                || declared_effects.as_ref().is_some_and(|d| d.contains(DIV));
+            self.mark_div(diverges);
             self.recur_params.pop();
 
             if let Err(e) = unify(&mut self.subst, &temp_ret, &body_ty) {
@@ -3929,7 +3995,17 @@ impl Checker {
             if let Some(ref declared) = declared_effects {
                 {
                     for eff in &inferred.labels {
-                        if !declared.contains(eff) {
+                        if eff == DIV && !declared.contains(eff) {
+                            self.errors.push(
+                                LoonDiagnostic::new(
+                                    ErrorCode::E0405,
+                                    format!("function `{name}` is annotated total but may not terminate"),
+                                )
+                                .with_why("its recursion is not structural (or it calls something that may diverge), so the checker infers `Div`")
+                                .with_fix("recurse on a strict subterm bound by `match` (e.g. `[Cons x rest]` → `[f rest]`), or add `Div` to the annotation: #{Div}")
+                                .with_label(span, "may not terminate", true),
+                            );
+                        } else if !declared.contains(eff) {
                             self.errors.push(
                                 LoonDiagnostic::new(
                                     ErrorCode::E0401,
@@ -4472,6 +4548,19 @@ impl Checker {
             body_ty = self.infer(e);
         }
         self.recur_params.pop();
+        // A `loop` whose `recur` is not structural on a binding may diverge.
+        if let ExprKind::List(bindings) = &args[0].kind {
+            let names: Vec<String> = bindings
+                .chunks(2)
+                .map(|p| match &p[0].kind {
+                    ExprKind::Symbol(s) => s.clone(),
+                    _ => String::new(),
+                })
+                .collect();
+            self.mark_div(termination::recursion_diverges("", &names, &args[1..]));
+        } else {
+            self.mark_div(true);
+        }
         self.pop_scope();
         body_ty
     }
@@ -5885,6 +5974,9 @@ impl Checker {
         // the same path. Only the promise they made is kept aside.
         let (expanded, kernels) = kernel::desugar(&expanded);
         self.kernels = kernels;
+        let facts = termination::program_facts(&expanded);
+        self.mutual_rec = facts.mutual;
+        self.may_diverge = facts.may_diverge;
 
         // Phase 2a: Pre-declare top-level functions so forward references
         // (including mutual recursion across definitions) resolve. Each name
@@ -6480,7 +6572,7 @@ mod tests {
                 0
                 [handle [+ [A.a] [weird [- n 1]]]
                   [A.a] [resume 1]]]]
-            [fn main [] #{} [println [weird 3]]]
+            [fn main [] #{Div} [println [weird 3]]]
         "#,
         );
         assert!(errors.is_empty(), "errors: {:?}", errors);
@@ -7528,5 +7620,75 @@ mod tests {
         let (ty, errors) = infer_type("42i32");
         assert!(errors.is_empty(), "errors: {:?}", errors);
         assert_eq!(ty, Type::Int);
+    }
+
+    // ── Div (nontermination) ─────────────────────────────────────────
+
+    fn check_div(src: &str) -> (Checker, Vec<LoonDiagnostic>) {
+        let exprs = parse(src).unwrap();
+        let mut checker = Checker::new();
+        let errs = checker.check_program(&exprs);
+        (checker, errs)
+    }
+
+    #[test]
+    fn div_structural_adt_recursion_is_total() {
+        let (c, errs) = check_div(
+            "[type L [Cons Int L] Nil]
+             [fn len [xs] [match xs [Cons _ rest] [+ 1 [len rest]] Nil 0]]
+             [fn len2 [xs] [match xs #[] 0 #[_ & rest] [+ 1 [recur rest]]]]",
+        );
+        assert!(errs.is_empty(), "{errs:?}");
+        assert!(c.is_total("len"), "{:?}", c.fn_effects.get("len"));
+        assert!(c.is_total("len2"), "{:?}", c.fn_effects.get("len2"));
+    }
+
+    #[test]
+    fn div_nonstructural_recursion_is_div() {
+        let (c, _) = check_div(
+            "[fn collatz [n] [if [<= n 1] 0 [+ 1 [collatz [if [= 0 [% n 2]] [/ n 2] [+ 1 [* 3 n]]]]]]]
+             [fn spin [] [loop [i 0] [recur [+ i 1]]]]
+             [fn ev [n] [if [= n 0] true [od [- n 1]]]]
+             [fn od [n] [if [= n 0] false [ev [- n 1]]]]",
+        );
+        for f in ["collatz", "spin", "ev", "od"] {
+            assert!(
+                !c.is_total(f),
+                "{f} should be Div: {:?}",
+                c.fn_effects.get(f)
+            );
+        }
+    }
+
+    #[test]
+    fn div_pure_annotation_on_div_fn_is_e0405() {
+        let (_, errs) = check_div("[fn f [n] #{} [f [+ n 1]]]");
+        assert!(errs.iter().any(|e| e.code == ErrorCode::E0405), "{errs:?}");
+        let (c, errs) = check_div("[fn g [n] #{Div} [g [+ n 1]]]");
+        assert!(errs.is_empty(), "{errs:?}");
+        assert!(!c.is_total("g"));
+    }
+
+    #[test]
+    fn div_propagates_through_call() {
+        let (c, _) = check_div(
+            "[fn spin [n] [spin [+ n 1]]]
+             [fn caller [x] [spin x]]
+             [fn early [x] [later x]]
+             [fn later [n] [later [+ n 1]]]",
+        );
+        assert!(!c.is_total("caller"));
+        assert!(!c.is_total("early"), "forward ref to a Div fn");
+    }
+
+    #[test]
+    fn div_propagates_through_map_callback() {
+        let (c, _) = check_div(
+            "[fn spin [n] [spin [+ n 1]]]
+             [fn all [xs] [map spin xs]]
+             [fn ok [xs] [map [fn [x] [+ x 1]] xs]]",
+        );
+        assert!(!c.is_total("all"), "{:?}", c.fn_effects.get("all"));
+        assert!(c.is_total("ok"));
     }
 }

@@ -1,0 +1,41 @@
+; Proof objects, checked by the kernel in dependency order.
+
+[proof append-nil
+  [induction xs
+    [Nil  [unfold append]]
+    [Cons [unfold append] [rewrite ih]]]]
+
+[proof append-assoc
+  [induction xs
+    [Nil  [unfold append]]
+    [Cons [unfold append] [unfold append] [rewrite ih]]]]
+
+[proof rev-append
+  [induction xs
+    [Nil  [unfold append] [rewrite append-nil :rev]]
+    [Cons [unfold append] [unfold reverse] [rewrite ih] [rewrite append-assoc]]]]
+
+[proof rev-rev
+  [induction xs
+    [Nil  [unfold reverse]]
+    [Cons [unfold reverse] [rewrite rev-append] [rewrite ih]]]]
+
+[proof map-append
+  [induction xs
+    [Nil  [unfold append]]
+    [Cons [unfold append] [unfold map] [rewrite ih]]]]
+
+[proof length-append
+  [induction xs
+    [Nil  [unfold append]]
+    [Cons [unfold append] [unfold length] [rewrite ih]]]]
+
+[proof map-length
+  [induction xs
+    [Nil  [unfold map]]
+    [Cons [unfold map] [unfold length] [rewrite ih]]]]
+
+[proof rev-length
+  [induction xs
+    [Nil  [unfold reverse]]
+    [Cons [unfold reverse] [rewrite length-append] [rewrite ih]]]]

@@ -1,0 +1,70 @@
+; Substitution lemmas over the kernel meta-model (verify/meta/defs.oo).
+
+[law nat-eq-refl [n] [= [nat-eq n n] T]]
+[law sym-eq-refl [x] [= [sym-eq x x] T]]
+
+[law subst-if [b u w s]
+  [= [subst [if-b b u w] s] [if-b b [subst u s] [subst w s]]]]
+
+; 1. The empty substitution is the identity (term and list versions).
+[law subst-empty [t] [= [subst t [Subst Nil]] t]]
+[law subst-list-empty [ts] [= [subst-list ts [Subst Nil]] ts]]
+
+; 2. Substitution composes (term and list versions), with the variable case
+;    as its own lemma.
+[law subst-apply-var [x bs1 bs2]
+  [= [subst [apply-var x bs1] [Subst bs2]]
+     [apply-var x [append [map-rhs bs1 [Subst bs2]] bs2]]]]
+
+[law subst-compose [t s1 s2]
+  [= [subst [subst t s1] s2] [subst t [compose s1 s2]]]]
+[law subst-list-compose [ts s1 s2]
+  [= [subst-list [subst-list ts s1] s2] [subst-list ts [compose s1 s2]]]]
+
+; 3. Match soundness. Equality deciders are sound and symmetric.
+[law nat-eq-sound [m n] :given [[= [nat-eq m n] T]] [= m n]]
+[law sym-eq-sound [a b] :given [[= [sym-eq a b] T]] [= a b]]
+[law nat-eq-comm [m n] [= [nat-eq m n] [nat-eq n m]]]
+[law sym-eq-comm [a b] [= [sym-eq a b] [sym-eq b a]]]
+[law term-eq-refl [a] [= [term-eq a a] T]]
+[law terms-eq-refl [ts] [= [terms-eq ts ts] T]]
+[law term-eq-sound [a b] :given [[= [term-eq a b] T]] [= a b]]
+[law terms-eq-sound [ts us] :given [[= [terms-eq ts us] T]] [= ts us]]
+
+; Lookup and agreement of binding lists.
+[law lookup-apply-var [x bs w] :given [[= [lookup x bs] [Some w]]]
+  [= [apply-var x bs] w]]
+[law agree-refl [ks b0] [= [agree ks b0 b0] T]]
+[law agree-lookup [ks b0 b x w]
+  :given [[= [lookup x ks] [Some w]] [= [agree ks b0 b] T]]
+  [= [apply-var x b] [apply-var x b0]]]
+[law agree-cons-fresh [ks b0 x u b]
+  :given [[= [lookup x ks] None] [= [agree ks [Cons [Pair x u] b0] b] T]]
+  [= [agree ks b0 b] T]]
+
+; Matching only adds bindings: agreement with the result implies agreement
+; with the input.
+[law match-in-mono [p t bs bs2 b]
+  :given [[= [match-in p t bs] [Some bs2]] [= [agree bs2 bs2 b] T]]
+  [= [agree bs bs b] T]]
+[law match-list-in-mono [ps ts bs bs2 b]
+  :given [[= [match-list-in ps ts bs] [Some bs2]] [= [agree bs2 bs2 b] T]]
+  [= [agree bs bs b] T]]
+
+; Soundness: any substitution agreeing with the match result maps the
+; pattern to the term.
+[law match-in-sound [p t bs bs2 b]
+  :given [[= [match-in p t bs] [Some bs2]] [= [agree bs2 bs2 b] T]]
+  [= [subst p [Subst b]] t]]
+[law match-list-in-sound [ps ts bs bs2 b]
+  :given [[= [match-list-in ps ts bs] [Some bs2]] [= [agree bs2 bs2 b] T]]
+  [= [subst-list ps [Subst b]] ts]]
+
+[law apply-match-var [x t] [= [apply-match [V x] t] t]]
+[law apply-match [p t] [= [apply-match p t] t]]
+
+; false: matching binds the pattern's variables, it does not return the pattern
+[law apply-match-bogus [p t] [= [apply-match p t] p]]
+; false: composition is not commutative
+[law subst-compose-swapped [t s1 s2]
+  [= [subst [subst t s1] s2] [subst t [compose s2 s1]]]]

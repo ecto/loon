@@ -1,0 +1,22 @@
+; Constructor injectivity: h1.2 is the second argument pair of h1.
+[proof cons-inj [rewrite h1.2]]
+
+[proof append-cancel-left
+  [induction xs
+    [Nil  [rewrite h1]]
+    ; h1 = [Cons x [append rest ys]] = [Cons x [append rest zs]]; ih's
+    ; obligation [append rest ys] = [append rest ?zs] is h1.2, binding ?zs.
+    [Cons [rewrite ih]]]]
+
+[proof rev-inj
+  [rewrite rev-rev :rev]
+  [rewrite h1]
+  [rewrite rev-rev]]
+
+; Cites rev-inj at the `xs` inside L; its obligation is discharged by h1.
+[proof rev-inj-append [rewrite rev-inj :at 2]]
+
+[proof add-cancel-left
+  [induction m
+    [Z [rewrite h1]]
+    [S [rewrite ih]]]]
