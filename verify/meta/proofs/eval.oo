@@ -1,0 +1,29 @@
+; Proof objects for verify/meta/laws/eval.oo.
+
+[proof evaln-zero
+  [unfold evaln]]
+
+[proof evaln-normal
+  [cases n
+    [Z [unfold evaln]]
+    [S [unfold evaln] [rewrite h1]]]]
+
+[proof evaln-succ-normal
+  [unfold evaln] [rewrite h1] [sym] [rewrite evaln-normal]]
+
+; Split on the first step: a normal t is a fixpoint on both sides
+; (evaln-normal, on R via sym); otherwise both sides step once and ih-rest
+; closes it.
+[proof evaln-add
+  [induction m
+    [Z [unfold add]]
+    [S [unfold add] [unfold evaln]
+       [cases [step p t] :as o
+         [None [sym] [unfold evaln] [rewrite o] [rewrite evaln-normal]]
+         [Some [rewrite ih-rest] [sym] [unfold evaln] [rewrite o]]]]]]
+
+[proof fuel-monotone
+  [rewrite evaln-add] [rewrite evaln-normal]]
+
+[proof step-list-normal-head
+  [unfold step-list] [rewrite h1] [unfold step-cons]]

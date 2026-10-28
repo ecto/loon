@@ -1146,6 +1146,9 @@ pub struct Mutual {
     pub var_ty: Ty,
     pub lhs: Expr,
     pub rhs: Expr,
+    /// The partner's `:given` hypotheses: obligations wherever its
+    /// hypothesis is cited, exactly like a conditional `ih`.
+    pub hyps: Vec<(Expr, Expr)>,
 }
 
 /// Is `t` fully known (no `?` anywhere)?
@@ -1204,8 +1207,9 @@ pub fn check_proof_with(
 
 /// `check_proof_with` for one law of a `:mutual` group (see `Mutual`):
 /// `partners` are the group's other laws. With partners, the proof must be
-/// a single `induction` on a law param of fully known type, and the law
-/// must have no hypotheses.
+/// a single `induction` on a law param of fully known type. Members may
+/// have `:given` hypotheses: a partner's hypothesis `ih-FIELD` carries them
+/// as obligations (instantiated at the field), like a conditional `ih`.
 pub fn check_proof_mutual(
     goal: &Goal,
     steps: &[Expr],
@@ -1227,9 +1231,6 @@ pub fn check_proof_mutual(
             return bad(format!(
                 ":mutual induction variable `{v}` must be a law param of known type"
             ));
-        }
-        if !goal.hyps.is_empty() {
-            return bad(":mutual laws may not have :given hypotheses".into());
         }
     }
     let mut ctx = Ctx {
@@ -1375,7 +1376,8 @@ fn occurs(pat: &Expr, t: &Expr, defs: &Defs) -> bool {
 /// `hN` has a canonical and an evaluated form; the first with a side
 /// occurring in the goal is used (either is the same equation).
 fn lookup_hyp(st: &State, name: &str, defs: &Defs) -> Option<Result<Rule, Outcome>> {
-    if !is_hyp_name(name) {
+    let base = name.split('.').next().unwrap_or(name);
+    if !is_hyp_name(name) && !st.hyps.iter().any(|(n, _, _)| n == base) {
         return None;
     }
     let cands: Vec<_> = hyps_in_scope(st, defs)
@@ -1464,7 +1466,13 @@ fn discharge(
 
 /// Rewrite with a conditional rule: the `at`-th match, then discharge each
 /// instantiated hypothesis in order.
-fn rewrite_cond(ctx: &mut Ctx, st: &State, rule: &Rule, at: usize) -> Result<Expr, String> {
+fn rewrite_cond(
+    ctx: &mut Ctx,
+    st: &State,
+    target: &Expr,
+    rule: &Rule,
+    at: usize,
+) -> Result<Expr, String> {
     let hyps = hyps_in_scope(st, ctx.defs);
     let mut used = used_symbols(st);
     for (a, b) in &rule.hyps {
@@ -1512,11 +1520,25 @@ fn rewrite_cond(ctx: &mut Ctx, st: &State, rule: &Rule, at: usize) -> Result<Exp
             .collect();
         Ok(subst(&rule.rhs, &bind, defs))
     };
-    rewrite_nth_by(&st.l, rule, at, &mut 0, defs, &mut on_match)
+    rewrite_nth_by(target, rule, at, &mut 0, defs, &mut on_match)
         .unwrap_or_else(|| Err("rule does not match".to_string()))
 }
 
+/// Ex falso: some hypothesis in scope (or a constructor component of one),
+/// evaluation-normalized, equates two distinct constructors. Distinct
+/// constructor values are never equal, so the hypotheses are inconsistent
+/// and the case holds vacuously.
+fn contradictory(st: &State, defs: &Defs) -> bool {
+    hyps_in_scope(st, defs).iter().any(|(_, a, b)| {
+        matches!((ctor_of(a, defs), ctor_of(b, defs)),
+            (Some((ca, xa)), Some((cb, xb))) if ca != cb || xa.len() != xb.len())
+    })
+}
+
 fn closes(st: &State, defs: &Defs) -> bool {
+    if contradictory(st, defs) {
+        return true;
+    }
     let mut used = HashSet::new();
     symbols(&st.l, &mut used);
     symbols(&st.r, &mut used);
@@ -1570,10 +1592,27 @@ fn run_steps(ctx: &mut Ctx, mut st: State, steps: &[Expr]) -> Result<(), Outcome
                 };
                 let name = &name;
                 let (mut rev, mut at) = (false, 0usize);
+                let mut into: Option<String> = None;
                 let mut j = 2;
                 while j < items.len() {
                     match &items[j].kind {
                         ExprKind::Keyword(k) if k == "rev" => rev = true,
+                        ExprKind::Keyword(k) if k == "in" => {
+                            j += 1;
+                            match items.get(j).map(|e| &e.kind) {
+                                Some(ExprKind::Symbol(h))
+                                    if st.hyps.iter().any(|(n, _, _)| n == h) =>
+                                {
+                                    into = Some(h.clone())
+                                }
+                                _ => {
+                                    return Err(stuck(
+                                        &st,
+                                        "`:in` needs the name of a hypothesis in scope",
+                                    ))
+                                }
+                            }
+                        }
                         ExprKind::Keyword(k) if k == "at" => {
                             j += 1;
                             match items.get(j).map(|e| &e.kind) {
@@ -1621,14 +1660,24 @@ fn run_steps(ctx: &mut Ctx, mut st: State, steps: &[Expr]) -> Result<(), Outcome
                         hyps: rule.hyps,
                     }
                 };
+                if let Some(h) = into {
+                    if let Err(e) = rewrite_hyp(ctx, &mut st, &h, &rule, at) {
+                        return Err(stuck(&st, format!("rewrite {name} :in {h}: {e}")));
+                    }
+                    continue;
+                }
                 let res = if rule.hyps.is_empty() {
                     rewrite(&st.l, &rule, at, ctx.defs)
                 } else {
-                    rewrite_cond(ctx, &st, &rule, at)
+                    let l = st.l.clone();
+                    rewrite_cond(ctx, &st, &l, &rule, at)
                 };
                 st.l = res
                     .map(|l| normalize(&l, ctx.defs))
                     .map_err(|e| stuck(&st, format!("rewrite {name}: {e}")))?;
+            }
+            "sym" => {
+                std::mem::swap(&mut st.l, &mut st.r);
             }
             "refl" => {
                 if !closes(&st, ctx.defs) {
@@ -1646,6 +1695,10 @@ fn run_steps(ctx: &mut Ctx, mut st: State, steps: &[Expr]) -> Result<(), Outcome
                         &st,
                         format!("steps after `{op}` are not allowed; put them in its cases"),
                     ));
+                }
+                if op == "cases" && matches!(items.get(1).map(|e| &e.kind), Some(ExprKind::List(_)))
+                {
+                    return split_expr(ctx, st, items);
                 }
                 return split(ctx, st, items, op == "induction");
             }
@@ -1804,7 +1857,11 @@ fn split(ctx: &mut Ctx, st: State, items: &[Expr], induction: bool) -> Result<()
                             params: ps,
                             lhs: normalize(&subst(&pt.lhs, &im, ctx.defs), ctx.defs),
                             rhs: normalize(&subst(&pt.rhs, &im, ctx.defs), ctx.defs),
-                            hyps: vec![],
+                            hyps: pt
+                                .hyps
+                                .iter()
+                                .map(|(a, b)| (subst(a, &im, ctx.defs), subst(b, &im, ctx.defs)))
+                                .collect(),
                         },
                     ));
                 }
@@ -1843,6 +1900,198 @@ fn split(ctx: &mut Ctx, st: State, items: &[Expr], induction: bool) -> Result<()
         return Err(stuck(
             &st,
             format!("case `{extra}` is not a constructor of {ty_name}"),
+        ));
+    }
+    Ok(())
+}
+
+/// `[rewrite RULE :in NAME]`: rewrite inside hypothesis NAME instead of the
+/// goal. The hypothesis is first replaced by its evaluation-normalized form
+/// (meaning-preserving), then the `at`-th match of RULE, counting through its
+/// left side and then its right side in preorder, is rewritten. Sound: the
+/// rule instance holds in this context (its obligations are discharged from
+/// the hypotheses in scope), so the new hypothesis follows from the old one;
+/// the old one is dropped, which only weakens the context.
+fn rewrite_hyp(
+    ctx: &mut Ctx,
+    st: &mut State,
+    name: &str,
+    rule: &Rule,
+    at: usize,
+) -> Result<(), String> {
+    let defs = ctx.defs;
+    let k = st.hyps.iter().position(|(n, _, _)| n == name).unwrap();
+    let mut used = used_symbols(st);
+    let mut fuel = 10_000;
+    let a = eval_normalize(&normalize(&st.hyps[k].1, defs), defs, &mut used, &mut fuel);
+    let b = eval_normalize(&normalize(&st.hyps[k].2, defs), defs, &mut used, &mut fuel);
+    let pair = list(vec![sym("="), a, b]);
+    let ExprKind::List(v) = &pair.kind else {
+        unreachable!()
+    };
+    // Matches in `a` are counted first; `at` beyond them falls through to `b`.
+    let count = |t: &Expr| -> usize {
+        fn go(t: &Expr, r: &Rule, defs: &Defs) -> usize {
+            let mut b = HashMap::new();
+            let me = usize::from(match_term(&r.lhs, t, &r.params, &mut b, defs));
+            me + children(t)
+                .into_iter()
+                .map(|c| go(c, r, defs))
+                .sum::<usize>()
+        }
+        go(t, rule, defs)
+    };
+    let na = count(&v[1]);
+    let (side, at2) = if at < na { (1, at) } else { (2, at - na) };
+    let res = if rule.hyps.is_empty() {
+        rewrite(&v[side], rule, at2, defs)
+    } else {
+        rewrite_cond(ctx, st, &v[side], rule, at2)
+    };
+    match res {
+        Ok(t) => {
+            let t = normalize(&t, defs);
+            let (na, nb) = if side == 1 {
+                (t, v[2].clone())
+            } else {
+                (v[1].clone(), t)
+            };
+            st.hyps[k] = (name.to_string(), na, nb);
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Replace every occurrence of `pat` in `t` by `by`.
+fn replace_all(t: &Expr, pat: &Expr, by: &Expr) -> Expr {
+    if term_eq(t, pat) {
+        return by.clone();
+    }
+    map_children(t, &mut |c| replace_all(c, pat, by))
+}
+
+/// `[cases EXPR :as NAME CASE*]`: case analysis on an arbitrary term.
+///
+/// EXPR's type is inferred (`infer::expr_type`, from the types of the goal's
+/// variables) and must be an ADT of defs.oo. For each constructor K, with
+/// fresh field names f1.., the case gets hypothesis NAME `[= EXPR [K f1 ..]]`
+/// and every occurrence of EXPR in the goal and in the (evaluation-
+/// normalized) hypotheses is replaced by `[K f1 ..]`.
+///
+/// Soundness: every fn in EXPR is total (checked: list heads must be
+/// constructors, `match`, or total fns of defs.oo, and no symbol may name a
+/// non-total fn), so EXPR evaluates to a value of its ADT type, which is one
+/// of the constructors applied to some field values. The cases are
+/// exhaustive, each with that equation as an assumption, and replacing EXPR
+/// by an equal term preserves the goal and the hypotheses.
+fn split_expr(ctx: &mut Ctx, st: State, items: &[Expr]) -> Result<(), Outcome> {
+    let defs = ctx.defs;
+    let expr = normalize(&items[1], defs);
+    let name = match (items.get(2).map(|e| &e.kind), items.get(3).map(|e| &e.kind)) {
+        (Some(ExprKind::Keyword(k)), Some(ExprKind::Symbol(n))) if k == "as" => n.clone(),
+        _ => return Err(stuck(&st, "cases on a term needs `:as NAME`")),
+    };
+    if name == "ih" || name.starts_with("ih-") || st.hyps.iter().any(|(n, _, _)| *n == name) {
+        return Err(stuck(&st, format!("`{name}` is already a hypothesis name")));
+    }
+    fn total_only(e: &Expr, defs: &Defs) -> Result<(), String> {
+        if let ExprKind::Symbol(s) = &e.kind {
+            if defs.fns.contains_key(s) && !defs.total.contains(s) {
+                return Err(format!("`{s}` is not structurally recursive"));
+            }
+        }
+        if let ExprKind::List(v) = &e.kind {
+            match v.first().map(|h| &h.kind) {
+                Some(ExprKind::Symbol(h))
+                    if h == "match" || defs.is_ctor(h) || defs.total.contains(h) => {}
+                _ => {
+                    return Err(format!(
+                        "`{e}` is not an application of a total fn of defs.oo"
+                    ))
+                }
+            }
+        }
+        children(e)
+            .into_iter()
+            .try_for_each(|c| total_only(c, defs))
+    }
+    total_only(&expr, defs).map_err(|e| stuck(&st, format!("cases on a term: {e}")))?;
+    let Some(ty) = super::infer::expr_type(defs, &st.types, &expr) else {
+        return Err(stuck(&st, format!("cannot infer the type of `{expr}`")));
+    };
+    let Some(ctors) = defs.types.get(&ty.name) else {
+        return Err(stuck(
+            &st,
+            format!(
+                "`{expr}` has type `{}`, not an ADT declared in defs.oo",
+                ty.name
+            ),
+        ));
+    };
+    let cases: Vec<&Expr> = items[4..].iter().collect();
+    let mut used0 = used_symbols(&st);
+    used0.insert(name.clone());
+    for ctor in ctors {
+        let case = cases.iter().find(|c| {
+            head_sym(c).is_some_and(|h| h == ctor.name || h.eq_ignore_ascii_case(&ctor.name))
+        });
+        let mut used = used0.clone();
+        let mut types = st.types.clone();
+        let ftys = field_tys(defs, &ty, &ctor.fields);
+        let mut fields = Vec::new();
+        for (k, rec) in ctor.recursive.iter().enumerate() {
+            let n = fresh_name(if *rec { "rest" } else { "x" }, &mut used);
+            if let Some(Some(t)) = ftys.get(k) {
+                types.insert(n.clone(), t.clone());
+            }
+            fields.push(sym(&n));
+        }
+        let value = if fields.is_empty() {
+            sym(&ctor.name)
+        } else {
+            let mut v = vec![sym(&ctor.name)];
+            v.extend(fields);
+            list(v)
+        };
+        let rp = |t: &Expr| normalize(&replace_all(t, &expr, &value), defs);
+        let mut hyps = Vec::new();
+        for (n, a, b) in &st.hyps {
+            let mut fuel = 10_000;
+            let a = eval_normalize(&normalize(a, defs), defs, &mut used, &mut fuel);
+            let b = eval_normalize(&normalize(b, defs), defs, &mut used, &mut fuel);
+            hyps.push((n.clone(), rp(&a), rp(&b)));
+        }
+        hyps.push((name.clone(), expr.clone(), value.clone()));
+        let child = State {
+            l: rp(&st.l),
+            r: rp(&st.r),
+            params: st.params.clone(),
+            types,
+            ihs: st.ihs.clone(),
+            hyps,
+            case: if st.case == "root" {
+                ctor.name.clone()
+            } else {
+                format!("{}/{}", st.case, ctor.name)
+            },
+        };
+        let Some(case) = case else {
+            return Err(stuck(&child, format!("missing case {}", ctor.name)));
+        };
+        let ExprKind::List(cs) = &case.kind else {
+            unreachable!()
+        };
+        run_steps(ctx, child, &cs[1..])?;
+    }
+    if let Some(extra) = cases.iter().find(|c| {
+        !ctors
+            .iter()
+            .any(|k| head_sym(c).is_some_and(|h| h.eq_ignore_ascii_case(&k.name)))
+    }) {
+        return Err(stuck(
+            &st,
+            format!("case `{extra}` is not a constructor of {}", ty.name),
         ));
     }
     Ok(())

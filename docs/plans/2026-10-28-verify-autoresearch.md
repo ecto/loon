@@ -130,6 +130,9 @@ STEP     := [unfold FN]                ; one unfolding of FN at the leftmost-out
           | [induction VAR CASE*]      ; VAR must be a law param of ADT type
           | [cases VAR CASE*]          ; like induction, no new ih; VAR may be a
                                        ; constructor field bound by an earlier split
+          | [cases EXPR :as NAME CASE*] ; case analysis on a term (see below)
+          | [rewrite RULE :in HYP]     ; rewrite inside hypothesis HYP (also with :rev/:at)
+          | [sym]                      ; swap L and R of the current goal
           | [refl]                     ; both sides syntactically equal after normalization
           | [admit]                    ; close the goal, taint the proof
 CASE     := [CTOR STEP*]               ; CTOR is a constructor of VAR's type; nil/cons for Vec
@@ -214,6 +217,37 @@ Reads "for all PARAMS, A1 = B1 ∧ ... → L = R". Rules:
   as `inputs_vacuous`; only inputs satisfying every hypothesis can falsify.
   If every input is vacuous the law is `unknown` with a note and is not
   sent to the kernel: never proven by vacuity.
+
+Case analysis on a term, hypothesis rewriting, ex falso (rung 3):
+
+- `[cases EXPR :as NAME CASE*]`, EXPR any non-variable term. Its type is
+  inferred (`infer::expr_type`, from the types of the goal's variables) and
+  must be an ADT of defs.oo. Every list head in EXPR must be a constructor,
+  `match`, or a total fn, and no symbol may name a non-total fn. For each
+  constructor K with fresh fields f1.., the case gets hypothesis
+  `NAME : [= EXPR [K f1 ..]]` (cited as `NAME`, components `NAME.K`), and
+  every occurrence of EXPR in the goal and in the evaluation-normalized
+  hypotheses is replaced by `[K f1 ..]`. Induction hypotheses are left
+  alone. Sound because EXPR, built from total fns, evaluates to some value
+  of its type, i.e. some constructor applied to values: the cases are
+  exhaustive, and replacing a term by an equal one changes nothing. Lean's
+  `cases h : e`. Plain `[cases VAR ...]` is unchanged.
+- `[rewrite RULE :in HYP]`: HYP (a law hypothesis `hN` or a `cases` name)
+  is replaced by its evaluation-normalized form, then the `:at`-th match
+  (counting its left side, then its right side, in preorder) is rewritten.
+  Obligations of a conditional RULE are discharged as for the goal. Sound:
+  the rule instance holds in this context, so the new hypothesis follows;
+  dropping the old one only weakens the context.
+- `[sym]` swaps L and R (the kernel only ever rewrites L).
+- Ex falso: a case also closes when some hypothesis in scope (or a
+  constructor component of one), evaluation-normalized, equates two
+  distinct constructors (`[= None [Some s]]`, `[= T F]`): no values satisfy
+  it, so the case is vacuous.
+- `:mutual` groups may now have `:given` hypotheses: a partner's `ih-FIELD`
+  is the partner law at that field with its hypotheses as obligations,
+  instantiated like its conclusion, exactly as a conditional `ih`. The
+  strong-induction argument is unchanged (each member is used only at a
+  strictly smaller constructor field, as an implication).
 
 AC declarations (a top-level form in `laws/*.oo`):
 

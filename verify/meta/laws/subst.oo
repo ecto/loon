@@ -21,7 +21,45 @@
 [law subst-list-compose [ts s1 s2]
   [= [subst-list [subst-list ts s1] s2] [subst-list ts [compose s1 s2]]]]
 
-; 3. Match soundness, unconditionally; and the variable-pattern instance.
+; 3. Match soundness. Equality deciders are sound and symmetric.
+[law nat-eq-sound [m n] :given [[= [nat-eq m n] T]] [= m n]]
+[law sym-eq-sound [a b] :given [[= [sym-eq a b] T]] [= a b]]
+[law nat-eq-comm [m n] [= [nat-eq m n] [nat-eq n m]]]
+[law sym-eq-comm [a b] [= [sym-eq a b] [sym-eq b a]]]
+[law term-eq-refl [a] [= [term-eq a a] T]]
+[law terms-eq-refl [ts] [= [terms-eq ts ts] T]]
+[law term-eq-sound [a b] :given [[= [term-eq a b] T]] [= a b]]
+[law terms-eq-sound [ts us] :given [[= [terms-eq ts us] T]] [= ts us]]
+
+; Lookup and agreement of binding lists.
+[law lookup-apply-var [x bs w] :given [[= [lookup x bs] [Some w]]]
+  [= [apply-var x bs] w]]
+[law agree-refl [ks b0] [= [agree ks b0 b0] T]]
+[law agree-lookup [ks b0 b x w]
+  :given [[= [lookup x ks] [Some w]] [= [agree ks b0 b] T]]
+  [= [apply-var x b] [apply-var x b0]]]
+[law agree-cons-fresh [ks b0 x u b]
+  :given [[= [lookup x ks] None] [= [agree ks [Cons [Pair x u] b0] b] T]]
+  [= [agree ks b0 b] T]]
+
+; Matching only adds bindings: agreement with the result implies agreement
+; with the input.
+[law match-in-mono [p t bs bs2 b]
+  :given [[= [match-in p t bs] [Some bs2]] [= [agree bs2 bs2 b] T]]
+  [= [agree bs bs b] T]]
+[law match-list-in-mono [ps ts bs bs2 b]
+  :given [[= [match-list-in ps ts bs] [Some bs2]] [= [agree bs2 bs2 b] T]]
+  [= [agree bs bs b] T]]
+
+; Soundness: any substitution agreeing with the match result maps the
+; pattern to the term.
+[law match-in-sound [p t bs bs2 b]
+  :given [[= [match-in p t bs] [Some bs2]] [= [agree bs2 bs2 b] T]]
+  [= [subst p [Subst b]] t]]
+[law match-list-in-sound [ps ts bs bs2 b]
+  :given [[= [match-list-in ps ts bs] [Some bs2]] [= [agree bs2 bs2 b] T]]
+  [= [subst-list ps [Subst b]] ts]]
+
 [law apply-match-var [x t] [= [apply-match [V x] t] t]]
 [law apply-match [p t] [= [apply-match p t] t]]
 

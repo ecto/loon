@@ -1462,6 +1462,7 @@ fn partner(
         var_ty: ty(var_ty),
         lhs: p(l),
         rhs: p(r),
+        hyps: vec![],
     }
 }
 
@@ -1637,4 +1638,297 @@ fn pipeline_mutual_group_fails_together() {
     assert!(!r.errors.is_empty());
     assert_eq!(status(&r, "subst-empty").status, "unknown");
     assert_eq!(status(&r, "subst-list-empty").status, "unknown");
+}
+
+// ─── Rung 3: cases on a term, sym, hypothesis rewriting, ex falso ─────────
+
+fn prove_meta(
+    params: &[(&str, &str)],
+    hyps: &[(&str, &str)],
+    (lhs, rhs): (&str, &str),
+    steps: &str,
+    lemmas: &kernel::Lemmas,
+    partners: &[kernel::Mutual],
+) -> Outcome {
+    let d = meta_defs();
+    let names: Vec<String> = params.iter().map(|(n, _)| n.to_string()).collect();
+    let types: HashMap<String, kernel::Ty> =
+        params.iter().map(|(n, t)| (n.to_string(), ty(t))).collect();
+    let hyps: Vec<(Expr, Expr)> = hyps.iter().map(|(a, b)| (p(a), p(b))).collect();
+    let (l, r) = (p(lhs), p(rhs));
+    let goal = Goal {
+        law_name: "t",
+        params: &names,
+        param_types: &types,
+        lhs: &l,
+        rhs: &r,
+        hyps: &hyps,
+    };
+    let steps = crate::parser::parse(steps).unwrap();
+    kernel::check_proof_mutual(&goal, &steps, &d, lemmas, &[], partners)
+}
+
+fn meta_lemmas(n: &str) -> Option<(Rule, bool)> {
+    let r = match n {
+        "sym-eq-sound" => rule(&["a", "b"], &[("[sym-eq a b]", "T")], "a", "b"),
+        "sym-eq-comm" => rule(&["a", "b"], &[], "[sym-eq a b]", "[sym-eq b a]"),
+        _ => return None,
+    };
+    Some((r, false))
+}
+
+const TT: [(&str, &str); 2] = [("p", "Term"), ("t", "Term")];
+
+#[test]
+fn cases_on_term_splits_option() {
+    let o = prove_meta(
+        &TT,
+        &[],
+        (
+            "[match [matcht p t] None None [Some s] [Some s]]",
+            "[matcht p t]",
+        ),
+        "[cases [matcht p t] :as hm [None] [Some]]",
+        &none,
+        &[],
+    );
+    assert_eq!(o, Outcome::Proven);
+    // The split's equation is a hypothesis in each case.
+    let o = prove_meta(
+        &TT,
+        &[],
+        ("[matcht p t]", "None"),
+        "[cases [matcht p t] :as hm [None] [Some]]",
+        &none,
+        &[],
+    );
+    assert!(stuck_with(&o, "hm: [= [matcht p t] [Some x]]"), "{o:?}");
+}
+
+#[test]
+fn cases_on_bool_term_cannot_prove_false_law() {
+    let ab = [("a", "Term"), ("b", "Term")];
+    let o = prove_meta(
+        &ab,
+        &[],
+        ("[term-eq a b]", "T"),
+        "[cases [term-eq a b] :as h [T] [F]]",
+        &none,
+        &[],
+    );
+    assert!(
+        matches!(&o, Outcome::Stuck { case, .. } if case == "F"),
+        "{o:?}"
+    );
+    let o = prove_meta(
+        &ab,
+        &[],
+        ("[term-eq a b]", "T"),
+        "[cases [term-eq a b] :as h [T]]",
+        &none,
+        &[],
+    );
+    assert!(stuck_with(&o, "missing case F"), "{o:?}");
+    // A name already in scope, and a missing `:as`, are refused.
+    let o = prove_meta(
+        &ab,
+        &[("[term-eq a b]", "T")],
+        ("a", "b"),
+        "[cases [term-eq a b] :as h1 [T] [F]]",
+        &none,
+        &[],
+    );
+    assert!(stuck_with(&o, "already a hypothesis"), "{o:?}");
+    let o = prove_meta(
+        &ab,
+        &[],
+        ("a", "b"),
+        "[cases [term-eq a b] [T] [F]]",
+        &none,
+        &[],
+    );
+    assert!(stuck_with(&o, ":as NAME"), "{o:?}");
+}
+
+#[test]
+fn cases_on_term_refuses_non_total_fns() {
+    let o = prove(
+        &defs(),
+        &["xs"],
+        "[spin xs]",
+        "xs",
+        "[cases [spin xs] :as h [Nil] [Cons]]",
+        &none,
+    );
+    assert!(stuck_with(&o, "not an application of a total fn"), "{o:?}");
+}
+
+#[test]
+fn sym_swaps_sides_only() {
+    let o = prove(
+        &defs(),
+        &["xs"],
+        "xs",
+        "[append xs Nil]",
+        "[sym] [induction xs [Nil [unfold append]] [Cons [unfold append] [rewrite ih]]]",
+        &none,
+    );
+    assert_eq!(o, Outcome::Proven);
+    let o = prove(&defs(), &["xs"], "xs", "Nil", "[sym]", &none);
+    assert!(matches!(o, Outcome::Stuck { .. }));
+}
+
+#[test]
+fn contradictory_hypothesis_closes_only_when_constructors_differ() {
+    let ab = [("a", "Sym"), ("b", "Sym")];
+    let o = prove_meta(
+        &ab,
+        &[("[term-eq [V a] [C a Nil]]", "T")],
+        ("a", "b"),
+        "",
+        &none,
+        &[],
+    );
+    assert_eq!(o, Outcome::Proven);
+    let o = prove_meta(
+        &ab,
+        &[("[term-eq [V a] [V b]]", "T")],
+        ("a", "[Sym Z]"),
+        "",
+        &none,
+        &[],
+    );
+    assert!(matches!(o, Outcome::Stuck { .. }));
+}
+
+#[test]
+fn rewrite_in_hypothesis() {
+    let ab = [("a", "Sym"), ("b", "Sym")];
+    let o = prove_meta(
+        &ab,
+        &[("[sym-eq a b]", "T")],
+        ("[sym-eq b a]", "T"),
+        "[rewrite sym-eq-comm :in h1] [rewrite h1]",
+        &meta_lemmas,
+        &[],
+    );
+    assert_eq!(o, Outcome::Proven);
+    // Without the hypothesis rewrite, h1 does not match.
+    let o = prove_meta(
+        &ab,
+        &[("[sym-eq a b]", "T")],
+        ("[sym-eq b a]", "T"),
+        "[rewrite h1]",
+        &meta_lemmas,
+        &[],
+    );
+    assert!(matches!(o, Outcome::Stuck { .. }));
+    let o = prove_meta(
+        &ab,
+        &[],
+        ("a", "b"),
+        "[rewrite sym-eq-comm :in h7]",
+        &meta_lemmas,
+        &[],
+    );
+    assert!(stuck_with(&o, "`:in` needs"), "{o:?}");
+}
+
+const TERM_SOUND: &str = "[induction a
+    [V [cases b [V [rewrite sym-eq-sound :at 2]] [C] [A]]]
+    [C [cases b [V]
+         [C [cases [sym-eq x x1] :as he [T [rewrite sym-eq-sound :at 2] [rewrite ih-rest]] [F]]]
+         [A]]]
+    [A [cases b [V] [C]
+         [A [cases [sym-eq x x1] :as he [T [rewrite sym-eq-sound :at 2] [rewrite ih-rest]] [F]]]]]]";
+const TERMS_SOUND: &str = "[induction ts
+    [Nil [cases us [Nil] [Cons]]]
+    [Cons [cases us [Nil]
+            [Cons [cases [term-eq x x1] :as he [T [rewrite ih-x] [rewrite ih-rest]] [F]]]]]]";
+
+fn cond_partner(
+    name: &str,
+    params: &[&str],
+    var: &str,
+    var_ty: &str,
+    hyp: (&str, &str),
+    l: &str,
+    r: &str,
+) -> kernel::Mutual {
+    let mut m = partner(name, params, var, var_ty, l, r);
+    m.hyps = vec![(p(hyp.0), p(hyp.1))];
+    m
+}
+
+#[test]
+fn conditional_mutual_pair_proves() {
+    let terms = cond_partner(
+        "terms-eq-sound",
+        &["ts", "us"],
+        "ts",
+        "[List Term]",
+        ("[terms-eq ts us]", "T"),
+        "ts",
+        "us",
+    );
+    let term = cond_partner(
+        "term-eq-sound",
+        &["a", "b"],
+        "a",
+        "Term",
+        ("[term-eq a b]", "T"),
+        "a",
+        "b",
+    );
+    let o = prove_meta(
+        &[("a", "Term"), ("b", "Term")],
+        &[("[term-eq a b]", "T")],
+        ("a", "b"),
+        TERM_SOUND,
+        &meta_lemmas,
+        std::slice::from_ref(&terms),
+    );
+    assert_eq!(o, Outcome::Proven);
+    let o = prove_meta(
+        &[("ts", "[List Term]"), ("us", "[List Term]")],
+        &[("[terms-eq ts us]", "T")],
+        ("ts", "us"),
+        TERMS_SOUND,
+        &meta_lemmas,
+        std::slice::from_ref(&term),
+    );
+    assert_eq!(o, Outcome::Proven);
+}
+
+#[test]
+fn conditional_mutual_false_pair_fails() {
+    // False list half: equal lists are not all empty. The term half,
+    // relying on it, cannot close either.
+    let terms = cond_partner(
+        "terms-bogus",
+        &["ts", "us"],
+        "ts",
+        "[List Term]",
+        ("[terms-eq ts us]", "T"),
+        "ts",
+        "Nil",
+    );
+    let o = prove_meta(
+        &[("a", "Term"), ("b", "Term")],
+        &[("[term-eq a b]", "T")],
+        ("a", "b"),
+        TERM_SOUND,
+        &meta_lemmas,
+        std::slice::from_ref(&terms),
+    );
+    assert!(matches!(o, Outcome::Stuck { .. }), "{o:?}");
+    let o = prove_meta(
+        &[("ts", "[List Term]"), ("us", "[List Term]")],
+        &[("[terms-eq ts us]", "T")],
+        ("ts", "Nil"),
+        TERMS_SOUND,
+        &meta_lemmas,
+        &[],
+    );
+    assert!(matches!(o, Outcome::Stuck { .. }), "{o:?}");
 }

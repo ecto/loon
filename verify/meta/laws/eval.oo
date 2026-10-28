@@ -1,0 +1,26 @@
+; Evaluation lemmas over the evaluator model (verify/meta/defs.oo, rung 3).
+
+[law evaln-zero [p t] [= [evaln Z p t] t]]
+
+[law evaln-normal [n p t] :given [[= [step p t] None]]
+  [= [evaln n p t] t]]
+
+[law evaln-succ-normal [n p t] :given [[= [step p t] None]]
+  [= [evaln [S n] p t] [evaln n p t]]]
+
+; Fuel composes.
+[law evaln-add [m n p t]
+  [= [evaln [add m n] p t] [evaln n p [evaln m p t]]]]
+
+; Fuel monotonicity: a normal form reached at fuel n stays at n+k.
+[law fuel-monotone [n k p t] :given [[= [step p [evaln n p t]] None]]
+  [= [evaln [add n k] p t] [evaln n p t]]]
+
+; A normal head leaves the list step to the tail (C/A congruence, later).
+[law step-list-normal-head [p t ts] :given [[= [step p t] None]]
+  [= [step-list p [Cons t ts]] [wrap-cons t [step-list p ts]]]]
+
+; false: variables are normal, so not every term is reducible
+[law normal-bogus [p t] [= [normal? p t] F]]
+; false: a step never returns its input unchanged on a variable
+[law step-self-bogus [p t] [= [step p t] [Some t]]]

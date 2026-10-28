@@ -1049,6 +1049,7 @@ pub fn run_dir(dir: &Path, opts: &Options) -> Result<Report, String> {
                     var,
                     lhs: l.lhs.clone(),
                     rhs: l.rhs.clone(),
+                    hyps: l.hyps.clone(),
                 })
             })
             .collect();

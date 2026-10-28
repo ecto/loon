@@ -283,6 +283,23 @@ pub fn law_param_types_eqs(
     params: &[String],
     eqs: &[(&Expr, &Expr)],
 ) -> Option<Vec<T>> {
+    let mut inf = with_schemes(defs, fn_order);
+    let mut env = HashMap::new();
+    let pts: Vec<T> = params.iter().map(|_| inf.fresh()).collect();
+    for (p, t) in params.iter().zip(&pts) {
+        env.insert(p.clone(), t.clone());
+    }
+    for (lhs, rhs) in eqs {
+        let l = inf.expr(lhs, &env, &HashMap::new())?;
+        let r = inf.expr(rhs, &env, &HashMap::new())?;
+        inf.unify(&l, &r)?;
+    }
+
+    Some(pts.iter().map(|t| inf.resolve(t)).collect())
+}
+
+/// An inference state with every typable fn of defs.oo generalized.
+fn with_schemes<'a>(defs: &'a Defs, fn_order: &[String]) -> Inf<'a> {
     let mut inf = Inf {
         defs,
         subst: Vec::new(),
@@ -322,18 +339,40 @@ pub fn law_param_types_eqs(
             inf.schemes.insert((*name).clone(), sc);
         }
     }
-    let mut env = HashMap::new();
-    let pts: Vec<T> = params.iter().map(|_| inf.fresh()).collect();
-    for (p, t) in params.iter().zip(&pts) {
-        env.insert(p.clone(), t.clone());
-    }
-    for (lhs, rhs) in eqs {
-        let l = inf.expr(lhs, &env, &HashMap::new())?;
-        let r = inf.expr(rhs, &env, &HashMap::new())?;
-        inf.unify(&l, &r)?;
-    }
+    inf
+}
 
-    Some(pts.iter().map(|t| inf.resolve(t)).collect())
+fn from_ty(inf: &mut Inf, t: &Ty) -> T {
+    if t.name == "?" {
+        return inf.fresh();
+    }
+    T::Con(
+        t.name.clone(),
+        t.args.iter().map(|a| from_ty(inf, a)).collect(),
+    )
+}
+
+/// The type of an arbitrary term `e` whose variables have the (kernel)
+/// types in `env`; other free symbols get fresh type variables. Used by the
+/// kernel's `cases EXPR :as NAME` to find the ADT to split over. `None` if
+/// it does not type.
+pub fn expr_type(defs: &Defs, env: &HashMap<String, Ty>, e: &Expr) -> Option<Ty> {
+    let mut inf = with_schemes(defs, &defs.fn_order);
+    let mut syms = std::collections::HashSet::new();
+    super::kernel::symbols(e, &mut syms);
+    let mut tenv = HashMap::new();
+    for s in syms {
+        if defs.is_ctor(&s) || defs.fns.contains_key(&s) {
+            continue;
+        }
+        let t = match env.get(&s) {
+            Some(t) => from_ty(&mut inf, t),
+            None => inf.fresh(),
+        };
+        tenv.insert(s, t);
+    }
+    let t = inf.expr(e, &tenv, &HashMap::new())?;
+    Some(to_ty(&inf.resolve(&t)))
 }
 
 /// The kernel's view: unresolved variables become `?`.

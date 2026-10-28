@@ -116,7 +116,8 @@ induction, cases, refl.
 (naturals), `Pair`, `Option`, `B` (`T`/`F`), `Subst` (an association list),
 and `subst`/`subst-list`, `apply-var`, `map-rhs`, `compose`, `term-eq`/
 `terms-eq`, `matcht`/`match-list` (non-linear: a repeated variable must
-match equal terms, checked by `add-binding`/`union`), `apply-match`.
+match equal terms; since rung 3 the binding list is threaded left to right
+by `match-in`/`match-list-in`, like the Rust `match_term`), `apply-match`.
 Proven: `subst-empty` and `subst-compose`, each with its list version,
 plus helper lemmas (`nat-eq-refl`, `sym-eq-refl`, `subst-if`,
 `subst-apply-var`) and `apply-match-var` (match soundness for a variable
@@ -124,8 +125,7 @@ pattern). `compose s1 s2` is `s1`'s bindings with `s2` applied, then all of
 `s2`'s; lookup takes the first binding, which gives the usual
 composition.
 
-Still open: `apply-match` in general (bounded-checked on ~1100 inputs, not
-proven). After the constructor test the goal is
+Open at rung 2 (closed in rung 3, below): `apply-match` in general. After the constructor test the goal is
 `[match [if-b [sym-eq f g] [match-list ps ts] None] ...]`: it needs
 `sym-eq f g = T → f = g` and `match-list ps ts = Some s → subst-list ps s
 = ts`, implications, i.e. rung 1's `:given` plus case analysis on a
@@ -145,7 +145,9 @@ Kernel growth it forced:
 - **Mutual induction.** `[proof P :mutual Q [induction t ...]]` and
   `[proof Q :mutual P [induction ts ...]]` (or `:mutual [Q R ...]`) form a
   group, declared identically by every member. Each member's proof must be
-  one `induction` on a param of fully known type, and the laws unconditional.
+  one `induction` on a param of fully known type (since rung 3 members may
+  carry `:given` hypotheses; a partner's `ih-FIELD` carries them as
+  obligations).
   In an induction case of P, a constructor field whose type is exactly Q's
   induction type gets Q at that field as `ih-FIELD` (Q's other params
   quantified, renamed apart); P's own `ih` is as before. Sound by strong
@@ -166,6 +168,33 @@ For rung 3: a `Fn`/`Prog` model with `step` and fuel-indexed `evaln`;
 `cases` on a non-variable scrutinee (or a `B`-valued lemma split), which
 `apply-match` needs too; and `:given` (rung 1) inside mutual groups, which
 the mutual scheme refuses today.
+
+## Rung 3 (kernel half), as built
+
+Kernel: `[cases EXPR :as NAME ...]` on any term of ADT type built from total
+fns, `[rewrite RULE :in HYP]`, `[sym]`, ex falso on a hypothesis equating
+distinct constructors, and `:given` inside `:mutual` groups (grammar and
+soundness in the main plan, section 2.3).
+
+Model change: matching now threads one binding list (`match-in p t bs`,
+`match-list-in ps ts bs`, `bind-var`), which is how the Rust kernel
+matches; `matcht`/`match-list` are `wrap-subst` of it from `Nil`. The
+merge-of-two-substitutions version needed a domain/union theory that
+ballooned; the threaded one only ever prepends a binding for an unbound
+variable. Still non-linear: a bound variable must meet an equal term
+(`term-eq`).
+
+`apply-match` is proven. Chain: `nat-eq-sound`, `sym-eq-sound`,
+`nat-eq-comm`, `sym-eq-comm`; `term-eq-refl`/`terms-eq-refl` and
+`term-eq-sound`/`terms-eq-sound` (mutual, the latter conditional);
+`lookup-apply-var`; `agree` (`b` reads like `b0` at every key of `ks`) with
+`agree-refl`, `agree-lookup`, `agree-cons-fresh`; `match-in-mono` (mutual,
+conditional: agreement with the result gives agreement with the input);
+`match-in-sound` (mutual, conditional: any `b` agreeing with the result
+maps the pattern to the term); then `apply-match` is a `cases` on
+`[match-in p t Nil]` and `match-in-sound` with `agree-refl` discharging the
+agreement. The evaluator lemmas `evaln-succ-normal`, `evaln-add`,
+`fuel-monotone` are proven with `sym` and `cases [step p t] :as o`.
 
 ## Risks, said plainly
 
