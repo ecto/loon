@@ -544,7 +544,9 @@ mod tests {
         match &exprs[0].kind {
             ExprKind::List(items) => {
                 assert_eq!(items.len(), 4);
-                assert!(items[1..].iter().all(|e| matches!(e.kind, ExprKind::Float(f) if f == 1e6)));
+                assert!(items[1..]
+                    .iter()
+                    .all(|e| matches!(e.kind, ExprKind::Float(f) if f == 1e6)));
             }
             other => panic!("{other:?}"),
         }
