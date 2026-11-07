@@ -524,6 +524,36 @@ mod tests {
     }
 
     #[test]
+    fn parse_scientific_notation_without_decimal_point() {
+        for (src, want) in [
+            ("1e6", 1e6),
+            ("2.5e-3", 2.5e-3),
+            ("1E+3", 1e3),
+            ("-4e2", -4e2),
+            ("3e-0", 3.0),
+        ] {
+            let exprs = parse(src).unwrap();
+            assert_eq!(exprs.len(), 1, "{src}");
+            match &exprs[0].kind {
+                ExprKind::Float(f) => assert_eq!(*f, want, "{src}"),
+                other => panic!("{src} parsed as {other:?}"),
+            }
+        }
+        // Inside a call: one argument each, not `1e` + `6`.
+        let exprs = parse("[cube 1e6 1e6 1e6]").unwrap();
+        assert_eq!(exprs[0].to_string(), "[cube 1000000.0 1000000.0 1000000.0]");
+    }
+
+    #[test]
+    fn unit_suffixes_still_desugar() {
+        assert_eq!(parse("10mm").unwrap()[0].to_string(), "[unit 10 :mm]");
+        assert_eq!(parse("2.5in").unwrap()[0].to_string(), "[unit 2.5 :in]");
+        assert_eq!(parse("90deg").unwrap()[0].to_string(), "[unit 90 :deg]");
+        // An exponent followed by a unit keeps both.
+        assert_eq!(parse("1e3mm").unwrap()[0].to_string(), "[unit 1000.0 :mm]");
+    }
+
+    #[test]
     fn parse_hello_world() {
         let src = r#"[fn main [] [println "hello, world!"]]"#;
         let exprs = parse(src).unwrap();

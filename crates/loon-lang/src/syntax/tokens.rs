@@ -129,6 +129,10 @@ pub enum Token {
 
     // Literals — higher priority than Symbol
     #[regex(r"-?[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?(f32|f64|[a-zA-Z]+)?", priority = 10, callback = |lex| lex.slice().to_string())]
+    // Scientific notation without a decimal point (1e6, 2E-3, 1e+3mm). Longest
+    // match beats the Int rule's unit-suffix group, which would otherwise read
+    // `1e6` as `1e` (unit `:e`) followed by `6`.
+    #[regex(r"-?[0-9]+[eE][+-]?[0-9]+(f32|f64|[a-zA-Z]+)?", priority = 11, callback = |lex| lex.slice().to_string())]
     Float(String),
     // Radix literals (issue #24): hex 0xFF, octal 0o17, binary 0b1010.
     // Higher priority than the decimal rule, which would otherwise split
