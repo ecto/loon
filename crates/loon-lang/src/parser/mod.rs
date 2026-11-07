@@ -541,7 +541,14 @@ mod tests {
         }
         // Inside a call: one argument each, not `1e` + `6`.
         let exprs = parse("[cube 1e6 1e6 1e6]").unwrap();
-        assert_eq!(exprs[0].to_string(), "[cube 1000000.0 1000000.0 1000000.0]");
+        match &exprs[0].kind {
+            ExprKind::List(items) => {
+                assert_eq!(items.len(), 4);
+                assert!(items[1..].iter().all(|e| matches!(e.kind, ExprKind::Float(f) if f == 1e6)));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(exprs[0].to_string(), "[cube 1000000 1000000 1000000]");
     }
 
     #[test]
@@ -550,7 +557,7 @@ mod tests {
         assert_eq!(parse("2.5in").unwrap()[0].to_string(), "[unit 2.5 :in]");
         assert_eq!(parse("90deg").unwrap()[0].to_string(), "[unit 90 :deg]");
         // An exponent followed by a unit keeps both.
-        assert_eq!(parse("1e3mm").unwrap()[0].to_string(), "[unit 1000.0 :mm]");
+        assert_eq!(parse("1e3mm").unwrap()[0].to_string(), "[unit 1000 :mm]");
     }
 
     #[test]
